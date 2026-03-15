@@ -17,8 +17,8 @@ SCOPES = ["https://www.googleapis.com/auth/calendar"]
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 
-# Temporary in-memory state store (single-user flow, no concurrency needed)
-_flow_state: dict = {}
+# Reuse the same Flow object across /start and /callback (PKCE code_verifier lives here)
+_flow_store: dict[str, Flow] = {}
 
 
 def _build_flow() -> Flow:
@@ -46,7 +46,7 @@ async def auth_start(secret: str = Query(...)):
         prompt="consent",
         include_granted_scopes="true",
     )
-    _flow_state["state"] = state
+    _flow_store["flow"] = flow  # persist so callback reuses same instance
     return RedirectResponse(auth_url)
 
 
@@ -57,7 +57,10 @@ async def auth_callback(request: Request):
     if not code:
         raise HTTPException(status_code=400, detail="Missing authorization code.")
 
-    flow = _build_flow()
+    flow = _flow_store.get("flow")
+    if not flow:
+        raise HTTPException(status_code=400, detail="Flow not found. Start the auth flow again at /auth/start.")
+
     flow.fetch_token(code=code)
 
     refresh_token = flow.credentials.refresh_token
