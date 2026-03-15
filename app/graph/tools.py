@@ -82,10 +82,14 @@ async def confirm_appointment(
     slot_duration_minutes: Literal[60, 120],
     state: Annotated[dict, InjectedState],
     config: RunnableConfig,
+    session_note: str = "",
 ) -> str:
     """
     Confirma e cria o agendamento no Google Calendar.
     slot_datetime deve estar no formato ISO 8601, ex: '2026-03-19T09:00:00'.
+    session_note: use para identificar sessões separadas de menor de idade,
+      ex: '1ª hora — responsáveis' ou '2ª hora — paciente'.
+      Deixe vazio para consultas normais ou consultas de 2h em bloco único.
     """
     from app.google_calendar import create_event
 
@@ -103,7 +107,14 @@ async def confirm_appointment(
     )
     patient_name = state.get("patient_name") or state.get("user_name", "Paciente")
     patient_age = state.get("patient_age") or 99
-    is_minor_first = patient_age < 18 and not state.get("is_patient", False)
+    # is_minor_first only applies to a single 2h block (no session_note)
+    is_minor_first = (
+        patient_age < 18
+        and not state.get("is_patient", False)
+        and state.get("preferred_doctor") == "julio"
+        and not session_note
+        and slot_duration_minutes == 120
+    )
 
     event_id = await create_event(
         calendar_id=calendar_id,
@@ -112,6 +123,7 @@ async def confirm_appointment(
         patient_name=patient_name,
         doctor_name=doctor_label,
         is_minor_first=is_minor_first,
+        session_note=session_note,
     )
 
     formatted = start.strftime("%d/%m/%Y às %H:%M")
@@ -135,17 +147,18 @@ async def confirm_appointment(
         "datetime": slot_datetime,
         "duration_minutes": slot_duration_minutes,
         "patient_name": patient_name,
-        "is_minor_first": is_minor_first,
+        "session_note": session_note,
     })
 
+    session_label = f" ({session_note})" if session_note else ""
     await _notify_clinic(
         f"Agendamento realizado! ✅\n"
-        f"Paciente: {patient_name}\n"
+        f"Paciente: {patient_name}{session_label}\n"
         f"Data e horário: {formatted}\n"
         f"Médico(a): {doctor_label}"
     )
 
-    return f"Consulta agendada com sucesso! ✅\n{doctor_label} — {formatted}\nID: {event_id}"
+    return f"Consulta agendada com sucesso! ✅\n{doctor_label} — {formatted}{session_label}\nID: {event_id}"
 
 
 @tool

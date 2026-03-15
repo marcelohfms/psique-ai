@@ -177,15 +177,22 @@ async def create_event(
     patient_name: str,
     doctor_name: str,
     is_minor_first: bool = False,
+    session_note: str = "",
 ) -> str:
     """Create a Google Calendar event and return the event ID."""
     end = start + timedelta(minutes=slot_minutes)
     description = f"Paciente: {patient_name}\nMédico: {doctor_name}"
-    if is_minor_first:
+    if session_note:
+        description += f"\n\n{session_note}"
+    elif is_minor_first:
         description += "\n\n1ª hora: conversa com os pais/responsáveis\n2ª hora: consulta com o paciente"
 
+    summary = f"Consulta — {patient_name}"
+    if session_note:
+        summary += f" ({session_note})"
+
     event = {
-        "summary": f"Consulta — {patient_name}",
+        "summary": summary,
         "description": description,
         "start": {"dateTime": start.isoformat(), "timeZone": TIMEZONE},
         "end": {"dateTime": end.isoformat(), "timeZone": TIMEZONE},

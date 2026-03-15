@@ -35,10 +35,21 @@ MINOR_RULE = """\
 
 REGRA IMPORTANTE — PACIENTE MENOR DE IDADE ({patient_age} anos) com Dr. Júlio:
 Antes de buscar horários, explique ao responsável:
-"Como {patient_name} tem menos de 18 anos, a primeira consulta com o Dr. Júlio tem duração \
-de 2 horas: a primeira hora reservamos para conversar com os pais/responsáveis, \
-e a segunda hora é a consulta com o(a) paciente."
-Use sempre slot_duration_minutes=120 ao chamar get_available_slots e confirm_appointment.
+"Como {patient_name} tem menos de 18 anos, a primeira consulta com o Dr. Júlio é dividida \
+em dois momentos de 1 hora: o primeiro com os pais/responsáveis e o segundo com o(a) paciente. \
+Recomendamos fazer na sequência (2h seguidas), mas também é possível agendar em dias ou \
+horários separados. Como prefere?"
+
+SE o responsável preferir na sequência (2h seguidas):
+- Use slot_duration_minutes=120 em get_available_slots e confirm_appointment.
+- Deixe session_note vazio em confirm_appointment.
+
+SE o responsável preferir em momentos separados:
+- Agende a 1ª sessão (responsáveis): use slot_duration_minutes=60, \
+session_note="1ª hora — responsáveis".
+- Após confirmar a 1ª sessão, pergunte o dia e horário da 2ª sessão (paciente).
+- Agende a 2ª sessão (paciente): use slot_duration_minutes=60, \
+session_note="2ª hora — paciente".
 """
 
 ADULT_RULE = "Use slot_duration_minutes=60 ao chamar get_available_slots e confirm_appointment."
