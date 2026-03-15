@@ -78,6 +78,17 @@ async def extract_message(payload: dict) -> tuple[str, str] | None:
         text = msg.get("text") or msg.get("content", {}).get("text", "")
         if not text or not text.strip():
             return None
+
+        # For replies, prepend the quoted message so the LLM has context
+        if msg_type == "ExtendedTextMessage":
+            quoted = msg.get("quoted", "")
+            if quoted and isinstance(quoted, str):
+                text = f'[Em resposta a: "{quoted}"]\n{text}'
+            elif quoted and isinstance(quoted, dict):
+                quoted_text = quoted.get("text") or quoted.get("body", "")
+                if quoted_text:
+                    text = f'[Em resposta a: "{quoted_text}"]\n{text}'
+
         return phone, text.strip()
 
     if msg_type in _MEDIA_TYPES:
