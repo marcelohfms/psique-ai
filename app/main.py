@@ -89,7 +89,7 @@ async def process_message(phone: str, text: str) -> None:
     """Route a (possibly debounced) message through the LangGraph chatbot."""
     config = {"configurable": {"thread_id": phone, "phone": phone}}
 
-    snapshot = graph_module.chatbot.get_state(config)
+    snapshot = await graph_module.chatbot.aget_state(config)
     if snapshot.values:
         state_update = {"messages": [HumanMessage(content=text)]}
     else:
