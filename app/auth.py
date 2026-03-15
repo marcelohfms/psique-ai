@@ -61,7 +61,10 @@ async def auth_callback(request: Request):
     if not flow:
         raise HTTPException(status_code=400, detail="Flow not found. Start the auth flow again at /auth/start.")
 
-    flow.fetch_token(code=code)
+    try:
+        flow.fetch_token(code=code)
+    except Warning:
+        pass  # Google returns extra pre-authorized scopes; safe to ignore
 
     refresh_token = flow.credentials.refresh_token
     if not refresh_token:
