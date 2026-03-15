@@ -31,4 +31,4 @@ jobs:
             curl -s -X POST "http://localhost:3000/api/trpc/services.app.deployService" \
               -H "authorization: ${{ secrets.EASYPANEL_API_KEY }}" \
               -H "Content-Type: application/json" \
-              -d '{"json": {"projectName": "evolution", "serviceName": "psique-dashboard"}}'
+              -d '{"json": {"projectName": "evolution", "serviceName": "dashboard"}}'
