@@ -1,0 +1,16 @@
+[project]
+name = "psique-chatbot"
+version = "0.1.0"
+description = "Add your description here"
+requires-python = ">=3.14"
+dependencies = [
+    "fastapi>=0.129.0",
+    "httpx>=0.28.1",
+    "langchain-openai>=1.1.11",
+    "langgraph>=1.1.2",
+    "langgraph-checkpoint-postgres>=3.0.4",
+    "psycopg[binary]>=3.3.3",
+    "python-dotenv>=1.2.1",
+    "supabase>=2.28.2",
+    "uvicorn>=0.41.0",
+]
