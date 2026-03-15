@@ -7,7 +7,7 @@ from langchain_core.runnables import RunnableConfig
 from langgraph.prebuilt import InjectedState
 
 from app.uazapi import send_text
-from app.database import get_supabase, log_event, DOCTOR_IDS
+from app.database import get_supabase, log_event, upsert_user, DOCTOR_IDS
 
 TZ = ZoneInfo("America/Recife")
 
@@ -142,7 +142,23 @@ async def transfer_to_human(
     config: RunnableConfig,
 ) -> str:
     """Transfere a conversa para um atendente humano quando o bot não consegue ajudar."""
+    import os
     phone = config["configurable"]["phone"]
+
+    # Disable bot for this user
+    await upsert_user(phone, {"active": False})
+
+    # Notify the clinic's internal number
+    notify_phone = os.getenv("NOTIFY_PHONE", "")
+    if notify_phone:
+        patient_name = state.get("patient_name") or state.get("user_name")
+        number = phone.replace("@s.whatsapp.net", "")
+        if patient_name:
+            notification = f"👤 *{patient_name}* precisa de atendimento.\nNúmero: {number}"
+        else:
+            notification = f"👤 Um paciente precisa de atendimento.\nNúmero: {number}"
+        await send_text(notify_phone, notification)
+
     await log_event("human_transfer", phone, {"reason": reason})
     await send_text(phone, "👤 Vou transferir você para um de nossos atendentes. Um momento, por favor!")
     return "Conversa transferida para atendente humano."

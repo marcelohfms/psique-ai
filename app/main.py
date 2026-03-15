@@ -107,12 +107,16 @@ async def process_message(phone: str, text: str) -> None:
     """Route a (possibly debounced) message through the LangGraph chatbot."""
     config = {"configurable": {"thread_id": phone, "phone": phone}}
 
+    # If user was transferred to human, bot stays silent
+    existing = await get_user_by_phone(phone)
+    if existing and existing.get("active") is False:
+        return
+
     snapshot = await graph_module.chatbot.aget_state(config)
     if snapshot.values:
         state_update = {"messages": [HumanMessage(content=text)]}
     else:
         await log_event("conversation_started", phone)
-        existing = await get_user_by_phone(phone)
         _REQUIRED = ("name", "patient_name", "age", "is_patient", "doctor_id")
         user_known = existing and all(existing.get(f) is not None for f in _REQUIRED)
 
