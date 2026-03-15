@@ -9,7 +9,7 @@ jobs:
   deploy:
     runs-on: ubuntu-latest
     steps:
-      - name: Trigger Easypanel deploy via SSH
+      - name: Deploy chatbot (psiqueai)
         uses: appleboy/ssh-action@v1.0.3
         with:
           host: 69.62.88.58
@@ -20,7 +20,15 @@ jobs:
               -H "authorization: ${{ secrets.EASYPANEL_API_KEY }}" \
               -H "Content-Type: application/json" \
               -d '{"json": {"projectName": "evolution", "serviceName": "psiqueai"}}'
-            curl -f -s -X POST "http://localhost:3000/api/trpc/services.app.deployService" \
+
+      - name: Deploy dashboard (psique-dashboard)
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: 69.62.88.58
+          username: root
+          key: ${{ secrets.VPS_SSH_KEY }}
+          script: |
+            curl -s -X POST "http://localhost:3000/api/trpc/services.app.deployService" \
               -H "authorization: ${{ secrets.EASYPANEL_API_KEY }}" \
               -H "Content-Type: application/json" \
               -d '{"json": {"projectName": "evolution", "serviceName": "psique-dashboard"}}'
