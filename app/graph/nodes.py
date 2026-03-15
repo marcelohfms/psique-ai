@@ -5,6 +5,7 @@ from langchain_core.runnables import RunnableConfig
 from app.graph.state import ConversationState
 from app.graph.schemas import CollectInfoOutput
 from app.graph.tools import get_available_slots, confirm_appointment, request_document, transfer_to_human
+from app.graph.prompts import COLLECT_SYSTEM, MINOR_RULE, ADULT_RULE, EXISTING_PATIENT_SYSTEM, NEW_PATIENT_SYSTEM
 from app.uazapi import send_text
 from app.database import upsert_user, DOCTOR_IDS
 
@@ -30,81 +31,6 @@ def _get_agent_llm():
     return _agent_llm
 
 
-# ── Prompts ───────────────────────────────────────────────────────────────────
-
-_COLLECT_SYSTEM = """\
-Você é a assistente virtual da Clínica Psique, uma clínica de psiquiatria.
-Sua tarefa é coletar as seguintes informações do usuário, UMA de cada vez, \
-de forma natural e acolhedora em português brasileiro.
-
-Informações necessárias (em ordem):
-1. user_name        — nome de quem está entrando em contato
-2. is_for_self      — a consulta é para a própria pessoa (true) ou outra (false)
-3. patient_name     — nome do paciente (pule se is_for_self=true, use user_name)
-4. patient_age      — idade do paciente em anos
-5. is_patient       — o paciente já é paciente da clínica?
-6. preferred_doctor — médico preferido: "julio" (Dr. Júlio) ou "bruna" (Dra. Bruna)
-
-Estado atual dos dados coletados:
-{collected}
-
-Regras:
-- Colete apenas UMA informação por mensagem.
-- Se is_for_self=true, defina patient_name = user_name sem perguntar.
-- Só marque is_complete=true quando TODOS os 6 campos estiverem preenchidos.
-- Seja acolhedor e empático — a clínica cuida de saúde mental.
-- Responda SEMPRE em português brasileiro.
-"""
-
-_MINOR_RULE = """\
-
-REGRA IMPORTANTE — PACIENTE MENOR DE IDADE ({patient_age} anos):
-Antes de buscar horários, explique ao responsável:
-"Como {patient_name} tem menos de 18 anos, nossa primeira consulta tem duração \
-de 2 horas: a primeira hora reservamos para conversar com os pais/responsáveis, \
-e a segunda hora é a consulta com o(a) paciente."
-Use sempre slot_duration_minutes=120 ao chamar get_available_slots e confirm_appointment.
-"""
-
-_ADULT_RULE = "Use slot_duration_minutes=60 ao chamar get_available_slots e confirm_appointment."
-
-_EXISTING_PATIENT_SYSTEM = """\
-Você é a assistente virtual da Clínica Psique atendendo {patient_name} \
-({patient_age} anos), paciente do(a) {doctor}.
-
-Você pode ajudar com:
-- Agendamento de consultas → pergunte o dia e turno preferido, \
-depois use get_available_slots para buscar horários, depois confirm_appointment para confirmar
-- Solicitação de documentos (laudo, exame, relatório, receita, declaração) → use request_document
-- Transferência para atendente humano → use transfer_to_human
-
-{duration_rule}
-
-IMPORTANTE:
-- NUNCA diga que "a equipe entrará em contato" — você mesmo agenda pelo sistema agora.
-- Para agendar: sempre pergunte o dia e turno (manhã, tarde ou noite) antes de chamar get_available_slots.
-- Seja breve, acolhedor e objetivo. Responda sempre em português brasileiro.
-"""
-
-_NEW_PATIENT_SYSTEM = """\
-Você é a assistente virtual da Clínica Psique atendendo {patient_name} \
-({patient_age} anos), um novo paciente que escolheu ser atendido por {doctor}.
-
-Sua única tarefa agora é agendar a primeira consulta:
-1. Pergunte qual dia e turno (manhã, tarde ou noite) prefere
-2. Chame get_available_slots com o dia e turno informados
-3. Mostre os horários e pergunte qual prefere
-4. Chame confirm_appointment para confirmar
-
-{duration_rule}
-
-IMPORTANTE:
-- NUNCA diga que "a equipe entrará em contato" — você agenda pelo sistema agora.
-- Se não souber o dia/turno, pergunte antes de chamar qualquer tool.
-- Se necessário, transfira para atendente humano com transfer_to_human.
-- Responda sempre em português brasileiro.
-"""
-
 # ── Nodes ─────────────────────────────────────────────────────────────────────
 
 async def collect_info_node(state: ConversationState, config: RunnableConfig) -> dict:
@@ -118,7 +44,7 @@ async def collect_info_node(state: ConversationState, config: RunnableConfig) ->
     }
 
     messages = [
-        SystemMessage(content=_COLLECT_SYSTEM.format(collected=collected)),
+        SystemMessage(content=COLLECT_SYSTEM.format(collected=collected)),
         *state["messages"],
     ]
 
@@ -160,15 +86,15 @@ async def patient_agent_node(state: ConversationState, config: RunnableConfig) -
     patient_age = state.get("patient_age") or 99
     is_minor_first = patient_age < 18 and not state.get("is_patient", False)
     duration_rule = (
-        _MINOR_RULE.format(
+        MINOR_RULE.format(
             patient_name=state.get("patient_name") or state.get("user_name", "paciente"),
             patient_age=patient_age,
         )
         if is_minor_first
-        else _ADULT_RULE
+        else ADULT_RULE
     )
 
-    template = _EXISTING_PATIENT_SYSTEM if state.get("is_patient") else _NEW_PATIENT_SYSTEM
+    template = EXISTING_PATIENT_SYSTEM if state.get("is_patient") else NEW_PATIENT_SYSTEM
     system_prompt = template.format(
         patient_name=state.get("patient_name") or state.get("user_name", "paciente"),
         patient_age=patient_age,
