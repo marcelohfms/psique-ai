@@ -1,6 +1,5 @@
 import os
 from supabase import AsyncClient, acreate_client
-from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
 
 # ── Doctor ID map (from doctors table) ───────────────────────────────────────
 
@@ -53,16 +52,5 @@ async def upsert_user(phone: str, data: dict) -> None:
 
 
 # ── LangGraph checkpointer ────────────────────────────────────────────────────
-
-async def create_checkpointer() -> AsyncPostgresSaver:
-    """
-    Creates AsyncPostgresSaver using Supabase shared pooler (transaction mode).
-    pipeline=False disables prepared statements required by pgbouncer poolers.
-    """
-    conn_string = os.environ["SUPABASE_CONNECTION_STRING"]
-    checkpointer = await AsyncPostgresSaver.afrom_conn_string(
-        conn_string,
-        pipeline=False,
-    )
-    await checkpointer.setup()
-    return checkpointer
+# AsyncPostgresSaver.from_conn_string is an async context manager in v3.x
+# Use it directly in the FastAPI lifespan (see main.py)

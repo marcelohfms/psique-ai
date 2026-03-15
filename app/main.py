@@ -21,17 +21,18 @@ async def lifespan(app: FastAPI):
     conn_string = os.getenv("SUPABASE_CONNECTION_STRING")
 
     if conn_string:
-        from app.database import create_checkpointer
+        from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
         from app.graph.graph import build_graph
 
         logger.info("Connecting to Supabase checkpointer...")
-        checkpointer = await create_checkpointer()
-        graph_module.chatbot = build_graph(checkpointer=checkpointer)
-        logger.info("Supabase checkpointer ready.")
+        async with AsyncPostgresSaver.from_conn_string(conn_string, pipeline=False) as checkpointer:
+            await checkpointer.setup()
+            graph_module.chatbot = build_graph(checkpointer=checkpointer)
+            logger.info("Supabase checkpointer ready.")
+            yield
     else:
         logger.warning("SUPABASE_CONNECTION_STRING not set — using in-memory checkpointer.")
-
-    yield
+        yield
 
 
 app = FastAPI(title="Psique Chatbot", lifespan=lifespan)
