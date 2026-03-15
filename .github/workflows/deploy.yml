@@ -1,0 +1,17 @@
+name: Deploy to Easypanel
+
+on:
+  push:
+    branches:
+      - main
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Trigger Easypanel deploy
+        run: |
+          curl -f -X POST "https://painel.ayexa.com.br/api/trpc/services.deployService" \
+            -H "Authorization: Bearer ${{ secrets.EASYPANEL_API_KEY }}" \
+            -H "Content-Type: application/json" \
+            -d '{"json": {"projectName": "evolution", "serviceName": "psiqueai"}}'
