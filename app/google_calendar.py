@@ -9,6 +9,23 @@ from googleapiclient.discovery import build
 TIMEZONE = "America/Recife"
 TZ = ZoneInfo(TIMEZONE)
 
+# Working hours per doctor per weekday (0=Mon … 6=Sun).
+# Each entry is a list of (start_h, start_m, end_h, end_m) tuples.
+# Edit here to change doctor availability — no other file needs to change.
+DOCTOR_SCHEDULES: dict[str, dict[int, list[tuple[int, int, int, int]]]] = {
+    "bruna": {
+        0: [(11, 30, 12, 30), (15, 30, 16, 30)],  # Segunda
+        2: [(8, 0, 12, 0), (14, 0, 18, 0)],        # Quarta
+        4: [(8, 0, 12, 0), (13, 0, 16, 0)],        # Sexta
+    },
+    "julio": {
+        0: [(9, 0, 12, 0)],                                   # Segunda
+        1: [(13, 0, 18, 0)],                                  # Terça
+        2: [(9, 0, 12, 0)],                                   # Quarta
+        3: [(9, 0, 12, 0), (14, 0, 17, 0), (18, 0, 20, 0)],  # Quinta
+    },
+}
+
 SHIFT_HOURS: dict[str, tuple[int, int]] = {
     "manha":  (8, 12),
     "tarde":  (13, 18),
@@ -90,27 +107,46 @@ async def get_available_slots(
     preferred_day: str,
     preferred_shift: str,
     slot_minutes: int = 60,
+    doctor_key: str | None = None,
 ) -> list[datetime]:
     """Return list of available slot start times."""
     target_date = _parse_day(preferred_day)
     if not target_date:
         return []
 
-    shift = _normalize_shift(preferred_shift)
-    start_hour, end_hour = SHIFT_HOURS.get(shift, (8, 18))
+    weekday = target_date.weekday()
+    slot_delta = timedelta(minutes=slot_minutes)
 
-    window_start = datetime(target_date.year, target_date.month, target_date.day,
-                            start_hour, 0, tzinfo=TZ)
-    window_end = datetime(target_date.year, target_date.month, target_date.day,
-                          end_hour, 0, tzinfo=TZ)
+    # Build working windows: use doctor schedule if available, else fall back to shift
+    doctor_schedule = DOCTOR_SCHEDULES.get(doctor_key or "", {})
+    if doctor_schedule:
+        day_windows_raw = doctor_schedule.get(weekday)
+        if day_windows_raw is None:
+            return []  # doctor doesn't work on this day
+        windows = [
+            (
+                datetime(target_date.year, target_date.month, target_date.day, sh, sm, tzinfo=TZ),
+                datetime(target_date.year, target_date.month, target_date.day, eh, em, tzinfo=TZ),
+            )
+            for sh, sm, eh, em in day_windows_raw
+        ]
+    else:
+        shift = _normalize_shift(preferred_shift)
+        start_hour, end_hour = SHIFT_HOURS.get(shift, (8, 18))
+        windows = [(
+            datetime(target_date.year, target_date.month, target_date.day, start_hour, 0, tzinfo=TZ),
+            datetime(target_date.year, target_date.month, target_date.day, end_hour, 0, tzinfo=TZ),
+        )]
+
+    # Fetch busy times covering the full span of all windows
+    overall_start = min(w[0] for w in windows)
+    overall_end = max(w[1] for w in windows)
 
     creds = _credentials()
     service = build("calendar", "v3", credentials=creds)
-
-    # Run blocking API call in thread pool
     loop = asyncio.get_event_loop()
     busy_raw = await loop.run_in_executor(
-        None, _get_busy, service, calendar_id, window_start, window_end
+        None, _get_busy, service, calendar_id, overall_start, overall_end
     )
 
     busy_ranges = [
@@ -121,15 +157,16 @@ async def get_available_slots(
         for b in busy_raw
     ]
 
-    slot_delta = timedelta(minutes=slot_minutes)
     slots: list[datetime] = []
-    current = window_start
-    while current + slot_delta <= window_end:
-        slot_end = current + slot_delta
-        if not any(current < be and slot_end > bs for bs, be in busy_ranges):
-            slots.append(current)
-        current += slot_delta
+    for window_start, window_end in windows:
+        current = window_start
+        while current + slot_delta <= window_end:
+            slot_end = current + slot_delta
+            if not any(current < be and slot_end > bs for bs, be in busy_ranges):
+                slots.append(current)
+            current += slot_delta
 
+    slots.sort()
     return slots
 
 

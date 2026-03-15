@@ -49,15 +49,21 @@ async def get_available_slots(
     """
     from app.google_calendar import get_available_slots as _get_slots
 
-    calendar_id = await _get_doctor_calendar_id(state.get("preferred_doctor", ""))
+    doctor = state.get("preferred_doctor", "")
+    calendar_id = await _get_doctor_calendar_id(doctor)
     if not calendar_id:
         return "Não foi possível identificar o calendário do médico."
+
+    # Dra. Bruna always uses 1h slots regardless of patient age
+    if doctor == "bruna":
+        slot_duration_minutes = 60
 
     slots = await _get_slots(
         calendar_id=calendar_id,
         preferred_day=preferred_day,
         preferred_shift=preferred_shift,
         slot_minutes=slot_duration_minutes,
+        doctor_key=doctor,
     )
 
     if not slots:

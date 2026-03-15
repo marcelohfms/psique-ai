@@ -102,7 +102,11 @@ async def patient_agent_node(state: ConversationState, config: RunnableConfig) -
     patient_age = state.get("patient_age") or 99
     _full_name = state.get("patient_name") or state.get("user_name") or "paciente"
     first_name = _full_name.split()[0]
-    is_minor_first = patient_age < 18 and not state.get("is_patient", False)
+    is_minor_first = (
+        patient_age < 18
+        and not state.get("is_patient", False)
+        and state.get("preferred_doctor") == "julio"
+    )
     duration_rule = (
         MINOR_RULE.format(
             patient_name=first_name,
