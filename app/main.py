@@ -9,7 +9,7 @@ from fastapi import FastAPI, Request
 from langchain_core.messages import HumanMessage
 
 from app.graph import graph as graph_module
-from app.database import get_user_by_phone, log_event, DOCTOR_NAMES
+from app.database import get_user_by_phone, log_event, DOCTOR_NAMES, save_message
 from app.buffer import push as buffer_push
 from app.auth import router as auth_router
 
@@ -153,6 +153,7 @@ async def _handle_payload(payload: dict) -> None:
             logger.info("Message ignored (type=%s)", msg_type)
             return
         phone, text = result
+        await save_message(phone, "user", text)
         await buffer_push(phone, text, process_message)
     except Exception:
         logger.exception("Error handling webhook payload")

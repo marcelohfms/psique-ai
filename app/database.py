@@ -88,6 +88,21 @@ async def get_upcoming_appointments(phone: str) -> list[dict]:
     return result.data or []
 
 
+# ── Message persistence ───────────────────────────────────────────────────────
+
+async def save_message(phone: str, role: str, content: str) -> None:
+    """Persist a chat message. Fire-and-forget — errors are swallowed."""
+    try:
+        client = await get_supabase()
+        await client.from_("messages").insert({
+            "phone": _strip_phone(phone),
+            "role": role,
+            "content": content,
+        }).execute()
+    except Exception:
+        pass  # never let persistence break the main flow
+
+
 # ── LangGraph checkpointer ────────────────────────────────────────────────────
 # AsyncPostgresSaver.from_conn_string is an async context manager in v3.x
 # Use it directly in the FastAPI lifespan (see main.py)

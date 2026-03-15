@@ -1,0 +1,12 @@
+[project]
+name = "psique-dashboard"
+version = "0.1.0"
+requires-python = ">=3.12"
+dependencies = [
+    "fastapi>=0.115.0",
+    "uvicorn[standard]>=0.32.0",
+    "jinja2>=3.1.4",
+    "python-dotenv>=1.0.1",
+    "supabase>=2.10.0",
+    "python-multipart>=0.0.18",
+]

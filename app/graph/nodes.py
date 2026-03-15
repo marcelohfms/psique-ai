@@ -13,7 +13,7 @@ from app.graph.tools import (
 )
 from app.graph.prompts import COLLECT_SYSTEM, MINOR_RULE, ADULT_RULE, EXISTING_PATIENT_SYSTEM, NEW_PATIENT_SYSTEM, PRICING_RULES
 from app.uazapi import send_text
-from app.database import upsert_user, log_event, get_upcoming_appointments, DOCTOR_IDS
+from app.database import upsert_user, log_event, get_upcoming_appointments, DOCTOR_IDS, save_message
 
 # ── LLM setup (lazy — instantiated on first use after .env is loaded) ─────────
 
@@ -61,6 +61,7 @@ async def collect_info_node(state: ConversationState, config: RunnableConfig) ->
     result: CollectInfoOutput = await _get_collect_llm().ainvoke(messages)
 
     await send_text(state["phone"], result.reply)
+    await save_message(state["phone"], "assistant", result.reply)
 
     update: dict = {"messages": [AIMessage(content=result.reply)]}
 
@@ -146,5 +147,6 @@ async def patient_agent_node(state: ConversationState, config: RunnableConfig) -
     # Only send to WhatsApp when the LLM produces a final text (no tool calls)
     if not response.tool_calls and response.content:
         await send_text(state["phone"], response.content)
+        await save_message(state["phone"], "assistant", response.content)
 
     return {"messages": [response]}

@@ -1,0 +1,35 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Psique Dashboard</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script>
+    tailwind.config = {
+      theme: {
+        extend: {
+          colors: {
+            wa: {
+              green:      '#128c7e',
+              'green-dk': '#075e54',
+              teal:       '#25d366',
+              bubble:     '#dcf8c6',
+              bg:         '#e5ddd5',
+            }
+          }
+        }
+      }
+    }
+  </script>
+  <style>
+    body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; }
+    ::-webkit-scrollbar { width: 6px; }
+    ::-webkit-scrollbar-track { background: transparent; }
+    ::-webkit-scrollbar-thumb { background: #ccc; border-radius: 3px; }
+  </style>
+</head>
+<body class="h-screen overflow-hidden bg-gray-100">
+  {% block content %}{% endblock %}
+</body>
+</html>

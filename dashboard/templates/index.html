@@ -1,0 +1,280 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="flex h-screen">
+
+  <!-- ── Left panel: conversation list ─────────────────────────────── -->
+  <div class="w-80 flex-shrink-0 bg-white border-r border-gray-200 flex flex-col">
+
+    <!-- Header -->
+    <div class="bg-wa-green-dk text-white px-4 py-3 flex items-center justify-between">
+      <div class="flex items-center gap-3">
+        <div class="w-9 h-9 rounded-full bg-wa-green flex items-center justify-center text-sm font-bold">P</div>
+        <span class="font-semibold">Psique Dashboard</span>
+      </div>
+      <span id="ws-dot" class="text-xs opacity-50" title="desconectado">●</span>
+    </div>
+
+    <!-- Search -->
+    <div class="px-3 py-2 bg-gray-50 border-b border-gray-100">
+      <input
+        id="search"
+        type="text"
+        placeholder="Buscar paciente…"
+        oninput="filterConversations(this.value)"
+        class="w-full px-3 py-1.5 rounded-full bg-white border border-gray-200 text-sm focus:outline-none focus:border-wa-green"
+      />
+    </div>
+
+    <!-- Conversation list -->
+    <div id="conv-list" class="flex-1 overflow-y-auto divide-y divide-gray-100">
+      <div class="text-center text-gray-400 text-sm py-8">Carregando…</div>
+    </div>
+  </div>
+
+  <!-- ── Right panel: chat view ─────────────────────────────────────── -->
+  <div class="flex-1 flex flex-col min-w-0">
+
+    <!-- Empty state -->
+    <div id="empty-state" class="flex-1 flex flex-col items-center justify-center bg-wa-bg select-none">
+      <div class="text-7xl mb-4">💬</div>
+      <p class="text-xl text-gray-500 font-light">Selecione uma conversa</p>
+      <p class="text-sm text-gray-400 mt-1">As mensagens aparecem aqui</p>
+    </div>
+
+    <!-- Chat panel (hidden until a conversation is selected) -->
+    <div id="chat-panel" class="hidden flex-1 flex flex-col min-h-0">
+
+      <!-- Chat header -->
+      <div class="bg-wa-green-dk text-white px-4 py-3 flex items-center gap-3 flex-shrink-0">
+        <div id="chat-avatar" class="w-10 h-10 rounded-full bg-wa-green flex items-center justify-center font-bold text-lg">?</div>
+        <div class="min-w-0">
+          <div id="chat-name" class="font-semibold truncate"></div>
+          <div id="chat-phone" class="text-xs opacity-70 truncate"></div>
+        </div>
+      </div>
+
+      <!-- Messages -->
+      <div id="messages" class="flex-1 overflow-y-auto px-6 py-4 space-y-1 bg-wa-bg">
+        <!-- injected by JS -->
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ── JavaScript ─────────────────────────────────────────────────────── -->
+<script>
+  // ── State ──────────────────────────────────────────────────────────────────
+  let state = {
+    conversations: [],   // [{phone, name, last_message, last_role, last_at}]
+    currentPhone: null,
+  };
+
+  // ── Utilities ──────────────────────────────────────────────────────────────
+  function fmtTime(iso) {
+    const d = new Date(iso);
+    const now = new Date();
+    const diffDays = Math.floor((now - d) / 86400000);
+    if (diffDays === 0) return d.toLocaleTimeString('pt-BR', {hour:'2-digit', minute:'2-digit'});
+    if (diffDays === 1) return 'ontem';
+    return d.toLocaleDateString('pt-BR', {day:'2-digit', month:'2-digit'});
+  }
+
+  function initial(name) {
+    return (name || '?').charAt(0).toUpperCase();
+  }
+
+  // ── Render helpers ─────────────────────────────────────────────────────────
+  function renderConvItem(conv) {
+    const isBot = conv.last_role === 'assistant';
+    const preview = (isBot ? '🤖 ' : '') + (conv.last_message || '').slice(0, 50);
+    return `
+      <div
+        class="conv-item flex items-center gap-3 px-4 py-3 hover:bg-gray-50 cursor-pointer transition-colors"
+        data-phone="${conv.phone}"
+        onclick="openChat('${conv.phone}')"
+      >
+        <div class="w-11 h-11 rounded-full bg-wa-green flex-shrink-0 flex items-center justify-center text-white font-bold text-lg">
+          ${initial(conv.name)}
+        </div>
+        <div class="flex-1 min-w-0">
+          <div class="flex justify-between items-baseline">
+            <span class="font-medium text-gray-900 text-sm truncate">${escHtml(conv.name)}</span>
+            <span class="text-xs text-gray-400 flex-shrink-0 ml-2">${fmtTime(conv.last_at)}</span>
+          </div>
+          <div class="text-xs text-gray-500 truncate mt-0.5">${escHtml(preview)}</div>
+        </div>
+      </div>`;
+  }
+
+  function renderMessage(msg) {
+    const isUser = msg.role === 'user';
+    const align = isUser ? 'justify-start' : 'justify-end';
+    const bubble = isUser
+      ? 'bg-white text-gray-800 rounded-tl-none'
+      : 'bg-wa-bubble text-gray-800 rounded-tr-none';
+    const time = fmtTime(msg.created_at);
+    return `
+      <div class="flex ${align}">
+        <div class="max-w-[70%] px-3 py-2 rounded-xl shadow-sm ${bubble}">
+          <div class="text-sm whitespace-pre-wrap break-words">${escHtml(msg.content)}</div>
+          <div class="text-[10px] text-gray-400 text-right mt-1">${time}</div>
+        </div>
+      </div>`;
+  }
+
+  function escHtml(str) {
+    return String(str)
+      .replace(/&/g,'&amp;')
+      .replace(/</g,'&lt;')
+      .replace(/>/g,'&gt;')
+      .replace(/"/g,'&quot;');
+  }
+
+  // ── Conversations list ─────────────────────────────────────────────────────
+  function renderConvList(list) {
+    const el = document.getElementById('conv-list');
+    if (!list.length) {
+      el.innerHTML = '<div class="text-center text-gray-400 text-sm py-8">Nenhuma conversa</div>';
+      return;
+    }
+    el.innerHTML = list.map(renderConvItem).join('');
+    highlightActive();
+  }
+
+  function highlightActive() {
+    document.querySelectorAll('.conv-item').forEach(el => {
+      if (el.dataset.phone === state.currentPhone) {
+        el.classList.add('bg-gray-100');
+      } else {
+        el.classList.remove('bg-gray-100');
+      }
+    });
+  }
+
+  function filterConversations(query) {
+    const q = query.toLowerCase();
+    const filtered = q
+      ? state.conversations.filter(c =>
+          c.name.toLowerCase().includes(q) || c.phone.includes(q))
+      : state.conversations;
+    renderConvList(filtered);
+  }
+
+  async function loadConversations() {
+    try {
+      const res = await fetch('/api/conversations');
+      state.conversations = await res.json();
+      renderConvList(state.conversations);
+    } catch (e) {
+      console.error('Failed to load conversations', e);
+    }
+  }
+
+  // ── Chat view ──────────────────────────────────────────────────────────────
+  async function openChat(phone) {
+    state.currentPhone = phone;
+
+    // Find name
+    const conv = state.conversations.find(c => c.phone === phone);
+    const name = conv ? conv.name : phone;
+
+    // Update header
+    document.getElementById('chat-avatar').textContent = initial(name);
+    document.getElementById('chat-name').textContent = name;
+    document.getElementById('chat-phone').textContent = phone;
+
+    // Show chat panel
+    document.getElementById('empty-state').classList.add('hidden');
+    document.getElementById('chat-panel').classList.remove('hidden');
+
+    // Load messages
+    document.getElementById('messages').innerHTML =
+      '<div class="text-center text-gray-400 text-sm py-4">Carregando…</div>';
+    try {
+      const res = await fetch(`/api/messages/${encodeURIComponent(phone)}`);
+      const msgs = await res.json();
+      document.getElementById('messages').innerHTML = msgs.map(renderMessage).join('');
+      scrollToBottom();
+    } catch(e) {
+      console.error('Failed to load messages', e);
+    }
+
+    highlightActive();
+  }
+
+  function scrollToBottom() {
+    const el = document.getElementById('messages');
+    el.scrollTop = el.scrollHeight;
+  }
+
+  // ── WebSocket (real-time updates) ──────────────────────────────────────────
+  let ws = null;
+  let wsReconnectTimer = null;
+
+  function connectWs() {
+    const proto = location.protocol === 'https:' ? 'wss' : 'ws';
+    ws = new WebSocket(`${proto}://${location.host}/ws`);
+
+    ws.onopen = () => {
+      const dot = document.getElementById('ws-dot');
+      dot.textContent = '●';
+      dot.classList.remove('opacity-50');
+      dot.classList.add('opacity-100', 'text-wa-teal');
+      dot.title = 'conectado';
+    };
+
+    ws.onmessage = (event) => {
+      const data = JSON.parse(event.data);
+      if (data.type === 'new_message') handleNewMessage(data.message);
+    };
+
+    ws.onclose = () => {
+      const dot = document.getElementById('ws-dot');
+      dot.textContent = '●';
+      dot.classList.remove('opacity-100', 'text-wa-teal');
+      dot.classList.add('opacity-50');
+      dot.title = 'desconectado — reconectando…';
+      // Reconnect after 3s
+      wsReconnectTimer = setTimeout(connectWs, 3000);
+    };
+
+    ws.onerror = () => ws.close();
+  }
+
+  function handleNewMessage(msg) {
+    // Update conversations list
+    const idx = state.conversations.findIndex(c => c.phone === msg.phone);
+    if (idx >= 0) {
+      state.conversations[idx].last_message = msg.content;
+      state.conversations[idx].last_role    = msg.role;
+      state.conversations[idx].last_at      = msg.created_at;
+      // Move to top
+      const [conv] = state.conversations.splice(idx, 1);
+      state.conversations.unshift(conv);
+    } else {
+      // New conversation — add it
+      state.conversations.unshift({
+        phone: msg.phone,
+        name:  msg.phone,
+        last_message: msg.content,
+        last_role:    msg.role,
+        last_at:      msg.created_at,
+      });
+    }
+
+    const search = document.getElementById('search').value;
+    filterConversations(search);
+
+    // If this phone is currently open, append the message
+    if (msg.phone === state.currentPhone) {
+      const el = document.getElementById('messages');
+      el.insertAdjacentHTML('beforeend', renderMessage(msg));
+      scrollToBottom();
+    }
+  }
+
+  // ── Init ───────────────────────────────────────────────────────────────────
+  loadConversations();
+  connectWs();
+</script>
+{% endblock %}
