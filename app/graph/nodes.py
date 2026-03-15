@@ -1,4 +1,5 @@
-from datetime import date
+from datetime import datetime
+from zoneinfo import ZoneInfo
 from langchain_openai import ChatOpenAI
 from langchain_core.messages import SystemMessage, AIMessage
 from langchain_core.runnables import RunnableConfig
@@ -96,7 +97,7 @@ async def patient_agent_node(state: ConversationState, config: RunnableConfig) -
     )
 
     template = EXISTING_PATIENT_SYSTEM if state.get("is_patient") else NEW_PATIENT_SYSTEM
-    today = date.today().strftime("%d/%m/%Y")
+    today = datetime.now(ZoneInfo("America/Recife")).strftime("%d/%m/%Y %H:%M")
     system_prompt = template.format(
         patient_name=state.get("patient_name") or state.get("user_name", "paciente"),
         patient_age=patient_age,

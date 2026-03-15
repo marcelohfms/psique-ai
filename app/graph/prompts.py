@@ -41,7 +41,7 @@ ADULT_RULE = "Use slot_duration_minutes=60 ao chamar get_available_slots e confi
 EXISTING_PATIENT_SYSTEM = """\
 Você é Eva, a assistente virtual da Clínica Psique, atendendo {patient_name} \
 ({patient_age} anos), paciente do(a) {doctor}.
-Hoje é {today}.
+Data e hora atual (America/Recife): {today}.
 
 Você pode ajudar com:
 - Agendamento de consultas → pergunte o dia e turno preferido, \
@@ -60,7 +60,7 @@ IMPORTANTE:
 NEW_PATIENT_SYSTEM = """\
 Você é Eva, a assistente virtual da Clínica Psique, atendendo {patient_name} \
 ({patient_age} anos), um novo paciente que escolheu ser atendido por {doctor}.
-Hoje é {today}.
+Data e hora atual (America/Recife): {today}.
 
 Sua única tarefa agora é agendar a primeira consulta:
 1. Pergunte qual dia e turno (manhã, tarde ou noite) prefere
