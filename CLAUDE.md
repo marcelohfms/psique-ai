@@ -6,7 +6,7 @@ AI WhatsApp chatbot for Psique psychiatry clinic. Built with FastAPI + LangGraph
 - **FastAPI** — webhook receiver
 - **LangGraph** — conversation state machine
 - **OpenAI** — LLM (GPT-4o)
-- **UAZAPI** — WhatsApp API (`https://marceloferro.uazapi.com`)
+- **UAZAPI** — WhatsApp API (`https://psique.uazapi.com`)
 - **Google Calendar** — appointment scheduling
 
 ## Run locally

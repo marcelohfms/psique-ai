@@ -2,7 +2,7 @@ import httpx
 import os
 
 
-BASE_URL = os.getenv("UAZAPI_BASE_URL", "https://marceloferro.uazapi.com")
+BASE_URL = os.getenv("UAZAPI_BASE_URL", "https://psique.uazapi.com")
 
 
 def _headers() -> dict:
