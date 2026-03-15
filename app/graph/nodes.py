@@ -11,7 +11,7 @@ from app.graph.tools import (
     cancel_appointment, reschedule_appointment,
     request_document, transfer_to_human,
 )
-from app.graph.prompts import COLLECT_SYSTEM, MINOR_RULE, ADULT_RULE, EXISTING_PATIENT_SYSTEM, NEW_PATIENT_SYSTEM
+from app.graph.prompts import COLLECT_SYSTEM, MINOR_RULE, ADULT_RULE, EXISTING_PATIENT_SYSTEM, NEW_PATIENT_SYSTEM, PRICING_RULES
 from app.uazapi import send_text
 from app.database import upsert_user, log_event, get_upcoming_appointments, DOCTOR_IDS
 
@@ -54,7 +54,7 @@ async def collect_info_node(state: ConversationState, config: RunnableConfig) ->
     }
 
     messages = [
-        SystemMessage(content=COLLECT_SYSTEM.format(collected=collected)),
+        SystemMessage(content=COLLECT_SYSTEM.format(collected=collected, pricing_rules=PRICING_RULES)),
         *state["messages"],
     ]
 
@@ -102,7 +102,11 @@ async def patient_agent_node(state: ConversationState, config: RunnableConfig) -
     patient_age = state.get("patient_age") or 99
     _full_name = state.get("patient_name") or state.get("user_name") or "paciente"
     first_name = _full_name.split()[0]
-    is_minor_first = patient_age < 18 and not state.get("is_patient", False)
+    is_minor_first = (
+        patient_age < 18
+        and not state.get("is_patient", False)
+        and state.get("preferred_doctor") == "julio"
+    )
     duration_rule = (
         MINOR_RULE.format(
             patient_name=first_name,
@@ -112,6 +116,7 @@ async def patient_agent_node(state: ConversationState, config: RunnableConfig) -
         else ADULT_RULE
     )
 
+    from app.google_calendar import format_doctor_schedules
     template = EXISTING_PATIENT_SYSTEM if state.get("is_patient") else NEW_PATIENT_SYSTEM
     today = datetime.now(ZoneInfo("America/Recife")).strftime("%d/%m/%Y %H:%M")
     system_prompt = template.format(
@@ -120,6 +125,8 @@ async def patient_agent_node(state: ConversationState, config: RunnableConfig) -
         doctor=doctor_label,
         duration_rule=duration_rule,
         today=today,
+        doctor_schedules=format_doctor_schedules(),
+        pricing_rules=PRICING_RULES,
     )
 
     # Inject upcoming appointments so the LLM knows what already exists

@@ -29,3 +29,6 @@ class ConversationState(TypedDict):
     # Clinic status
     is_patient: bool | None
     preferred_doctor: Literal["julio", "bruna"] | None
+
+    # Relationship of contact to patient (only relevant when is_for_self=False and patient is minor)
+    guardian_relationship: str | None
