@@ -887,7 +887,7 @@ requires-dist = [
     { name = "langgraph-checkpoint-postgres", specifier = ">=3.0.4" },
     { name = "psycopg", extras = ["binary"], specifier = ">=3.3.3" },
     { name = "python-dotenv", specifier = ">=1.2.1" },
-    { name = "supabase", specifier = ">=2.28.2" },
+    { name = "supabase", specifier = "==2.28.2" },
     { name = "uvicorn", specifier = ">=0.41.0" },
 ]
 
