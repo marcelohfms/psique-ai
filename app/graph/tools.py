@@ -1,3 +1,4 @@
+import os
 from datetime import datetime, timedelta
 from typing import Annotated, Literal
 from zoneinfo import ZoneInfo
@@ -10,6 +11,17 @@ from app.uazapi import send_text
 from app.database import get_supabase, log_event, upsert_user, get_user_by_phone, DOCTOR_IDS
 
 TZ = ZoneInfo("America/Recife")
+
+APPOINTMENT_NOTIFY_PHONE = os.getenv("APPOINTMENT_NOTIFY_PHONE", "5583998566516")
+
+
+async def _notify_clinic(message: str) -> None:
+    """Envia notificação de agendamento para a atendente da clínica."""
+    if APPOINTMENT_NOTIFY_PHONE:
+        try:
+            await send_text(APPOINTMENT_NOTIFY_PHONE, message)
+        except Exception:
+            pass  # Não interrompe o fluxo se a notificação falhar
 
 
 async def _get_doctor_calendar_id(preferred_doctor: str) -> str | None:
@@ -119,6 +131,14 @@ async def confirm_appointment(
         "patient_name": patient_name,
         "is_minor_first": is_minor_first,
     })
+
+    await _notify_clinic(
+        f"Agendamento realizado! ✅\n"
+        f"Paciente: {patient_name}\n"
+        f"Data e horário: {formatted}\n"
+        f"Médico(a): {doctor_label}"
+    )
+
     return f"Consulta agendada com sucesso! ✅\n{doctor_label} — {formatted}\nID: {event_id}"
 
 
@@ -135,11 +155,15 @@ async def cancel_appointment(
     if not calendar_id:
         return "Não foi possível identificar o calendário do médico."
 
+    # Fetch appointment data before canceling for the notification
+    client = await get_supabase()
+    appt_result = await client.from_("appointments").select("start_time").eq("appointment_id", appointment_id).maybe_single().execute()
+    old_start_time = appt_result.data.get("start_time") if appt_result.data else None
+
     # Cancel in Google Calendar
     await cancel_event(calendar_id, appointment_id)
 
     # Update status in DB
-    client = await get_supabase()
     await client.from_("appointments").update({
         "status": "canceled",
         "updated_at": datetime.now(TZ).isoformat(),
@@ -147,6 +171,24 @@ async def cancel_appointment(
 
     phone = config["configurable"]["phone"]
     await log_event("appointment_canceled", phone, {"appointment_id": appointment_id})
+
+    doctor_label = {"julio": "Dr. Júlio", "bruna": "Dra. Bruna"}.get(
+        state.get("preferred_doctor", ""), "médico(a)"
+    )
+    patient_name = state.get("patient_name") or state.get("user_name", "Paciente")
+    if old_start_time:
+        old_dt = datetime.fromisoformat(old_start_time).astimezone(TZ)
+        formatted_old = old_dt.strftime("%d/%m/%Y às %H:%M")
+    else:
+        formatted_old = "horário não disponível"
+
+    await _notify_clinic(
+        f"Agendamento cancelado! ❌\n"
+        f"Paciente: {patient_name}\n"
+        f"Data e horário: {formatted_old}\n"
+        f"Médico(a): {doctor_label}"
+    )
+
     return "Consulta cancelada com sucesso. ✅"
 
 
@@ -181,6 +223,11 @@ async def reschedule_appointment(
     patient_age = state.get("patient_age") or 99
     is_minor_first = patient_age < 18 and not state.get("is_patient", False)
 
+    # Fetch old start_time before updating
+    client = await get_supabase()
+    appt_result = await client.from_("appointments").select("start_time").eq("appointment_id", appointment_id).maybe_single().execute()
+    old_start_time = appt_result.data.get("start_time") if appt_result.data else None
+
     # Update Google Calendar event (same event_id, new time)
     await update_event(
         calendar_id=calendar_id,
@@ -194,7 +241,6 @@ async def reschedule_appointment(
 
     # Update DB record
     new_end = new_start + timedelta(minutes=slot_duration_minutes)
-    client = await get_supabase()
     await client.from_("appointments").update({
         "start_time": new_start.isoformat(),
         "end_time": new_end.isoformat(),
@@ -202,12 +248,27 @@ async def reschedule_appointment(
     }).eq("appointment_id", appointment_id).execute()
 
     phone = config["configurable"]["phone"]
-    formatted = new_start.strftime("%d/%m/%Y às %H:%M")
+    formatted_new = new_start.strftime("%d/%m/%Y às %H:%M")
     await log_event("appointment_rescheduled", phone, {
         "appointment_id": appointment_id,
         "new_datetime": new_slot_datetime,
     })
-    return f"Consulta remarcada com sucesso! ✅\n{doctor_label} — {formatted}"
+
+    if old_start_time:
+        old_dt = datetime.fromisoformat(old_start_time).astimezone(TZ)
+        formatted_old = old_dt.strftime("%d/%m/%Y às %H:%M")
+    else:
+        formatted_old = "horário não disponível"
+
+    await _notify_clinic(
+        f"Agendamento alterado! 🔄\n"
+        f"Paciente: {patient_name}\n"
+        f"Horário anterior: {formatted_old}\n"
+        f"Novo horário: {formatted_new}\n"
+        f"Médico(a): {doctor_label}"
+    )
+
+    return f"Consulta remarcada com sucesso! ✅\n{doctor_label} — {formatted_new}"
 
 
 @tool
