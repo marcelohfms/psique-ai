@@ -44,7 +44,6 @@ async def auth_start(secret: str = Query(...)):
     auth_url, state = flow.authorization_url(
         access_type="offline",
         prompt="consent",
-        include_granted_scopes="true",
     )
     _flow_store["flow"] = flow  # persist so callback reuses same instance
     return RedirectResponse(auth_url)
