@@ -51,6 +51,21 @@ async def upsert_user(phone: str, data: dict) -> None:
     await client.from_("users").upsert(payload, on_conflict="number").execute()
 
 
+# ── Event tracking ────────────────────────────────────────────────────────────
+
+async def log_event(event_type: str, phone: str, metadata: dict | None = None) -> None:
+    """Insert a tracking event. Fire-and-forget — errors are swallowed."""
+    try:
+        client = await get_supabase()
+        await client.from_("events").insert({
+            "event_type": event_type,
+            "phone": _strip_phone(phone),
+            "metadata": metadata or {},
+        }).execute()
+    except Exception:
+        pass  # never let tracking break the main flow
+
+
 # ── LangGraph checkpointer ────────────────────────────────────────────────────
 # AsyncPostgresSaver.from_conn_string is an async context manager in v3.x
 # Use it directly in the FastAPI lifespan (see main.py)

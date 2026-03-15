@@ -8,7 +8,7 @@ from fastapi import FastAPI, Request
 from langchain_core.messages import HumanMessage
 
 from app.graph import graph as graph_module
-from app.database import get_user_by_phone, DOCTOR_NAMES
+from app.database import get_user_by_phone, log_event, DOCTOR_NAMES
 from app.buffer import push as buffer_push
 from app.auth import router as auth_router
 
@@ -93,6 +93,7 @@ async def process_message(phone: str, text: str) -> None:
     if snapshot.values:
         state_update = {"messages": [HumanMessage(content=text)]}
     else:
+        await log_event("conversation_started", phone)
         existing = await get_user_by_phone(phone)
         _REQUIRED = ("name", "patient_name", "age", "is_patient", "doctor_id")
         user_known = existing and all(existing.get(f) is not None for f in _REQUIRED)

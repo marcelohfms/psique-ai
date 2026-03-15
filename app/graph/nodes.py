@@ -9,7 +9,7 @@ from app.graph.schemas import CollectInfoOutput
 from app.graph.tools import get_available_slots, confirm_appointment, request_document, transfer_to_human
 from app.graph.prompts import COLLECT_SYSTEM, MINOR_RULE, ADULT_RULE, EXISTING_PATIENT_SYSTEM, NEW_PATIENT_SYSTEM
 from app.uazapi import send_text
-from app.database import upsert_user, DOCTOR_IDS
+from app.database import upsert_user, log_event, DOCTOR_IDS
 
 # ── LLM setup (lazy — instantiated on first use after .env is loaded) ─────────
 
@@ -72,6 +72,12 @@ async def collect_info_node(state: ConversationState, config: RunnableConfig) ->
             "age": merged.get("patient_age"),
             "is_patient": merged.get("is_patient"),
             "doctor_id": DOCTOR_IDS.get(merged.get("preferred_doctor", ""), None),
+        })
+        await log_event("info_collected", state["phone"], {
+            "patient_name": merged.get("patient_name"),
+            "patient_age": merged.get("patient_age"),
+            "is_patient": merged.get("is_patient"),
+            "preferred_doctor": merged.get("preferred_doctor"),
         })
 
     return update

@@ -7,7 +7,7 @@ from langchain_core.runnables import RunnableConfig
 from langgraph.prebuilt import InjectedState
 
 from app.uazapi import send_text
-from app.database import get_supabase, DOCTOR_IDS
+from app.database import get_supabase, log_event, DOCTOR_IDS
 
 TZ = ZoneInfo("America/Recife")
 
@@ -97,6 +97,13 @@ async def confirm_appointment(
     )
 
     formatted = start.strftime("%d/%m/%Y às %H:%M")
+    await log_event("appointment_booked", config["configurable"]["phone"], {
+        "doctor": state.get("preferred_doctor"),
+        "datetime": slot_datetime,
+        "duration_minutes": slot_duration_minutes,
+        "patient_name": patient_name,
+        "is_minor_first": is_minor_first,
+    })
     return f"Consulta agendada com sucesso! ✅\n{doctor_label} — {formatted}\nID: {event_id}"
 
 
@@ -121,6 +128,10 @@ async def request_document(
         },
     }).execute()
 
+    await log_event("document_requested", config["configurable"]["phone"], {
+        "document_type": document_type,
+        "patient_name": patient_name,
+    })
     return f"Solicitação de {document_type} registrada com sucesso. Em breve entraremos em contato."
 
 
@@ -132,5 +143,6 @@ async def transfer_to_human(
 ) -> str:
     """Transfere a conversa para um atendente humano quando o bot não consegue ajudar."""
     phone = config["configurable"]["phone"]
+    await log_event("human_transfer", phone, {"reason": reason})
     await send_text(phone, "👤 Vou transferir você para um de nossos atendentes. Um momento, por favor!")
     return "Conversa transferida para atendente humano."
