@@ -8,6 +8,7 @@ Usage (after deploying to VPS):
   4. Restart the server
 """
 import os
+os.environ.setdefault("OAUTHLIB_RELAX_TOKEN_SCOPE", "1")
 from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 from google_auth_oauthlib.flow import Flow
