@@ -31,7 +31,7 @@ async def _download(message_id: str) -> bytes:
     async with httpx.AsyncClient(timeout=30) as client:
         resp = await client.post(
             f"{BASE_URL}/message/download",
-            json={"messageid": message_id},
+            json={"id": message_id},
             headers=_headers(),
         )
         resp.raise_for_status()
