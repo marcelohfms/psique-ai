@@ -10,6 +10,7 @@ from langchain_core.messages import HumanMessage
 from app.graph import graph as graph_module
 from app.database import get_user_by_phone, DOCTOR_NAMES
 from app.buffer import push as buffer_push
+from app.auth import router as auth_router
 
 logger = logging.getLogger(__name__)
 
@@ -34,6 +35,7 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="Psique Chatbot", lifespan=lifespan)
+app.include_router(auth_router)
 
 
 def extract_message(payload: dict) -> tuple[str, str] | None:

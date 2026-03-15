@@ -4,13 +4,13 @@ from langchain_core.runnables import RunnableConfig
 
 from app.graph.state import ConversationState
 from app.graph.schemas import CollectInfoOutput
-from app.graph.tools import schedule_appointment, request_document, transfer_to_human
+from app.graph.tools import get_available_slots, confirm_appointment, request_document, transfer_to_human
 from app.uazapi import send_text
 from app.database import upsert_user, DOCTOR_IDS
 
 # ── LLM setup (lazy — instantiated on first use after .env is loaded) ─────────
 
-TOOLS = [schedule_appointment, request_document, transfer_to_human]
+TOOLS = [get_available_slots, confirm_appointment, request_document, transfer_to_human]
 
 _collect_llm = None
 _agent_llm = None
@@ -56,14 +56,29 @@ Regras:
 - Responda SEMPRE em português brasileiro.
 """
 
+_MINOR_RULE = """\
+
+REGRA IMPORTANTE — PACIENTE MENOR DE IDADE ({patient_age} anos):
+Antes de buscar horários, explique ao responsável:
+"Como {patient_name} tem menos de 18 anos, nossa primeira consulta tem duração \
+de 2 horas: a primeira hora reservamos para conversar com os pais/responsáveis, \
+e a segunda hora é a consulta com o(a) paciente."
+Use sempre slot_duration_minutes=120 ao chamar get_available_slots e confirm_appointment.
+"""
+
+_ADULT_RULE = "Use slot_duration_minutes=60 ao chamar get_available_slots e confirm_appointment."
+
 _EXISTING_PATIENT_SYSTEM = """\
 Você é a assistente virtual da Clínica Psique atendendo {patient_name} \
 ({patient_age} anos), paciente do(a) {doctor}.
 
 Você pode ajudar com:
-- Agendamento de consultas → use schedule_appointment
+- Agendamento de consultas → use get_available_slots para verificar horários, \
+depois confirm_appointment para confirmar
 - Solicitação de documentos (laudo, exame, relatório, receita, declaração) → use request_document
 - Transferência para atendente humano → use transfer_to_human
+
+{duration_rule}
 
 Seja breve, acolhedor e objetivo. Responda sempre em português brasileiro.
 Se for a primeira interação após a coleta de dados, apresente as opções disponíveis.
@@ -77,10 +92,13 @@ A Clínica Psique é especializada em saúde mental, oferecendo atendimento \
 psiquiátrico humanizado com o Dr. Júlio e a Dra. Bruna, \
 que atendem adultos, crianças e adolescentes.
 
-O paciente escolheu ser atendido por {doctor}. Sua tarefa é agendar a \
-primeira consulta usando schedule_appointment.
-Se necessário, transfira para atendente humano com transfer_to_human.
+O paciente escolheu ser atendido por {doctor}. Sua tarefa é agendar a primeira consulta:
+1. Use get_available_slots para verificar horários disponíveis
+2. Use confirm_appointment para confirmar o horário escolhido
 
+{duration_rule}
+
+Se necessário, transfira para atendente humano com transfer_to_human.
 Seja acolhedor e explique brevemente a clínica se o paciente perguntar.
 Responda sempre em português brasileiro.
 """
@@ -137,11 +155,23 @@ async def patient_agent_node(state: ConversationState, config: RunnableConfig) -
     doctor_label = {"julio": "Dr. Júlio", "bruna": "Dra. Bruna"}.get(
         state.get("preferred_doctor", ""), "médico(a)"
     )
+    patient_age = state.get("patient_age") or 99
+    is_minor_first = patient_age < 18 and not state.get("is_patient", False)
+    duration_rule = (
+        _MINOR_RULE.format(
+            patient_name=state.get("patient_name") or state.get("user_name", "paciente"),
+            patient_age=patient_age,
+        )
+        if is_minor_first
+        else _ADULT_RULE
+    )
+
     template = _EXISTING_PATIENT_SYSTEM if state.get("is_patient") else _NEW_PATIENT_SYSTEM
     system_prompt = template.format(
         patient_name=state.get("patient_name") or state.get("user_name", "paciente"),
-        patient_age=state.get("patient_age", ""),
+        patient_age=patient_age,
         doctor=doctor_label,
+        duration_rule=duration_rule,
     )
 
     messages = [SystemMessage(content=system_prompt), *state["messages"]]
