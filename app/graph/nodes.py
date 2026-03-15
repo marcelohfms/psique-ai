@@ -116,6 +116,7 @@ async def patient_agent_node(state: ConversationState, config: RunnableConfig) -
         else ADULT_RULE
     )
 
+    from app.google_calendar import format_doctor_schedules
     template = EXISTING_PATIENT_SYSTEM if state.get("is_patient") else NEW_PATIENT_SYSTEM
     today = datetime.now(ZoneInfo("America/Recife")).strftime("%d/%m/%Y %H:%M")
     system_prompt = template.format(
@@ -124,6 +125,7 @@ async def patient_agent_node(state: ConversationState, config: RunnableConfig) -
         doctor=doctor_label,
         duration_rule=duration_rule,
         today=today,
+        doctor_schedules=format_doctor_schedules(),
     )
 
     # Inject upcoming appointments so the LLM knows what already exists

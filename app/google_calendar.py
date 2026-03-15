@@ -26,6 +26,45 @@ DOCTOR_SCHEDULES: dict[str, dict[int, list[tuple[int, int, int, int]]]] = {
     },
 }
 
+_WEEKDAY_NAMES = {0: "Segunda", 1: "Terça", 2: "Quarta", 3: "Quinta", 4: "Sexta", 5: "Sábado", 6: "Domingo"}
+_DOCTOR_LABELS = {"bruna": "Dra. Bruna", "julio": "Dr. Júlio"}
+
+
+def _shift_label(start_h: int, end_h: int) -> str:
+    """Map a time window to a generic shift name in Portuguese."""
+    if end_h <= 12:
+        return "manhã"
+    if start_h >= 18:
+        return "noite"
+    if start_h >= 12:
+        return "tarde"
+    if start_h < 12 and end_h > 12:
+        return "manhã e tarde"
+    return "manhã"
+
+
+def format_doctor_schedules() -> str:
+    """Return a natural-language Portuguese summary of all doctor schedules.
+    Reads directly from DOCTOR_SCHEDULES so any edit there is reflected here.
+    Describes shifts generically (manhã/tarde/noite) rather than exact hours.
+    """
+    lines = []
+    for doctor_key, days in DOCTOR_SCHEDULES.items():
+        label = _DOCTOR_LABELS.get(doctor_key, doctor_key)
+        lines.append(f"{label}:")
+        for weekday in sorted(days):
+            windows = days[weekday]
+            shifts = []
+            seen = set()
+            for sh, sm, eh, em in windows:
+                s = _shift_label(sh, eh)
+                if s not in seen:
+                    shifts.append(s)
+                    seen.add(s)
+            lines.append(f"  - {_WEEKDAY_NAMES[weekday]}: {', '.join(shifts)}")
+    return "\n".join(lines)
+
+
 SHIFT_HOURS: dict[str, tuple[int, int]] = {
     "manha":  (8, 12),
     "tarde":  (13, 18),
