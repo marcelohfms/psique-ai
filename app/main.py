@@ -21,11 +21,21 @@ async def lifespan(app: FastAPI):
     conn_string = os.getenv("SUPABASE_CONNECTION_STRING")
 
     if conn_string:
+        from psycopg import AsyncConnection
+        from psycopg.rows import dict_row
         from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
         from app.graph.graph import build_graph
 
         logger.info("Connecting to Supabase checkpointer...")
-        async with AsyncPostgresSaver.from_conn_string(conn_string, pipeline=False) as checkpointer:
+        # prepare_threshold=None disables prepared statements, required for
+        # pgbouncer in transaction mode (Supabase shared pooler)
+        async with await AsyncConnection.connect(
+            conn_string,
+            autocommit=True,
+            prepare_threshold=None,
+            row_factory=dict_row,
+        ) as conn:
+            checkpointer = AsyncPostgresSaver(conn)
             await checkpointer.setup()
             graph_module.chatbot = build_graph(checkpointer=checkpointer)
             logger.info("Supabase checkpointer ready.")
