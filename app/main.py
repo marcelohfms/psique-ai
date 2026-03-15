@@ -139,11 +139,19 @@ async def process_message(phone: str, text: str) -> None:
 
 
 async def _handle_payload(payload: dict) -> None:
-    result = await extract_message(payload)
-    if result is None:
-        return
-    phone, text = result
-    await buffer_push(phone, text, process_message)
+    try:
+        msg = payload.get("message", {})
+        msg_type = msg.get("messageType", "unknown")
+        logger.info("Incoming messageType=%s fromMe=%s", msg_type, msg.get("fromMe"))
+
+        result = await extract_message(payload)
+        if result is None:
+            logger.info("Message ignored (type=%s)", msg_type)
+            return
+        phone, text = result
+        await buffer_push(phone, text, process_message)
+    except Exception:
+        logger.exception("Error handling webhook payload")
 
 
 @app.post("/webhook")
