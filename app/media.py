@@ -35,7 +35,8 @@ async def _download(message_id: str) -> bytes:
             headers=_headers(),
         )
         resp.raise_for_status()
-        url = resp.json().get("url") or resp.json().get("mediaUrl")
+        data = resp.json()
+        url = data.get("fileURL") or data.get("url") or data.get("mediaUrl")
         if not url:
             raise ValueError(f"No URL in download response: {resp.text}")
         media = await client.get(url, follow_redirects=True)
@@ -48,7 +49,7 @@ async def transcribe_audio(message_id: str) -> str:
     audio_bytes = await _download(message_id)
     result = await _get_openai().audio.transcriptions.create(
         model="whisper-1",
-        file=("audio.ogg", audio_bytes, "audio/ogg"),
+        file=("audio.mp3", audio_bytes, "audio/mpeg"),
         language="pt",
     )
     return f"[áudio transcrito]: {result.text}"
