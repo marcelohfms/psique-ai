@@ -1,3 +1,4 @@
+from datetime import date
 from langchain_openai import ChatOpenAI
 from langchain_core.messages import SystemMessage, AIMessage
 from langchain_core.runnables import RunnableConfig
@@ -95,11 +96,13 @@ async def patient_agent_node(state: ConversationState, config: RunnableConfig) -
     )
 
     template = EXISTING_PATIENT_SYSTEM if state.get("is_patient") else NEW_PATIENT_SYSTEM
+    today = date.today().strftime("%d/%m/%Y")
     system_prompt = template.format(
         patient_name=state.get("patient_name") or state.get("user_name", "paciente"),
         patient_age=patient_age,
         doctor=doctor_label,
         duration_rule=duration_rule,
+        today=today,
     )
 
     messages = [SystemMessage(content=system_prompt), *state["messages"]]
