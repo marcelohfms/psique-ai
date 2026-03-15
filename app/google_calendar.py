@@ -77,6 +77,14 @@ def _create_event(service, calendar_id: str, event: dict) -> str:
     return result["id"]
 
 
+def _cancel_event(service, calendar_id: str, event_id: str) -> None:
+    service.events().delete(calendarId=calendar_id, eventId=event_id).execute()
+
+
+def _update_event(service, calendar_id: str, event_id: str, patch: dict) -> None:
+    service.events().patch(calendarId=calendar_id, eventId=event_id, body=patch).execute()
+
+
 async def get_available_slots(
     calendar_id: str,
     preferred_day: str,
@@ -153,3 +161,37 @@ async def create_event(
         None, _create_event, service, calendar_id, event
     )
     return event_id
+
+
+async def cancel_event(calendar_id: str, event_id: str) -> None:
+    """Delete a Google Calendar event."""
+    creds = _credentials()
+    service = build("calendar", "v3", credentials=creds)
+    loop = asyncio.get_event_loop()
+    await loop.run_in_executor(None, _cancel_event, service, calendar_id, event_id)
+
+
+async def update_event(
+    calendar_id: str,
+    event_id: str,
+    new_start: datetime,
+    slot_minutes: int,
+    patient_name: str,
+    doctor_name: str,
+    is_minor_first: bool = False,
+) -> None:
+    """Patch an existing Google Calendar event with a new start/end time."""
+    new_end = new_start + timedelta(minutes=slot_minutes)
+    description = f"Paciente: {patient_name}\nMédico: {doctor_name}"
+    if is_minor_first:
+        description += "\n\n1ª hora: conversa com os pais/responsáveis\n2ª hora: consulta com o paciente"
+
+    patch = {
+        "start": {"dateTime": new_start.isoformat(), "timeZone": TIMEZONE},
+        "end":   {"dateTime": new_end.isoformat(),   "timeZone": TIMEZONE},
+        "description": description,
+    }
+    creds = _credentials()
+    service = build("calendar", "v3", credentials=creds)
+    loop = asyncio.get_event_loop()
+    await loop.run_in_executor(None, _update_event, service, calendar_id, event_id, patch)

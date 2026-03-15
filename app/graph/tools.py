@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Annotated, Literal
 from zoneinfo import ZoneInfo
 
@@ -7,7 +7,7 @@ from langchain_core.runnables import RunnableConfig
 from langgraph.prebuilt import InjectedState
 
 from app.uazapi import send_text
-from app.database import get_supabase, log_event, upsert_user, DOCTOR_IDS
+from app.database import get_supabase, log_event, upsert_user, get_user_by_phone, DOCTOR_IDS
 
 TZ = ZoneInfo("America/Recife")
 
@@ -97,7 +97,22 @@ async def confirm_appointment(
     )
 
     formatted = start.strftime("%d/%m/%Y às %H:%M")
-    await log_event("appointment_booked", config["configurable"]["phone"], {
+    phone = config["configurable"]["phone"]
+
+    # Persist to appointments table
+    end = start + timedelta(minutes=slot_duration_minutes)
+    user = await get_user_by_phone(phone)
+    client = await get_supabase()
+    await client.from_("appointments").insert({
+        "user_id": user["id"] if user else None,
+        "doctor_id": DOCTOR_IDS.get(state.get("preferred_doctor", "")),
+        "appointment_id": event_id,
+        "start_time": start.isoformat(),
+        "end_time": end.isoformat(),
+        "status": "scheduled",
+    }).execute()
+
+    await log_event("appointment_booked", phone, {
         "doctor": state.get("preferred_doctor"),
         "datetime": slot_datetime,
         "duration_minutes": slot_duration_minutes,
@@ -105,6 +120,94 @@ async def confirm_appointment(
         "is_minor_first": is_minor_first,
     })
     return f"Consulta agendada com sucesso! ✅\n{doctor_label} — {formatted}\nID: {event_id}"
+
+
+@tool
+async def cancel_appointment(
+    appointment_id: str,
+    state: Annotated[dict, InjectedState],
+    config: RunnableConfig,
+) -> str:
+    """Cancela uma consulta agendada. appointment_id é o Google Calendar event ID."""
+    from app.google_calendar import cancel_event
+
+    calendar_id = await _get_doctor_calendar_id(state.get("preferred_doctor", ""))
+    if not calendar_id:
+        return "Não foi possível identificar o calendário do médico."
+
+    # Cancel in Google Calendar
+    await cancel_event(calendar_id, appointment_id)
+
+    # Update status in DB
+    client = await get_supabase()
+    await client.from_("appointments").update({
+        "status": "canceled",
+        "updated_at": datetime.now(TZ).isoformat(),
+    }).eq("appointment_id", appointment_id).execute()
+
+    phone = config["configurable"]["phone"]
+    await log_event("appointment_canceled", phone, {"appointment_id": appointment_id})
+    return "Consulta cancelada com sucesso. ✅"
+
+
+@tool
+async def reschedule_appointment(
+    appointment_id: str,
+    new_slot_datetime: str,
+    slot_duration_minutes: Literal[60, 120],
+    state: Annotated[dict, InjectedState],
+    config: RunnableConfig,
+) -> str:
+    """
+    Remarca uma consulta existente para um novo horário.
+    appointment_id é o Google Calendar event ID.
+    new_slot_datetime deve estar no formato ISO 8601, ex: '2026-03-19T09:00:00'.
+    """
+    from app.google_calendar import update_event
+
+    calendar_id = await _get_doctor_calendar_id(state.get("preferred_doctor", ""))
+    if not calendar_id:
+        return "Não foi possível identificar o calendário do médico."
+
+    try:
+        new_start = datetime.fromisoformat(new_slot_datetime).replace(tzinfo=TZ)
+    except ValueError:
+        return f"Formato de data inválido: {new_slot_datetime}. Use ISO 8601 (ex: 2026-03-19T09:00:00)."
+
+    doctor_label = {"julio": "Dr. Júlio", "bruna": "Dra. Bruna"}.get(
+        state.get("preferred_doctor", ""), "médico(a)"
+    )
+    patient_name = state.get("patient_name") or state.get("user_name", "Paciente")
+    patient_age = state.get("patient_age") or 99
+    is_minor_first = patient_age < 18 and not state.get("is_patient", False)
+
+    # Update Google Calendar event (same event_id, new time)
+    await update_event(
+        calendar_id=calendar_id,
+        event_id=appointment_id,
+        new_start=new_start,
+        slot_minutes=slot_duration_minutes,
+        patient_name=patient_name,
+        doctor_name=doctor_label,
+        is_minor_first=is_minor_first,
+    )
+
+    # Update DB record
+    new_end = new_start + timedelta(minutes=slot_duration_minutes)
+    client = await get_supabase()
+    await client.from_("appointments").update({
+        "start_time": new_start.isoformat(),
+        "end_time": new_end.isoformat(),
+        "updated_at": datetime.now(TZ).isoformat(),
+    }).eq("appointment_id", appointment_id).execute()
+
+    phone = config["configurable"]["phone"]
+    formatted = new_start.strftime("%d/%m/%Y às %H:%M")
+    await log_event("appointment_rescheduled", phone, {
+        "appointment_id": appointment_id,
+        "new_datetime": new_slot_datetime,
+    })
+    return f"Consulta remarcada com sucesso! ✅\n{doctor_label} — {formatted}"
 
 
 @tool

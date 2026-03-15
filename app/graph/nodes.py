@@ -6,14 +6,22 @@ from langchain_core.runnables import RunnableConfig
 
 from app.graph.state import ConversationState
 from app.graph.schemas import CollectInfoOutput
-from app.graph.tools import get_available_slots, confirm_appointment, request_document, transfer_to_human
+from app.graph.tools import (
+    get_available_slots, confirm_appointment,
+    cancel_appointment, reschedule_appointment,
+    request_document, transfer_to_human,
+)
 from app.graph.prompts import COLLECT_SYSTEM, MINOR_RULE, ADULT_RULE, EXISTING_PATIENT_SYSTEM, NEW_PATIENT_SYSTEM
 from app.uazapi import send_text
-from app.database import upsert_user, log_event, DOCTOR_IDS
+from app.database import upsert_user, log_event, get_upcoming_appointments, DOCTOR_IDS
 
 # ── LLM setup (lazy — instantiated on first use after .env is loaded) ─────────
 
-TOOLS = [get_available_slots, confirm_appointment, request_document, transfer_to_human]
+TOOLS = [
+    get_available_slots, confirm_appointment,
+    cancel_appointment, reschedule_appointment,
+    request_document, transfer_to_human,
+]
 
 _collect_llm = None
 _agent_llm = None
@@ -92,10 +100,12 @@ async def patient_agent_node(state: ConversationState, config: RunnableConfig) -
         state.get("preferred_doctor", ""), "médico(a)"
     )
     patient_age = state.get("patient_age") or 99
+    _full_name = state.get("patient_name") or state.get("user_name") or "paciente"
+    first_name = _full_name.split()[0]
     is_minor_first = patient_age < 18 and not state.get("is_patient", False)
     duration_rule = (
         MINOR_RULE.format(
-            patient_name=state.get("patient_name") or state.get("user_name", "paciente"),
+            patient_name=first_name,
             patient_age=patient_age,
         )
         if is_minor_first
@@ -105,12 +115,23 @@ async def patient_agent_node(state: ConversationState, config: RunnableConfig) -
     template = EXISTING_PATIENT_SYSTEM if state.get("is_patient") else NEW_PATIENT_SYSTEM
     today = datetime.now(ZoneInfo("America/Recife")).strftime("%d/%m/%Y %H:%M")
     system_prompt = template.format(
-        patient_name=state.get("patient_name") or state.get("user_name", "paciente"),
+        patient_name=first_name,
         patient_age=patient_age,
         doctor=doctor_label,
         duration_rule=duration_rule,
         today=today,
     )
+
+    # Inject upcoming appointments so the LLM knows what already exists
+    upcoming = await get_upcoming_appointments(state["phone"])
+    if upcoming:
+        from zoneinfo import ZoneInfo as _ZI
+        _TZ = _ZI("America/Recife")
+        lines = ["Consultas agendadas para este paciente:"]
+        for apt in upcoming:
+            dt = datetime.fromisoformat(apt["start_time"]).astimezone(_TZ)
+            lines.append(f"- {dt.strftime('%d/%m/%Y às %H:%M')} (ID: {apt['appointment_id']})")
+        system_prompt += "\n\n" + "\n".join(lines)
 
     messages = [SystemMessage(content=system_prompt), *state["messages"]]
     response = await _get_agent_llm().ainvoke(messages)

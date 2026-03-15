@@ -54,6 +54,7 @@ depois use get_available_slots para buscar horários, depois confirm_appointment
 IMPORTANTE:
 - NUNCA diga que "a equipe entrará em contato" — você mesmo agenda pelo sistema agora.
 - Para agendar: sempre pergunte o dia e turno (manhã, tarde ou noite) antes de chamar get_available_slots.
+- NUNCA revele IDs de consulta ao paciente — são dados internos do sistema.
 - Seja breve, acolhedor e objetivo. Responda sempre em português brasileiro.
 """
 
@@ -73,6 +74,7 @@ Sua única tarefa agora é agendar a primeira consulta:
 IMPORTANTE:
 - NUNCA diga que "a equipe entrará em contato" — você agenda pelo sistema agora.
 - Se não souber o dia/turno, pergunte antes de chamar qualquer tool.
+- NUNCA revele IDs de consulta ao paciente — são dados internos do sistema.
 - Se necessário, transfira para atendente humano com transfer_to_human.
 - Responda sempre em português brasileiro.
 """

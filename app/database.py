@@ -66,6 +66,28 @@ async def log_event(event_type: str, phone: str, metadata: dict | None = None) -
         pass  # never let tracking break the main flow
 
 
+# ── Appointment helpers ───────────────────────────────────────────────────────
+
+async def get_upcoming_appointments(phone: str) -> list[dict]:
+    """Return scheduled future appointments for a user, ordered by start_time."""
+    client = await get_supabase()
+    user = await get_user_by_phone(phone)
+    if not user:
+        return []
+    from datetime import datetime, timezone
+    now_iso = datetime.now(timezone.utc).isoformat()
+    result = (
+        await client.from_("appointments")
+        .select("appointment_id, start_time, end_time, status")
+        .eq("user_id", user["id"])
+        .eq("status", "scheduled")
+        .gte("start_time", now_iso)
+        .order("start_time")
+        .execute()
+    )
+    return result.data or []
+
+
 # ── LangGraph checkpointer ────────────────────────────────────────────────────
 # AsyncPostgresSaver.from_conn_string is an async context manager in v3.x
 # Use it directly in the FastAPI lifespan (see main.py)
