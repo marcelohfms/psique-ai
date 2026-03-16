@@ -139,6 +139,8 @@ async def process_message(phone: str, text: str) -> None:
             "preferred_doctor": doctor_key,
         }
 
+    config["metadata"] = {"phone": phone, "source": "whatsapp"}
+    config["tags"] = ["whatsapp", "production"]
     await graph_module.chatbot.ainvoke(state_update, config=config)
 
 
