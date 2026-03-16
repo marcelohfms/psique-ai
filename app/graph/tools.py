@@ -292,13 +292,19 @@ async def reschedule_appointment(
 
 @tool
 async def request_document(
-    document_type: Literal["laudo", "exame", "relatorio", "receita", "declaracao"],
+    document_type: Literal["nota_fiscal", "laudo", "exame", "relatorio", "receita", "declaracao"],
     state: Annotated[dict, InjectedState],
     config: RunnableConfig,
 ) -> str:
     """Registra uma solicitação de documento médico para o paciente."""
+    from app.google_sheets import append_document_request
+    from app.email_sender import send_document_request_email
+
+    phone = config["configurable"]["phone"]
     patient_name = state.get("patient_name") or state.get("user_name", "Paciente")
-    doctor_id = DOCTOR_IDS.get(state.get("preferred_doctor", ""))
+    patient_age = state.get("patient_age")
+    doctor_key = state.get("preferred_doctor", "")
+    doctor_id = DOCTOR_IDS.get(doctor_key)
 
     client = await get_supabase()
     await client.from_("documents").insert({
@@ -307,15 +313,30 @@ async def request_document(
             "type": document_type,
             "patient_name": patient_name,
             "doctor_id": doctor_id,
-            "phone": config["configurable"]["phone"],
+            "phone": phone,
         },
     }).execute()
 
-    await log_event("document_requested", config["configurable"]["phone"], {
+    await log_event("document_requested", phone, {
         "document_type": document_type,
         "patient_name": patient_name,
     })
-    return f"Solicitação de {document_type} registrada com sucesso. Em breve entraremos em contato."
+
+    # Register in spreadsheet and notify doctor — fire-and-forget
+    try:
+        await append_document_request(patient_name, patient_age, phone, document_type)
+    except Exception:
+        pass
+
+    try:
+        await send_document_request_email(doctor_key, patient_name, patient_age, phone, document_type)
+    except Exception:
+        pass
+
+    return (
+        f"Solicitação de {document_type} registrada com sucesso! ✅\n"
+        f"Já encaminhamos para o setor responsável e em breve será enviado para você."
+    )
 
 
 @tool

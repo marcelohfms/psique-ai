@@ -14,7 +14,10 @@ from fastapi.responses import HTMLResponse, RedirectResponse
 from google_auth_oauthlib.flow import Flow
 
 REDIRECT_URI = "https://psiqueai.ayexa.com.br/auth/callback"
-SCOPES = ["https://www.googleapis.com/auth/calendar"]
+SCOPES = [
+    "https://www.googleapis.com/auth/calendar",
+    "https://www.googleapis.com/auth/spreadsheets",
+]
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 
