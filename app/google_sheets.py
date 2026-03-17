@@ -8,8 +8,8 @@ from googleapiclient.discovery import build
 
 TZ = ZoneInfo("America/Recife")
 
-# Column order: Data, Nome completo, Idade, Telefone, Tipo de solicitação
-_SHEET_RANGE = "Solicitações!A:E"
+# Column order: Data, Nome completo, Idade, Telefone, E-mail, Tipo de solicitação
+_SHEET_RANGE = "Solicitações!A:F"
 
 
 def _credentials() -> Credentials:
@@ -39,6 +39,7 @@ async def append_document_request(
     patient_name: str,
     patient_age: int | None,
     phone: str,
+    patient_email: str,
     document_type: str,
 ) -> None:
     """Append a document request row to the Google Sheets spreadsheet.
@@ -51,7 +52,7 @@ async def append_document_request(
     now = datetime.now(TZ).strftime("%d/%m/%Y %H:%M")
     age_str = str(patient_age) if patient_age else "—"
     phone_clean = phone.replace("@s.whatsapp.net", "")
-    row = [now, patient_name, age_str, phone_clean, document_type]
+    row = [now, patient_name, age_str, phone_clean, patient_email, document_type]
 
     creds = _credentials()
     service = build("sheets", "v4", credentials=creds)

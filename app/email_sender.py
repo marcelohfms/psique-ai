@@ -44,6 +44,7 @@ async def send_document_request_email(
     patient_name: str,
     patient_age: int | None,
     phone: str,
+    patient_email: str,
     document_type: str,
 ) -> None:
     """Send an email to the responsible doctor notifying a document request.
@@ -74,9 +75,10 @@ async def send_document_request_email(
         f"  Nome: {patient_name}\n"
         f"  Idade: {age_str}\n"
         f"  Telefone: {phone_clean}\n"
+        f"  E-mail para envio: {patient_email}\n"
         f"  Tipo de documento: {doc_label}\n"
         f"  Data da solicitação: {now}\n\n"
-        f"Por favor, providencie a emissão e envie ao paciente.\n\n"
+        f"Por favor, providencie a emissão e envie ao paciente no e-mail acima.\n\n"
         f"— Eva, assistente virtual Psique"
     )
 

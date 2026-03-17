@@ -293,10 +293,13 @@ async def reschedule_appointment(
 @tool
 async def request_document(
     document_type: Literal["nota_fiscal", "laudo", "exame", "relatorio", "receita", "declaracao"],
+    patient_email: str,
     state: Annotated[dict, InjectedState],
     config: RunnableConfig,
 ) -> str:
-    """Registra uma solicitação de documento médico para o paciente."""
+    """Registra uma solicitação de documento médico para o paciente.
+    patient_email: e-mail informado pelo paciente para recebimento do documento.
+    """
     from app.google_sheets import append_document_request
     from app.email_sender import send_document_request_email
 
@@ -312,6 +315,7 @@ async def request_document(
         "metadata": {
             "type": document_type,
             "patient_name": patient_name,
+            "patient_email": patient_email,
             "doctor_id": doctor_id,
             "phone": phone,
         },
@@ -324,12 +328,12 @@ async def request_document(
 
     # Register in spreadsheet and notify doctor — fire-and-forget
     try:
-        await append_document_request(patient_name, patient_age, phone, document_type)
+        await append_document_request(patient_name, patient_age, phone, patient_email, document_type)
     except Exception:
         pass
 
     try:
-        await send_document_request_email(doctor_key, patient_name, patient_age, phone, document_type)
+        await send_document_request_email(doctor_key, patient_name, patient_age, phone, patient_email, document_type)
     except Exception:
         pass
 
