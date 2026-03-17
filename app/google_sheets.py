@@ -46,6 +46,7 @@ async def append_document_request(
     Does nothing if GOOGLE_SHEETS_DOC_ID is not configured.
     """
     spreadsheet_id = os.environ.get("GOOGLE_SHEETS_DOC_ID")
+    print(f"[DEBUG] Sheets spreadsheet_id={spreadsheet_id!r}", flush=True)
     if not spreadsheet_id:
         return
 
