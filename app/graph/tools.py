@@ -350,7 +350,8 @@ async def transfer_to_human(
     phone = config["configurable"]["phone"]
 
     # Disable bot for this user
-    await upsert_user(phone, {"active": False})
+    from datetime import datetime, timezone
+    await upsert_user(phone, {"active": False, "deactivated_at": datetime.now(timezone.utc).isoformat()})
 
     # Notify the clinic's internal number
     notify_phone = os.getenv("NOTIFY_PHONE", "")
