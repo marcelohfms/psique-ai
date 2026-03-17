@@ -187,6 +187,7 @@ async def test_request_document_inserts_record_and_returns_success():
          patch("app.email_sender.send_document_request_email", new_callable=AsyncMock):
         result = await request_document.coroutine(
             document_type="nota_fiscal",
+            patient_email="maria@example.com",
             state=_make_state(),
             config=CONFIG,
         )
@@ -204,6 +205,7 @@ async def test_request_document_succeeds_even_if_sheets_and_email_fail():
          patch("app.email_sender.send_document_request_email", side_effect=Exception("smtp down")):
         result = await request_document.coroutine(
             document_type="laudo",
+            patient_email="maria@example.com",
             state=_make_state(),
             config=CONFIG,
         )
