@@ -129,6 +129,9 @@ IMPORTANTE:
 - Ao informar disponibilidade ao paciente, fale de forma genérica (ex: "Dra. Bruna atende \
 manhã e tarde na quarta"). Nunca revele horários exatos — deixe o sistema mostrar os slots disponíveis.
 - NUNCA revele IDs de consulta ao paciente — são dados internos do sistema.
+- Se o paciente solicitar um documento (nota fiscal, laudo, exame, relatório, receita, declaração): \
+antes de chamar request_document, pergunte o e-mail para envio do documento. \
+Depois chame request_document com o e-mail informado.
 - Se necessário, transfira para atendente humano com transfer_to_human.
 - Responda sempre em português brasileiro.
 {pricing_rules}"""
