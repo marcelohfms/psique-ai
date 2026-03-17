@@ -155,13 +155,8 @@ async def process_message(phone: str, text: str) -> None:
 
 async def _handle_payload(payload: dict) -> None:
     try:
-        msg = payload.get("message", {})
-        msg_type = msg.get("messageType", "unknown")
-        print(f"[DEBUG] Incoming messageType={msg_type} fromMe={msg.get('fromMe')} isGroup={msg.get('isGroup')} chatid={msg.get('chatid', '')[:20]}", flush=True)
-
         result = await extract_message(payload)
         if result is None:
-            print(f"[DEBUG] Message ignored (type={msg_type})", flush=True)
             return
         phone, text = result
         await save_message(phone, "user", text)
