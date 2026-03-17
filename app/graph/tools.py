@@ -329,8 +329,8 @@ async def request_document(
     # Register in spreadsheet and notify doctor — fire-and-forget
     try:
         await append_document_request(patient_name, patient_age, phone, patient_email, document_type)
-    except Exception:
-        pass
+    except Exception as e:
+        print(f"[DEBUG] Sheets error: {type(e).__name__}: {e}", flush=True)
 
     try:
         await send_document_request_email(doctor_key, patient_name, patient_age, phone, patient_email, document_type)
