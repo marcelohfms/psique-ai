@@ -94,6 +94,7 @@ async def collect_info_node(state: ConversationState, config: RunnableConfig) ->
             "birth_date": merged.get("birth_date"),
             "guardian_name": merged.get("guardian_name"),
             "guardian_cpf": merged.get("guardian_cpf"),
+            "guardian_relationship": merged.get("guardian_relationship"),
             "is_patient": merged.get("is_patient"),
             "doctor_id": DOCTOR_IDS.get(merged.get("preferred_doctor", ""), None),
             "email": merged.get("patient_email"),

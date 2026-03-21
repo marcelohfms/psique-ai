@@ -129,18 +129,26 @@ async def confirm_appointment(
     formatted = start.strftime("%d/%m/%Y às %H:%M")
     phone = config["configurable"]["phone"]
 
-    # Persist to appointments table
+    # Persist to appointments table; roll back calendar event on failure
     end = start + timedelta(minutes=slot_duration_minutes)
     user = await get_user_by_phone(phone)
     client = await get_supabase()
-    await client.from_("appointments").insert({
-        "user_id": user["id"] if user else None,
-        "doctor_id": DOCTOR_IDS.get(state.get("preferred_doctor", "")),
-        "appointment_id": event_id,
-        "start_time": start.isoformat(),
-        "end_time": end.isoformat(),
-        "status": "scheduled",
-    }).execute()
+    try:
+        await client.from_("appointments").insert({
+            "user_id": user["id"] if user else None,
+            "doctor_id": DOCTOR_IDS.get(state.get("preferred_doctor", "")),
+            "appointment_id": event_id,
+            "start_time": start.isoformat(),
+            "end_time": end.isoformat(),
+            "status": "scheduled",
+        }).execute()
+    except Exception:
+        from app.google_calendar import cancel_event
+        try:
+            await cancel_event(calendar_id, event_id)
+        except Exception:
+            pass
+        return "Houve um erro ao salvar o agendamento. Por favor, tente novamente."
 
     await log_event("appointment_booked", phone, {
         "doctor": state.get("preferred_doctor"),

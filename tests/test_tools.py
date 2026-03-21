@@ -131,6 +131,27 @@ async def test_confirm_appointment_with_session_note():
     assert "1ª hora — responsáveis" in result
 
 
+async def test_confirm_appointment_rolls_back_calendar_on_db_failure():
+    from app.graph.tools import confirm_appointment
+    client, table, execute = _make_supabase_client()
+    execute.side_effect = Exception("DB error")
+    with patch("app.graph.tools._get_doctor_calendar_id", new_callable=AsyncMock, return_value="cal123"), \
+         patch("app.google_calendar.create_event", new_callable=AsyncMock, return_value="evt-rollback"), \
+         patch("app.google_calendar.cancel_event", new_callable=AsyncMock) as mock_cancel, \
+         patch("app.graph.tools.get_supabase", new_callable=AsyncMock, return_value=client), \
+         patch("app.graph.tools.get_user_by_phone", new_callable=AsyncMock, return_value={"id": "user-1"}), \
+         patch("app.graph.tools.log_event", new_callable=AsyncMock), \
+         patch("app.graph.tools.send_text", new_callable=AsyncMock):
+        result = await confirm_appointment.coroutine(
+            slot_datetime="2026-03-23T09:00:00",
+            slot_duration_minutes=60,
+            state=_make_state(),
+            config=CONFIG,
+        )
+    assert "erro" in result.lower()
+    mock_cancel.assert_awaited_once_with("cal123", "evt-rollback")
+
+
 # ── cancel_appointment ────────────────────────────────────────────────────────
 
 async def test_cancel_appointment_cancels_and_notifies():
