@@ -56,6 +56,13 @@ session_note="2ª hora — paciente".
 
 ADULT_RULE = "Use slot_duration_minutes=60 ao chamar get_available_slots e confirm_appointment."
 
+CLINIC_ADDRESS = """\
+
+ENDEREÇO DA CLÍNICA:
+RioMar Trade Center, Torre 1, Andar 25, Sala 2502
+Av. República do Líbano, 251 — Recife-PE
+"""
+
 CANCELLATION_RULES = """\
 
 POLÍTICA DE CANCELAMENTO E REAGENDAMENTO:
@@ -117,7 +124,7 @@ IMPORTANTE:
 na segunda e quarta"). Nunca revele horários exatos — deixe o sistema mostrar os slots disponíveis.
 - NUNCA revele IDs de consulta ao paciente — são dados internos do sistema.
 - Seja breve, acolhedor e objetivo. Responda sempre em português brasileiro.
-{pricing_rules}"""
+{pricing_rules}{clinic_address}"""
 
 NEW_PATIENT_SYSTEM = """\
 Você é Eva, a assistente virtual da Clínica Psique, atendendo {patient_name} \
@@ -146,4 +153,4 @@ antes de chamar request_document, pergunte o e-mail para envio do documento. \
 Depois chame request_document com o e-mail informado.
 - Se necessário, transfira para atendente humano com transfer_to_human.
 - Responda sempre em português brasileiro.
-{cancellation_rules}{pricing_rules}"""
+{cancellation_rules}{pricing_rules}{clinic_address}"""
