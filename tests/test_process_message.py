@@ -14,15 +14,22 @@ def test_collect_info_output_accepts_valid_birth_date():
     assert obj.birth_date == "15/01/1994"
 
 
-def test_collect_info_output_rejects_iso_birth_date():
+def test_collect_info_output_normalises_iso_birth_date():
+    """LLM may return ISO format — we normalise to dd/mm/yyyy, not reject."""
     from app.graph.schemas import CollectInfoOutput
     obj = CollectInfoOutput(reply="ok", birth_date="1994-01-15")
-    assert obj.birth_date is None
+    assert obj.birth_date == "15/01/1994"
 
 
-def test_collect_info_output_rejects_partial_date():
+def test_collect_info_output_normalises_dot_separated_date():
     from app.graph.schemas import CollectInfoOutput
-    obj = CollectInfoOutput(reply="ok", birth_date="15/01/94")
+    obj = CollectInfoOutput(reply="ok", birth_date="15.01.1994")
+    assert obj.birth_date == "15/01/1994"
+
+
+def test_collect_info_output_rejects_unparseable_date():
+    from app.graph.schemas import CollectInfoOutput
+    obj = CollectInfoOutput(reply="ok", birth_date="not-a-date")
     assert obj.birth_date is None
 
 
@@ -33,7 +40,7 @@ async def test_collect_info_node_overrides_reply_on_invalid_birth_date():
 
     invalid_result = CollectInfoOutput(
         reply="Anotei sua data de nascimento.",
-        birth_date="1994-01-15",  # ISO format — will be coerced to None by validator
+        birth_date="not-a-date",  # genuinely unparseable — validator returns None
         is_complete=False,
     )
     # birth_date is in model_fields_set even though validator set it to None
