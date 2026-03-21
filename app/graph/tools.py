@@ -310,6 +310,13 @@ async def request_document(
     doctor_id = DOCTOR_IDS.get(doctor_key)
 
     client = await get_supabase()
+
+    # Fetch doctor email from doctors table (agenda_id = email)
+    doctor_email = ""
+    if doctor_id:
+        result = await client.from_("doctors").select("agenda_id").eq("doctor_id", doctor_id).single().execute()
+        doctor_email = result.data.get("agenda_id", "") if result.data else ""
+
     await client.from_("documents").insert({
         "content": f"Solicitação de {document_type}",
         "metadata": {
@@ -333,7 +340,7 @@ async def request_document(
         pass
 
     try:
-        await send_document_request_email(doctor_key, patient_name, patient_age, phone, patient_email, document_type)
+        await send_document_request_email(doctor_key, doctor_email, patient_name, patient_age, phone, patient_email, document_type)
     except Exception:
         pass
 

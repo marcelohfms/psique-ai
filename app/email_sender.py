@@ -41,6 +41,7 @@ def _send_email(
 
 async def send_document_request_email(
     doctor_key: str,
+    doctor_email: str,
     patient_name: str,
     patient_age: int | None,
     phone: str,
@@ -49,14 +50,13 @@ async def send_document_request_email(
 ) -> None:
     """Send an email to the responsible doctor notifying a document request.
     Does nothing if SMTP credentials or doctor email are not configured.
+    doctor_email: fetched from doctors.agenda_id in Supabase.
     """
     smtp_host = os.environ.get("SMTP_HOST")
     smtp_port = int(os.environ.get("SMTP_PORT", "465"))
     smtp_user = os.environ.get("SMTP_USER")
     smtp_password = os.environ.get("SMTP_PASSWORD")
-
-    doctor_email_var = f"DOCTOR_{doctor_key.upper()}_EMAIL"
-    to_email = os.environ.get(doctor_email_var)
+    to_email = doctor_email
 
     if not all([smtp_host, smtp_user, smtp_password, to_email]):
         return
