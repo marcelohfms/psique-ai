@@ -1,0 +1,25 @@
+name: Send appointment reminders
+
+on:
+  schedule:
+    - cron: "0 11 * * *"  # 8h Recife (UTC-3) every day
+  workflow_dispatch:       # allow manual runs for testing
+
+jobs:
+  reminders:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v5
+
+      - name: Install dependencies
+        run: uv sync --frozen --no-dev
+
+      - name: Send appointment reminders
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+          UAZAPI_BASE_URL: ${{ secrets.UAZAPI_BASE_URL }}
+          UAZAPI_TOKEN: ${{ secrets.UAZAPI_TOKEN }}
+        run: uv run python scripts/send_appointment_reminders.py
