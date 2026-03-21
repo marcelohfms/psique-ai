@@ -153,6 +153,24 @@ async def process_message(phone: str, text: str) -> None:
     await graph_module.chatbot.ainvoke(state_update, config=config)
 
 
+async def _reset_conversation(phone: str) -> None:
+    """Apaga todo o histórico e estado da conversa para um número."""
+    from app.database import get_supabase, _strip_phone
+    client = await get_supabase()
+    stripped = _strip_phone(phone)
+
+    # Apaga mensagens, usuário e estado do checkpointer
+    await client.from_("messages").delete().eq("phone", stripped).execute()
+    await client.from_("users").delete().eq("number", stripped).execute()
+    for table in ("checkpoints", "checkpoint_writes", "checkpoint_blobs"):
+        try:
+            await client.from_(table).delete().eq("thread_id", phone).execute()
+        except Exception:
+            pass
+
+    await send_text(phone, "✅ Histórico apagado! Pode começar uma nova conversa.")
+
+
 async def _handle_payload(payload: dict) -> None:
     try:
         msg = payload.get("message", {})
@@ -164,6 +182,11 @@ async def _handle_payload(payload: dict) -> None:
             logger.info("Message ignored (type=%s)", msg_type)
             return
         phone, text = result
+
+        if text.strip().lower() == "/reset":
+            await _reset_conversation(phone)
+            return
+
         await save_message(phone, "user", text)
         await buffer_push(phone, text, process_message)
     except Exception:
