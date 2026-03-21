@@ -32,3 +32,11 @@ class ConversationState(TypedDict):
 
     # Relationship of contact to patient (only relevant when is_for_self=False and patient is minor)
     guardian_relationship: str | None
+
+    # Extended patient registration fields
+    birth_date: str | None          # data de nascimento (dd/mm/aaaa)
+    guardian_name: str | None       # nome dos pais/responsáveis (menores)
+    guardian_cpf: str | None        # CPF dos pais/responsáveis (menores)
+    patient_email: str | None       # e-mail para contato
+    consultation_reason: str | None # motivo da consulta (apenas novos pacientes)
+    referral_professional: str | None  # profissional que encaminhou (apenas novos pacientes)

@@ -49,8 +49,15 @@ async def collect_info_node(state: ConversationState, config: RunnableConfig) ->
         "is_for_self": state.get("is_for_self"),
         "patient_name": state.get("patient_name"),
         "patient_age": state.get("patient_age"),
+        "birth_date": state.get("birth_date"),
+        "guardian_relationship": state.get("guardian_relationship"),
+        "guardian_name": state.get("guardian_name"),
+        "guardian_cpf": state.get("guardian_cpf"),
         "is_patient": state.get("is_patient"),
         "preferred_doctor": state.get("preferred_doctor"),
+        "patient_email": state.get("patient_email"),
+        "consultation_reason": state.get("consultation_reason"),
+        "referral_professional": state.get("referral_professional"),
     }
 
     messages = [
@@ -65,7 +72,12 @@ async def collect_info_node(state: ConversationState, config: RunnableConfig) ->
 
     update: dict = {"messages": [AIMessage(content=result.reply)]}
 
-    for field in ["user_name", "is_for_self", "patient_name", "patient_age", "is_patient", "preferred_doctor"]:
+    for field in [
+        "user_name", "is_for_self", "patient_name", "patient_age",
+        "birth_date", "guardian_relationship", "guardian_name", "guardian_cpf",
+        "is_patient", "preferred_doctor", "patient_email",
+        "consultation_reason", "referral_professional",
+    ]:
         val = getattr(result, field)
         if val is not None:
             update[field] = val
@@ -79,8 +91,14 @@ async def collect_info_node(state: ConversationState, config: RunnableConfig) ->
             "name": merged.get("user_name"),
             "patient_name": merged.get("patient_name"),
             "age": merged.get("patient_age"),
+            "birth_date": merged.get("birth_date"),
+            "guardian_name": merged.get("guardian_name"),
+            "guardian_cpf": merged.get("guardian_cpf"),
             "is_patient": merged.get("is_patient"),
             "doctor_id": DOCTOR_IDS.get(merged.get("preferred_doctor", ""), None),
+            "email": merged.get("patient_email"),
+            "consultation_reason": merged.get("consultation_reason"),
+            "referral_professional": merged.get("referral_professional"),
         })
         await log_event("info_collected", state["phone"], {
             "patient_name": merged.get("patient_name"),

@@ -121,7 +121,7 @@ async def process_message(phone: str, text: str) -> None:
         state_update = {"messages": [HumanMessage(content=text)]}
     else:
         await log_event("conversation_started", phone)
-        _REQUIRED = ("name", "patient_name", "age", "is_patient", "doctor_id")
+        _REQUIRED = ("name", "patient_name", "age", "is_patient", "doctor_id", "birth_date", "email")
         user_known = existing and all(existing.get(f) is not None for f in _REQUIRED)
 
         if user_known:
@@ -139,8 +139,14 @@ async def process_message(phone: str, text: str) -> None:
             "is_for_self": None,
             "patient_name": existing.get("patient_name") if existing else None,
             "patient_age": existing.get("age") if existing else None,
+            "birth_date": existing.get("birth_date") if existing else None,
+            "guardian_name": existing.get("guardian_name") if existing else None,
+            "guardian_cpf": existing.get("guardian_cpf") if existing else None,
             "is_patient": existing.get("is_patient") if existing else None,
             "preferred_doctor": doctor_key,
+            "patient_email": existing.get("email") if existing else None,
+            "consultation_reason": existing.get("consultation_reason") if existing else None,
+            "referral_professional": existing.get("referral_professional") if existing else None,
         }
 
     config["metadata"] = {

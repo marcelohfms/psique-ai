@@ -10,4 +10,10 @@ class CollectInfoOutput(BaseModel):
     patient_age: int | None = None
     is_patient: bool | None = None
     preferred_doctor: Literal["julio", "bruna"] | None = None
+    birth_date: str | None = None
+    guardian_name: str | None = None
+    guardian_cpf: str | None = None
+    patient_email: str | None = None
+    consultation_reason: str | None = None
+    referral_professional: str | None = None
     is_complete: bool = False
