@@ -54,6 +54,14 @@ async def get_available_slots(
     if not calendar_id:
         return "Não foi possível identificar o calendário do médico."
 
+    # Dra. Bruna only attends patients aged 12 or older
+    if doctor == "bruna" and (state.get("patient_age") or 99) < 12:
+        return (
+            "Dra. Bruna atende apenas pacientes a partir de 12 anos. "
+            "Este paciente tem menos de 12 anos e precisa ser atendido pelo Dr. Júlio. "
+            "Por favor, informe o paciente e pergunte se deseja agendar com o Dr. Júlio."
+        )
+
     # Dra. Bruna always uses 1h slots regardless of patient age
     if doctor == "bruna":
         slot_duration_minutes = 60

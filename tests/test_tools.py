@@ -90,6 +90,22 @@ async def test_get_available_slots_bruna_always_60min():
     assert kwargs.get("slot_minutes") == 60 or mock_slots.call_args[0][3] == 60
 
 
+async def test_get_available_slots_bruna_rejects_patient_under_12():
+    """Dra. Bruna must not attend patients younger than 12."""
+    from app.graph.tools import get_available_slots
+    with patch("app.graph.tools._get_doctor_calendar_id", new_callable=AsyncMock, return_value="cal-bruna"), \
+         patch("app.google_calendar.get_available_slots", new_callable=AsyncMock) as mock_slots:
+        result = await get_available_slots.coroutine(
+            preferred_day="quarta",
+            preferred_shift="manha",
+            slot_duration_minutes=60,
+            state=_make_state(preferred_doctor="bruna", patient_age=8),
+            config=CONFIG,
+        )
+    assert "12 anos" in result
+    mock_slots.assert_not_called()
+
+
 # ── confirm_appointment ───────────────────────────────────────────────────────
 
 async def test_confirm_appointment_creates_event_and_notifies():

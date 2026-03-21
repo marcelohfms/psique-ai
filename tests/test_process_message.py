@@ -1,9 +1,61 @@
 """Tests for process_message() — conversation routing logic."""
 import pytest
 from unittest.mock import AsyncMock, MagicMock, patch, call
-from langchain_core.messages import HumanMessage
+from langchain_core.messages import HumanMessage, AIMessage
 
 from tests.conftest import PHONE, CONFIG
+
+
+# ── CollectInfoOutput schema validation ───────────────────────────────────────
+
+def test_collect_info_output_accepts_valid_birth_date():
+    from app.graph.schemas import CollectInfoOutput
+    obj = CollectInfoOutput(reply="ok", birth_date="15/01/1994")
+    assert obj.birth_date == "15/01/1994"
+
+
+def test_collect_info_output_rejects_iso_birth_date():
+    from app.graph.schemas import CollectInfoOutput
+    obj = CollectInfoOutput(reply="ok", birth_date="1994-01-15")
+    assert obj.birth_date is None
+
+
+def test_collect_info_output_rejects_partial_date():
+    from app.graph.schemas import CollectInfoOutput
+    obj = CollectInfoOutput(reply="ok", birth_date="15/01/94")
+    assert obj.birth_date is None
+
+
+async def test_collect_info_node_overrides_reply_on_invalid_birth_date():
+    """When the LLM extracts an invalid birth_date, the node sends a correction message."""
+    from app.graph.nodes import collect_info_node
+    from app.graph.schemas import CollectInfoOutput
+
+    invalid_result = CollectInfoOutput(
+        reply="Anotei sua data de nascimento.",
+        birth_date="1994-01-15",  # ISO format — will be coerced to None by validator
+        is_complete=False,
+    )
+    # birth_date is in model_fields_set even though validator set it to None
+    assert "birth_date" in invalid_result.model_fields_set
+    assert invalid_result.birth_date is None
+
+    state = {
+        "phone": PHONE,
+        "messages": [HumanMessage(content="nasci em 1994-01-15")],
+        "birth_date": None,
+    }
+    with patch("app.graph.nodes._get_collect_llm") as mock_llm_fn, \
+         patch("app.graph.nodes.send_text", new_callable=AsyncMock) as mock_send, \
+         patch("app.graph.nodes.save_message", new_callable=AsyncMock):
+        mock_llm = MagicMock()
+        mock_llm.ainvoke = AsyncMock(return_value=invalid_result)
+        mock_llm_fn.return_value = mock_llm
+        await collect_info_node(state, {})
+
+    sent_text = mock_send.call_args[0][1]
+    assert "dd/mm/aaaa" in sent_text
+    assert "Anotei" not in sent_text  # original reply must not be sent
 
 # A user record that has all required fields filled in
 _KNOWN_USER = {

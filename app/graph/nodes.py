@@ -67,10 +67,26 @@ async def collect_info_node(state: ConversationState, config: RunnableConfig) ->
 
     result: CollectInfoOutput = await _get_collect_llm().ainvoke(messages)
 
-    await send_text(state["phone"], result.reply)
-    await save_message(state["phone"], "assistant", result.reply)
+    # Detect when the LLM tried to set birth_date but the validator rejected the format.
+    # model_fields_set contains fields that were explicitly provided by the LLM,
+    # so if birth_date is in it but the validated result is None, the format was wrong.
+    birth_date_invalid = (
+        "birth_date" in result.model_fields_set
+        and result.birth_date is None
+        and state.get("birth_date") is None
+    )
 
-    update: dict = {"messages": [AIMessage(content=result.reply)]}
+    reply = result.reply
+    if birth_date_invalid:
+        reply = (
+            "Não consegui identificar a data de nascimento no formato correto. "
+            "Poderia informar no formato dd/mm/aaaa? Por exemplo: 15/01/1994."
+        )
+
+    await send_text(state["phone"], reply)
+    await save_message(state["phone"], "assistant", reply)
+
+    update: dict = {"messages": [AIMessage(content=reply)]}
 
     for field in [
         "user_name", "is_for_self", "patient_name", "patient_age",
@@ -82,7 +98,7 @@ async def collect_info_node(state: ConversationState, config: RunnableConfig) ->
         if val is not None:
             update[field] = val
 
-    if result.is_complete:
+    if result.is_complete and not birth_date_invalid:
         update["stage"] = "patient_agent"
 
         # Merge collected fields with existing state for the upsert
