@@ -155,8 +155,13 @@ async def process_message(phone: str, text: str) -> None:
 
 async def _handle_payload(payload: dict) -> None:
     try:
+        msg = payload.get("message", {})
+        msg_type = msg.get("messageType", "unknown")
+        logger.info("Incoming messageType=%s fromMe=%s", msg_type, msg.get("fromMe"))
+
         result = await extract_message(payload)
         if result is None:
+            logger.info("Message ignored (type=%s)", msg_type)
             return
         phone, text = result
         await save_message(phone, "user", text)
