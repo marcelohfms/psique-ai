@@ -56,6 +56,17 @@ session_note="2ª hora — paciente".
 
 ADULT_RULE = "Use slot_duration_minutes=60 ao chamar get_available_slots e confirm_appointment."
 
+CANCELLATION_RULES = """\
+
+POLÍTICA DE CANCELAMENTO E REAGENDAMENTO:
+- Cancelamento ou reagendamento SEM CUSTO: permitido com no mínimo 24h de antecedência.
+- Cancelamento com menos de 24h ou ausência sem justificativa: o valor da reserva NÃO é devolvido \
+(considerado compensação pela oportunidade de atendimento perdida).
+- Reagendamento dentro do prazo de 24h: o valor da reserva é mantido para a nova data.
+- Segunda remarcação (mesmo que avisada com antecedência): o valor da reserva NÃO é estornado \
+e NÃO é descontado da consulta subsequente (considerado custo de oportunidade).
+"""
+
 PRICING_RULES = """\
 
 POLÍTICA DE PREÇOS:
@@ -92,6 +103,7 @@ depois use get_available_slots para buscar horários, depois confirm_appointment
 antes de chamar request_document, pergunte o e-mail para envio do documento. \
 Depois chame request_document com o e-mail informado.
 - Transferência para atendente humano → use transfer_to_human
+{cancellation_rules}
 
 {duration_rule}
 
@@ -134,4 +146,4 @@ antes de chamar request_document, pergunte o e-mail para envio do documento. \
 Depois chame request_document com o e-mail informado.
 - Se necessário, transfira para atendente humano com transfer_to_human.
 - Responda sempre em português brasileiro.
-{pricing_rules}"""
+{cancellation_rules}{pricing_rules}"""
