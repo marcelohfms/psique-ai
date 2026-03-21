@@ -14,6 +14,8 @@ _KNOWN_USER = {
     "age": 30,
     "is_patient": True,
     "doctor_id": "d5baa58b-a788-4f40-b8c0-512c189150be",  # julio
+    "birth_date": "1994-01-01",
+    "email": "maria@example.com",
     "active": True,
 }
 
