@@ -301,3 +301,21 @@ async def test_transfer_to_human_no_notify_phone_sends_only_to_user():
     # send_text called only once: to the user
     assert mock_send.await_count == 1
     assert mock_send.call_args[0][0] == PHONE
+
+
+# ── confirm_attendance ────────────────────────────────────────────────────────
+
+async def test_confirm_attendance_sets_confirmed_at():
+    from app.graph.tools import confirm_attendance
+    client, table, execute = _make_supabase_client()
+    with patch("app.graph.tools.get_supabase", new_callable=AsyncMock, return_value=client), \
+         patch("app.graph.tools.log_event", new_callable=AsyncMock):
+        result = await confirm_attendance.coroutine(
+            appointment_id="evt-abc123",
+            state=_make_state(),
+            config=CONFIG,
+        )
+    assert "confirmada" in result.lower()
+    # Verify the update was called with confirmed_at
+    update_call = table.update.call_args[0][0]
+    assert "confirmed_at" in update_call

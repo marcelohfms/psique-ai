@@ -9,7 +9,7 @@ from app.graph.schemas import CollectInfoOutput
 from app.graph.tools import (
     get_available_slots, confirm_appointment,
     cancel_appointment, reschedule_appointment,
-    request_document, transfer_to_human,
+    request_document, transfer_to_human, confirm_attendance,
 )
 from app.graph.prompts import COLLECT_SYSTEM, MINOR_RULE, ADULT_RULE, EXISTING_PATIENT_SYSTEM, NEW_PATIENT_SYSTEM, PRICING_RULES, CANCELLATION_RULES, CLINIC_ADDRESS
 from app.uazapi import send_text
@@ -20,7 +20,7 @@ from app.database import upsert_user, log_event, get_upcoming_appointments, DOCT
 TOOLS = [
     get_available_slots, confirm_appointment,
     cancel_appointment, reschedule_appointment,
-    request_document, transfer_to_human,
+    request_document, transfer_to_human, confirm_attendance,
 ]
 
 _collect_llm = None

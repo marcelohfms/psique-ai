@@ -88,6 +88,7 @@ async def main():
     now = datetime.now(TZ)
     today_str = now.date().isoformat()
     tomorrow_str = (now.date() + timedelta(days=1)).isoformat()
+    day_after_tomorrow_str = (now.date() + timedelta(days=2)).isoformat()
 
     # Fetch scheduled appointments for today and tomorrow
     result = await (
@@ -95,7 +96,7 @@ async def main():
         .select("appointment_id, start_time, doctor_id, users(number, patient_name, name)")
         .eq("status", "scheduled")
         .gte("start_time", f"{today_str}T00:00:00")
-        .lt("start_time", f"{tomorrow_str}T23:59:59")
+        .lt("start_time", f"{day_after_tomorrow_str}T00:00:00")
         .execute()
     )
 

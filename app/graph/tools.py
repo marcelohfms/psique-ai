@@ -367,6 +367,29 @@ async def request_document(
 
 
 @tool
+async def confirm_attendance(
+    appointment_id: str,
+    state: Annotated[dict, InjectedState],
+    config: RunnableConfig,
+) -> str:
+    """
+    Confirma a presença do paciente na consulta agendada.
+    Chame este tool quando o paciente confirmar que comparecerá à consulta
+    (ex: em resposta a um lembrete). Não chame se o paciente não confirmou explicitamente.
+    """
+    client = await get_supabase()
+    await client.from_("appointments").update({
+        "confirmed_at": datetime.now(TZ).isoformat(),
+    }).eq("appointment_id", appointment_id).execute()
+
+    await log_event("appointment_confirmed", config["configurable"]["phone"], {
+        "appointment_id": appointment_id,
+    })
+
+    return "Presença confirmada! ✅"
+
+
+@tool
 async def transfer_to_human(
     reason: str,
     state: Annotated[dict, InjectedState],
