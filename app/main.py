@@ -183,15 +183,20 @@ async def _handle_payload(payload: dict) -> None:
         msg_type = msg.get("messageType", "unknown")
         logger.info("Incoming messageType=%s fromMe=%s", msg_type, msg.get("fromMe"))
 
+        # Check /reset directly from raw payload (before type filtering)
+        if not msg.get("fromMe") and not msg.get("isGroup"):
+            raw_text = (msg.get("text") or msg.get("content", {}).get("text") or "").strip().lower()
+            if raw_text == "/reset":
+                phone = msg.get("chatid", "")
+                if phone:
+                    await _reset_conversation(phone)
+                    return
+
         result = await extract_message(payload)
         if result is None:
             logger.info("Message ignored (type=%s)", msg_type)
             return
         phone, text = result
-
-        if text.strip().lower() == "/reset":
-            await _reset_conversation(phone)
-            return
 
         await save_message(phone, "user", text)
         await buffer_push(phone, text, process_message)
