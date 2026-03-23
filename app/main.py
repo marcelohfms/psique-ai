@@ -16,6 +16,7 @@ from app.graph import graph as graph_module
 from app.database import get_user_by_phone, log_event, DOCTOR_NAMES, save_message
 from app.buffer import push as buffer_push
 from app.auth import router as auth_router
+from app.uazapi import send_text
 
 logger = logging.getLogger(__name__)
 
