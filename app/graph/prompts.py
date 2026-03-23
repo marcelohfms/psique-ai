@@ -74,6 +74,16 @@ RioMar Trade Center, Torre 1, Andar 25, Sala 2502
 Av. República do Líbano, 251 — Recife-PE
 """
 
+DOCTORS_INFO = """\
+
+SOBRE OS MÉDICOS:
+- Dra. Bruna Lima e Dr. Júlio Gouveia se conheceram durante a residência médica de Psiquiatria \
+na UFPE de Caruaru e continuaram sua jornada na saúde mental juntos com a Clínica Psique.
+- Dr. Júlio Gouveia: além da residência em Psiquiatria, fez residência em Psiquiatria da Infância \
+e Adolescência no IMIP e aprimoramento em Transtornos Alimentares na USP.
+- Dra. Bruna Lima: atende adolescentes (a partir de 12 anos) e adultos.
+"""
+
 CANCELLATION_RULES = """\
 
 POLÍTICA DE CANCELAMENTO E REAGENDAMENTO:
@@ -142,7 +152,7 @@ chame confirm_attendance com o appointment_id correspondente antes de responder.
 - Antes de chamar confirm_appointment, verifique se a data de nascimento do paciente já é conhecida. \
 Se não for, pergunte antes de confirmar o agendamento.
 - Seja breve, acolhedor e objetivo. Responda sempre em português brasileiro.
-{pricing_rules}{clinic_address}"""
+{pricing_rules}{clinic_address}{doctors_info}"""
 
 NEW_PATIENT_SYSTEM = """\
 Você é Eva, a assistente virtual da Clínica Psique, atendendo {patient_name} \
@@ -177,4 +187,4 @@ Depois chame request_document com o e-mail informado.
 Se não for, pergunte antes de confirmar o agendamento.
 - Se necessário, transfira para atendente humano com transfer_to_human.
 - Responda sempre em português brasileiro.
-{cancellation_rules}{pricing_rules}{clinic_address}"""
+{cancellation_rules}{pricing_rules}{clinic_address}{doctors_info}"""
