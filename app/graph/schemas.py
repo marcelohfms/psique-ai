@@ -1,5 +1,5 @@
 from datetime import datetime
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 from typing import Literal
 
 # Formats the LLM commonly produces; we normalise all of them to dd/mm/yyyy.
@@ -32,6 +32,7 @@ class CollectInfoOutput(BaseModel):
     is_patient: bool | None = None
     preferred_doctor: Literal["julio", "bruna"] | None = None
     birth_date: str | None = None
+    birth_date_parse_failed: bool = False
     guardian_relationship: str | None = None
     guardian_name: str | None = None
     guardian_cpf: str | None = None
@@ -39,6 +40,14 @@ class CollectInfoOutput(BaseModel):
     consultation_reason: str | None = None
     referral_professional: str | None = None
     is_complete: bool = False
+
+    @model_validator(mode="before")
+    @classmethod
+    def track_birth_date_failure(cls, data: dict) -> dict:
+        bd = data.get("birth_date")
+        if isinstance(bd, str) and bd.strip() and _parse_birth_date(bd.strip()) is None:
+            data["birth_date_parse_failed"] = True
+        return data
 
     @field_validator("birth_date", mode="before")
     @classmethod

@@ -67,12 +67,9 @@ async def collect_info_node(state: ConversationState, config: RunnableConfig) ->
 
     result: CollectInfoOutput = await _get_collect_llm().ainvoke(messages)
 
-    # Detect when the LLM tried to set birth_date but the validator rejected the format.
-    # model_fields_set contains fields that were explicitly provided by the LLM,
-    # so if birth_date is in it but the validated result is None, the format was wrong.
+    # Only show parse error if the LLM provided a non-empty string that failed validation.
     birth_date_invalid = (
-        "birth_date" in result.model_fields_set
-        and result.birth_date is None
+        result.birth_date_parse_failed
         and state.get("birth_date") is None
     )
 
