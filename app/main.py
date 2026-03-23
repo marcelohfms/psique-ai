@@ -186,6 +186,7 @@ async def _handle_payload(payload: dict) -> None:
         # Check /reset directly from raw payload (before type filtering)
         if not msg.get("fromMe") and not msg.get("isGroup"):
             raw_text = (msg.get("text") or msg.get("content", {}).get("text") or "").strip().lower()
+            logger.info("RESET_DEBUG type=%s raw_text=%r keys=%s", msg_type, raw_text, list(msg.keys()))
             if raw_text == "/reset":
                 phone = msg.get("chatid", "")
                 if phone:
