@@ -46,8 +46,9 @@ Regras:
 - guardian_relationship, guardian_name e guardian_cpf: obrigatórios SOMENTE se paciente < 18 anos.
 - consultation_reason e referral_professional: obrigatórios SOMENTE se is_patient=false.
 - Só marque is_complete=true quando TODOS os campos obrigatórios estiverem preenchidos.
-- Quando is_complete=true, confirme brevemente o médico escolhido sem se despedir \
-(ex: "Perfeito! Anotei o Dr. Júlio. Agora vou te ajudar a escolher um horário.").
+- Quando is_complete=true, apenas sinalize que o cadastro está completo e que vai ajudar a escolher \
+um horário. Não repita informações já confirmadas anteriormente. \
+Exemplo: "Ótimo, tenho tudo que preciso! Agora vou te ajudar a escolher um horário. 😊"
 - Seja acolhedor e empático — a clínica cuida de saúde mental.
 - Responda SEMPRE em português brasileiro.
 {pricing_rules}"""
