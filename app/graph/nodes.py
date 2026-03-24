@@ -110,26 +110,30 @@ async def collect_info_node(state: ConversationState, config: RunnableConfig) ->
 
         # Merge collected fields with existing state for the upsert
         merged = {**state, **{k: v for k, v in update.items() if k not in ("messages", "stage")}}
-        await upsert_user(state["phone"], {
-            "name": merged.get("user_name"),
-            "patient_name": merged.get("patient_name"),
-            "age": merged.get("patient_age"),
-            "birth_date": merged.get("birth_date"),
-            "guardian_name": merged.get("guardian_name"),
-            "guardian_cpf": merged.get("guardian_cpf"),
-            "guardian_relationship": merged.get("guardian_relationship"),
-            "is_patient": merged.get("is_patient"),
-            "doctor_id": DOCTOR_IDS.get(merged.get("preferred_doctor", ""), None),
-            "email": merged.get("patient_email"),
-            "consultation_reason": merged.get("consultation_reason"),
-            "referral_professional": merged.get("referral_professional"),
-        })
-        await log_event("info_collected", state["phone"], {
-            "patient_name": merged.get("patient_name"),
-            "patient_age": merged.get("patient_age"),
-            "is_patient": merged.get("is_patient"),
-            "preferred_doctor": merged.get("preferred_doctor"),
-        })
+        try:
+            await upsert_user(state["phone"], {
+                "name": merged.get("user_name"),
+                "patient_name": merged.get("patient_name"),
+                "age": merged.get("patient_age"),
+                "birth_date": merged.get("birth_date"),
+                "guardian_name": merged.get("guardian_name"),
+                "guardian_cpf": merged.get("guardian_cpf"),
+                "guardian_relationship": merged.get("guardian_relationship"),
+                "is_patient": merged.get("is_patient"),
+                "doctor_id": DOCTOR_IDS.get(merged.get("preferred_doctor", ""), None),
+                "email": merged.get("patient_email"),
+                "consultation_reason": merged.get("consultation_reason"),
+                "referral_professional": merged.get("referral_professional"),
+            })
+            await log_event("info_collected", state["phone"], {
+                "patient_name": merged.get("patient_name"),
+                "patient_age": merged.get("patient_age"),
+                "is_patient": merged.get("is_patient"),
+                "preferred_doctor": merged.get("preferred_doctor"),
+            })
+        except Exception:
+            import logging as _log
+            _log.getLogger(__name__).exception("Failed to upsert user after collect_info")
 
     return update
 

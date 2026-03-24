@@ -42,6 +42,9 @@ async def push(
         entry.messages.clear()
         entry.task = None
         logger.debug("Buffer flush for %s: %r", phone, combined)
-        await handler(phone, combined)
+        try:
+            await handler(phone, combined)
+        except Exception:
+            logger.exception("Error in buffer flush for %s", phone)
 
     entry.task = asyncio.create_task(flush())
