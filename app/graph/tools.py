@@ -99,9 +99,14 @@ async def confirm_appointment(
       ex: '1ª hora — responsáveis' ou '2ª hora — paciente'.
       Deixe vazio para consultas normais ou consultas de 2h em bloco único.
     """
+    import logging as _log
+    _logger = _log.getLogger(__name__)
+
     from app.google_calendar import create_event
 
     calendar_id = await _get_doctor_calendar_id(state.get("preferred_doctor", ""))
+    _logger.info("CONFIRM_DEBUG calendar_id=%s doctor=%s slot=%s duration=%s",
+                 calendar_id, state.get("preferred_doctor"), slot_datetime, slot_duration_minutes)
     if not calendar_id:
         return "Não foi possível identificar o calendário do médico."
 
@@ -124,15 +129,21 @@ async def confirm_appointment(
         and slot_duration_minutes == 120
     )
 
-    event_id = await create_event(
-        calendar_id=calendar_id,
-        start=start,
-        slot_minutes=slot_duration_minutes,
-        patient_name=patient_name,
-        doctor_name=doctor_label,
-        is_minor_first=is_minor_first,
-        session_note=session_note,
-    )
+    _logger.info("CONFIRM_DEBUG2 patient=%s calendar=%s start=%s", patient_name, calendar_id, start)
+
+    try:
+        event_id = await create_event(
+            calendar_id=calendar_id,
+            start=start,
+            slot_minutes=slot_duration_minutes,
+            patient_name=patient_name,
+            doctor_name=doctor_label,
+            is_minor_first=is_minor_first,
+            session_note=session_note,
+        )
+    except Exception as e:
+        _logger.error("CONFIRM_DEBUG create_event FAILED: %s", e, exc_info=True)
+        return f"Erro ao criar evento no Google Calendar: {e}"
 
     formatted = start.strftime("%d/%m/%Y às %H:%M")
     phone = config["configurable"]["phone"]
