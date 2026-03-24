@@ -193,7 +193,17 @@ async def patient_agent_node(state: ConversationState, config: RunnableConfig) -
     import logging as _log
     _logger = _log.getLogger(__name__)
 
-    messages = [SystemMessage(content=system_prompt), *state["messages"]]
+    # Remove orphan tool_calls: AIMessages with tool_calls not followed by ToolMessages
+    raw_messages = list(state["messages"])
+    clean_messages = []
+    for i, msg in enumerate(raw_messages):
+        if getattr(msg, "tool_calls", None):
+            next_msg = raw_messages[i + 1] if i + 1 < len(raw_messages) else None
+            if next_msg is None or next_msg.type != "tool":
+                continue  # skip orphan tool call
+        clean_messages.append(msg)
+
+    messages = [SystemMessage(content=system_prompt), *clean_messages]
     response = await _get_agent_llm().ainvoke(messages)
 
     _logger.info("AGENT_DEBUG tool_calls=%s content_len=%s",
