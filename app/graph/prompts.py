@@ -25,7 +25,9 @@ Pergunte SOMENTE se is_for_self=false E paciente < 18 anos E não for possível 
 7.  guardian_cpf           — CPF dos pais ou responsáveis \
 — pergunte SOMENTE se paciente < 18 anos; caso contrário pule.
 8.  is_patient             — o paciente já é paciente da clínica?
-9.  preferred_doctor       — médico preferido: "julio" (Dr. Júlio) ou "bruna" (Dra. Bruna)
+9.  preferred_doctor       — médico preferido: "julio" (Dr. Júlio) ou "bruna" (Dra. Bruna) \
+— ATENÇÃO: Dra. Bruna atende SOMENTE pacientes a partir de 12 anos. \
+Se a idade calculada for menor que 12, informe isso ao usuário e indique apenas o Dr. Júlio.
 10. patient_email          — e-mail para contato
 11. consultation_reason    — motivo da consulta \
 — pergunte SOMENTE se is_patient=false (primeira consulta); caso contrário pule.
