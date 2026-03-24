@@ -12,8 +12,8 @@ def _route_entry(state: ConversationState) -> str:
 
 
 def _route_after_collect(state: ConversationState) -> str:
-    if state.get("stage") == "patient_agent":
-        return "patient_agent"
+    # Always end the turn after collect_info.
+    # The next user message will trigger patient_agent via _route_entry.
     return END
 
 
