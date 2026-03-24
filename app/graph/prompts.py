@@ -80,12 +80,14 @@ Av. República do Líbano, 251 — Recife-PE
 
 DOCTORS_INFO = """\
 
-SOBRE OS MÉDICOS:
+SOBRE OS MÉDICOS (responda APENAS com as informações abaixo — não invente nem acrescente nada):
 - Dra. Bruna Lima e Dr. Júlio Gouveia se conheceram durante a residência médica de Psiquiatria \
 na UFPE de Caruaru e continuaram sua jornada na saúde mental juntos com a Clínica Psique.
 - Dr. Júlio Gouveia: além da residência em Psiquiatria, fez residência em Psiquiatria da Infância \
 e Adolescência no IMIP e aprimoramento em Transtornos Alimentares na USP.
 - Dra. Bruna Lima: atende adolescentes (a partir de 12 anos) e adultos.
+- Se o paciente perguntar algo sobre os médicos que não esteja listado acima, diga que não tem \
+essa informação e sugira entrar em contato diretamente com a clínica.
 """
 
 CANCELLATION_RULES = """\
