@@ -190,8 +190,15 @@ async def patient_agent_node(state: ConversationState, config: RunnableConfig) -
             lines.append(f"- {dt.strftime('%d/%m/%Y às %H:%M')} (ID: {apt['appointment_id']})")
         system_prompt += "\n\n" + "\n".join(lines)
 
+    import logging as _log
+    _logger = _log.getLogger(__name__)
+
     messages = [SystemMessage(content=system_prompt), *state["messages"]]
     response = await _get_agent_llm().ainvoke(messages)
+
+    _logger.info("AGENT_DEBUG tool_calls=%s content_len=%s",
+                 [t["name"] for t in response.tool_calls] if response.tool_calls else [],
+                 len(response.content) if response.content else 0)
 
     # Only send to WhatsApp when the LLM produces a final text (no tool calls)
     if not response.tool_calls and response.content:
