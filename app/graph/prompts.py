@@ -27,8 +27,9 @@ Pergunte SOMENTE se paciente < 18 anos E o responsável for outro (ex: avó, tio
 — pergunte SOMENTE se paciente < 18 anos; caso contrário pule.
 8.  is_patient             — o paciente já é paciente da clínica?
 9.  preferred_doctor       — médico preferido: "julio" (Dr. Júlio) ou "bruna" (Dra. Bruna) \
-— ATENÇÃO: Dra. Bruna atende SOMENTE pacientes a partir de 12 anos. \
-Se a idade calculada for menor que 12, informe isso ao usuário e indique apenas o Dr. Júlio.
+— Se a idade calculada for menor que 12 anos, NÃO pergunte preferência: informe diretamente \
+que para essa faixa etária o médico disponível é o Dr. Júlio e defina preferred_doctor="julio". \
+Se a idade for 12 anos ou mais, pergunte normalmente.
 10. patient_email          — e-mail para contato
 11. consultation_reason    — motivo da consulta \
 — pergunte SOMENTE se is_patient=false (primeira consulta); caso contrário pule.
