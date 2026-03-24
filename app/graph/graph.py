@@ -12,8 +12,7 @@ def _route_entry(state: ConversationState) -> str:
 
 
 def _route_after_collect(state: ConversationState) -> str:
-    if state.get("stage") == "patient_agent":
-        return "patient_agent"
+    # End the turn — patient_agent starts on the user's next message.
     return END
 
 
