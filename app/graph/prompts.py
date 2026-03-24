@@ -21,7 +21,8 @@ Informações necessárias (em ordem):
 — infira pelo contexto quando possível (ex: "minha filha" → mãe ou pai, "meu filho" → mãe ou pai). \
 Pergunte SOMENTE se is_for_self=false E paciente < 18 anos E não for possível inferir pelo contexto.
 6.  guardian_name          — nome completo dos pais ou responsáveis \
-— pergunte SOMENTE se paciente < 18 anos; caso contrário pule.
+— se guardian_relationship for "mãe" ou "pai", use user_name como guardian_name sem perguntar. \
+Pergunte SOMENTE se paciente < 18 anos E o responsável for outro (ex: avó, tio, responsável legal).
 7.  guardian_cpf           — CPF dos pais ou responsáveis \
 — pergunte SOMENTE se paciente < 18 anos; caso contrário pule.
 8.  is_patient             — o paciente já é paciente da clínica?
