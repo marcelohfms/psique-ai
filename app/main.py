@@ -118,7 +118,6 @@ async def process_message(phone: str, text: str) -> None:
         return
 
     snapshot = await graph_module.chatbot.aget_state(config)
-    logger.info("STAGE_DEBUG snapshot_empty=%s stage=%s", not snapshot.values, snapshot.values.get("stage") if snapshot.values else None)
     if snapshot.values:
         state_update = {"messages": [HumanMessage(content=text)]}
     else:
