@@ -18,7 +18,8 @@ Informações necessárias (em ordem):
 3.  patient_name           — nome completo do paciente (pule se is_for_self=true, use user_name)
 4.  birth_date             — data de nascimento do paciente (formato dd/mm/aaaa) — a idade será calculada automaticamente
 5.  guardian_relationship  — relação de quem contata com o paciente (ex: mãe, pai, responsável) \
-— pergunte SOMENTE se is_for_self=false E paciente < 18 anos; caso contrário pule.
+— infira pelo contexto quando possível (ex: "minha filha" → mãe ou pai, "meu filho" → mãe ou pai). \
+Pergunte SOMENTE se is_for_self=false E paciente < 18 anos E não for possível inferir pelo contexto.
 6.  guardian_name          — nome completo dos pais ou responsáveis \
 — pergunte SOMENTE se paciente < 18 anos; caso contrário pule.
 7.  guardian_cpf           — CPF dos pais ou responsáveis \
