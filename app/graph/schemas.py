@@ -28,7 +28,6 @@ class CollectInfoOutput(BaseModel):
     user_name: str | None = None
     is_for_self: bool | None = None
     patient_name: str | None = None
-    patient_age: int | None = None
     is_patient: bool | None = None
     preferred_doctor: Literal["julio", "bruna"] | None = None
     birth_date: str | None = None

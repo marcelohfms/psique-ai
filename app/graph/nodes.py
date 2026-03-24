@@ -48,7 +48,6 @@ async def collect_info_node(state: ConversationState, config: RunnableConfig) ->
         "user_name": state.get("user_name"),
         "is_for_self": state.get("is_for_self"),
         "patient_name": state.get("patient_name"),
-        "patient_age": state.get("patient_age"),
         "birth_date": state.get("birth_date"),
         "guardian_relationship": state.get("guardian_relationship"),
         "guardian_name": state.get("guardian_name"),
@@ -86,14 +85,25 @@ async def collect_info_node(state: ConversationState, config: RunnableConfig) ->
     update: dict = {"messages": [AIMessage(content=reply)]}
 
     for field in [
-        "user_name", "is_for_self", "patient_name", "patient_age",
+        "user_name", "is_for_self", "patient_name",
         "birth_date", "guardian_relationship", "guardian_name", "guardian_cpf",
         "is_patient", "preferred_doctor", "patient_email",
         "consultation_reason", "referral_professional",
     ]:
-        val = getattr(result, field)
+        val = getattr(result, field, None)
         if val is not None:
             update[field] = val
+
+    # Calculate age automatically from birth_date
+    birth_date_str = update.get("birth_date") or state.get("birth_date")
+    if birth_date_str and not state.get("patient_age"):
+        try:
+            bd = datetime.strptime(birth_date_str, "%d/%m/%Y")
+            today = datetime.now()
+            age = today.year - bd.year - ((today.month, today.day) < (bd.month, bd.day))
+            update["patient_age"] = age
+        except ValueError:
+            pass
 
     if result.is_complete and not birth_date_invalid:
         update["stage"] = "patient_agent"
