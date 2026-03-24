@@ -129,6 +129,13 @@ def _get_busy(service, calendar_id: str, window_start: datetime, window_end: dat
 
 
 def _create_event(service, calendar_id: str, event: dict) -> str:
+    # Temporary diagnostic: log which account owns this calendar
+    try:
+        cal_info = service.calendars().get(calendarId=calendar_id).execute()
+        import logging
+        logging.getLogger(__name__).warning("CALENDAR_OWNER: %s", cal_info.get("id"))
+    except Exception:
+        pass
     result = service.events().insert(calendarId=calendar_id, body=event).execute()
     return result["id"]
 
