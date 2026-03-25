@@ -367,3 +367,23 @@ async def test_register_payment_rename_failure_still_succeeds():
             config=CONFIG,
         )
     assert "✅" in result
+
+
+async def test_register_payment_sets_paid_at():
+    from app.graph.tools import register_payment
+    client, table, execute = _make_supabase_client()
+    with patch("app.graph.tools.get_supabase", new_callable=AsyncMock, return_value=client), \
+         patch("app.graph.tools.get_user_by_phone", new_callable=AsyncMock, return_value={"id": "user-123"}), \
+         patch("app.graph.tools.log_event", new_callable=AsyncMock), \
+         patch("app.google_drive.rename_file", new_callable=AsyncMock), \
+         patch("app.google_sheets.append_payment_receipt", new_callable=AsyncMock), \
+         patch("app.graph.tools.send_text", new_callable=AsyncMock):
+        await register_payment.coroutine(
+            amount="100,00",
+            drive_link="https://drive.google.com/file/d/abc/view",
+            state=_make_state(),
+            config=CONFIG,
+        )
+    # Verify paid_at was set in an update call
+    update_calls = [c for c in table.update.call_args_list if "paid_at" in c[0][0]]
+    assert len(update_calls) == 1

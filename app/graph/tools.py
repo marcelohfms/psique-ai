@@ -466,6 +466,16 @@ async def register_payment(
         import logging as _log
         _log.getLogger(__name__).exception("SHEETS_APPEND FAILED patient=%s", patient_name)
 
+    # Mark appointment as paid so the payment reminder script skips it
+    if user:
+        try:
+            await client.from_("appointments").update({
+                "paid_at": datetime.now(TZ).isoformat(),
+            }).eq("user_id", user["id"]).eq("status", "scheduled").order("start_time").limit(1).execute()
+        except Exception:
+            import logging as _log
+            _log.getLogger(__name__).exception("PAID_AT UPDATE FAILED patient=%s", patient_name)
+
     await _notify_clinic(
         f"💰 Comprovante recebido!\nPaciente: {patient_name}\nValor: R$ {amount}\nConsulta: {appointment_dt}\nLink: {drive_link}"
     )
