@@ -23,9 +23,7 @@ def _credentials() -> Credentials:
         client_id=os.environ["GOOGLE_CLIENT_ID"],
         client_secret=os.environ["GOOGLE_CLIENT_SECRET"],
         scopes=[
-            "https://www.googleapis.com/auth/calendar",
             "https://www.googleapis.com/auth/spreadsheets",
-            "https://www.googleapis.com/auth/drive.file",
         ],
     )
 
