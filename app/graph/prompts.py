@@ -96,15 +96,31 @@ e Adolescência no IMIP e aprimoramento em Transtornos Alimentares na USP.
 essa informação e sugira entrar em contato diretamente com a clínica.
 """
 
+BOOKING_FEE_RULE = """\
+
+TAXA DE RESERVA — OBRIGATÓRIA PARA CONFIRMAR O AGENDAMENTO:
+Após o paciente escolher um horário, SEMPRE siga esta sequência:
+1. Confirme o horário escolhido (médico, dia e hora).
+2. Informe sobre a taxa de reserva e chame confirm_appointment para registrar o agendamento.
+3. Envie a mensagem de confirmação com as instruções de pagamento.
+
+Mensagem padrão após confirmar o agendamento:
+"Consulta registrada! ✅ Para garantir a vaga, é necessário o pagamento da taxa de reserva de \
+R$ 100,00 em até 2 horas.
+💳 PIX: 07670034467
+Esse valor será abatido do total da consulta. Em caso de cancelamento com menos de 24h de \
+antecedência ou ausência sem justificativa, a taxa não é devolvida."
+"""
+
 CANCELLATION_RULES = """\
 
 POLÍTICA DE CANCELAMENTO E REAGENDAMENTO:
 - Cancelamento ou reagendamento SEM CUSTO: permitido com no mínimo 24h de antecedência.
-- Cancelamento com menos de 24h ou ausência sem justificativa: o valor da reserva NÃO é devolvido \
-(considerado compensação pela oportunidade de atendimento perdida).
-- Reagendamento dentro do prazo de 24h: o valor da reserva é mantido para a nova data.
-- Segunda remarcação (mesmo que avisada com antecedência): o valor da reserva NÃO é estornado \
-e NÃO é descontado da consulta subsequente (considerado custo de oportunidade).
+- Cancelamento com menos de 24h ou ausência sem justificativa: a taxa de reserva (R$ 100,00) \
+NÃO é devolvida (considerado compensação pela oportunidade de atendimento perdida).
+- Reagendamento dentro do prazo de 24h: a taxa de reserva é mantida para a nova data.
+- Segunda remarcação (mesmo que avisada com antecedência): a taxa de reserva NÃO é estornada \
+e NÃO é descontada da consulta subsequente (considerado custo de oportunidade).
 """
 
 PRICING_RULES = """\
@@ -164,7 +180,7 @@ chame confirm_attendance com o appointment_id correspondente antes de responder.
 - Antes de chamar confirm_appointment, verifique se a data de nascimento do paciente já é conhecida. \
 Se não for, pergunte antes de confirmar o agendamento.
 - Seja breve, acolhedor e objetivo. Responda sempre em português brasileiro.
-{pricing_rules}{clinic_address}{doctors_info}"""
+{booking_fee_rule}{pricing_rules}{clinic_address}{doctors_info}"""
 
 NEW_PATIENT_SYSTEM = """\
 Você é Eva, a assistente virtual da Clínica Psique, atendendo {patient_name} \
@@ -199,4 +215,4 @@ Depois chame request_document com o e-mail informado.
 Se não for, pergunte antes de confirmar o agendamento.
 - Se necessário, transfira para atendente humano com transfer_to_human.
 - Responda sempre em português brasileiro.
-{cancellation_rules}{pricing_rules}{clinic_address}{doctors_info}"""
+{booking_fee_rule}{cancellation_rules}{pricing_rules}{clinic_address}{doctors_info}"""
