@@ -371,6 +371,21 @@ async def request_document(
     except Exception:
         pass
 
+    doc_labels = {
+        "nota_fiscal": "Nota Fiscal", "laudo": "Laudo", "exame": "Exame",
+        "relatorio": "Relatório", "receita": "Receita", "declaracao": "Declaração",
+    }
+    doc_label = doc_labels.get(document_type, document_type)
+    doctor_label = {"julio": "Dr. Júlio", "bruna": "Dra. Bruna"}.get(doctor_key, "médico(a)")
+    phone_clean = phone.replace("@s.whatsapp.net", "")
+    await _notify_clinic(
+        f"📄 Solicitação de {doc_label}\n"
+        f"Paciente: {patient_name}\n"
+        f"Médico(a): {doctor_label}\n"
+        f"E-mail: {patient_email}\n"
+        f"WhatsApp: {phone_clean}"
+    )
+
     return (
         f"Solicitação de {document_type} registrada com sucesso! ✅\n"
         f"Já encaminhamos para o setor responsável e em breve será enviado para você."
