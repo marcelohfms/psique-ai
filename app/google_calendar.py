@@ -165,20 +165,29 @@ async def get_available_slots(
 
     # Build working windows: use doctor schedule if available, else fall back to shift
     doctor_schedule = DOCTOR_SCHEDULES.get(doctor_key or "", {})
+    shift = _normalize_shift(preferred_shift)
+    shift_start_h, shift_end_h = SHIFT_HOURS.get(shift, (8, 18))
+
     if doctor_schedule:
         day_windows_raw = doctor_schedule.get(weekday)
         if day_windows_raw is None:
             return []  # doctor doesn't work on this day
+        # Keep only windows that overlap with the requested shift
+        filtered = [
+            (sh, sm, eh, em) for sh, sm, eh, em in day_windows_raw
+            if sh < shift_end_h and eh > shift_start_h
+        ]
+        if not filtered:
+            return []  # doctor doesn't work this shift on this day
         windows = [
             (
                 datetime(target_date.year, target_date.month, target_date.day, sh, sm, tzinfo=TZ),
                 datetime(target_date.year, target_date.month, target_date.day, eh, em, tzinfo=TZ),
             )
-            for sh, sm, eh, em in day_windows_raw
+            for sh, sm, eh, em in filtered
         ]
     else:
-        shift = _normalize_shift(preferred_shift)
-        start_hour, end_hour = SHIFT_HOURS.get(shift, (8, 18))
+        start_hour, end_hour = shift_start_h, shift_end_h
         windows = [(
             datetime(target_date.year, target_date.month, target_date.day, start_hour, 0, tzinfo=TZ),
             datetime(target_date.year, target_date.month, target_date.day, end_hour, 0, tzinfo=TZ),

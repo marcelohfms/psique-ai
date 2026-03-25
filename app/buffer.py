@@ -13,7 +13,7 @@ DEBOUNCE_SECONDS = float(os.getenv("DEBOUNCE_SECONDS", "3"))
 @dataclass
 class _Entry:
     messages: list[str] = field(default_factory=list)
-    task: asyncio.Task | None = None
+    handle: asyncio.TimerHandle | None = None
 
 
 # phone → pending entry
@@ -28,23 +28,35 @@ async def push(
     """
     Buffer a message for `phone`. If no new message arrives within
     DEBOUNCE_SECONDS, calls handler(phone, combined_text).
+
+    Uses loop.call_later instead of create_task so the actual handler
+    runs in a task spawned from the event loop's root context, avoiding
+    the 'ContextVar created in a different Context' error from LangGraph.
     """
     entry = _pending[phone]
     entry.messages.append(text)
 
-    # Cancel previous scheduled flush
-    if entry.task and not entry.task.done():
-        entry.task.cancel()
+    if entry.handle is not None:
+        entry.handle.cancel()
 
-    async def flush():
-        await asyncio.sleep(DEBOUNCE_SECONDS)
+    loop = asyncio.get_running_loop()
+
+    def _fire() -> None:
         combined = " ".join(entry.messages)
         entry.messages.clear()
-        entry.task = None
+        entry.handle = None
         logger.debug("Buffer flush for %s: %r", phone, combined)
-        try:
-            await handler(phone, combined)
-        except Exception:
-            logger.exception("Error in buffer flush for %s", phone)
+        asyncio.create_task(_run(phone, combined, handler))
 
-    entry.task = asyncio.create_task(flush())
+    entry.handle = loop.call_later(DEBOUNCE_SECONDS, _fire)
+
+
+async def _run(
+    phone: str,
+    combined: str,
+    handler: Callable[[str, str], Awaitable[None]],
+) -> None:
+    try:
+        await handler(phone, combined)
+    except Exception:
+        logger.exception("Error in buffer flush for %s", phone)
