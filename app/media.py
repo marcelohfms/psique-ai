@@ -76,7 +76,7 @@ async def describe_image(message_id: str) -> str:
         }],
         max_tokens=300,
     )
-    return f"[imagem descrita]: {resp.choices[0].message.content}"
+    return f"[imagem:{message_id}]: {resp.choices[0].message.content}"
 
 
 async def process_media(message_id: str, media_type: str) -> str | None:

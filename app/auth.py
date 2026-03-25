@@ -17,6 +17,7 @@ REDIRECT_URI = "https://psiqueai.ayexa.com.br/auth/callback"
 SCOPES = [
     "https://www.googleapis.com/auth/calendar",
     "https://www.googleapis.com/auth/spreadsheets",
+    "https://www.googleapis.com/auth/drive.file",
 ]
 
 router = APIRouter(prefix="/auth", tags=["auth"])

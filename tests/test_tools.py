@@ -319,3 +319,51 @@ async def test_confirm_attendance_sets_confirmed_at():
     # Verify the update was called with confirmed_at
     update_call = table.update.call_args[0][0]
     assert "confirmed_at" in update_call
+
+
+# ── register_payment ──────────────────────────────────────────────────────────
+
+async def test_register_payment_uploads_and_notifies():
+    from app.graph.tools import register_payment
+    client, table, execute = _make_supabase_client()
+    # Simulate user lookup returning a user with id
+    user_mock = AsyncMock(return_value={"id": "user-123"})
+    with patch("app.graph.tools.get_supabase", new_callable=AsyncMock, return_value=client), \
+         patch("app.graph.tools.get_user_by_phone", new_callable=AsyncMock, return_value={"id": "user-123"}), \
+         patch("app.graph.tools.log_event", new_callable=AsyncMock), \
+         patch("app.google_drive.upload_comprovante", new_callable=AsyncMock, return_value="https://drive.google.com/file/d/abc/view") as mock_upload, \
+         patch("app.google_sheets.append_payment_receipt", new_callable=AsyncMock) as mock_sheets, \
+         patch("app.graph.tools.send_text", new_callable=AsyncMock) as mock_notify:
+        result = await register_payment.coroutine(
+            message_id="msg-abc123",
+            state=_make_state(),
+            config=CONFIG,
+        )
+
+    assert "✅" in result
+    mock_upload.assert_awaited_once()
+    upload_args = mock_upload.call_args[0]
+    assert upload_args[0] == "msg-abc123"
+    assert "comprovante_pix" in upload_args[1]
+    assert "Maria" in upload_args[1]
+    mock_sheets.assert_awaited_once()
+    mock_notify.assert_called()
+    notify_msg = mock_notify.call_args[0][1]
+    assert "Maria" in notify_msg
+    assert "https://drive.google.com" in notify_msg
+
+
+async def test_register_payment_drive_error_returns_error_message():
+    from app.graph.tools import register_payment
+    client, _, _ = _make_supabase_client()
+    with patch("app.graph.tools.get_supabase", new_callable=AsyncMock, return_value=client), \
+         patch("app.graph.tools.get_user_by_phone", new_callable=AsyncMock, return_value=None), \
+         patch("app.graph.tools.log_event", new_callable=AsyncMock), \
+         patch("app.google_drive.upload_comprovante", new_callable=AsyncMock, side_effect=Exception("Drive unavailable")), \
+         patch("app.graph.tools.send_text", new_callable=AsyncMock):
+        result = await register_payment.coroutine(
+            message_id="msg-xyz",
+            state=_make_state(),
+            config=CONFIG,
+        )
+    assert "Erro" in result

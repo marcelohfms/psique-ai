@@ -10,6 +10,7 @@ from app.graph.tools import (
     get_available_slots, confirm_appointment,
     cancel_appointment, reschedule_appointment,
     request_document, transfer_to_human, confirm_attendance,
+    register_payment,
 )
 from app.graph.prompts import COLLECT_SYSTEM, MINOR_RULE, ADULT_RULE, EXISTING_PATIENT_SYSTEM, NEW_PATIENT_SYSTEM, PRICING_RULES, CANCELLATION_RULES, CLINIC_ADDRESS, DOCTORS_INFO, BOOKING_FEE_RULE
 from app.uazapi import send_text
@@ -21,6 +22,7 @@ TOOLS = [
     get_available_slots, confirm_appointment,
     cancel_appointment, reschedule_appointment,
     request_document, transfer_to_human, confirm_attendance,
+    register_payment,
 ]
 
 _collect_llm = None

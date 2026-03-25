@@ -159,6 +159,8 @@ depois use get_available_slots para buscar horários, depois confirm_appointment
 - Solicitação de documentos (nota fiscal, laudo, exame, relatório, receita, declaração) → \
 antes de chamar request_document, pergunte o e-mail para envio do documento. \
 Depois chame request_document com o e-mail informado.
+- Comprovante de pagamento PIX → quando o paciente enviar uma imagem e ela aparecer no histórico \
+como [imagem:ID]: ..., chame register_payment passando o ID exato do prefixo como message_id.
 - Transferência para atendente humano → use transfer_to_human
 {cancellation_rules}
 
@@ -213,6 +215,8 @@ antes de chamar request_document, pergunte o e-mail para envio do documento. \
 Depois chame request_document com o e-mail informado.
 - Antes de chamar confirm_appointment, verifique se a data de nascimento do paciente já é conhecida. \
 Se não for, pergunte antes de confirmar o agendamento.
+- Se o paciente enviar uma imagem de comprovante de pagamento (aparece no histórico como [imagem:ID]: ...): \
+chame register_payment passando o ID exato do prefixo como message_id.
 - Se necessário, transfira para atendente humano com transfer_to_human.
 - Responda sempre em português brasileiro.
 {booking_fee_rule}{cancellation_rules}{pricing_rules}{clinic_address}{doctors_info}"""
