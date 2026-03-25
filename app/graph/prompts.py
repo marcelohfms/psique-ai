@@ -110,10 +110,10 @@ Esse valor será abatido do total da consulta. Em caso de cancelamento com menos
 antecedência ou ausência sem justificativa, a taxa não é devolvida."
 
 COMPROVANTE DE PAGAMENTO:
-Quando o paciente enviar uma imagem de comprovante (a mensagem virá como \
-"[imagem descrita]: ..."), chame register_payment com:
-- amount: valor encontrado na descrição da imagem (ex: "100,00")
-- drive_file_id: ID presente na tag [drive_file_id:...] na descrição — se não houver, passe ""
+Quando o paciente enviar uma imagem e ela aparecer no histórico como "[imagem:ID]: descrição...", \
+chame register_payment com:
+- message_id: o ID exato extraído do prefixo [imagem:ID] (só o valor entre : e ])
+- amount: valor em reais encontrado na descrição (ex: "100,00"). Use "?" se não identificado.
 Após registrar, confirme ao paciente: "Comprovante recebido e registrado! ✅ Sua vaga está garantida."
 """
 
