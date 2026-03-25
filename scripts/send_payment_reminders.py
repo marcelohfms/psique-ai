@@ -43,7 +43,7 @@ def payment_reminder_message(first_name: str, doctor_label: str, date_str: str) 
         f"de reserva de R$ 100,00.\n\n"
         f"💳 PIX: 07670034467\n\n"
         f"Assim que o pagamento for realizado, sua vaga estará garantida! "
-        f"Qualquer dúvida, é só chamar. 🙏"
+        f"Precisa de alguma ajuda ou tem alguma dúvida sobre o pagamento? É só me chamar aqui. 🙏"
     )
 
 
