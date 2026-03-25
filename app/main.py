@@ -100,7 +100,7 @@ async def extract_message(payload: dict) -> tuple[str, str] | None:
         message_id = msg.get("messageid") or msg.get("id", "")
         if not message_id:
             return None
-        text = await process_media(message_id, msg_type)
+        text = await process_media(message_id, msg_type, phone=phone)
         if not text:
             return None
         return phone, text

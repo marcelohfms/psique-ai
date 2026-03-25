@@ -5,7 +5,7 @@ Flow:
   1. POST /message/download {messageid} → {url: "..."}
   2. GET url → raw bytes
   3. AudioMessage → OpenAI Whisper transcription
-  4. ImageMessage → GPT-4o vision description
+  4. ImageMessage → GPT-4o vision description (message_id embedded for Drive upload)
 """
 import base64
 import logging
@@ -56,7 +56,9 @@ async def transcribe_audio(message_id: str) -> str:
 
 
 async def describe_image(message_id: str) -> str:
-    """Download image and describe with GPT-4o vision."""
+    """Download image and describe with GPT-4o vision.
+    The message_id is embedded in the prefix so the LLM can pass it to register_payment.
+    """
     image_bytes = await _download(message_id)
     b64 = base64.b64encode(image_bytes).decode()
     resp = await _get_openai().chat.completions.create(
@@ -79,7 +81,7 @@ async def describe_image(message_id: str) -> str:
     return f"[imagem:{message_id}]: {resp.choices[0].message.content}"
 
 
-async def process_media(message_id: str, media_type: str) -> str | None:
+async def process_media(message_id: str, media_type: str, phone: str = "") -> str | None:
     """
     Returns transcribed/described text for audio or image messages.
     Returns None for unsupported types.

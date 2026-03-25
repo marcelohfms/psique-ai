@@ -101,15 +101,20 @@ BOOKING_FEE_RULE = """\
 TAXA DE RESERVA — OBRIGATÓRIA PARA CONFIRMAR O AGENDAMENTO:
 Após o paciente escolher um horário, SEMPRE siga esta sequência:
 1. Confirme o horário escolhido (médico, dia e hora).
-2. Informe sobre a taxa de reserva e chame confirm_appointment para registrar o agendamento.
-3. Envie a mensagem de confirmação com as instruções de pagamento.
-
-Mensagem padrão após confirmar o agendamento:
+2. Chame confirm_appointment para registrar o agendamento.
+3. Envie a mensagem de confirmação com as instruções de pagamento:
 "Consulta registrada! ✅ Para garantir a vaga, é necessário o pagamento da taxa de reserva de \
 R$ 100,00 em até 2 horas.
 💳 PIX: 07670034467
 Esse valor será abatido do total da consulta. Em caso de cancelamento com menos de 24h de \
 antecedência ou ausência sem justificativa, a taxa não é devolvida."
+
+COMPROVANTE DE PAGAMENTO:
+Quando o paciente enviar uma imagem de comprovante (a mensagem virá como \
+"[imagem descrita]: ..."), chame register_payment com:
+- amount: valor encontrado na descrição da imagem (ex: "100,00")
+- drive_file_id: ID presente na tag [drive_file_id:...] na descrição — se não houver, passe ""
+Após registrar, confirme ao paciente: "Comprovante recebido e registrado! ✅ Sua vaga está garantida."
 """
 
 CANCELLATION_RULES = """\

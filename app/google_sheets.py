@@ -11,8 +11,8 @@ TZ = ZoneInfo("America/Recife")
 # Column order: Data, Nome completo, Idade, Telefone, E-mail, Tipo de solicitação
 _SHEET_RANGE = "Solicitações!A:F"
 
-# Column order: Data/Hora, Nome do paciente, Telefone, Médico, Data da consulta, Link, Status
-_PAYMENTS_SHEET_RANGE = "Pagamentos!A:G"
+# Column order: Data do Pagamento, Paciente, Médico, Data da Consulta, Valor, Telefone, Comprovante, Conferência Humana
+_PAYMENTS_SHEET_RANGE = "Pagamentos!A:H"
 
 
 def _credentials() -> Credentials:
@@ -25,6 +25,7 @@ def _credentials() -> Credentials:
         scopes=[
             "https://www.googleapis.com/auth/calendar",
             "https://www.googleapis.com/auth/spreadsheets",
+            "https://www.googleapis.com/auth/drive.file",
         ],
     )
 
@@ -38,15 +39,26 @@ def _append_row(service, spreadsheet_id: str, row: list) -> None:
     ).execute()
 
 
+def _append_row_payments(service, spreadsheet_id: str, row: list) -> None:
+    service.spreadsheets().values().append(
+        spreadsheetId=spreadsheet_id,
+        range=_PAYMENTS_SHEET_RANGE,
+        valueInputOption="USER_ENTERED",
+        body={"values": [row]},
+    ).execute()
+
+
 async def append_payment_receipt(
     patient_name: str,
     phone: str,
     doctor_name: str,
     appointment_dt: str,
+    amount: str,
     drive_link: str,
 ) -> None:
     """Append a payment receipt row to the Pagamentos sheet.
     Does nothing if GOOGLE_SHEETS_PAYMENTS_ID is not configured.
+    Columns: Data do Pagamento | Paciente | Médico | Data da Consulta | Valor | Telefone | Comprovante | Conferência Humana
     """
     spreadsheet_id = os.environ.get("GOOGLE_SHEETS_PAYMENTS_ID")
     if not spreadsheet_id:
@@ -54,21 +66,12 @@ async def append_payment_receipt(
 
     now = datetime.now(TZ).strftime("%d/%m/%Y %H:%M")
     phone_clean = phone.replace("@s.whatsapp.net", "")
-    row = [now, patient_name, phone_clean, doctor_name, appointment_dt, drive_link, "pendente"]
+    row = [now, patient_name, doctor_name, appointment_dt, amount, phone_clean, drive_link, ""]
 
     creds = _credentials()
     service = build("sheets", "v4", credentials=creds)
-
-    def _do_append() -> None:
-        service.spreadsheets().values().append(
-            spreadsheetId=spreadsheet_id,
-            range=_PAYMENTS_SHEET_RANGE,
-            valueInputOption="USER_ENTERED",
-            body={"values": [row]},
-        ).execute()
-
     loop = asyncio.get_event_loop()
-    await loop.run_in_executor(None, _do_append)
+    await loop.run_in_executor(None, _append_row_payments, service, spreadsheet_id, row)
 
 
 async def append_document_request(

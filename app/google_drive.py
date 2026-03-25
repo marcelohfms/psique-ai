@@ -9,7 +9,11 @@ from googleapiclient.http import MediaIoBaseUpload
 
 from app.uazapi import BASE_URL, _headers
 
-FOLDER_ID = os.getenv("GOOGLE_DRIVE_PAYMENTS_FOLDER_ID", "")
+_SCOPES = [
+    "https://www.googleapis.com/auth/calendar",
+    "https://www.googleapis.com/auth/spreadsheets",
+    "https://www.googleapis.com/auth/drive.file",
+]
 
 
 def _credentials() -> Credentials:
@@ -19,11 +23,7 @@ def _credentials() -> Credentials:
         token_uri="https://oauth2.googleapis.com/token",
         client_id=os.environ["GOOGLE_CLIENT_ID"],
         client_secret=os.environ["GOOGLE_CLIENT_SECRET"],
-        scopes=[
-            "https://www.googleapis.com/auth/calendar",
-            "https://www.googleapis.com/auth/spreadsheets",
-            "https://www.googleapis.com/auth/drive.file",
-        ],
+        scopes=_SCOPES,
     )
 
 
@@ -46,10 +46,7 @@ async def _download_from_uazapi(message_id: str) -> bytes:
 
 def _upload_and_share(service, folder_id: str, filename: str, image_bytes: bytes) -> str:
     """Upload image to Drive, make it public, and return the web view link."""
-    file_metadata = {
-        "name": filename,
-        "parents": [folder_id],
-    }
+    file_metadata = {"name": filename, "parents": [folder_id]}
     media = MediaIoBaseUpload(io.BytesIO(image_bytes), mimetype="image/jpeg", resumable=False)
     file = service.files().create(
         body=file_metadata,
@@ -58,8 +55,6 @@ def _upload_and_share(service, folder_id: str, filename: str, image_bytes: bytes
     ).execute()
 
     file_id = file["id"]
-
-    # Make the file accessible to anyone with the link
     service.permissions().create(
         fileId=file_id,
         body={"role": "reader", "type": "anyone"},
@@ -70,12 +65,11 @@ def _upload_and_share(service, folder_id: str, filename: str, image_bytes: bytes
 
 async def upload_comprovante(message_id: str, filename: str) -> str:
     """Download image from UAZAPI, upload to Drive folder, and return public web view URL."""
-    image_bytes = await _download_from_uazapi(message_id)
-
-    folder_id = FOLDER_ID
+    folder_id = os.getenv("GOOGLE_DRIVE_PAYMENTS_FOLDER_ID", "")
     if not folder_id:
         raise ValueError("GOOGLE_DRIVE_PAYMENTS_FOLDER_ID is not set")
 
+    image_bytes = await _download_from_uazapi(message_id)
     creds = _credentials()
     service = build("drive", "v3", credentials=creds)
     loop = asyncio.get_event_loop()

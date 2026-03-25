@@ -403,14 +403,15 @@ async def confirm_attendance(
 @tool
 async def register_payment(
     message_id: str,
+    amount: str,
     state: Annotated[dict, InjectedState],
     config: RunnableConfig,
 ) -> str:
     """
     Registra um comprovante de pagamento PIX recebido pelo WhatsApp.
-    message_id: ID da mensagem de imagem extraído do prefixo [imagem:ID] no histórico.
-    Faz upload da imagem para o Google Drive, registra na planilha de pagamentos
-    e notifica a atendente da clínica.
+    message_id: ID da mensagem de imagem, extraído do prefixo [imagem:ID] no histórico.
+    amount: valor pago extraído da descrição da imagem (ex: "100,00"). Use "?" se não identificado.
+    Faz upload da imagem para o Google Drive e registra na planilha de pagamentos.
     """
     from datetime import datetime as _dt
     from app.google_drive import upload_comprovante
@@ -421,10 +422,10 @@ async def register_payment(
     doctor_key = state.get("preferred_doctor", "")
     doctor_label = {"julio": "Dr. Júlio", "bruna": "Dra. Bruna"}.get(doctor_key, "médico(a)")
 
-    # Build filename: comprovante_pix_DD_MM_YYYY_Nome_do_Paciente
     now = _dt.now(TZ)
     safe_name = patient_name.replace(" ", "_")
-    filename = f"comprovante_pix_{now.strftime('%d_%m_%Y')}_{safe_name}"
+    amount_clean = amount.replace("R$", "").replace(" ", "").strip()
+    filename = f"comprovante_pix_{now.strftime('%d_%m_%Y')}_{safe_name}_R${amount_clean}"
 
     # Fetch next scheduled appointment date for the sheet
     client = await get_supabase()
@@ -444,21 +445,21 @@ async def register_payment(
 
     # Append to Sheets (fire-and-forget)
     try:
-        await append_payment_receipt(patient_name, phone, doctor_label, appointment_dt, drive_link)
+        await append_payment_receipt(patient_name, phone, doctor_label, appointment_dt, amount, drive_link)
     except Exception:
         pass
 
-    # Notify attendant
     await _notify_clinic(
-        f"Um comprovante de pagamento de {patient_name} foi recebido.\nLink: {drive_link}"
+        f"💰 Comprovante recebido!\nPaciente: {patient_name}\nValor: R$ {amount}\nConsulta: {appointment_dt}\nLink: {drive_link}"
     )
 
     await log_event("payment_receipt_registered", phone, {
         "patient_name": patient_name,
+        "amount": amount,
         "drive_link": drive_link,
     })
 
-    return "Comprovante recebido e registrado com sucesso! ✅ Nossa equipe já foi notificada."
+    return "Comprovante recebido e registrado com sucesso! ✅ Sua vaga está garantida."
 
 
 @tool
