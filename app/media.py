@@ -65,14 +65,18 @@ async def describe_image(message_id: str) -> str:
 
     # Upload to Drive immediately while we still have the bytes
     drive_link = ""
-    if os.getenv("GOOGLE_DRIVE_PAYMENTS_FOLDER_ID"):
+    folder_id = os.getenv("GOOGLE_DRIVE_PAYMENTS_FOLDER_ID")
+    if folder_id:
         try:
             from app.google_drive import upload_image
             now = datetime.now(TZ).strftime("%Y%m%d_%H%M%S")
             filename = f"comprovante_{now}.jpg"
             drive_link = await upload_image(image_bytes, filename)
+            logger.info("DRIVE_UPLOAD OK link=%s", drive_link)
         except Exception:
-            logger.exception("Failed to upload image to Drive")
+            logger.exception("DRIVE_UPLOAD FAILED folder_id=%s", folder_id)
+    else:
+        logger.warning("DRIVE_UPLOAD SKIPPED: GOOGLE_DRIVE_PAYMENTS_FOLDER_ID not set")
 
     b64 = base64.b64encode(image_bytes).decode()
     resp = await _get_openai().chat.completions.create(

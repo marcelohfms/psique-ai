@@ -434,7 +434,8 @@ async def register_payment(
     try:
         await append_payment_receipt(patient_name, phone, doctor_label, appointment_dt, amount, drive_link)
     except Exception:
-        pass
+        import logging as _log
+        _log.getLogger(__name__).exception("SHEETS_APPEND FAILED patient=%s", patient_name)
 
     await _notify_clinic(
         f"💰 Comprovante recebido!\nPaciente: {patient_name}\nValor: R$ {amount}\nConsulta: {appointment_dt}\nLink: {drive_link}"
