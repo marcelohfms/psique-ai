@@ -431,6 +431,20 @@ async def register_payment(
             apt_start = datetime.fromisoformat(result.data[0]["start_time"]).astimezone(TZ)
             appointment_dt = apt_start.strftime("%d/%m/%Y %H:%M")
 
+    # Rename Drive file with patient name + appointment date + amount
+    if drive_link:
+        try:
+            from app.google_drive import rename_file
+            file_id = drive_link.split("/d/")[1].split("/")[0]
+            amount_clean = amount.replace("R$", "").replace(" ", "").strip()
+            date_clean = appointment_dt.split(" ")[0].replace("/", "-") if appointment_dt != "—" else datetime.now(TZ).strftime("%d-%m-%Y")
+            safe_name = patient_name.replace(" ", "_")
+            new_filename = f"{safe_name}_{date_clean}_R${amount_clean}.jpg"
+            await rename_file(file_id, new_filename)
+        except Exception:
+            import logging as _log
+            _log.getLogger(__name__).exception("DRIVE_RENAME FAILED")
+
     try:
         await append_payment_receipt(patient_name, phone, doctor_label, appointment_dt, amount, drive_link)
     except Exception:

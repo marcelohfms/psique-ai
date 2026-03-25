@@ -44,6 +44,18 @@ def _upload_and_share(service, folder_id: str, filename: str, image_bytes: bytes
     return file.get("webViewLink", f"https://drive.google.com/file/d/{file_id}/view")
 
 
+def _rename_file(service, file_id: str, new_name: str) -> None:
+    service.files().update(fileId=file_id, body={"name": new_name}).execute()
+
+
+async def rename_file(file_id: str, new_name: str) -> None:
+    """Rename an existing Drive file."""
+    creds = _credentials()
+    service = build("drive", "v3", credentials=creds)
+    loop = asyncio.get_event_loop()
+    await loop.run_in_executor(None, _rename_file, service, file_id, new_name)
+
+
 async def upload_image(image_bytes: bytes, filename: str) -> str:
     """Upload image bytes to the payments Drive folder. Returns public web view URL."""
     folder_id = os.getenv("GOOGLE_DRIVE_PAYMENTS_FOLDER_ID", "")

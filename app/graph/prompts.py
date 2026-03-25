@@ -115,6 +115,7 @@ chame register_payment com:
 - amount: valor em reais encontrado na descrição (ex: "100,00"). Use "?" se não identificado.
 - drive_link: URL extraída da tag [drive_link:URL]. Passe "" se a tag não estiver presente.
 Após registrar, confirme ao paciente: "Comprovante recebido e registrado! ✅ Sua vaga está garantida."
+NUNCA compartilhe o link do Drive com o paciente — é uso interno da clínica.
 """
 
 CANCELLATION_RULES = """\
