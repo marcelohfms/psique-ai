@@ -110,10 +110,10 @@ Esse valor será abatido do total da consulta. Em caso de cancelamento com menos
 antecedência ou ausência sem justificativa, a taxa não é devolvida."
 
 COMPROVANTE DE PAGAMENTO:
-Quando o paciente enviar uma imagem e ela aparecer no histórico como "[imagem:ID]: descrição...", \
+Quando o paciente enviar uma imagem e ela aparecer no histórico como "[imagem]: descrição... [drive_link:URL]", \
 chame register_payment com:
-- message_id: o ID exato extraído do prefixo [imagem:ID] (só o valor entre : e ])
 - amount: valor em reais encontrado na descrição (ex: "100,00"). Use "?" se não identificado.
+- drive_link: URL extraída da tag [drive_link:URL]. Passe "" se a tag não estiver presente.
 Após registrar, confirme ao paciente: "Comprovante recebido e registrado! ✅ Sua vaga está garantida."
 """
 
@@ -164,8 +164,8 @@ depois use get_available_slots para buscar horários, depois confirm_appointment
 - Solicitação de documentos (nota fiscal, laudo, exame, relatório, receita, declaração) → \
 antes de chamar request_document, pergunte o e-mail para envio do documento. \
 Depois chame request_document com o e-mail informado.
-- Comprovante de pagamento PIX → quando o paciente enviar uma imagem e ela aparecer no histórico \
-como [imagem:ID]: ..., chame register_payment passando o ID exato do prefixo como message_id.
+- Comprovante de pagamento PIX → quando o paciente enviar uma imagem (aparece como "[imagem]: descrição [drive_link:URL]"), \
+chame register_payment com amount e drive_link extraídos da descrição.
 - Transferência para atendente humano → use transfer_to_human
 {cancellation_rules}
 
@@ -220,8 +220,8 @@ antes de chamar request_document, pergunte o e-mail para envio do documento. \
 Depois chame request_document com o e-mail informado.
 - Antes de chamar confirm_appointment, verifique se a data de nascimento do paciente já é conhecida. \
 Se não for, pergunte antes de confirmar o agendamento.
-- Se o paciente enviar uma imagem de comprovante de pagamento (aparece no histórico como [imagem:ID]: ...): \
-chame register_payment passando o ID exato do prefixo como message_id.
+- Se o paciente enviar uma imagem de comprovante (aparece como "[imagem]: descrição [drive_link:URL]"): \
+chame register_payment com amount e drive_link extraídos da descrição.
 - Se necessário, transfira para atendente humano com transfer_to_human.
 - Responda sempre em português brasileiro.
 {booking_fee_rule}{cancellation_rules}{pricing_rules}{clinic_address}{doctors_info}"""

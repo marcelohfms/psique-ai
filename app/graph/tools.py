@@ -402,19 +402,18 @@ async def confirm_attendance(
 
 @tool
 async def register_payment(
-    message_id: str,
     amount: str,
+    drive_link: str,
     state: Annotated[dict, InjectedState],
     config: RunnableConfig,
 ) -> str:
     """
-    Registra um comprovante de pagamento PIX recebido pelo WhatsApp.
-    message_id: ID da mensagem de imagem, extraído do prefixo [imagem:ID] no histórico.
-    amount: valor pago extraído da descrição da imagem (ex: "100,00"). Use "?" se não identificado.
-    Faz upload da imagem para o Google Drive e registra na planilha de pagamentos.
+    Registra um comprovante de pagamento PIX na planilha.
+    Chame quando o paciente enviar imagem de comprovante — ela aparecerá no histórico como
+    "[imagem]: descrição... [drive_link:URL]".
+    amount: valor pago extraído da descrição (ex: "100,00"). Use "?" se não identificado.
+    drive_link: URL extraída da tag [drive_link:URL] na descrição. Passe "" se não houver.
     """
-    from datetime import datetime as _dt
-    from app.google_drive import upload_comprovante
     from app.google_sheets import append_payment_receipt
 
     phone = config["configurable"]["phone"]
@@ -422,28 +421,16 @@ async def register_payment(
     doctor_key = state.get("preferred_doctor", "")
     doctor_label = {"julio": "Dr. Júlio", "bruna": "Dra. Bruna"}.get(doctor_key, "médico(a)")
 
-    now = _dt.now(TZ)
-    safe_name = patient_name.replace(" ", "_")
-    amount_clean = amount.replace("R$", "").replace(" ", "").strip()
-    filename = f"comprovante_pix_{now.strftime('%d_%m_%Y')}_{safe_name}_R${amount_clean}"
-
-    # Fetch next scheduled appointment date for the sheet
+    # Fetch next scheduled appointment date
     client = await get_supabase()
     user = await get_user_by_phone(phone)
     appointment_dt = "—"
     if user:
         result = await client.from_("appointments").select("start_time").eq("user_id", user["id"]).eq("status", "scheduled").order("start_time").limit(1).execute()
         if result.data:
-            apt_start = _dt.fromisoformat(result.data[0]["start_time"]).astimezone(TZ)
+            apt_start = datetime.fromisoformat(result.data[0]["start_time"]).astimezone(TZ)
             appointment_dt = apt_start.strftime("%d/%m/%Y %H:%M")
 
-    # Upload to Drive
-    try:
-        drive_link = await upload_comprovante(message_id, filename)
-    except Exception as e:
-        return f"Erro ao fazer upload do comprovante: {e}. Por favor, tente novamente."
-
-    # Append to Sheets (fire-and-forget)
     try:
         await append_payment_receipt(patient_name, phone, doctor_label, appointment_dt, amount, drive_link)
     except Exception:

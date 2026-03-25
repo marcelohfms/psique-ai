@@ -5,10 +5,13 @@ Flow:
   1. POST /message/download {messageid} → {url: "..."}
   2. GET url → raw bytes
   3. AudioMessage → OpenAI Whisper transcription
-  4. ImageMessage → GPT-4o vision description (message_id embedded for Drive upload)
+  4. ImageMessage → upload to Drive (if configured) + GPT-4o vision description
 """
 import base64
 import logging
+import os
+from datetime import datetime
+from zoneinfo import ZoneInfo
 
 import httpx
 from openai import AsyncOpenAI
@@ -16,6 +19,7 @@ from openai import AsyncOpenAI
 from app.uazapi import BASE_URL, _headers
 
 logger = logging.getLogger(__name__)
+TZ = ZoneInfo("America/Recife")
 
 _openai: AsyncOpenAI | None = None
 
@@ -56,10 +60,20 @@ async def transcribe_audio(message_id: str) -> str:
 
 
 async def describe_image(message_id: str) -> str:
-    """Download image and describe with GPT-4o vision.
-    The message_id is embedded in the prefix so the LLM can pass it to register_payment.
-    """
+    """Download image, upload to Drive (if configured), and describe with GPT-4o vision."""
     image_bytes = await _download(message_id)
+
+    # Upload to Drive immediately while we still have the bytes
+    drive_link = ""
+    if os.getenv("GOOGLE_DRIVE_PAYMENTS_FOLDER_ID"):
+        try:
+            from app.google_drive import upload_image
+            now = datetime.now(TZ).strftime("%Y%m%d_%H%M%S")
+            filename = f"comprovante_{now}.jpg"
+            drive_link = await upload_image(image_bytes, filename)
+        except Exception:
+            logger.exception("Failed to upload image to Drive")
+
     b64 = base64.b64encode(image_bytes).decode()
     resp = await _get_openai().chat.completions.create(
         model="gpt-4o",
@@ -78,7 +92,10 @@ async def describe_image(message_id: str) -> str:
         }],
         max_tokens=300,
     )
-    return f"[imagem:{message_id}]: {resp.choices[0].message.content}"
+    description = resp.choices[0].message.content
+    if drive_link:
+        return f"[imagem]: {description} [drive_link:{drive_link}]"
+    return f"[imagem]: {description}"
 
 
 async def process_media(message_id: str, media_type: str, phone: str = "") -> str | None:
