@@ -156,15 +156,24 @@ async def main():
     cancel_appts = cancel_result.data or []
     print(f"Appointments to auto-cancel (unpaid after 4h): {len(cancel_appts)}")
 
-    # Set up LangGraph checkpointer
+    # Set up LangGraph checkpointer — same connection options as the main app
+    # (prepare_threshold=None is required for pgbouncer in transaction mode)
     conn_string = os.environ.get("SUPABASE_CONNECTION_STRING")
     graph = None
-    checkpointer = None
+    pg_conn = None
     if conn_string:
+        from psycopg import AsyncConnection
+        from psycopg.rows import dict_row
         from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
         from app.graph.graph import build_graph
-        checkpointer = AsyncPostgresSaver.from_conn_string(conn_string)
-        graph = build_graph(await checkpointer.__aenter__())
+        pg_conn = await AsyncConnection.connect(
+            conn_string,
+            autocommit=True,
+            prepare_threshold=None,
+            row_factory=dict_row,
+        )
+        checkpointer = AsyncPostgresSaver(pg_conn)
+        graph = build_graph(checkpointer=checkpointer)
     else:
         print("SUPABASE_CONNECTION_STRING not set — messages won't be saved to LangGraph checkpoint.")
 
@@ -233,8 +242,8 @@ async def main():
                 print(f"  Failed to cancel for {phone}: {e}")
 
     finally:
-        if conn_string and checkpointer:
-            await checkpointer.__aexit__(None, None, None)
+        if pg_conn:
+            await pg_conn.close()
 
 
 if __name__ == "__main__":
