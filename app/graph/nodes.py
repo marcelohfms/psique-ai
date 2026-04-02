@@ -12,7 +12,7 @@ from app.graph.tools import (
     request_document, transfer_to_human, confirm_attendance,
     register_payment,
 )
-from app.graph.prompts import COLLECT_SYSTEM, MINOR_RULE, ADULT_RULE, EXISTING_PATIENT_SYSTEM, NEW_PATIENT_SYSTEM, PRICING_RULES, CANCELLATION_RULES, CLINIC_ADDRESS, DOCTORS_INFO, BOOKING_FEE_RULE, MEDICAL_LIMITS_RULE
+from app.graph.prompts import COLLECT_SYSTEM, MINOR_RULE, ADULT_RULE, EXISTING_PATIENT_SYSTEM, NEW_PATIENT_SYSTEM, CANCELLATION_RULES, CLINIC_ADDRESS, DOCTORS_INFO, BOOKING_FEE_RULE, MEDICAL_LIMITS_RULE, get_pricing_rules
 from app.uazapi import send_text
 from app.database import upsert_user, log_event, get_upcoming_appointments, DOCTOR_IDS, save_message
 
@@ -62,7 +62,7 @@ async def collect_info_node(state: ConversationState, config: RunnableConfig) ->
     }
 
     messages = [
-        SystemMessage(content=COLLECT_SYSTEM.format(collected=collected, pricing_rules=PRICING_RULES, medical_limits_rule=MEDICAL_LIMITS_RULE)),
+        SystemMessage(content=COLLECT_SYSTEM.format(collected=collected, pricing_rules=get_pricing_rules(datetime.now()), medical_limits_rule=MEDICAL_LIMITS_RULE)),
         *state["messages"],
     ]
 
@@ -177,7 +177,7 @@ async def patient_agent_node(state: ConversationState, config: RunnableConfig) -
         doctor_schedules=format_doctor_schedules(),
         booking_fee_rule=BOOKING_FEE_RULE,
         cancellation_rules=CANCELLATION_RULES,
-        pricing_rules=PRICING_RULES,
+        pricing_rules=get_pricing_rules(datetime.now()),
         clinic_address=CLINIC_ADDRESS,
         doctors_info=DOCTORS_INFO,
         medical_limits_rule=MEDICAL_LIMITS_RULE,

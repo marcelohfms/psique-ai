@@ -149,7 +149,7 @@ NÃO é devolvida (considerado compensação pela oportunidade de atendimento pe
 e NÃO é descontada da consulta subsequente (considerado custo de oportunidade).
 """
 
-PRICING_RULES = """\
+_PRICING_BODY_PRE = """\
 
 POLÍTICA DE PREÇOS:
 - Dra. Bruna: R$ 600,00 para todos (adultos e adolescentes).
@@ -171,7 +171,53 @@ da primeira consulta (R$ 750,00) E já mencione o valor das demais consultas (R$
 
 Sempre que informar um preço, mostre o valor cheio E o valor com desconto PIX/à vista:
   Exemplo: "A consulta custa R$ 600,00. No pagamento à vista ou PIX, fica por R$ 550,00."
+⚠️ AVISO OBRIGATÓRIO: Sempre que informar qualquer valor de consulta, acrescente: \
+"Importante: os valores das consultas serão reajustados em maio de 2026."
 """
+
+_PRICING_BODY_POS = """\
+
+POLÍTICA DE PREÇOS (valores reajustados em maio de 2026):
+- Dra. Bruna: R$ 700,00 para todos (adultos e adolescentes).
+- Dr. Júlio:
+    • Adultos (e consultas de retorno em geral): R$ 700,00
+    • Primeira consulta infantil (paciente < 18 anos): R$ 850,00 (duração 2h)
+    • Demais consultas infantis (retorno): R$ 750,00
+- Desconto de R$ 50,00 para pagamento à vista ou PIX (válido para qualquer consulta/médico).
+
+AO RESPONDER SOBRE PREÇOS — siga este fluxo:
+1. Se ainda não souber o médico preferido: apresente os dois médicos brevemente e pergunte \
+se tem preferência antes de informar qualquer valor.
+2. Se o médico for Dra. Bruna: informe diretamente (o valor é único para todos).
+3. Se o médico for Dr. Júlio e ainda não souber a idade do paciente: pergunte a idade primeiro.
+4. Se o médico for Dr. Júlio e o paciente for adulto: informe o valor de adulto.
+5. Se o médico for Dr. Júlio e o paciente for menor de 18 anos: pergunte se é primeira \
+consulta ou retorno antes de informar o valor. Se for primeira consulta, informe o valor \
+da primeira consulta (R$ 850,00) E já mencione o valor das demais consultas (R$ 750,00).
+
+Sempre que informar um preço, mostre o valor cheio E o valor com desconto PIX/à vista:
+  Exemplo: "A consulta custa R$ 700,00. No pagamento à vista ou PIX, fica por R$ 650,00."
+"""
+
+_PRICING_REMINDER = """\
+ℹ️ LEMBRETE OBRIGATÓRIO: Sempre que informar qualquer valor de consulta, acrescente: \
+"Informamos que os valores das consultas foram reajustados em maio de 2026."
+"""
+
+
+def get_pricing_rules(today) -> str:
+    """Returns the correct pricing rules string based on the current date."""
+    year, month = today.year, today.month
+    if (year, month) < (2026, 5):
+        return _PRICING_BODY_PRE
+    elif (year, month) <= (2026, 8):
+        return _PRICING_BODY_POS + _PRICING_REMINDER
+    else:
+        return _PRICING_BODY_POS
+
+
+# Keep alias for any external references
+PRICING_RULES = _PRICING_BODY_PRE
 
 EXISTING_PATIENT_SYSTEM = """\
 Você é Eva, a assistente virtual da Clínica Psique, atendendo {patient_name} \
