@@ -10,9 +10,9 @@ from app.graph.tools import (
     get_available_slots, confirm_appointment,
     cancel_appointment, reschedule_appointment,
     request_document, transfer_to_human, confirm_attendance,
-    register_payment,
+    register_payment, update_preferred_doctor,
 )
-from app.graph.prompts import COLLECT_SYSTEM, MINOR_RULE, ADULT_RULE, EXISTING_PATIENT_SYSTEM, NEW_PATIENT_SYSTEM, CANCELLATION_RULES, CLINIC_ADDRESS, DOCTORS_INFO, BOOKING_FEE_RULE, MEDICAL_LIMITS_RULE, get_pricing_rules
+from app.graph.prompts import COLLECT_SYSTEM, MINOR_RULE, ADULT_RULE, EXISTING_PATIENT_SYSTEM, NEW_PATIENT_SYSTEM, CANCELLATION_RULES, CLINIC_ADDRESS, DOCTORS_INFO, BOOKING_FEE_RULE, MEDICAL_LIMITS_RULE, DOCTOR_CORRECTION_RULE, get_pricing_rules
 from app.uazapi import send_text
 from app.database import upsert_user, log_event, get_upcoming_appointments, get_user_by_phone, DOCTOR_IDS, save_message
 
@@ -22,7 +22,7 @@ TOOLS = [
     get_available_slots, confirm_appointment,
     cancel_appointment, reschedule_appointment,
     request_document, transfer_to_human, confirm_attendance,
-    register_payment,
+    register_payment, update_preferred_doctor,
 ]
 
 _collect_llm = None
@@ -175,6 +175,7 @@ async def patient_agent_node(state: ConversationState, config: RunnableConfig) -
         duration_rule=duration_rule,
         today=today,
         doctor_schedules=format_doctor_schedules(),
+        doctor_correction_rule=DOCTOR_CORRECTION_RULE,
         booking_fee_rule=BOOKING_FEE_RULE,
         cancellation_rules=CANCELLATION_RULES,
         pricing_rules=get_pricing_rules(datetime.now()),

@@ -122,7 +122,7 @@ async def process_message(phone: str, text: str) -> None:
         state_update = {"messages": [HumanMessage(content=text)]}
     else:
         await log_event("conversation_started", phone)
-        _REQUIRED = ("name", "patient_name", "age", "is_patient", "doctor_id", "birth_date", "email")
+        _REQUIRED = ("name", "patient_name", "age", "is_patient", "birth_date", "email")
         user_known = existing and all(existing.get(f) is not None for f in _REQUIRED)
 
         if user_known:

@@ -490,6 +490,27 @@ async def register_payment(
 
 
 @tool
+async def update_preferred_doctor(
+    doctor: Literal["julio", "bruna"],
+    state: Annotated[dict, InjectedState],
+    config: RunnableConfig,
+) -> str:
+    """Atualiza o médico preferido do paciente no cadastro.
+    Use quando o paciente informar que o médico cadastrado está incorreto ou quando
+    ele escolher um médico pela primeira vez.
+    """
+    from app.graph import graph as graph_module
+
+    phone = config["configurable"]["phone"]
+    doctor_id = DOCTOR_IDS.get(doctor)
+    await upsert_user(phone, {"doctor_id": doctor_id})
+    await graph_module.chatbot.aupdate_state(config, {"preferred_doctor": doctor}, as_node="patient_agent")
+    doctor_label = {"julio": "Dr. Júlio", "bruna": "Dra. Bruna"}.get(doctor, doctor)
+    await log_event("doctor_updated", phone, {"doctor": doctor})
+    return f"Médico atualizado para {doctor_label}!"
+
+
+@tool
 async def transfer_to_human(
     reason: str,
     state: Annotated[dict, InjectedState],

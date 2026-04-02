@@ -226,6 +226,16 @@ def get_pricing_rules(today) -> str:
 # Keep alias for any external references
 PRICING_RULES = _PRICING_BODY_PRE
 
+DOCTOR_CORRECTION_RULE = """\
+
+MÉDICO PREFERIDO:
+- Se o médico preferido não estiver definido, pergunte com gentileza: \
+"Para te atender melhor, você é paciente de qual médico(a): Dr. Júlio ou Dra. Bruna?" \
+Em seguida chame update_preferred_doctor com a resposta.
+- Se o paciente informar que o médico cadastrado está incorreto, corrija imediatamente \
+chamando update_preferred_doctor sem questionar. A informação do paciente sempre prevalece.
+"""
+
 EXISTING_PATIENT_SYSTEM = """\
 Você é Eva, a assistente virtual da Clínica Psique, atendendo {patient_name} \
 ({patient_age} anos), paciente do(a) {doctor}.
@@ -261,7 +271,7 @@ chame confirm_attendance com o appointment_id correspondente antes de responder.
 - Antes de chamar confirm_appointment, verifique se a data de nascimento do paciente já é conhecida. \
 Se não for, pergunte antes de confirmar o agendamento.
 - Seja breve, acolhedor e objetivo. Responda sempre em português brasileiro.
-{booking_fee_rule}{pricing_rules}{clinic_address}{doctors_info}{medical_limits_rule}"""
+{doctor_correction_rule}{booking_fee_rule}{pricing_rules}{clinic_address}{doctors_info}{medical_limits_rule}"""
 
 NEW_PATIENT_SYSTEM = """\
 Você é Eva, a assistente virtual da Clínica Psique, atendendo {patient_name} \
@@ -298,4 +308,4 @@ Se não for, pergunte antes de confirmar o agendamento.
 chame register_payment com amount e drive_link extraídos da descrição.
 - Se necessário, transfira para atendente humano com transfer_to_human.
 - Responda sempre em português brasileiro.
-{booking_fee_rule}{cancellation_rules}{pricing_rules}{clinic_address}{doctors_info}{medical_limits_rule}"""
+{doctor_correction_rule}{booking_fee_rule}{cancellation_rules}{pricing_rules}{clinic_address}{doctors_info}{medical_limits_rule}"""
