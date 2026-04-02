@@ -199,6 +199,7 @@ async def _handle_payload(payload: dict) -> None:
             return
         phone, text = result
 
+
         await save_message(phone, "user", text)
         await buffer_push(phone, text, process_message)
     except Exception:
