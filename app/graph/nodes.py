@@ -193,10 +193,14 @@ async def patient_agent_node(state: ConversationState, config: RunnableConfig) -
             system_prompt += (
                 "\n\nAVISO ÚNICO OBRIGATÓRIO NESTA MENSAGEM: Inclua no início da sua resposta, "
                 "de forma natural e acolhedora, que o valor da consulta deste paciente será "
-                "reajustado em maio de 2026. Informe apenas o novo valor específico para este "
-                "paciente (considerando médico, idade e se é primeira consulta ou retorno, "
-                "conforme a política de preços acima). Se ainda não souber o tipo de consulta "
-                "(primeira vez ou retorno), pergunte antes de informar o valor. "
+                "reajustado em maio de 2026. Use a tabela abaixo para informar APENAS o novo "
+                "valor correspondente ao médico e perfil deste paciente:\n"
+                "  • Dra. Bruna → R$ 700,00 (hoje R$ 600,00)\n"
+                "  • Dr. Júlio, adulto → R$ 700,00 (hoje R$ 600,00)\n"
+                "  • Dr. Júlio, 1ª consulta infantil (< 18 anos) → R$ 850,00 (hoje R$ 750,00)\n"
+                "  • Dr. Júlio, retorno infantil → R$ 750,00 (hoje R$ 650,00)\n"
+                "Se for Dr. Júlio e ainda não souber se é primeira consulta ou retorno, "
+                "pergunte antes de informar o valor. "
                 "Faça isso independentemente do assunto da conversa."
             )
 
