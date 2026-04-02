@@ -14,7 +14,7 @@ from app.graph.tools import (
 )
 from app.graph.prompts import COLLECT_SYSTEM, MINOR_RULE, ADULT_RULE, EXISTING_PATIENT_SYSTEM, NEW_PATIENT_SYSTEM, CANCELLATION_RULES, CLINIC_ADDRESS, DOCTORS_INFO, BOOKING_FEE_RULE, MEDICAL_LIMITS_RULE, get_pricing_rules
 from app.uazapi import send_text
-from app.database import upsert_user, log_event, get_upcoming_appointments, DOCTOR_IDS, save_message
+from app.database import upsert_user, log_event, get_upcoming_appointments, get_user_by_phone, DOCTOR_IDS, save_message
 
 # ── LLM setup (lazy — instantiated on first use after .env is loaded) ─────────
 
@@ -183,6 +183,19 @@ async def patient_agent_node(state: ConversationState, config: RunnableConfig) -
         medical_limits_rule=MEDICAL_LIMITS_RULE,
     )
 
+    # One-time price adjustment notice injected into the system prompt (before May 2026)
+    needs_price_notice = False
+    now_dt = datetime.now(ZoneInfo("America/Recife"))
+    if (now_dt.year, now_dt.month) < (2026, 5):
+        user = await get_user_by_phone(state["phone"])
+        if user and not user.get("price_adjustment_notified_at"):
+            needs_price_notice = True
+            system_prompt += (
+                "\n\nAVISO ÚNICO OBRIGATÓRIO NESTA MENSAGEM: Inclua no início da sua resposta, "
+                "de forma natural e acolhedora, que os valores das consultas serão reajustados "
+                "em maio de 2026. Faça isso independentemente do assunto da conversa."
+            )
+
     # Inject upcoming appointments so the LLM knows what already exists
     upcoming = await get_upcoming_appointments(state["phone"])
     if upcoming:
@@ -218,5 +231,7 @@ async def patient_agent_node(state: ConversationState, config: RunnableConfig) -
     if not response.tool_calls and response.content:
         await send_text(state["phone"], response.content)
         await save_message(state["phone"], "assistant", response.content)
+        if needs_price_notice:
+            await upsert_user(state["phone"], {"price_adjustment_notified_at": now_dt.isoformat()})
 
     return {"messages": [response]}
