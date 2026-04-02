@@ -60,24 +60,10 @@ async def transcribe_audio(message_id: str) -> str:
 
 
 async def describe_image(message_id: str) -> str:
-    """Download image, upload to Drive (if configured), and describe with GPT-4o vision."""
+    """Download image, classify, upload to Drive, and describe with GPT-4o vision."""
     image_bytes = await _download(message_id)
 
-    # Upload to Drive immediately while we still have the bytes
-    drive_link = ""
-    folder_id = os.getenv("GOOGLE_DRIVE_PAYMENTS_FOLDER_ID")
-    if folder_id:
-        try:
-            from app.google_drive import upload_image
-            now = datetime.now(TZ).strftime("%Y%m%d_%H%M%S")
-            filename = f"comprovante_{now}.jpg"
-            drive_link = await upload_image(image_bytes, filename)
-            logger.info("DRIVE_UPLOAD OK link=%s", drive_link)
-        except Exception:
-            logger.exception("DRIVE_UPLOAD FAILED folder_id=%s", folder_id)
-    else:
-        logger.warning("DRIVE_UPLOAD SKIPPED: GOOGLE_DRIVE_PAYMENTS_FOLDER_ID not set")
-
+    # Classify and describe in one vision call
     b64 = base64.b64encode(image_bytes).decode()
     resp = await _get_openai().chat.completions.create(
         model="gpt-4o",
@@ -90,16 +76,43 @@ async def describe_image(message_id: str) -> str:
                 },
                 {
                     "type": "text",
-                    "text": "Descreva o conteúdo desta imagem em português de forma objetiva.",
+                    "text": (
+                        "Descreva o conteúdo desta imagem em português de forma objetiva. "
+                        "Se for um comprovante de pagamento (PIX, TED, DOC, transferência bancária ou recibo de pagamento), "
+                        "comece com 'COMPROVANTE DE PAGAMENTO:'. "
+                        "Para qualquer outro tipo de imagem ou documento, comece com 'DOCUMENTO:'."
+                    ),
                 },
             ],
         }],
         max_tokens=300,
     )
     description = resp.choices[0].message.content
-    if drive_link:
-        return f"[imagem]: {description} [drive_link:{drive_link}]"
-    return f"[imagem]: {description}"
+    is_payment = description.upper().startswith("COMPROVANTE DE PAGAMENTO")
+    now = datetime.now(TZ).strftime("%Y%m%d_%H%M%S")
+
+    if is_payment:
+        folder_id = os.getenv("GOOGLE_DRIVE_PAYMENTS_FOLDER_ID")
+        if folder_id:
+            try:
+                from app.google_drive import upload_image
+                drive_link = await upload_image(image_bytes, f"comprovante_{now}.jpg")
+                logger.info("DRIVE_UPLOAD OK link=%s", drive_link)
+                return f"[imagem]: {description} [drive_link:{drive_link}]"
+            except Exception:
+                logger.exception("DRIVE_UPLOAD FAILED folder_id=%s", folder_id)
+        return f"[imagem]: {description}"
+    else:
+        folder_id = os.getenv("GOOGLE_DRIVE_DOCUMENTS_FOLDER_ID")
+        if folder_id:
+            try:
+                from app.google_drive import upload_document
+                drive_link = await upload_document(image_bytes, f"documento_{now}.jpg")
+                logger.info("DRIVE_UPLOAD DOCUMENT OK link=%s", drive_link)
+                return f"[imagem]: {description} [documento_link:{drive_link}]"
+            except Exception:
+                logger.exception("DRIVE_UPLOAD DOCUMENT FAILED folder_id=%s", folder_id)
+        return f"[imagem]: {description}"
 
 
 async def process_media(message_id: str, media_type: str, phone: str = "") -> str | None:

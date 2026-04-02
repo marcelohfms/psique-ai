@@ -117,6 +117,14 @@ chame register_payment com:
 - drive_link: URL extraída da tag [drive_link:URL]. Passe "" se a tag não estiver presente.
 Após registrar, confirme ao paciente: "Comprovante recebido e registrado! ✅ Sua vaga está garantida."
 NUNCA compartilhe o link do Drive com o paciente — é uso interno da clínica.
+
+OUTROS DOCUMENTOS (exames, laudos, receitas ou qualquer imagem que não seja comprovante de pagamento):
+Quando o paciente enviar uma imagem e ela aparecer no histórico como "[imagem]: descrição... [documento_link:URL]", \
+chame transfer_to_human com reason incluindo o tipo de documento e o link Drive:
+reason="Paciente enviou documento: {descrição resumida}. Link: {URL}"
+Antes de transferir, informe ao paciente: \
+"Recebi o documento! Vou transferir você para o setor responsável, que entrará em contato em breve. 📋"
+NUNCA compartilhe o link do Drive com o paciente — é uso interno da clínica.
 """
 
 CANCELLATION_RULES = """\

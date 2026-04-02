@@ -65,3 +65,14 @@ async def upload_image(image_bytes: bytes, filename: str) -> str:
     service = build("drive", "v3", credentials=creds)
     loop = asyncio.get_event_loop()
     return await loop.run_in_executor(None, _upload_and_share, service, folder_id, filename, image_bytes)
+
+
+async def upload_document(image_bytes: bytes, filename: str) -> str:
+    """Upload document bytes to the documents Drive folder. Returns public web view URL."""
+    folder_id = os.getenv("GOOGLE_DRIVE_DOCUMENTS_FOLDER_ID", "")
+    if not folder_id:
+        raise ValueError("GOOGLE_DRIVE_DOCUMENTS_FOLDER_ID is not set")
+    creds = _credentials()
+    service = build("drive", "v3", credentials=creds)
+    loop = asyncio.get_event_loop()
+    return await loop.run_in_executor(None, _upload_and_share, service, folder_id, filename, image_bytes)
