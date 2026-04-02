@@ -192,8 +192,12 @@ async def patient_agent_node(state: ConversationState, config: RunnableConfig) -
             needs_price_notice = True
             system_prompt += (
                 "\n\nAVISO ÚNICO OBRIGATÓRIO NESTA MENSAGEM: Inclua no início da sua resposta, "
-                "de forma natural e acolhedora, que os valores das consultas serão reajustados "
-                "em maio de 2026. Faça isso independentemente do assunto da conversa."
+                "de forma natural e acolhedora, que o valor da consulta deste paciente será "
+                "reajustado em maio de 2026. Informe apenas o novo valor específico para este "
+                "paciente (considerando médico, idade e se é primeira consulta ou retorno, "
+                "conforme a política de preços acima). Se ainda não souber o tipo de consulta "
+                "(primeira vez ou retorno), pergunte antes de informar o valor. "
+                "Faça isso independentemente do assunto da conversa."
             )
 
     # Inject upcoming appointments so the LLM knows what already exists
