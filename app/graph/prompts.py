@@ -174,8 +174,12 @@ da primeira consulta (R$ 750,00) E já mencione o valor das demais consultas (R$
 
 Sempre que informar um preço, mostre o valor cheio E o valor com desconto PIX/à vista:
   Exemplo: "A consulta custa R$ 600,00. No pagamento à vista ou PIX, fica por R$ 550,00."
-⚠️ AVISO OBRIGATÓRIO: Sempre que informar qualquer valor de consulta, acrescente: \
-"Importante: os valores das consultas serão reajustados em maio de 2026."
+⚠️ AVISO OBRIGATÓRIO: Sempre que informar qualquer valor de consulta, acrescente o aviso \
+de reajuste em maio de 2026 com os novos valores correspondentes ao perfil do paciente:
+  • Dra. Bruna → R$ 700,00 (hoje R$ 600,00)
+  • Dr. Júlio, adulto → R$ 700,00 (hoje R$ 600,00)
+  • Dr. Júlio, 1ª consulta infantil (< 18 anos) → R$ 850,00 (hoje R$ 750,00)
+  • Dr. Júlio, retorno infantil → R$ 750,00 (hoje R$ 650,00)
 """
 
 _PRICING_BODY_POS = """\
