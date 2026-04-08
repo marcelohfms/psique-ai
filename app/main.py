@@ -5,9 +5,7 @@ from contextlib import asynccontextmanager
 from dotenv import load_dotenv
 load_dotenv()
 
-from langfuse.langchain import CallbackHandler as LangfuseCallbackHandler
-
-_langfuse_handler = LangfuseCallbackHandler() if os.getenv("LANGFUSE_PUBLIC_KEY") else None
+_langfuse_enabled = bool(os.getenv("LANGFUSE_PUBLIC_KEY"))
 
 from fastapi import FastAPI, Request
 from langchain_core.messages import HumanMessage
@@ -155,8 +153,9 @@ async def process_message(phone: str, text: str) -> None:
         "langfuse_session_id": phone,
     }
     config["tags"] = ["whatsapp", "production"]
-    if _langfuse_handler:
-        config["callbacks"] = [_langfuse_handler]
+    if _langfuse_enabled:
+        from langfuse.langchain import CallbackHandler as LangfuseCallbackHandler
+        config["callbacks"] = [LangfuseCallbackHandler()]
     await graph_module.chatbot.ainvoke(state_update, config=config)
 
 
