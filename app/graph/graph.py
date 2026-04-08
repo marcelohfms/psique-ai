@@ -12,7 +12,10 @@ def _route_entry(state: ConversationState) -> str:
 
 
 def _route_after_collect(state: ConversationState) -> str:
-    # End the turn — patient_agent starts on the user's next message.
+    # If collect_info just completed, continue to patient_agent in the same turn
+    # so tools (request_document, confirm_appointment, etc.) are called immediately.
+    if state.get("stage") == "patient_agent":
+        return "patient_agent"
     return END
 
 
