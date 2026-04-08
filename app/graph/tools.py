@@ -8,7 +8,7 @@ from langchain_core.runnables import RunnableConfig
 from langgraph.prebuilt import InjectedState
 
 from app.uazapi import send_text
-from app.database import get_supabase, log_event, upsert_user, get_user_by_phone, DOCTOR_IDS
+from app.database import get_supabase, log_event, upsert_user, get_user_by_phone, DOCTOR_IDS, DOCTOR_NAMES
 
 TZ = ZoneInfo("America/Recife")
 
@@ -22,6 +22,16 @@ async def _notify_clinic(message: str) -> None:
             await send_text(APPOINTMENT_NOTIFY_PHONE, message)
         except Exception:
             pass  # Não interrompe o fluxo se a notificação falhar
+
+
+async def _resolve_doctor(state: dict, config: RunnableConfig) -> str:
+    """Return preferred_doctor key, falling back to DB if not in state."""
+    doctor = state.get("preferred_doctor") or ""
+    if not doctor:
+        user = await get_user_by_phone(config["configurable"]["phone"])
+        if user and user.get("doctor_id"):
+            doctor = DOCTOR_NAMES.get(user["doctor_id"], "")
+    return doctor
 
 
 async def _get_doctor_calendar_id(preferred_doctor: str) -> str | None:
@@ -49,7 +59,7 @@ async def get_available_slots(
     """
     from app.google_calendar import get_available_slots as _get_slots
 
-    doctor = state.get("preferred_doctor", "")
+    doctor = await _resolve_doctor(state, config)
     calendar_id = await _get_doctor_calendar_id(doctor)
     if not calendar_id:
         return "Não foi possível identificar o calendário do médico."
@@ -104,9 +114,10 @@ async def confirm_appointment(
 
     from app.google_calendar import create_event
 
-    calendar_id = await _get_doctor_calendar_id(state.get("preferred_doctor", ""))
+    doctor = await _resolve_doctor(state, config)
+    calendar_id = await _get_doctor_calendar_id(doctor)
     _logger.info("CONFIRM_DEBUG calendar_id=%s doctor=%s slot=%s duration=%s",
-                 calendar_id, state.get("preferred_doctor"), slot_datetime, slot_duration_minutes)
+                 calendar_id, doctor, slot_datetime, slot_duration_minutes)
     if not calendar_id:
         return "Não foi possível identificar o calendário do médico."
 
@@ -499,15 +510,12 @@ async def update_preferred_doctor(
     Use quando o paciente informar que o médico cadastrado está incorreto ou quando
     ele escolher um médico pela primeira vez.
     """
-    from app.graph import graph as graph_module
-
     phone = config["configurable"]["phone"]
     doctor_id = DOCTOR_IDS.get(doctor)
     await upsert_user(phone, {"doctor_id": doctor_id})
-    await graph_module.chatbot.aupdate_state(config, {"preferred_doctor": doctor}, as_node="patient_agent")
     doctor_label = {"julio": "Dr. Júlio", "bruna": "Dra. Bruna"}.get(doctor, doctor)
     await log_event("doctor_updated", phone, {"doctor": doctor})
-    return f"Médico atualizado para {doctor_label}!"
+    return f"Médico atualizado para {doctor_label}! Pode continuar."
 
 
 @tool
