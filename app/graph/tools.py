@@ -375,7 +375,8 @@ async def request_document(
     try:
         await append_document_request(patient_name, patient_age, phone, patient_email, document_type)
     except Exception:
-        pass
+        import logging as _log
+        _log.getLogger(__name__).exception("DOC_SHEETS_FAILED patient=%s type=%s", patient_name, document_type)
 
     try:
         await send_document_request_email(doctor_key, doctor_email, patient_name, patient_age, phone, patient_email, document_type)
