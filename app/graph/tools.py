@@ -338,6 +338,9 @@ async def request_document(
     """Registra uma solicitação de documento médico para o paciente.
     patient_email: e-mail informado pelo paciente para recebimento do documento.
     """
+    import logging as _log
+    _log.getLogger(__name__).warning("REQUEST_DOC_CALLED type=%s email=%s", document_type, patient_email)
+
     from app.google_sheets import append_document_request
     from app.email_sender import send_document_request_email
 
