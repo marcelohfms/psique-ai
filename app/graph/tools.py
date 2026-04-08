@@ -372,11 +372,14 @@ async def request_document(
     })
 
     # Register in spreadsheet and notify doctor — fire-and-forget
+    import logging as _log
+    _doc_logger = _log.getLogger(__name__)
+    _doc_logger.warning("DOC_SHEETS_ATTEMPT patient=%s type=%s", patient_name, document_type)
     try:
         await append_document_request(patient_name, patient_age, phone, patient_email, document_type)
+        _doc_logger.warning("DOC_SHEETS_OK patient=%s", patient_name)
     except Exception:
-        import logging as _log
-        _log.getLogger(__name__).exception("DOC_SHEETS_FAILED patient=%s type=%s", patient_name, document_type)
+        _doc_logger.exception("DOC_SHEETS_FAILED patient=%s type=%s", patient_name, document_type)
 
     try:
         await send_document_request_email(doctor_key, doctor_email, patient_name, patient_age, phone, patient_email, document_type)
