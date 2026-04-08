@@ -175,6 +175,7 @@ async def patient_agent_node(state: ConversationState, config: RunnableConfig) -
         duration_rule=duration_rule,
         today=today,
         doctor_schedules=format_doctor_schedules(),
+        patient_email=state.get("patient_email") or "não informado",
         doctor_correction_rule=DOCTOR_CORRECTION_RULE,
         booking_fee_rule=BOOKING_FEE_RULE,
         cancellation_rules=CANCELLATION_RULES,
