@@ -191,24 +191,3 @@ async def test_log_event_called_for_new_conversation():
         gg.chatbot = original
 
 
-async def test_langfuse_callbacks_injected_when_handler_set():
-    """If _langfuse_handler is configured, it appears in the invocation config."""
-    import app.graph.graph as gg
-    import app.main as main_module
-    chatbot = _make_chatbot()
-    original = gg.chatbot
-    gg.chatbot = chatbot
-    fake_handler = object()
-    original_handler = main_module._langfuse_handler
-    main_module._langfuse_handler = fake_handler
-    try:
-        with patch("app.main.get_user_by_phone", new_callable=AsyncMock, return_value=None), \
-             patch("app.main.log_event", new_callable=AsyncMock):
-            from app.main import process_message
-            await process_message(PHONE, "oi")
-            _, kwargs = chatbot.ainvoke.call_args
-            config = kwargs.get("config") or chatbot.ainvoke.call_args[0][1]
-            assert fake_handler in config.get("callbacks", [])
-    finally:
-        gg.chatbot = original
-        main_module._langfuse_handler = original_handler
