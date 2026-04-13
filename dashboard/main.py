@@ -121,7 +121,7 @@ templates = Jinja2Templates(directory="templates")
 
 @app.get("/")
 async def index(request: Request, username: str = Depends(verify_credentials)):
-    return templates.TemplateResponse("index.html", {"request": request, "username": username})
+    return templates.TemplateResponse(request, "index.html", {"username": username})
 
 
 @app.get("/api/conversations")
