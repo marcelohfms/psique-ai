@@ -80,6 +80,7 @@ manager = ConnectionManager()
 
 async def _poll_new_messages() -> None:
     """Poll Supabase every 1.5 s for new messages and broadcast to all WS clients."""
+    global _supabase
     last_ts = datetime.now(timezone.utc).isoformat()
     while True:
         await asyncio.sleep(1.5)
@@ -98,6 +99,7 @@ async def _poll_new_messages() -> None:
                     await manager.broadcast({"type": "new_message", "message": msg})
         except Exception:
             logger.exception("Polling error")
+            _supabase = None
 
 
 # ── App lifecycle ─────────────────────────────────────────────────────────────
