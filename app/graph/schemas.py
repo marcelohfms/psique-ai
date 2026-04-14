@@ -36,6 +36,7 @@ class CollectInfoOutput(BaseModel):
     guardian_name: str | None = None
     guardian_cpf: str | None = None
     patient_email: str | None = None
+    medication_note: str | None = None
     consultation_reason: str | None = None
     referral_professional: str | None = None
     is_complete: bool = False

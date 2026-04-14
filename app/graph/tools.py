@@ -334,12 +334,17 @@ async def request_document(
     patient_email: str,
     state: Annotated[dict, InjectedState],
     config: RunnableConfig,
+    medication_note: str = "",
 ) -> str:
     """Registra uma solicitação de documento médico para o paciente.
     patient_email: e-mail informado pelo paciente para recebimento do documento.
+    medication_note: obrigatório quando document_type='receita' — medicação(ões) solicitada(s).
     """
     import logging as _log
     _log.getLogger(__name__).warning("REQUEST_DOC_CALLED type=%s email=%s", document_type, patient_email)
+
+    if document_type == "receita" and not medication_note.strip():
+        return "Qual medicação você precisa na receita?"
 
     from app.google_sheets import append_document_request
     from app.email_sender import send_document_request_email
@@ -379,7 +384,7 @@ async def request_document(
     _doc_logger = _log.getLogger(__name__)
     _doc_logger.warning("DOC_SHEETS_ATTEMPT patient=%s type=%s", patient_name, document_type)
     try:
-        await append_document_request(patient_name, patient_age, phone, patient_email, document_type)
+        await append_document_request(patient_name, patient_age, phone, patient_email, document_type, medication_note)
         _doc_logger.warning("DOC_SHEETS_OK patient=%s", patient_name)
     except Exception:
         _doc_logger.exception("DOC_SHEETS_FAILED patient=%s type=%s", patient_name, document_type)
@@ -396,13 +401,16 @@ async def request_document(
     doc_label = doc_labels.get(document_type, document_type)
     doctor_label = {"julio": "Dr. Júlio", "bruna": "Dra. Bruna"}.get(doctor_key, "médico(a)")
     phone_clean = phone.replace("@s.whatsapp.net", "")
-    await _notify_clinic(
+    notify_msg = (
         f"📄 Solicitação de {doc_label}\n"
         f"Paciente: {patient_name}\n"
         f"Médico(a): {doctor_label}\n"
         f"E-mail: {patient_email}\n"
         f"WhatsApp: {phone_clean}"
     )
+    if medication_note:
+        notify_msg += f"\nMedicação: {medication_note}"
+    await _notify_clinic(notify_msg)
 
     return (
         f"Solicitação de {document_type} registrada com sucesso! ✅\n"

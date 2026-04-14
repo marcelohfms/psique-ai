@@ -90,7 +90,7 @@ async def collect_info_node(state: ConversationState, config: RunnableConfig) ->
         "user_name", "is_for_self", "patient_name",
         "birth_date", "guardian_relationship", "guardian_name", "guardian_cpf",
         "is_patient", "preferred_doctor", "patient_email",
-        "consultation_reason", "referral_professional",
+        "consultation_reason", "referral_professional", "medication_note",
     ]:
         val = getattr(result, field, None)
         if val is not None:

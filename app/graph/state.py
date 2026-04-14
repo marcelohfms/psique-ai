@@ -40,3 +40,4 @@ class ConversationState(TypedDict):
     patient_email: str | None       # e-mail para contato
     consultation_reason: str | None # motivo da consulta (apenas novos pacientes)
     referral_professional: str | None  # profissional que encaminhou (apenas novos pacientes)
+    medication_note: str | None      # medicação solicitada (apenas para receitas)

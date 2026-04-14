@@ -8,8 +8,8 @@ from googleapiclient.discovery import build
 
 TZ = ZoneInfo("America/Recife")
 
-# Column order: Data, Nome completo, Idade, Telefone, E-mail, Tipo de solicitação
-_SHEET_RANGE = "Solicitações!A:F"
+# Column order: Data, Nome completo, Idade, Telefone, E-mail, Tipo de solicitação, Observação
+_SHEET_RANGE = "Solicitações!A:G"
 
 # Column order: Data do Pagamento, Paciente, Médico, Data da Consulta, Valor, Telefone, Comprovante, Conferência Humana
 _PAYMENTS_SHEET_RANGE = "Pagamentos!A:H"
@@ -78,6 +78,7 @@ async def append_document_request(
     phone: str,
     patient_email: str,
     document_type: str,
+    medication_note: str = "",
 ) -> None:
     """Append a document request row to the Google Sheets spreadsheet.
     Does nothing if GOOGLE_SHEETS_DOC_ID is not configured.
@@ -89,7 +90,7 @@ async def append_document_request(
     now = datetime.now(TZ).strftime("%d/%m/%Y %H:%M")
     age_str = str(patient_age) if patient_age else "—"
     phone_clean = phone.replace("@s.whatsapp.net", "")
-    row = [now, patient_name, age_str, phone_clean, patient_email, document_type]
+    row = [now, patient_name, age_str, phone_clean, patient_email, document_type, medication_note]
 
     creds = _credentials()
     service = build("sheets", "v4", credentials=creds)
