@@ -61,6 +61,45 @@ async def collect_info_node(state: ConversationState, config: RunnableConfig) ->
         "referral_professional": state.get("referral_professional"),
     }
 
+    # Detect receita request from any user message
+    _messages_text = " ".join(
+        m.content for m in state["messages"]
+        if hasattr(m, "content") and isinstance(m.content, str)
+    ).lower()
+    _is_receita = "receita" in _messages_text
+
+    async def _ask(reply: str) -> dict:
+        await send_text(state["phone"], reply)
+        await save_message(state["phone"], "assistant", reply)
+        return {"messages": [AIMessage(content=reply)]}
+
+    # Step 1: for self or someone else?
+    if state.get("is_for_self") is None:
+        return await _ask("A solicitação é para você ou para outra pessoa?")
+
+    # Step 2: full name
+    if not state.get("user_name"):
+        if state.get("is_for_self"):
+            return await _ask("Pode me informar seu nome completo?")
+        else:
+            return await _ask("Pode me informar o nome completo do paciente?")
+
+    # Steps 3 & 4 (birth_date, is_patient) are collected by the LLM below.
+    # Steps 5-7 only run after the LLM has already collected those fields.
+    if state.get("birth_date") is not None and state.get("is_patient") is not None:
+
+        # Step 5: preferred doctor — always confirm per request
+        if not state.get("preferred_doctor"):
+            return await _ask("Essa solicitação é para o Dr. Júlio ou para a Dra. Bruna?")
+
+        # Step 6: email
+        if not state.get("patient_email"):
+            return await _ask("Qual o seu e-mail para contato?")
+
+        # Step 7: medication — only for receita
+        if _is_receita and not state.get("medication_note"):
+            return await _ask("Qual medicação você precisa na receita?")
+
     messages = [
         SystemMessage(content=COLLECT_SYSTEM.format(collected=collected, pricing_rules=get_pricing_rules(datetime.now()), medical_limits_rule=MEDICAL_LIMITS_RULE)),
         *state["messages"],
