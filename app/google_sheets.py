@@ -72,6 +72,31 @@ async def append_payment_receipt(
     await loop.run_in_executor(None, _append_row_payments, service, spreadsheet_id, row)
 
 
+async def get_controlled_medications() -> list[str]:
+    """Return list of controlled medication names (lowercase) from the 'Receita' tab, column A.
+    Returns empty list if sheet is not configured or tab is empty.
+    """
+    spreadsheet_id = os.environ.get("GOOGLE_SHEETS_DOC_ID")
+    if not spreadsheet_id:
+        return []
+
+    def _read(service) -> list[str]:
+        result = service.spreadsheets().values().get(
+            spreadsheetId=spreadsheet_id,
+            range="Receita!A:A",
+        ).execute()
+        rows = result.get("values", [])
+        return [row[0].strip().lower() for row in rows if row and row[0].strip()]
+
+    creds = _credentials()
+    service = build("sheets", "v4", credentials=creds)
+    loop = asyncio.get_event_loop()
+    try:
+        return await loop.run_in_executor(None, _read, service)
+    except Exception:
+        return []
+
+
 async def append_document_request(
     patient_name: str,
     patient_age: int | None,

@@ -346,8 +346,16 @@ async def request_document(
     if document_type == "receita" and not medication_note.strip():
         return "Qual medicação você precisa na receita?"
 
-    from app.google_sheets import append_document_request
+    from app.google_sheets import append_document_request, get_controlled_medications
     from app.email_sender import send_document_request_email
+
+    # Check if medication requires physical prescription
+    is_controlled = False
+    if document_type == "receita" and medication_note:
+        controlled = await get_controlled_medications()
+        med_lower = medication_note.lower()
+        if any(med in med_lower for med in controlled):
+            is_controlled = True
 
     phone = config["configurable"]["phone"]
     patient_name = state.get("patient_name") or state.get("user_name", "Paciente")
@@ -410,7 +418,16 @@ async def request_document(
     )
     if medication_note:
         notify_msg += f"\nMedicação: {medication_note}"
+    if is_controlled:
+        notify_msg += "\n\n⚠️ RECEITA FÍSICA — o paciente deverá retirar presencialmente na clínica."
     await _notify_clinic(notify_msg)
+
+    if is_controlled:
+        return (
+            "Solicitação registrada! ✅\n"
+            "O medicamento solicitado requer receita física. Assim que estiver disponível, "
+            "nossa atendente entrará em contato para informar sobre a retirada presencial na clínica."
+        )
 
     return (
         f"Solicitação de {document_type} registrada com sucesso! ✅\n"
