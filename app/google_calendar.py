@@ -14,9 +14,9 @@ TZ = ZoneInfo(TIMEZONE)
 # Edit here to change doctor availability — no other file needs to change.
 DOCTOR_SCHEDULES: dict[str, dict[int, list[tuple[int, int, int, int]]]] = {
     "bruna": {
-        0: [(11, 30, 12, 30), (15, 30, 16, 30)],  # Segunda
-        2: [(8, 0, 12, 0), (14, 0, 18, 0)],        # Quarta
-        4: [(8, 0, 12, 0), (13, 0, 16, 0)],        # Sexta
+        0: [(7, 30, 8, 30), (16, 30, 18, 30)],  # Segunda
+        2: [(9, 0, 12, 0), (14, 0, 18, 0)],      # Quarta
+        4: [(8, 0, 12, 0), (13, 0, 16, 0)],      # Sexta
     },
     "julio": {
         0: [(9, 0, 12, 0)],                                   # Segunda
