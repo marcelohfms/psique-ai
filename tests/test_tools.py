@@ -341,7 +341,7 @@ async def test_register_payment_appends_sheet_and_notifies():
     from app.graph.tools import register_payment
     client, table, execute = _make_supabase_client_with_appointment()
     with patch("app.graph.tools.get_supabase", new_callable=AsyncMock, return_value=client), \
-         patch("app.graph.tools.get_user_by_phone", new_callable=AsyncMock, return_value={"id": "user-123"}), \
+         patch("app.graph.tools.get_user_by_phone", new_callable=AsyncMock, return_value={"id": "user-123", "patient_name": "Maria"}), \
          patch("app.graph.tools.log_event", new_callable=AsyncMock), \
          patch("app.google_drive.rename_file", new_callable=AsyncMock), \
          patch("app.google_sheets.append_payment_receipt", new_callable=AsyncMock) as mock_sheets, \
