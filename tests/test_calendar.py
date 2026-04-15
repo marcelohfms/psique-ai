@@ -69,8 +69,8 @@ async def test_slots_60min_julio_monday_morning():
             doctor_key="julio",
         )
     assert len(slots) == 3
-    assert all(s.weekday() == 0 for s in slots)
-    assert slots[0].hour == 9
+    assert all(dt.weekday() == 0 for dt, _ in slots)
+    assert slots[0][0].hour == 9
 
 
 async def test_slots_120min_julio_monday():
@@ -91,7 +91,7 @@ async def test_slots_120min_julio_monday():
     # 9:00→11:00 fits; next current=11:00, 11:00+120=13:00 > 12:00 → stop.
     # So only [9:00].
     assert len(slots) == 1
-    assert slots[0].hour == 9
+    assert slots[0][0].hour == 9
 
 
 async def test_slots_empty_on_off_day():
@@ -127,7 +127,7 @@ async def test_busy_period_removes_slot():
             slot_minutes=60,
             doctor_key="julio",
         )
-    hours = [s.hour for s in slots]
+    hours = [dt.hour for dt, _ in slots]
     assert 9 not in hours
     assert 10 in hours
 
@@ -147,7 +147,7 @@ async def test_bruna_wednesday_returns_slots():
             doctor_key="bruna",
         )
     assert len(slots) > 0
-    assert all(s.weekday() == 2 for s in slots)  # Wednesday
+    assert all(dt.weekday() == 2 for dt, _ in slots)  # Wednesday
 
 
 async def test_timezone_america_recife():
@@ -164,5 +164,5 @@ async def test_timezone_america_recife():
             slot_minutes=60,
             doctor_key="julio",
         )
-    assert all(s.tzinfo is not None for s in slots)
-    assert all(str(s.tzinfo) == "America/Recife" for s in slots)
+    assert all(dt.tzinfo is not None for dt, _ in slots)
+    assert all(str(dt.tzinfo) == "America/Recife" for dt, _ in slots)

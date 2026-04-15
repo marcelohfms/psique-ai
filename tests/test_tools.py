@@ -44,8 +44,8 @@ def _make_supabase_client():
 async def test_get_available_slots_returns_formatted_list():
     from app.graph.tools import get_available_slots
     slots = [
-        datetime(2026, 3, 23, 9, 0, tzinfo=TZ),
-        datetime(2026, 3, 23, 10, 0, tzinfo=TZ),
+        (datetime(2026, 3, 23, 9, 0, tzinfo=TZ), "escolha"),
+        (datetime(2026, 3, 23, 10, 0, tzinfo=TZ), "online"),
     ]
     with patch("app.graph.tools._get_doctor_calendar_id", new_callable=AsyncMock, return_value="cal123"), \
          patch("app.google_calendar.get_available_slots", new_callable=AsyncMock, return_value=slots):
@@ -323,9 +323,23 @@ async def test_confirm_attendance_sets_confirmed_at():
 
 # ── register_payment ──────────────────────────────────────────────────────────
 
+def _make_supabase_client_with_appointment():
+    """Supabase client whose execute returns a scheduled appointment by default."""
+    apt_data = MagicMock(data=[{"appointment_id": "apt-1", "start_time": "2026-03-23T09:00:00+00:00"}])
+    execute = AsyncMock(return_value=apt_data)
+    table = MagicMock()
+    for m in ("select", "eq", "limit", "single", "maybe_single",
+              "gte", "order", "insert", "update", "upsert"):
+        getattr(table, m).return_value = table
+    table.execute = execute
+    client = MagicMock()
+    client.from_.return_value = table
+    return client, table, execute
+
+
 async def test_register_payment_appends_sheet_and_notifies():
     from app.graph.tools import register_payment
-    client, table, execute = _make_supabase_client()
+    client, table, execute = _make_supabase_client_with_appointment()
     with patch("app.graph.tools.get_supabase", new_callable=AsyncMock, return_value=client), \
          patch("app.graph.tools.get_user_by_phone", new_callable=AsyncMock, return_value={"id": "user-123"}), \
          patch("app.graph.tools.log_event", new_callable=AsyncMock), \
@@ -353,9 +367,9 @@ async def test_register_payment_appends_sheet_and_notifies():
 
 async def test_register_payment_rename_failure_still_succeeds():
     from app.graph.tools import register_payment
-    client, _, _ = _make_supabase_client()
+    client, _, _ = _make_supabase_client_with_appointment()
     with patch("app.graph.tools.get_supabase", new_callable=AsyncMock, return_value=client), \
-         patch("app.graph.tools.get_user_by_phone", new_callable=AsyncMock, return_value=None), \
+         patch("app.graph.tools.get_user_by_phone", new_callable=AsyncMock, return_value={"id": "user-123"}), \
          patch("app.graph.tools.log_event", new_callable=AsyncMock), \
          patch("app.google_drive.rename_file", new_callable=AsyncMock, side_effect=Exception("Drive unavailable")), \
          patch("app.google_sheets.append_payment_receipt", new_callable=AsyncMock), \
@@ -371,7 +385,7 @@ async def test_register_payment_rename_failure_still_succeeds():
 
 async def test_register_payment_sets_paid_at():
     from app.graph.tools import register_payment
-    client, table, execute = _make_supabase_client()
+    client, table, execute = _make_supabase_client_with_appointment()
     with patch("app.graph.tools.get_supabase", new_callable=AsyncMock, return_value=client), \
          patch("app.graph.tools.get_user_by_phone", new_callable=AsyncMock, return_value={"id": "user-123"}), \
          patch("app.graph.tools.log_event", new_callable=AsyncMock), \
