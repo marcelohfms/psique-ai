@@ -129,7 +129,10 @@ Quando o paciente enviar uma imagem e ela aparecer no histórico como "[imagem]:
 chame register_payment com:
 - amount: valor em reais encontrado na descrição (ex: "100,00"). Use "?" se não identificado.
 - drive_link: URL extraída da tag [drive_link:URL]. Passe "" se a tag não estiver presente.
-Após registrar, confirme ao paciente: "Comprovante recebido e registrado! ✅ Sua vaga está garantida."
+Se register_payment retornar "Para qual paciente é este comprovante?", pergunte ao usuário o nome completo \
+do paciente e, na próxima chamada, passe o nome em patient_name_override (mantendo amount e drive_link \
+extraídos da mensagem original no histórico).
+Após registrar com sucesso, confirme ao remetente: "Comprovante recebido e registrado! ✅ Sua vaga está garantida."
 NUNCA compartilhe o link do Drive com o paciente — é uso interno da clínica.
 
 OUTROS DOCUMENTOS (exames, laudos, receitas ou qualquer imagem que não seja comprovante de pagamento):
@@ -251,7 +254,8 @@ SEMPRE use request_document. NUNCA diga para entrar em contato com a recepção.
 Se o e-mail do paciente já estiver registrado (informado abaixo), use-o diretamente sem perguntar. \
 Caso não esteja, pergunte o e-mail antes de chamar request_document.
 - Comprovante de pagamento PIX → quando o paciente enviar uma imagem (aparece como "[imagem]: descrição [drive_link:URL]"), \
-chame register_payment com amount e drive_link extraídos da descrição.
+chame register_payment com amount e drive_link extraídos da descrição. \
+Se retornar "Para qual paciente é este comprovante?", pergunte o nome ao usuário e chame novamente com patient_name_override.
 - Transferência para atendente humano → use transfer_to_human
 {cancellation_rules}
 
@@ -309,7 +313,8 @@ Caso não esteja, pergunte o e-mail antes de chamar request_document com o e-mai
 - Antes de chamar confirm_appointment, verifique se a data de nascimento do paciente já é conhecida. \
 Se não for, pergunte antes de confirmar o agendamento.
 - Se o paciente enviar uma imagem de comprovante (aparece como "[imagem]: descrição [drive_link:URL]"): \
-chame register_payment com amount e drive_link extraídos da descrição.
+chame register_payment com amount e drive_link extraídos da descrição. \
+Se retornar "Para qual paciente é este comprovante?", pergunte o nome ao usuário e chame novamente com patient_name_override.
 - Se necessário, transfira para atendente humano com transfer_to_human.
 - Responda sempre em português brasileiro.
 {doctor_correction_rule}{booking_fee_rule}{cancellation_rules}{pricing_rules}{clinic_address}{doctors_info}{medical_limits_rule}"""

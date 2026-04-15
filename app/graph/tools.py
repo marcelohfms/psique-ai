@@ -464,6 +464,7 @@ async def register_payment(
     drive_link: str,
     state: Annotated[dict, InjectedState],
     config: RunnableConfig,
+    patient_name_override: str = "",
 ) -> str:
     """
     Registra um comprovante de pagamento PIX na planilha.
@@ -471,53 +472,94 @@ async def register_payment(
     "[imagem]: descrição... [drive_link:URL]".
     amount: valor pago extraído da descrição (ex: "100,00"). Use "?" se não identificado.
     drive_link: URL extraída da tag [drive_link:URL] na descrição. Passe "" se não houver.
+    patient_name_override: use quando este número não tem agendamento e o remetente informou
+      o nome do paciente — busca pelo nome no cadastro e envia confirmação ao número original do paciente.
     """
+    import logging as _log
+    _logger = _log.getLogger(__name__)
+
     from app.google_sheets import append_payment_receipt
 
     phone = config["configurable"]["phone"]
-    patient_name = state.get("patient_name") or state.get("user_name", "Paciente")
+    client = await get_supabase()
+
+    # ── Resolve patient ────────────────────────────────────────────────────────
+    is_third_party = False
+    patient_phone = phone
+    user_id = None
     doctor_key = state.get("preferred_doctor", "")
+
+    if patient_name_override.strip():
+        # Third-party sender: search user by patient_name
+        search_name = patient_name_override.strip()
+        user_result = await client.from_("users").select(
+            "id, number, patient_name, name, doctor_id"
+        ).ilike("patient_name", f"%{search_name}%").limit(5).execute()
+
+        if not user_result.data:
+            return (
+                f"Não encontrei nenhum paciente com o nome '{search_name}'. "
+                "Pode confirmar o nome completo?"
+            )
+
+        matched = user_result.data[0]
+        patient_name = matched.get("patient_name") or matched.get("name", "Paciente")
+        patient_phone = matched["number"] + "@s.whatsapp.net"
+        user_id = matched["id"]
+        doctor_key = DOCTOR_NAMES.get(matched.get("doctor_id", ""), "")
+        is_third_party = True
+    else:
+        user = await get_user_by_phone(phone)
+        if not user:
+            return "Para qual paciente é este comprovante? Por favor, informe o nome completo."
+        appt_check = await client.from_("appointments").select("appointment_id").eq(
+            "user_id", user["id"]
+        ).eq("status", "scheduled").limit(1).execute()
+        if not appt_check.data:
+            return "Para qual paciente é este comprovante? Por favor, informe o nome completo."
+        patient_name = user.get("patient_name") or user.get("name", "Paciente")
+        user_id = user["id"]
+
     doctor_label = {"julio": "Dr. Júlio", "bruna": "Dra. Bruna"}.get(doctor_key, "médico(a)")
 
-    # Fetch next scheduled appointment date
-    client = await get_supabase()
-    user = await get_user_by_phone(phone)
+    # ── Fetch next scheduled appointment date ──────────────────────────────────
     appointment_dt = "—"
-    if user:
-        result = await client.from_("appointments").select("start_time").eq("user_id", user["id"]).eq("status", "scheduled").order("start_time").limit(1).execute()
-        if result.data:
-            apt_start = datetime.fromisoformat(result.data[0]["start_time"]).astimezone(TZ)
-            appointment_dt = apt_start.strftime("%d/%m/%Y %H:%M")
+    appt_result = await client.from_("appointments").select("start_time").eq(
+        "user_id", user_id
+    ).eq("status", "scheduled").order("start_time").limit(1).execute()
+    if appt_result.data:
+        apt_start = datetime.fromisoformat(appt_result.data[0]["start_time"]).astimezone(TZ)
+        appointment_dt = apt_start.strftime("%d/%m/%Y %H:%M")
 
-    # Rename Drive file with patient name + appointment date + amount
+    # ── Rename Drive file ──────────────────────────────────────────────────────
     if drive_link:
         try:
             from app.google_drive import rename_file
             file_id = drive_link.split("/d/")[1].split("/")[0]
             amount_clean = amount.replace("R$", "").replace(" ", "").strip()
-            date_clean = appointment_dt.split(" ")[0].replace("/", "-") if appointment_dt != "—" else datetime.now(TZ).strftime("%d-%m-%Y")
+            date_clean = (
+                appointment_dt.split(" ")[0].replace("/", "-")
+                if appointment_dt != "—"
+                else datetime.now(TZ).strftime("%d-%m-%Y")
+            )
             safe_name = patient_name.replace(" ", "_")
             new_filename = f"{safe_name}_{date_clean}_R${amount_clean}.jpg"
             await rename_file(file_id, new_filename)
         except Exception:
-            import logging as _log
-            _log.getLogger(__name__).exception("DRIVE_RENAME FAILED")
+            _logger.exception("DRIVE_RENAME FAILED")
 
     try:
-        await append_payment_receipt(patient_name, phone, doctor_label, appointment_dt, amount, drive_link)
+        await append_payment_receipt(patient_name, patient_phone, doctor_label, appointment_dt, amount, drive_link)
     except Exception:
-        import logging as _log
-        _log.getLogger(__name__).exception("SHEETS_APPEND FAILED patient=%s", patient_name)
+        _logger.exception("SHEETS_APPEND FAILED patient=%s", patient_name)
 
-    # Mark appointment as paid so the payment reminder script skips it
-    if user:
-        try:
-            await client.from_("appointments").update({
-                "paid_at": datetime.now(TZ).isoformat(),
-            }).eq("user_id", user["id"]).eq("status", "scheduled").order("start_time").limit(1).execute()
-        except Exception:
-            import logging as _log
-            _log.getLogger(__name__).exception("PAID_AT UPDATE FAILED patient=%s", patient_name)
+    # ── Mark appointment as paid ───────────────────────────────────────────────
+    try:
+        await client.from_("appointments").update({
+            "paid_at": datetime.now(TZ).isoformat(),
+        }).eq("user_id", user_id).eq("status", "scheduled").order("start_time").limit(1).execute()
+    except Exception:
+        _logger.exception("PAID_AT UPDATE FAILED patient=%s", patient_name)
 
     await _notify_clinic(
         f"💰 Comprovante recebido!\nPaciente: {patient_name}\nValor: R$ {amount}\nConsulta: {appointment_dt}\nLink: {drive_link}"
@@ -528,6 +570,18 @@ async def register_payment(
         "amount": amount,
         "drive_link": drive_link,
     })
+
+    # ── Notify original patient number if third-party sender ──────────────────
+    if is_third_party:
+        try:
+            await send_text(
+                patient_phone,
+                f"Olá, {patient_name}! 👋 Recebemos o comprovante de pagamento da sua consulta"
+                + (f" com {doctor_label}" if doctor_label != "médico(a)" else "")
+                + ". Sua vaga está garantida! ✅",
+            )
+        except Exception:
+            _logger.exception("PATIENT_CONFIRM FAILED phone=%s", patient_phone)
 
     return "Comprovante recebido e registrado com sucesso! ✅ Sua vaga está garantida."
 
