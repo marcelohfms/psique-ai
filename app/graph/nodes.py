@@ -83,41 +83,100 @@ async def collect_info_node(state: ConversationState, config: RunnableConfig) ->
         await save_message(state["phone"], "assistant", reply)
         return {"messages": [AIMessage(content=reply)]}
 
+    async def _extract_and_ask(extracted: dict, next_q: str) -> dict:
+        """Save extracted fields and ask the next question in one turn."""
+        await send_text(state["phone"], next_q)
+        await save_message(state["phone"], "assistant", next_q)
+        return {**extracted, "messages": [AIMessage(content=next_q)]}
+
+    def _last_ai() -> str:
+        for msg in reversed(state["messages"]):
+            if getattr(msg, "type", None) == "ai":
+                return msg.content or ""
+        return ""
+
+    def _last_human() -> str:
+        for msg in reversed(state["messages"]):
+            if getattr(msg, "type", None) == "human":
+                return msg.content or ""
+        return ""
+
+    _NAME_Q = "Pode me informar o nome completo do paciente?"
+    _CPF_Q = "Qual o CPF do paciente?"
+    _DOCTOR_Q = "Essa solicitação é para o Dr. Júlio ou para a Dra. Bruna?"
+    _EMAIL_Q = "Qual o e-mail para envio?"
+    _MED_Q = "Qual medicação você precisa na receita?"
+
+    # Accumulated extractions to inject into the LLM context and state update
+    _extracted: dict = {}
+
     # Step 1: greeting + first question only when user already made a specific request
     if not _has_greeted and _has_request:
         greeting = (
             "Olá! 😊 Sou a Eva, assistente virtual da Clínica Psique.\n\n"
             "Claro, posso te ajudar com isso! Mas primeiro precisarei colher algumas informações.\n\n"
-            "Pode me informar o nome completo do paciente?"
+            + _NAME_Q
         )
         return await _ask(greeting)
 
     # Steps 2-8 only run when user has made a specific request
     if _has_request:
+        last_ai = _last_ai()
+        last_human = _last_human().strip()
 
         # Step 2: full name
         if not state.get("user_name"):
-            return await _ask("Pode me informar o nome completo do paciente?")
+            if last_ai.endswith(_NAME_Q) and last_human:
+                # User answered → extract name, ask CPF
+                return await _extract_and_ask(
+                    {"user_name": last_human, "patient_name": last_human}, _CPF_Q
+                )
+            return await _ask(_NAME_Q)
 
         # Step 3: CPF
         if not state.get("patient_cpf"):
-            return await _ask("Qual o CPF do paciente?")
+            if last_ai == _CPF_Q and last_human:
+                # Extract CPF, update collected so LLM asks birth_date next
+                _extracted["patient_cpf"] = last_human
+                collected["patient_cpf"] = last_human
+            else:
+                return await _ask(_CPF_Q)
 
-        # Steps 4 & 5 (birth_date, is_patient) are collected by the LLM below.
-        # Steps 6-8 only run after the LLM has already collected those fields.
+        # Steps 4 & 5 (birth_date, is_patient) collected by LLM.
+        # Steps 6-8 only after the LLM has collected those fields.
         if state.get("birth_date") is not None and state.get("is_patient") is not None:
 
             # Step 6: preferred doctor
             if not state.get("preferred_doctor"):
-                return await _ask("Essa solicitação é para o Dr. Júlio ou para a Dra. Bruna?")
+                if last_ai == _DOCTOR_Q and last_human:
+                    doctor = None
+                    h = last_human.lower()
+                    if "julio" in h or "júlio" in h:
+                        doctor = "julio"
+                    elif "bruna" in h:
+                        doctor = "bruna"
+                    if doctor:
+                        return await _extract_and_ask({"preferred_doctor": doctor}, _EMAIL_Q)
+                return await _ask(_DOCTOR_Q)
 
             # Step 7: email
             if not state.get("patient_email"):
-                return await _ask("Qual o e-mail para envio?")
+                if last_ai == _EMAIL_Q and last_human:
+                    if _is_receita and not state.get("medication_note"):
+                        return await _extract_and_ask({"patient_email": last_human}, _MED_Q)
+                    else:
+                        _extracted["patient_email"] = last_human
+                        collected["patient_email"] = last_human
+                else:
+                    return await _ask(_EMAIL_Q)
 
             # Step 8: medication — only for receita
             if _is_receita and not state.get("medication_note"):
-                return await _ask("Qual medicação você precisa na receita?")
+                if last_ai == _MED_Q and last_human:
+                    _extracted["medication_note"] = last_human
+                    collected["medication_note"] = last_human
+                else:
+                    return await _ask(_MED_Q)
 
     messages = [
         SystemMessage(content=COLLECT_SYSTEM.format(collected=collected, pricing_rules=get_pricing_rules(datetime.now()), medical_limits_rule=MEDICAL_LIMITS_RULE)),
@@ -153,6 +212,10 @@ async def collect_info_node(state: ConversationState, config: RunnableConfig) ->
         val = getattr(result, field, None)
         if val is not None:
             update[field] = val
+
+    # Merge any fields extracted programmatically this turn
+    for k, v in _extracted.items():
+        update[k] = v
 
     # Calculate age automatically from birth_date
     birth_date_str = update.get("birth_date") or state.get("birth_date")
