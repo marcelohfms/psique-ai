@@ -641,6 +641,31 @@ async def update_preferred_doctor(
     return f"Médico atualizado para {doctor_label}! Pode continuar."
 
 
+# Attendant working hours (weekday → list of (start_h, end_h) ranges)
+_ATTENDANT_HOURS: dict[int, list[tuple[int, int]]] = {
+    0: [(8, 12), (13, 18)],  # Segunda
+    1: [(8, 12), (13, 18)],  # Terça
+    2: [(8, 12), (13, 18)],  # Quarta
+    3: [(8, 12), (13, 18)],  # Quinta
+    4: [(8, 12), (13, 17)],  # Sexta
+    # Sábado e Domingo: sem atendimento
+}
+
+_ATTENDANT_HOURS_MSG = (
+    "Nossa equipe de atendimento funciona de *segunda a quinta*, das 8h às 12h e das 13h às 18h, "
+    "e na *sexta*, das 8h às 12h e das 13h às 17h. "
+    "Assim que possível, nossa atendente entrará em contato! 🙏"
+)
+
+
+def _is_attendant_available() -> bool:
+    """Return True if current time (Recife) is within attendant working hours."""
+    now = datetime.now(TZ)
+    ranges = _ATTENDANT_HOURS.get(now.weekday(), [])
+    current_minutes = now.hour * 60 + now.minute
+    return any(sh * 60 <= current_minutes < eh * 60 for sh, eh in ranges)
+
+
 @tool
 async def transfer_to_human(
     reason: str,
@@ -652,8 +677,7 @@ async def transfer_to_human(
     phone = config["configurable"]["phone"]
 
     # Disable bot for this user
-    from datetime import datetime, timezone
-    await upsert_user(phone, {"active": False, "deactivated_at": datetime.now(timezone.utc).isoformat()})
+    await upsert_user(phone, {"active": False, "deactivated_at": datetime.now(TZ).isoformat()})
 
     # Notify the clinic's internal number
     notify_phone = os.getenv("NOTIFY_PHONE", "")
@@ -669,5 +693,14 @@ async def transfer_to_human(
         await send_text(notify_phone, notification)
 
     await log_event("human_transfer", phone, {"reason": reason})
-    await send_text(phone, "👤 Vou transferir você para um de nossos atendentes. Um momento, por favor!")
+
+    if _is_attendant_available():
+        msg = "👤 Vou transferir você para um de nossos atendentes. Um momento, por favor!"
+    else:
+        msg = (
+            "👤 Vou encaminhar você para um de nossos atendentes!\n\n"
+            + _ATTENDANT_HOURS_MSG
+        )
+
+    await send_text(phone, msg)
     return "Conversa transferida para atendente humano."
