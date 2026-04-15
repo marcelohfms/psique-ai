@@ -10,19 +10,23 @@ TIMEZONE = "America/Recife"
 TZ = ZoneInfo(TIMEZONE)
 
 # Working hours per doctor per weekday (0=Mon … 6=Sun).
-# Each entry is a list of (start_h, start_m, end_h, end_m) tuples.
+# Each entry: (start_h, start_m, end_h, end_m, modality)
+# modality values:
+#   "online"                  — slot is exclusively online (no choice)
+#   "escolha"                 — patient chooses online or presencial
+#   "presencial_sob_consulta" — presencial possible but requires human confirmation
 # Edit here to change doctor availability — no other file needs to change.
-DOCTOR_SCHEDULES: dict[str, dict[int, list[tuple[int, int, int, int]]]] = {
+DOCTOR_SCHEDULES: dict[str, dict[int, list[tuple[int, int, int, int, str]]]] = {
     "bruna": {
-        0: [(7, 30, 8, 30), (16, 30, 18, 30)],  # Segunda
-        2: [(9, 0, 12, 0), (14, 0, 18, 0)],      # Quarta
-        4: [(8, 0, 12, 0), (13, 0, 16, 0)],      # Sexta
+        0: [(7, 30, 8, 30, "online"), (16, 30, 18, 30, "online")],   # Segunda — tudo online
+        2: [(9, 0, 12, 0, "escolha"), (14, 0, 18, 0, "escolha")],    # Quarta — paciente escolhe
+        4: [(8, 0, 12, 0, "escolha"), (13, 0, 16, 0, "online")],     # Sexta — manhã escolha, tarde online
     },
     "julio": {
-        0: [(9, 0, 12, 0)],                                   # Segunda
-        1: [(13, 0, 18, 0)],                                  # Terça
-        2: [(9, 0, 12, 0)],                                   # Quarta
-        3: [(9, 0, 12, 0), (14, 0, 17, 0), (18, 0, 20, 0)],  # Quinta
+        0: [(9, 0, 12, 0, "escolha")],                                                                   # Segunda
+        1: [(13, 0, 18, 0, "escolha")],                                                                  # Terça
+        2: [(9, 0, 12, 0, "escolha")],                                                                   # Quarta
+        3: [(9, 0, 12, 0, "escolha"), (14, 0, 17, 0, "presencial_sob_consulta"), (18, 0, 20, 0, "escolha")],  # Quinta
     },
 }
 
@@ -43,10 +47,18 @@ def _shift_label(start_h: int, end_h: int) -> str:
     return "manhã"
 
 
+_MODALITY_LABELS = {
+    "online": "apenas online",
+    "escolha": "online ou presencial",
+    "presencial_sob_consulta": "online ou presencial sob consulta",
+}
+
+
 def format_doctor_schedules() -> str:
     """Return a natural-language Portuguese summary of all doctor schedules.
     Reads directly from DOCTOR_SCHEDULES so any edit there is reflected here.
-    Describes shifts generically (manhã/tarde/noite) rather than exact hours.
+    Describes shifts generically (manhã/tarde/noite) rather than exact hours,
+    and includes modality info per window.
     """
     lines = []
     for doctor_key, days in DOCTOR_SCHEDULES.items():
@@ -54,15 +66,30 @@ def format_doctor_schedules() -> str:
         lines.append(f"{label}:")
         for weekday in sorted(days):
             windows = days[weekday]
-            shifts = []
-            seen = set()
-            for sh, sm, eh, em in windows:
-                s = _shift_label(sh, eh)
-                if s not in seen:
-                    shifts.append(s)
-                    seen.add(s)
-            lines.append(f"  - {_WEEKDAY_NAMES[weekday]}: {', '.join(shifts)}")
+            parts = []
+            seen: set = set()
+            for entry in windows:
+                sh, sm, eh, em, modality = entry
+                shift = _shift_label(sh, eh)
+                mod = _MODALITY_LABELS.get(modality, modality)
+                key = (shift, modality)
+                if key not in seen:
+                    parts.append(f"{shift} ({mod})")
+                    seen.add(key)
+            lines.append(f"  - {_WEEKDAY_NAMES[weekday]}: {', '.join(parts)}")
     return "\n".join(lines)
+
+
+def get_modality_for_slot(doctor_key: str, slot_dt: datetime) -> str:
+    """Return the modality constraint for a given slot datetime."""
+    weekday = slot_dt.weekday()
+    windows = DOCTOR_SCHEDULES.get(doctor_key, {}).get(weekday, [])
+    slot_min = slot_dt.hour * 60 + slot_dt.minute
+    for entry in windows:
+        sh, sm, eh, em, modality = entry
+        if (sh * 60 + sm) <= slot_min < (eh * 60 + em):
+            return modality
+    return "escolha"
 
 
 SHIFT_HOURS: dict[str, tuple[int, int]] = {
@@ -154,8 +181,8 @@ async def get_available_slots(
     preferred_shift: str,
     slot_minutes: int = 60,
     doctor_key: str | None = None,
-) -> list[datetime]:
-    """Return list of available slot start times."""
+) -> list[tuple[datetime, str]]:
+    """Return list of (slot_start, modality) pairs for available slots."""
     target_date = _parse_day(preferred_day)
     if not target_date:
         return []
@@ -174,23 +201,25 @@ async def get_available_slots(
             return []  # doctor doesn't work on this day
         # Keep only windows that overlap with the requested shift
         filtered = [
-            (sh, sm, eh, em) for sh, sm, eh, em in day_windows_raw
-            if sh < shift_end_h and eh > shift_start_h
+            entry for entry in day_windows_raw
+            if entry[0] < shift_end_h and entry[2] > shift_start_h
         ]
         if not filtered:
             return []  # doctor doesn't work this shift on this day
         windows = [
             (
-                datetime(target_date.year, target_date.month, target_date.day, sh, sm, tzinfo=TZ),
-                datetime(target_date.year, target_date.month, target_date.day, eh, em, tzinfo=TZ),
+                datetime(target_date.year, target_date.month, target_date.day, entry[0], entry[1], tzinfo=TZ),
+                datetime(target_date.year, target_date.month, target_date.day, entry[2], entry[3], tzinfo=TZ),
+                entry[4],
             )
-            for sh, sm, eh, em in filtered
+            for entry in filtered
         ]
     else:
         start_hour, end_hour = shift_start_h, shift_end_h
         windows = [(
             datetime(target_date.year, target_date.month, target_date.day, start_hour, 0, tzinfo=TZ),
             datetime(target_date.year, target_date.month, target_date.day, end_hour, 0, tzinfo=TZ),
+            "escolha",
         )]
 
     # Fetch busy times covering the full span of all windows
@@ -212,16 +241,16 @@ async def get_available_slots(
         for b in busy_raw
     ]
 
-    slots: list[datetime] = []
-    for window_start, window_end in windows:
+    slots: list[tuple[datetime, str]] = []
+    for window_start, window_end, modality in windows:
         current = window_start
         while current + slot_delta <= window_end:
             slot_end = current + slot_delta
             if not any(current < be and slot_end > bs for bs, be in busy_ranges):
-                slots.append(current)
+                slots.append((current, modality))
             current += slot_delta
 
-    slots.sort()
+    slots.sort(key=lambda x: x[0])
     return slots
 
 
@@ -233,16 +262,23 @@ async def create_event(
     doctor_name: str,
     is_minor_first: bool = False,
     session_note: str = "",
+    modality: str = "",
 ) -> str:
     """Create a Google Calendar event and return the event ID."""
     end = start + timedelta(minutes=slot_minutes)
     description = f"Paciente: {patient_name}\nMédico: {doctor_name}"
+    if modality:
+        modality_label = "Online" if modality == "online" else "Presencial"
+        description += f"\nModalidade: {modality_label}"
     if session_note:
         description += f"\n\n{session_note}"
     elif is_minor_first:
         description += "\n\n1ª hora: conversa com os pais/responsáveis\n2ª hora: consulta com o paciente"
 
     summary = f"Consulta — {patient_name}"
+    if modality:
+        modality_label = "Online" if modality == "online" else "Presencial"
+        summary += f" [{modality_label}]"
     if session_note:
         summary += f" ({session_note})"
 
@@ -278,14 +314,24 @@ async def update_event(
     patient_name: str,
     doctor_name: str,
     is_minor_first: bool = False,
+    modality: str = "",
 ) -> None:
     """Patch an existing Google Calendar event with a new start/end time."""
     new_end = new_start + timedelta(minutes=slot_minutes)
     description = f"Paciente: {patient_name}\nMédico: {doctor_name}"
+    if modality:
+        modality_label = "Online" if modality == "online" else "Presencial"
+        description += f"\nModalidade: {modality_label}"
     if is_minor_first:
         description += "\n\n1ª hora: conversa com os pais/responsáveis\n2ª hora: consulta com o paciente"
 
+    new_summary = f"Consulta — {patient_name}"
+    if modality:
+        modality_label = "Online" if modality == "online" else "Presencial"
+        new_summary += f" [{modality_label}]"
+
     patch = {
+        "summary": new_summary,
         "start": {"dateTime": new_start.isoformat(), "timeZone": TIMEZONE},
         "end":   {"dateTime": new_end.isoformat(),   "timeZone": TIMEZONE},
         "description": description,

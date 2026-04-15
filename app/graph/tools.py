@@ -87,9 +87,15 @@ async def get_available_slots(
     if not slots:
         return f"Não há horários disponíveis para {preferred_day} no turno da {preferred_shift}. Deseja tentar outro dia ou turno?"
 
+    _mod_labels = {
+        "online": "apenas online",
+        "escolha": "online ou presencial",
+        "presencial_sob_consulta": "online ou presencial — presencial requer confirmação da atendente",
+    }
     lines = [f"Horários disponíveis para {preferred_day} ({preferred_shift}):"]
-    for i, slot in enumerate(slots, 1):
-        lines.append(f"{i}. {slot.strftime('%H:%M')}")
+    for i, (slot, modality) in enumerate(slots, 1):
+        mod_label = _mod_labels.get(modality, modality)
+        lines.append(f"{i}. {slot.strftime('%H:%M')} [{mod_label}]")
 
     return "\n".join(lines)
 
@@ -101,6 +107,7 @@ async def confirm_appointment(
     state: Annotated[dict, InjectedState],
     config: RunnableConfig,
     session_note: str = "",
+    modality: str = "",
 ) -> str:
     """
     Confirma e cria o agendamento no Google Calendar.
@@ -108,6 +115,11 @@ async def confirm_appointment(
     session_note: use para identificar sessões separadas de menor de idade,
       ex: '1ª hora — responsáveis' ou '2ª hora — paciente'.
       Deixe vazio para consultas normais ou consultas de 2h em bloco único.
+    modality: modalidade de atendimento — "online" ou "presencial".
+      Para slots marcados como "apenas online" na listagem, passe "online".
+      Para slots com escolha livre, passe o que o paciente escolheu.
+      Para slots "presencial requer confirmação": se o paciente escolheu presencial,
+      use transfer_to_human antes de chamar confirm_appointment.
     """
     import logging as _log
     _logger = _log.getLogger(__name__)
@@ -126,6 +138,20 @@ async def confirm_appointment(
     except ValueError:
         return f"Formato de data inválido: {slot_datetime}. Use ISO 8601 (ex: 2026-03-19T09:00:00)."
 
+    # Enforce modality constraints from schedule
+    from app.google_calendar import get_modality_for_slot
+    slot_constraint = get_modality_for_slot(doctor, start)
+    if slot_constraint == "online":
+        effective_modality = "online"
+    elif slot_constraint == "presencial_sob_consulta" and modality == "presencial":
+        return (
+            "AÇÃO NECESSÁRIA: Este horário (quinta à tarde com o Dr. Júlio) pode ser presencial, "
+            "mas a disponibilidade precisa ser confirmada pela atendente. "
+            "Use transfer_to_human para que ela confirme antes de prosseguir."
+        )
+    else:
+        effective_modality = modality if modality in ("online", "presencial") else ""
+
     doctor_label = {"julio": "Dr. Júlio", "bruna": "Dra. Bruna"}.get(
         state.get("preferred_doctor", ""), "médico(a)"
     )
@@ -140,7 +166,7 @@ async def confirm_appointment(
         and slot_duration_minutes == 120
     )
 
-    _logger.info("CONFIRM_DEBUG2 patient=%s calendar=%s start=%s", patient_name, calendar_id, start)
+    _logger.info("CONFIRM_DEBUG2 patient=%s calendar=%s start=%s modality=%s", patient_name, calendar_id, start, effective_modality)
 
     try:
         event_id = await create_event(
@@ -151,6 +177,7 @@ async def confirm_appointment(
             doctor_name=doctor_label,
             is_minor_first=is_minor_first,
             session_note=session_note,
+            modality=effective_modality,
         )
     except Exception as e:
         _logger.error("CONFIRM_DEBUG create_event FAILED: %s", e, exc_info=True)
@@ -189,11 +216,13 @@ async def confirm_appointment(
     })
 
     session_label = f" ({session_note})" if session_note else ""
+    modality_line = f"\nModalidade: {'Online' if effective_modality == 'online' else 'Presencial'}" if effective_modality else ""
     await _notify_clinic(
         f"Agendamento realizado! ✅\n"
         f"Paciente: {patient_name}{session_label}\n"
         f"Data e horário: {formatted}\n"
         f"Médico(a): {doctor_label}"
+        f"{modality_line}"
     )
 
     return f"Consulta agendada com sucesso! ✅\n{doctor_label} — {formatted}{session_label}\nID: {event_id}"
@@ -256,11 +285,13 @@ async def reschedule_appointment(
     slot_duration_minutes: Literal[60, 120],
     state: Annotated[dict, InjectedState],
     config: RunnableConfig,
+    modality: str = "",
 ) -> str:
     """
     Remarca uma consulta existente para um novo horário.
     appointment_id é o Google Calendar event ID.
     new_slot_datetime deve estar no formato ISO 8601, ex: '2026-03-19T09:00:00'.
+    modality: modalidade do novo horário — "online" ou "presencial" (se aplicável).
     """
     from app.google_calendar import update_event
 
@@ -285,6 +316,11 @@ async def reschedule_appointment(
     appt_result = await client.from_("appointments").select("start_time").eq("appointment_id", appointment_id).maybe_single().execute()
     old_start_time = appt_result.data.get("start_time") if appt_result.data else None
 
+    # Enforce modality constraints
+    from app.google_calendar import get_modality_for_slot
+    slot_constraint = get_modality_for_slot(state.get("preferred_doctor", ""), new_start)
+    effective_modality = "online" if slot_constraint == "online" else (modality if modality in ("online", "presencial") else "")
+
     # Update Google Calendar event (same event_id, new time)
     await update_event(
         calendar_id=calendar_id,
@@ -294,6 +330,7 @@ async def reschedule_appointment(
         patient_name=patient_name,
         doctor_name=doctor_label,
         is_minor_first=is_minor_first,
+        modality=effective_modality,
     )
 
     # Update DB record
