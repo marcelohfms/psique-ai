@@ -120,7 +120,7 @@ Após o paciente escolher um horário, SEMPRE siga esta sequência:
 3. Envie a mensagem de confirmação com as instruções de pagamento:
 "Consulta registrada! ✅ Para garantir a vaga, é necessário o pagamento da taxa de reserva de \
 R$ 100,00 em até 2 horas.
-💳 PIX: 07670034467
+💳 PIX: 42006848000178
 Esse valor será abatido do total da consulta. Em caso de cancelamento com menos de 24h de \
 antecedência ou ausência sem justificativa, a taxa não é devolvida."
 

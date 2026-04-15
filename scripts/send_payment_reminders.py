@@ -41,7 +41,7 @@ def payment_reminder_message(first_name: str, doctor_label: str, date_str: str) 
         f"Olá, {first_name}! 😊 Só passando para lembrar que sua consulta com "
         f"*{doctor_label}* no dia *{date_str}* ainda aguarda o pagamento da taxa "
         f"de reserva de R$ 100,00.\n\n"
-        f"💳 PIX: 07670034467\n\n"
+        f"💳 PIX: 42006848000178\n\n"
         f"Assim que o pagamento for realizado, sua vaga estará garantida! "
         f"Precisa de alguma ajuda ou tem alguma dúvida sobre o pagamento? É só me chamar aqui. 🙏"
     )
