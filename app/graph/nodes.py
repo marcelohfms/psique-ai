@@ -68,35 +68,44 @@ async def collect_info_node(state: ConversationState, config: RunnableConfig) ->
     ).lower()
     _is_receita = "receita" in _messages_text
 
+    # Detect if this is the very first bot response (no prior AIMessages)
+    _has_greeted = any(getattr(m, "type", None) == "ai" for m in state["messages"])
+
     async def _ask(reply: str) -> dict:
         await send_text(state["phone"], reply)
         await save_message(state["phone"], "assistant", reply)
         return {"messages": [AIMessage(content=reply)]}
 
-    # Step 1: for self or someone else?
-    if state.get("is_for_self") is None:
-        return await _ask("A solicitação é para você ou para outra pessoa?")
+    # Step 1: greeting + first question (nome completo) combined on first response
+    if not _has_greeted:
+        greeting = (
+            "Olá! 😊 Sou a Eva, assistente virtual da Clínica Psique.\n\n"
+            "Claro, posso te ajudar com isso! Mas primeiro precisarei colher algumas informações.\n\n"
+            "Pode me informar o nome completo do paciente?"
+        )
+        return await _ask(greeting)
 
-    # Step 2: full name
+    # Step 2: full name (subsequent turns if still missing)
     if not state.get("user_name"):
-        if state.get("is_for_self"):
-            return await _ask("Pode me informar seu nome completo?")
-        else:
-            return await _ask("Pode me informar o nome completo do paciente?")
+        return await _ask("Pode me informar o nome completo do paciente?")
 
-    # Steps 3 & 4 (birth_date, is_patient) are collected by the LLM below.
-    # Steps 5-7 only run after the LLM has already collected those fields.
+    # Step 3: CPF
+    if not state.get("patient_cpf"):
+        return await _ask("Qual o CPF do paciente?")
+
+    # Steps 4 & 5 (birth_date, is_patient) are collected by the LLM below.
+    # Steps 6-8 only run after the LLM has already collected those fields.
     if state.get("birth_date") is not None and state.get("is_patient") is not None:
 
-        # Step 5: preferred doctor — always confirm per request
+        # Step 6: preferred doctor
         if not state.get("preferred_doctor"):
             return await _ask("Essa solicitação é para o Dr. Júlio ou para a Dra. Bruna?")
 
-        # Step 6: email
+        # Step 7: email
         if not state.get("patient_email"):
-            return await _ask("Qual o seu e-mail para contato?")
+            return await _ask("Qual o e-mail para envio?")
 
-        # Step 7: medication — only for receita
+        # Step 8: medication — only for receita
         if _is_receita and not state.get("medication_note"):
             return await _ask("Qual medicação você precisa na receita?")
 
@@ -127,7 +136,7 @@ async def collect_info_node(state: ConversationState, config: RunnableConfig) ->
 
     for field in [
         "user_name", "is_for_self", "patient_name",
-        "birth_date", "guardian_relationship", "guardian_name", "guardian_cpf",
+        "birth_date", "patient_cpf", "guardian_relationship", "guardian_name", "guardian_cpf",
         "is_patient", "preferred_doctor", "patient_email",
         "consultation_reason", "referral_professional", "medication_note",
     ]:
@@ -157,6 +166,7 @@ async def collect_info_node(state: ConversationState, config: RunnableConfig) ->
                 "patient_name": merged.get("patient_name"),
                 "age": merged.get("patient_age"),
                 "birth_date": merged.get("birth_date"),
+                "patient_cpf": merged.get("patient_cpf"),
                 "guardian_name": merged.get("guardian_name"),
                 "guardian_cpf": merged.get("guardian_cpf"),
                 "guardian_relationship": merged.get("guardian_relationship"),

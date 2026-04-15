@@ -38,6 +38,7 @@ class ConversationState(TypedDict):
     guardian_name: str | None       # nome dos pais/responsáveis (menores)
     guardian_cpf: str | None        # CPF dos pais/responsáveis (menores)
     patient_email: str | None       # e-mail para contato
+    patient_cpf: str | None          # CPF do paciente
     consultation_reason: str | None # motivo da consulta (apenas novos pacientes)
     referral_professional: str | None  # profissional que encaminhou (apenas novos pacientes)
     medication_note: str | None      # medicação solicitada (apenas para receitas)
