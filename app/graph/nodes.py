@@ -71,13 +71,20 @@ async def collect_info_node(state: ConversationState, config: RunnableConfig) ->
     # Detect if this is the very first bot response (no prior AIMessages)
     _has_greeted = any(getattr(m, "type", None) == "ai" for m in state["messages"])
 
+    # Detect if the user has already made a specific request
+    _request_keywords = [
+        "receita", "agendar", "consulta", "laudo", "exame",
+        "relatório", "relatorio", "nota fiscal", "declaração", "declaracao",
+    ]
+    _has_request = any(kw in _messages_text for kw in _request_keywords)
+
     async def _ask(reply: str) -> dict:
         await send_text(state["phone"], reply)
         await save_message(state["phone"], "assistant", reply)
         return {"messages": [AIMessage(content=reply)]}
 
-    # Step 1: greeting + first question (nome completo) combined on first response
-    if not _has_greeted:
+    # Step 1: greeting + first question only when user already made a specific request
+    if not _has_greeted and _has_request:
         greeting = (
             "Olá! 😊 Sou a Eva, assistente virtual da Clínica Psique.\n\n"
             "Claro, posso te ajudar com isso! Mas primeiro precisarei colher algumas informações.\n\n"
