@@ -217,12 +217,14 @@ async def confirm_appointment(
 
     session_label = f" ({session_note})" if session_note else ""
     modality_line = f"\nModalidade: {'Online' if effective_modality == 'online' else 'Presencial'}" if effective_modality else ""
+    patient_email = state.get("patient_email") or "não informado"
     await _notify_clinic(
         f"Agendamento realizado! ✅\n"
         f"Paciente: {patient_name}{session_label}\n"
         f"Data e horário: {formatted}\n"
         f"Médico(a): {doctor_label}"
-        f"{modality_line}"
+        f"{modality_line}\n\n"
+        f"📋 Lembrete: enviar o *Termo de Compromisso* para o e-mail do paciente ({patient_email})."
     )
 
     return f"Consulta agendada com sucesso! ✅\n{doctor_label} — {formatted}{session_label}\nID: {event_id}"
