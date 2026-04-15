@@ -137,8 +137,11 @@ async def process_message(phone: str, text: str) -> None:
     config = {"configurable": {"thread_id": phone, "phone": phone}}
 
     # If user was transferred to human or paused by attendant, bot stays silent.
-    # After 24 h, auto-reactivate when patient sends a new message.
+    # manual_hold=True = desligado permanentemente, nunca reativa.
+    # active=False + deactivated_at = hold de 24 h, reativa automaticamente.
     existing = await get_user_by_phone(phone)
+    if existing and existing.get("manual_hold"):
+        return  # hold permanente — nunca reativa
     if existing and existing.get("active") is False:
         deactivated_at = existing.get("deactivated_at")
         if deactivated_at:
