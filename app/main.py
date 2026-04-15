@@ -2,6 +2,7 @@ import asyncio
 import logging
 import os
 from contextlib import asynccontextmanager
+from datetime import datetime, timezone, timedelta
 from dotenv import load_dotenv
 load_dotenv()
 
@@ -105,14 +106,53 @@ async def extract_message(payload: dict) -> tuple[str, str] | None:
     return None
 
 
+_PAUSE_CMD   = "~Obrigada, Eva!~"
+_RESUME_CMD  = "~Eva, consegue dar continuidade no atendimento?~"
+_HOLD_HOURS  = 24
+
+
+async def _pause_bot_for_patient(phone: str) -> None:
+    """Desativa o bot para o paciente pelo período de hold (24 h)."""
+    from app.database import upsert_user
+    await upsert_user(phone, {
+        "active": False,
+        "deactivated_at": datetime.now(timezone.utc).isoformat(),
+    })
+    logger.info("Bot pausado para %s pelo comando da atendente", phone)
+
+
+async def _resume_bot_for_patient(phone: str) -> None:
+    """Reativa o bot para o paciente imediatamente."""
+    from app.database import upsert_user
+    await upsert_user(phone, {
+        "active": True,
+        "deactivated_at": None,
+    })
+    logger.info("Bot reativado para %s pelo comando da atendente", phone)
+    # O bot vai responder na próxima mensagem do paciente — sem enviar nada agora.
+
+
 async def process_message(phone: str, text: str) -> None:
     """Route a (possibly debounced) message through the LangGraph chatbot."""
     config = {"configurable": {"thread_id": phone, "phone": phone}}
 
-    # If user was transferred to human, bot stays silent
+    # If user was transferred to human or paused by attendant, bot stays silent.
+    # After 24 h, auto-reactivate when patient sends a new message.
     existing = await get_user_by_phone(phone)
     if existing and existing.get("active") is False:
-        return
+        deactivated_at = existing.get("deactivated_at")
+        if deactivated_at:
+            dt = datetime.fromisoformat(deactivated_at)
+            if not dt.tzinfo:
+                dt = dt.replace(tzinfo=timezone.utc)
+            if datetime.now(timezone.utc) - dt < timedelta(hours=_HOLD_HOURS):
+                return  # still within the 24-h hold
+            # 24 h elapsed — reactivate automatically and proceed
+            from app.database import upsert_user
+            await upsert_user(phone, {"active": True, "deactivated_at": None})
+            logger.info("Bot auto-reativado para %s após 24 h", phone)
+        else:
+            return  # no timestamp = permanent hold, never auto-reactivate
 
     snapshot = await graph_module.chatbot.aget_state(config)
     if snapshot.values:
@@ -178,6 +218,18 @@ async def _handle_payload(payload: dict) -> None:
         msg = payload.get("message", {})
         msg_type = msg.get("messageType", "unknown")
         logger.info("Incoming messageType=%s fromMe=%s", msg_type, msg.get("fromMe"))
+
+        # Detect attendant commands typed directly in WhatsApp (fromMe but not via API)
+        if msg.get("fromMe") and not msg.get("wasSentByApi") and not msg.get("isGroup"):
+            raw_text = (msg.get("text") or msg.get("content", {}).get("text") or "").strip()
+            phone = msg.get("chatid", "")
+            if phone:
+                if raw_text == _PAUSE_CMD:
+                    await _pause_bot_for_patient(phone)
+                    return
+                if raw_text == _RESUME_CMD:
+                    await _resume_bot_for_patient(phone)
+                    return
 
         # Check /reset directly from raw payload (before type filtering)
         if not msg.get("fromMe") and not msg.get("isGroup"):
