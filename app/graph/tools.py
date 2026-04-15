@@ -380,6 +380,10 @@ async def request_document(
     import logging as _log
     _log.getLogger(__name__).warning("REQUEST_DOC_CALLED type=%s email=%s", document_type, patient_email)
 
+    # Fall back to state if LLM didn't pass medication_note explicitly
+    if not medication_note.strip():
+        medication_note = state.get("medication_note") or ""
+
     if document_type == "receita" and not medication_note.strip():
         return "Qual medicação você precisa na receita?"
 
