@@ -101,14 +101,15 @@ async def collect_info_node(state: ConversationState, config: RunnableConfig) ->
                 return msg.content or ""
         return ""
 
+    _extracted: dict = {}  # fields extracted programmatically this turn
+
     _NAME_Q = "Pode me informar o nome completo do paciente?"
     _CPF_Q = "Qual o CPF do paciente?"
+    _BIRTH_Q = "Qual a data de nascimento do paciente? (formato dd/mm/aaaa)"
+    _PATIENT_Q = "O paciente já é paciente da clínica?"
     _DOCTOR_Q = "Essa solicitação é para o Dr. Júlio ou para a Dra. Bruna?"
     _EMAIL_Q = "Qual o e-mail para envio?"
     _MED_Q = "Qual medicação você precisa na receita?"
-
-    # Accumulated extractions to inject into the LLM context and state update
-    _extracted: dict = {}
 
     # Step 1: greeting + first question only when user already made a specific request
     if not _has_greeted and _has_request:
@@ -121,13 +122,13 @@ async def collect_info_node(state: ConversationState, config: RunnableConfig) ->
 
     # Steps 2-8 only run when user has made a specific request
     if _has_request:
+        from app.graph.schemas import _parse_birth_date
         last_ai = _last_ai()
         last_human = _last_human().strip()
 
         # Step 2: full name
         if not state.get("user_name"):
             if last_ai.endswith(_NAME_Q) and last_human:
-                # User answered → extract name, ask CPF
                 return await _extract_and_ask(
                     {"user_name": last_human, "patient_name": last_human}, _CPF_Q
                 )
@@ -136,47 +137,75 @@ async def collect_info_node(state: ConversationState, config: RunnableConfig) ->
         # Step 3: CPF
         if not state.get("patient_cpf"):
             if last_ai == _CPF_Q and last_human:
-                # Extract CPF, update collected so LLM asks birth_date next
-                _extracted["patient_cpf"] = last_human
-                collected["patient_cpf"] = last_human
-            else:
-                return await _ask(_CPF_Q)
+                return await _extract_and_ask({"patient_cpf": last_human}, _BIRTH_Q)
+            return await _ask(_CPF_Q)
 
-        # Steps 4 & 5 (birth_date, is_patient) collected by LLM.
-        # Steps 6-8 only after the LLM has collected those fields.
-        if state.get("birth_date") is not None and state.get("is_patient") is not None:
+        # Step 4: birth date
+        if not state.get("birth_date"):
+            if last_ai == _BIRTH_Q and last_human:
+                parsed = _parse_birth_date(last_human)
+                if parsed:
+                    # Calculate age
+                    bd = datetime.strptime(parsed, "%d/%m/%Y")
+                    today = datetime.now()
+                    age = today.year - bd.year - ((today.month, today.day) < (bd.month, bd.day))
+                    return await _extract_and_ask(
+                        {"birth_date": parsed, "patient_age": age}, _PATIENT_Q
+                    )
+                else:
+                    return await _ask("Não consegui identificar a data. Pode informar no formato dd/mm/aaaa? Ex: 15/01/1990.")
+            return await _ask(_BIRTH_Q)
 
-            # Step 6: preferred doctor
-            if not state.get("preferred_doctor"):
-                if last_ai == _DOCTOR_Q and last_human:
+        # Step 5: is_patient
+        if state.get("is_patient") is None:
+            if last_ai == _PATIENT_Q and last_human:
+                h = last_human.lower()
+                if any(kw in h for kw in ["sim", "já", "ja", "sou", "é", "e paciente", "paciente"]):
+                    is_patient = True
+                elif any(kw in h for kw in ["não", "nao", "nunca", "primeira", "novo", "nova"]):
+                    is_patient = False
+                else:
+                    is_patient = None
+                if is_patient is not None:
+                    return await _extract_and_ask({"is_patient": is_patient}, _DOCTOR_Q)
+            return await _ask(_PATIENT_Q)
+
+        # Step 6: preferred doctor
+        if not state.get("preferred_doctor"):
+            if last_ai == _DOCTOR_Q and last_human:
+                h = last_human.lower()
+                if "julio" in h or "júlio" in h:
+                    doctor = "julio"
+                elif "bruna" in h:
+                    doctor = "bruna"
+                else:
                     doctor = None
-                    h = last_human.lower()
-                    if "julio" in h or "júlio" in h:
-                        doctor = "julio"
-                    elif "bruna" in h:
-                        doctor = "bruna"
-                    if doctor:
-                        return await _extract_and_ask({"preferred_doctor": doctor}, _EMAIL_Q)
-                return await _ask(_DOCTOR_Q)
+                if doctor:
+                    return await _extract_and_ask({"preferred_doctor": doctor}, _EMAIL_Q)
+            return await _ask(_DOCTOR_Q)
 
-            # Step 7: email
-            if not state.get("patient_email"):
-                if last_ai == _EMAIL_Q and last_human:
-                    if _is_receita and not state.get("medication_note"):
-                        return await _extract_and_ask({"patient_email": last_human}, _MED_Q)
-                    else:
-                        _extracted["patient_email"] = last_human
-                        collected["patient_email"] = last_human
+        # Step 7: email
+        if not state.get("patient_email"):
+            if last_ai == _EMAIL_Q and last_human:
+                if _is_receita and not state.get("medication_note"):
+                    return await _extract_and_ask({"patient_email": last_human}, _MED_Q)
                 else:
-                    return await _ask(_EMAIL_Q)
+                    # Last step — save and fall through to LLM to confirm
+                    _extracted["patient_email"] = last_human
+                    collected["patient_email"] = last_human
+            else:
+                return await _ask(_EMAIL_Q)
 
-            # Step 8: medication — only for receita
-            if _is_receita and not state.get("medication_note"):
-                if last_ai == _MED_Q and last_human:
-                    _extracted["medication_note"] = last_human
-                    collected["medication_note"] = last_human
-                else:
-                    return await _ask(_MED_Q)
+        # Step 8: medication — only for receita (last step)
+        if _is_receita and not state.get("medication_note"):
+            if last_ai == _MED_Q and last_human:
+                # Last step — save and fall through to LLM to confirm
+                _extracted["medication_note"] = last_human
+                collected["medication_note"] = last_human
+            else:
+                return await _ask(_MED_Q)
+
+        # All programmatic steps complete — _extracted will be merged into update below
 
     messages = [
         SystemMessage(content=COLLECT_SYSTEM.format(collected=collected, pricing_rules=get_pricing_rules(datetime.now()), medical_limits_rule=MEDICAL_LIMITS_RULE)),
