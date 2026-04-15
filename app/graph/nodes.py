@@ -92,29 +92,32 @@ async def collect_info_node(state: ConversationState, config: RunnableConfig) ->
         )
         return await _ask(greeting)
 
-    # Step 2: full name (subsequent turns if still missing)
-    if not state.get("user_name"):
-        return await _ask("Pode me informar o nome completo do paciente?")
+    # Steps 2-8 only run when user has made a specific request
+    if _has_request:
 
-    # Step 3: CPF
-    if not state.get("patient_cpf"):
-        return await _ask("Qual o CPF do paciente?")
+        # Step 2: full name
+        if not state.get("user_name"):
+            return await _ask("Pode me informar o nome completo do paciente?")
 
-    # Steps 4 & 5 (birth_date, is_patient) are collected by the LLM below.
-    # Steps 6-8 only run after the LLM has already collected those fields.
-    if state.get("birth_date") is not None and state.get("is_patient") is not None:
+        # Step 3: CPF
+        if not state.get("patient_cpf"):
+            return await _ask("Qual o CPF do paciente?")
 
-        # Step 6: preferred doctor
-        if not state.get("preferred_doctor"):
-            return await _ask("Essa solicitação é para o Dr. Júlio ou para a Dra. Bruna?")
+        # Steps 4 & 5 (birth_date, is_patient) are collected by the LLM below.
+        # Steps 6-8 only run after the LLM has already collected those fields.
+        if state.get("birth_date") is not None and state.get("is_patient") is not None:
 
-        # Step 7: email
-        if not state.get("patient_email"):
-            return await _ask("Qual o e-mail para envio?")
+            # Step 6: preferred doctor
+            if not state.get("preferred_doctor"):
+                return await _ask("Essa solicitação é para o Dr. Júlio ou para a Dra. Bruna?")
 
-        # Step 8: medication — only for receita
-        if _is_receita and not state.get("medication_note"):
-            return await _ask("Qual medicação você precisa na receita?")
+            # Step 7: email
+            if not state.get("patient_email"):
+                return await _ask("Qual o e-mail para envio?")
+
+            # Step 8: medication — only for receita
+            if _is_receita and not state.get("medication_note"):
+                return await _ask("Qual medicação você precisa na receita?")
 
     messages = [
         SystemMessage(content=COLLECT_SYSTEM.format(collected=collected, pricing_rules=get_pricing_rules(datetime.now()), medical_limits_rule=MEDICAL_LIMITS_RULE)),
