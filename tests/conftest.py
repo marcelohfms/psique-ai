@@ -9,8 +9,9 @@ os.environ.setdefault("OPENAI_API_KEY", "sk-test")
 os.environ.setdefault("GOOGLE_CLIENT_ID", "test-client-id")
 os.environ.setdefault("GOOGLE_CLIENT_SECRET", "test-secret")
 os.environ.setdefault("GOOGLE_REFRESH_TOKEN", "test-refresh-token")
-os.environ.setdefault("UAZAPI_TOKEN", "test-token")
-os.environ.setdefault("UAZAPI_BASE_URL", "https://test.uazapi.com")
+os.environ.setdefault("WHATSAPP_TOKEN", "test-token")
+os.environ.setdefault("WHATSAPP_PHONE_NUMBER_ID", "123456789")
+os.environ.setdefault("WHATSAPP_VERIFY_TOKEN", "test-verify-token")
 
 import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -43,7 +44,7 @@ def mock_supabase():
 
 @pytest.fixture
 def mock_send_text():
-    with patch("app.uazapi.send_text", new_callable=AsyncMock) as mock:
+    with patch("app.whatsapp.send_text", new_callable=AsyncMock) as mock:
         yield mock
 
 

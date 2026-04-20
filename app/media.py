@@ -1,11 +1,12 @@
 """
-Download and process media messages from UAZAPI.
+Download and process media messages from WhatsApp Cloud API (Meta).
 
 Flow:
-  1. POST /message/download {messageid} → {url: "..."}
-  2. GET url → raw bytes
-  3. AudioMessage → OpenAI Whisper transcription
-  4. ImageMessage → upload to Drive (if configured) + GPT-4o vision description
+  1. Receive media_id from webhook payload
+  2. Resolve media URL via GET graph.facebook.com/v19.0/{media_id}
+  3. Download bytes using Authorization header
+  4. AudioMessage → OpenAI Whisper transcription
+  5. ImageMessage → upload to Drive (if configured) + GPT-4o vision description
 """
 import base64
 import logging
@@ -13,10 +14,9 @@ import os
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
-import httpx
 from openai import AsyncOpenAI
 
-from app.uazapi import BASE_URL, _headers
+from app.whatsapp import download_media
 
 logger = logging.getLogger(__name__)
 TZ = ZoneInfo("America/Recife")
@@ -31,39 +31,21 @@ def _get_openai() -> AsyncOpenAI:
     return _openai
 
 
-async def _download(message_id: str) -> bytes:
-    async with httpx.AsyncClient(timeout=30) as client:
-        resp = await client.post(
-            f"{BASE_URL}/message/download",
-            json={"id": message_id},
-            headers=_headers(),
-        )
-        resp.raise_for_status()
-        data = resp.json()
-        url = data.get("fileURL") or data.get("url") or data.get("mediaUrl")
-        if not url:
-            raise ValueError(f"No URL in download response: {resp.text}")
-        media = await client.get(url, follow_redirects=True)
-        media.raise_for_status()
-        return media.content
-
-
-async def transcribe_audio(message_id: str) -> str:
+async def transcribe_audio(media_id: str) -> str:
     """Download audio and transcribe with Whisper."""
-    audio_bytes = await _download(message_id)
+    audio_bytes = await download_media(media_id)
     result = await _get_openai().audio.transcriptions.create(
         model="whisper-1",
-        file=("audio.mp3", audio_bytes, "audio/mpeg"),
+        file=("audio.ogg", audio_bytes, "audio/ogg"),
         language="pt",
     )
     return f"[áudio transcrito]: {result.text}"
 
 
-async def describe_image(message_id: str) -> str:
+async def describe_image(media_id: str) -> str:
     """Download image, classify, upload to Drive, and describe with GPT-4o vision."""
-    image_bytes = await _download(message_id)
+    image_bytes = await download_media(media_id)
 
-    # Classify and describe in one vision call
     b64 = base64.b64encode(image_bytes).decode()
     resp = await _get_openai().chat.completions.create(
         model="gpt-4o",
@@ -115,16 +97,17 @@ async def describe_image(message_id: str) -> str:
         return f"[imagem]: {description}"
 
 
-async def process_media(message_id: str, media_type: str, phone: str = "") -> str | None:
+async def process_media(media_id: str, media_type: str, phone: str = "") -> str | None:
     """
     Returns transcribed/described text for audio or image messages.
+    media_type: 'audio' or 'image' (Meta Cloud API types).
     Returns None for unsupported types.
     """
     try:
-        if media_type == "AudioMessage":
-            return await transcribe_audio(message_id)
-        if media_type == "ImageMessage":
-            return await describe_image(message_id)
+        if media_type == "audio":
+            return await transcribe_audio(media_id)
+        if media_type == "image":
+            return await describe_image(media_id)
     except Exception:
-        logger.exception("Failed to process media %s (type=%s)", message_id, media_type)
+        logger.exception("Failed to process media %s (type=%s)", media_id, media_type)
     return None

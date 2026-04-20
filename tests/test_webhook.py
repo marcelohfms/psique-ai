@@ -1,81 +1,130 @@
-"""Tests for extract_message() and the /webhook endpoint."""
+"""Tests for extract_message() and the /webhook endpoint (Meta Cloud API format)."""
 import pytest
 from unittest.mock import AsyncMock, patch
 
 from tests.conftest import PHONE
 
+# Strip @s.whatsapp.net to get the raw number Meta sends
+_NUMBER = PHONE.replace("@s.whatsapp.net", "")
 
-def _msg(**kwargs) -> dict:
-    """Build a minimal UAZAPI webhook payload."""
-    defaults = {
-        "fromMe": False,
-        "wasSentByApi": False,
-        "isGroup": False,
-        "chatid": PHONE,
-        "messageType": "Conversation",
-        "text": "olá",
+
+def _meta_payload(
+    msg_type: str = "text",
+    body: str = "olá",
+    from_number: str = _NUMBER,
+    include_messages: bool = True,
+) -> dict:
+    """Build a minimal Meta Cloud API webhook payload."""
+    value: dict = {}
+    if include_messages:
+        msg: dict = {"from": from_number, "id": "wamid.test", "type": msg_type}
+        if msg_type == "text":
+            msg["text"] = {"body": body}
+        elif msg_type == "audio":
+            msg["audio"] = {"id": "media-123", "mime_type": "audio/ogg; codecs=opus"}
+        elif msg_type == "image":
+            msg["image"] = {"id": "media-456", "mime_type": "image/jpeg"}
+        value["messages"] = [msg]
+
+    return {
+        "object": "whatsapp_business_account",
+        "entry": [{"id": "waba-id", "changes": [{"value": value, "field": "messages"}]}],
     }
-    defaults.update(kwargs)
-    return {"message": defaults}
+
+
+def _status_payload() -> dict:
+    """Build a Meta delivery status payload (no messages key)."""
+    return {
+        "object": "whatsapp_business_account",
+        "entry": [{"id": "waba-id", "changes": [{"value": {"statuses": [{"id": "wamid.test", "status": "delivered"}]}, "field": "messages"}]}],
+    }
 
 
 # ── extract_message tests ─────────────────────────────────────────────────────
 
-async def test_ignores_fromme():
+async def test_extracts_text_message():
     from app.main import extract_message
-    result = await extract_message(_msg(fromMe=True))
-    assert result is None
-
-
-async def test_ignores_group():
-    from app.main import extract_message
-    result = await extract_message(_msg(isGroup=True))
-    assert result is None
-
-
-async def test_extracts_conversation_text():
-    from app.main import extract_message
-    result = await extract_message(_msg(text="Quero marcar consulta"))
-    assert result == (PHONE, "Quero marcar consulta")
-
-
-async def test_extended_text_includes_quoted_context():
-    from app.main import extract_message
-    payload = _msg(
-        messageType="ExtendedTextMessage",
-        text="Sim, isso mesmo",
-        quoted="Confirma o horário das 9h?",
-    )
-    result = await extract_message(payload)
+    result = await extract_message(_meta_payload(body="Quero marcar consulta"))
     assert result is not None
     phone, text = result
     assert phone == PHONE
-    assert "Confirma o horário das 9h?" in text
-    assert "Sim, isso mesmo" in text
+    assert text == "Quero marcar consulta"
 
 
-async def test_ignores_missing_chatid():
+async def test_ignores_status_payload():
     from app.main import extract_message
-    result = await extract_message(_msg(chatid=""))
+    result = await extract_message(_status_payload())
+    assert result is None
+
+
+async def test_ignores_empty_messages():
+    from app.main import extract_message
+    result = await extract_message(_meta_payload(include_messages=False))
     assert result is None
 
 
 async def test_ignores_empty_text():
     from app.main import extract_message
-    result = await extract_message(_msg(text="   "))
+    result = await extract_message(_meta_payload(body="   "))
     assert result is None
 
 
 async def test_ignores_unknown_message_type():
     from app.main import extract_message
-    result = await extract_message(_msg(messageType="StickerMessage"))
+    result = await extract_message(_meta_payload(msg_type="sticker"))
     assert result is None
 
 
-# ── /webhook endpoint test ────────────────────────────────────────────────────
+async def test_ignores_missing_from():
+    from app.main import extract_message
+    result = await extract_message(_meta_payload(from_number=""))
+    assert result is None
 
-def test_webhook_returns_200_immediately(http_client):
-    """The endpoint must respond 200 regardless of payload content."""
-    response = http_client.post("/webhook", json=_msg())
+
+async def test_extracts_audio_message():
+    from app.main import extract_message
+    with patch("app.media.process_media", new_callable=AsyncMock, return_value="[áudio transcrito]: consulta amanhã"):
+        result = await extract_message(_meta_payload(msg_type="audio"))
+    assert result is not None
+    phone, text = result
+    assert phone == PHONE
+    assert "áudio transcrito" in text
+
+
+async def test_extracts_image_message():
+    from app.main import extract_message
+    with patch("app.media.process_media", new_callable=AsyncMock, return_value="[imagem]: COMPROVANTE DE PAGAMENTO: R$100"):
+        result = await extract_message(_meta_payload(msg_type="image"))
+    assert result is not None
+    _, text = result
+    assert "COMPROVANTE" in text
+
+
+# ── /webhook endpoint tests ───────────────────────────────────────────────────
+
+def test_webhook_post_returns_200(http_client):
+    """POST /webhook must respond 200 immediately."""
+    response = http_client.post("/webhook", json=_meta_payload())
     assert response.status_code == 200
     assert response.json() == {"status": "ok"}
+
+
+def test_webhook_verify_get_returns_challenge(http_client):
+    """GET /webhook must respond with the hub.challenge when token matches."""
+    import os
+    token = os.environ.get("WHATSAPP_VERIFY_TOKEN", "test-verify-token")
+    response = http_client.get(
+        "/webhook",
+        params={"hub.mode": "subscribe", "hub.verify_token": token, "hub.challenge": "abc123"},
+    )
+    assert response.status_code == 200
+    assert response.text == "abc123"
+
+
+def test_webhook_verify_get_rejects_wrong_token(http_client):
+    """GET /webhook must respond 403 when token doesn't match."""
+    response = http_client.get(
+        "/webhook",
+        params={"hub.mode": "subscribe", "hub.verify_token": "wrong-token", "hub.challenge": "abc123"},
+    )
+    assert response.status_code == 403

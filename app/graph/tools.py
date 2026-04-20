@@ -7,7 +7,7 @@ from langchain_core.tools import tool
 from langchain_core.runnables import RunnableConfig
 from langgraph.prebuilt import InjectedState
 
-from app.uazapi import send_text
+from app.whatsapp import send_text
 from app.database import get_supabase, log_event, upsert_user, get_user_by_phone, DOCTOR_IDS, DOCTOR_NAMES
 
 TZ = ZoneInfo("America/Recife")

@@ -7,14 +7,14 @@ from dotenv import load_dotenv
 load_dotenv()
 
 
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, Request, Response, Header, HTTPException
 from langchain_core.messages import HumanMessage
 
 from app.graph import graph as graph_module
 from app.database import get_user_by_phone, log_event, DOCTOR_NAMES, save_message
 from app.buffer import push as buffer_push
 from app.auth import router as auth_router
-from app.uazapi import send_text
+from app.whatsapp import send_text
 
 logger = logging.getLogger(__name__)
 
@@ -31,8 +31,6 @@ async def lifespan(app: FastAPI):
         from app.graph.graph import build_graph
 
         logger.info("Connecting to Supabase checkpointer...")
-        # prepare_threshold=None disables prepared statements, required for
-        # pgbouncer in transaction mode (Supabase shared pooler)
         async with await AsyncConnection.connect(
             conn_string,
             autocommit=True,
@@ -53,95 +51,160 @@ app = FastAPI(title="Psique Chatbot", lifespan=lifespan)
 app.include_router(auth_router)
 
 
-_TEXT_TYPES = {"Conversation", "ExtendedTextMessage"}
-_MEDIA_TYPES = {"AudioMessage", "ImageMessage"}
+# ── Webhook verification (Meta requires GET on the webhook URL) ───────────────
 
+@app.get("/webhook")
+async def webhook_verify(request: Request):
+    """Meta webhook verification handshake."""
+    params = request.query_params
+    mode      = params.get("hub.mode")
+    token     = params.get("hub.verify_token")
+    challenge = params.get("hub.challenge")
+
+    if mode == "subscribe" and token == os.getenv("WHATSAPP_VERIFY_TOKEN", ""):
+        logger.info("Webhook verified by Meta.")
+        return Response(content=challenge, media_type="text/plain")
+
+    logger.warning("Webhook verification failed — token mismatch.")
+    raise HTTPException(status_code=403, detail="Verification failed")
+
+
+# ── Message extraction from Meta Cloud API payload ────────────────────────────
 
 async def extract_message(payload: dict) -> tuple[str, str] | None:
     """
-    Extract (phone, text) from a UAZAPI webhook payload.
-    Handles text, extended text, audio (Whisper) and image (GPT-4o vision).
+    Extract (phone, text) from a Meta Cloud API webhook payload.
+    Handles text, audio and image messages.
+    Returns None for statuses, reactions, stickers and unsupported types.
     """
     from app.media import process_media
 
-    msg = payload.get("message", {})
-
-    if msg.get("fromMe") or msg.get("wasSentByApi"):
-        return None
-    if msg.get("isGroup"):
-        return None
-
-    phone = msg.get("chatid", "")
-    if not phone:
+    try:
+        entry   = payload["entry"][0]
+        change  = entry["changes"][0]
+        value   = change["value"]
+    except (KeyError, IndexError):
         return None
 
-    msg_type = msg.get("messageType", "")
+    # Ignore status updates (delivery receipts etc.)
+    if "statuses" in value and "messages" not in value:
+        return None
 
-    if msg_type in _TEXT_TYPES:
-        text = msg.get("text") or msg.get("content", {}).get("text", "")
-        if not text or not text.strip():
+    messages = value.get("messages")
+    if not messages:
+        return None
+
+    msg = messages[0]
+    msg_type = msg.get("type", "")
+    from_number = msg.get("from", "")
+    if not from_number:
+        return None
+
+    phone = from_number + "@s.whatsapp.net"
+
+    if msg_type == "text":
+        text = msg.get("text", {}).get("body", "").strip()
+        if not text:
             return None
+        # Prepend quoted context if this is a reply
+        context = msg.get("context")
+        if context:
+            quoted_body = context.get("quoted_message", {}).get("text", {}).get("body", "")
+            if quoted_body:
+                text = f'[Em resposta a: "{quoted_body}"]\n{text}'
+        return phone, text
 
-        # For replies, prepend the quoted message so the LLM has context
-        if msg_type == "ExtendedTextMessage":
-            quoted = msg.get("quoted", "")
-            if quoted and isinstance(quoted, str):
-                text = f'[Em resposta a: "{quoted}"]\n{text}'
-            elif quoted and isinstance(quoted, dict):
-                quoted_text = quoted.get("text") or quoted.get("body", "")
-                if quoted_text:
-                    text = f'[Em resposta a: "{quoted_text}"]\n{text}'
-
-        return phone, text.strip()
-
-    if msg_type in _MEDIA_TYPES:
-        message_id = msg.get("messageid") or msg.get("id", "")
-        if not message_id:
+    if msg_type == "audio":
+        media_id = msg.get("audio", {}).get("id", "")
+        if not media_id:
             return None
-        text = await process_media(message_id, msg_type, phone=phone)
+        text = await process_media(media_id, "audio", phone=phone)
         if not text:
             return None
         return phone, text
 
+    if msg_type == "image":
+        media_id = msg.get("image", {}).get("id", "")
+        if not media_id:
+            return None
+        text = await process_media(media_id, "image", phone=phone)
+        if not text:
+            return None
+        return phone, text
+
+    # reaction, sticker, document, location, etc. — ignore
+    logger.info("Unsupported message type ignored: %s", msg_type)
     return None
 
 
-_PAUSE_CMD   = "~Obrigada, Eva!~"
-_RESUME_CMD  = "~Eva, consegue dar continuidade no atendimento?~"
-_HOLD_HOURS  = 24
+# ── Attendant pause/resume commands ──────────────────────────────────────────
+# With Meta Cloud API, messages typed in the WhatsApp app are NOT delivered
+# to the webhook. Attendant commands are handled via these admin endpoints.
+
+_HOLD_HOURS = 24
 
 
 async def _pause_bot_for_patient(phone: str) -> None:
-    """Desativa o bot para o paciente pelo período de hold (24 h)."""
     from app.database import upsert_user
     await upsert_user(phone, {
         "active": False,
         "deactivated_at": datetime.now(timezone.utc).isoformat(),
     })
-    logger.info("Bot pausado para %s pelo comando da atendente", phone)
+    logger.info("Bot pausado para %s", phone)
 
 
 async def _resume_bot_for_patient(phone: str) -> None:
-    """Reativa o bot para o paciente imediatamente."""
     from app.database import upsert_user
     await upsert_user(phone, {
         "active": True,
         "deactivated_at": None,
     })
-    logger.info("Bot reativado para %s pelo comando da atendente", phone)
-    # O bot vai responder na próxima mensagem do paciente — sem enviar nada agora.
+    logger.info("Bot reativado para %s", phone)
 
+
+def _check_admin_secret(x_admin_secret: str | None) -> None:
+    secret = os.getenv("ADMIN_SECRET", "")
+    if not secret or x_admin_secret != secret:
+        raise HTTPException(status_code=403, detail="Forbidden")
+
+
+@app.post("/admin/pause")
+async def admin_pause(request: Request, x_admin_secret: str | None = Header(default=None)):
+    """Pause the bot for a patient. Body: {"phone": "5583..."}"""
+    _check_admin_secret(x_admin_secret)
+    body = await request.json()
+    phone = body.get("phone", "").strip()
+    if not phone:
+        raise HTTPException(status_code=400, detail="phone required")
+    if not phone.endswith("@s.whatsapp.net"):
+        phone += "@s.whatsapp.net"
+    await _pause_bot_for_patient(phone)
+    return {"status": "paused", "phone": phone}
+
+
+@app.post("/admin/resume")
+async def admin_resume(request: Request, x_admin_secret: str | None = Header(default=None)):
+    """Resume the bot for a patient. Body: {"phone": "5583..."}"""
+    _check_admin_secret(x_admin_secret)
+    body = await request.json()
+    phone = body.get("phone", "").strip()
+    if not phone:
+        raise HTTPException(status_code=400, detail="phone required")
+    if not phone.endswith("@s.whatsapp.net"):
+        phone += "@s.whatsapp.net"
+    await _resume_bot_for_patient(phone)
+    return {"status": "resumed", "phone": phone}
+
+
+# ── Core message processing ───────────────────────────────────────────────────
 
 async def process_message(phone: str, text: str) -> None:
     """Route a (possibly debounced) message through the LangGraph chatbot."""
     config = {"configurable": {"thread_id": phone, "phone": phone}}
 
-    # If user was transferred to human or paused by attendant, bot stays silent.
-    # manual_hold=True = desligado permanentemente, nunca reativa.
-    # active=False + deactivated_at = hold de 24 h, reativa automaticamente.
     existing = await get_user_by_phone(phone)
     if existing and existing.get("manual_hold"):
-        return  # hold permanente — nunca reativa
+        return  # permanent hold — never reactivates
     if existing and existing.get("active") is False:
         deactivated_at = existing.get("deactivated_at")
         if deactivated_at:
@@ -149,13 +212,13 @@ async def process_message(phone: str, text: str) -> None:
             if not dt.tzinfo:
                 dt = dt.replace(tzinfo=timezone.utc)
             if datetime.now(timezone.utc) - dt < timedelta(hours=_HOLD_HOURS):
-                return  # still within the 24-h hold
-            # 24 h elapsed — reactivate automatically and proceed
+                return  # still within 24-h hold
+            # 24 h elapsed — reactivate automatically
             from app.database import upsert_user
             await upsert_user(phone, {"active": True, "deactivated_at": None})
             logger.info("Bot auto-reativado para %s após 24 h", phone)
         else:
-            return  # no timestamp = permanent hold, never auto-reactivate
+            return  # no timestamp = permanent hold
 
     snapshot = await graph_module.chatbot.aget_state(config)
     if snapshot.values:
@@ -204,7 +267,6 @@ async def _reset_conversation(phone: str) -> None:
     client = await get_supabase()
     stripped = _strip_phone(phone)
 
-    # Apaga mensagens, usuário e estado do checkpointer
     await client.from_("messages").delete().eq("phone", stripped).execute()
     await client.from_("users").delete().eq("number", stripped).execute()
     for table in ("checkpoints", "checkpoint_writes", "checkpoint_blobs"):
@@ -218,37 +280,17 @@ async def _reset_conversation(phone: str) -> None:
 
 async def _handle_payload(payload: dict) -> None:
     try:
-        msg = payload.get("message", {})
-        msg_type = msg.get("messageType", "unknown")
-        logger.info("Incoming messageType=%s fromMe=%s", msg_type, msg.get("fromMe"))
-
-        # Detect attendant commands typed directly in WhatsApp (fromMe but not via API)
-        if msg.get("fromMe") and not msg.get("wasSentByApi") and not msg.get("isGroup"):
-            raw_text = (msg.get("text") or msg.get("content", {}).get("text") or "").strip()
-            phone = msg.get("chatid", "")
-            if phone:
-                if raw_text == _PAUSE_CMD:
-                    await _pause_bot_for_patient(phone)
-                    return
-                if raw_text == _RESUME_CMD:
-                    await _resume_bot_for_patient(phone)
-                    return
-
-        # Check /reset directly from raw payload (before type filtering)
-        if not msg.get("fromMe") and not msg.get("isGroup"):
-            raw_text = (msg.get("text") or msg.get("content", {}).get("text") or "").strip().lower()
-            if raw_text == "/reset":
-                phone = msg.get("chatid", "")
-                if phone:
-                    await _reset_conversation(phone)
-                    return
-
         result = await extract_message(payload)
         if result is None:
-            logger.info("Message ignored (type=%s)", msg_type)
             return
         phone, text = result
 
+        logger.info("Incoming message from %s: %.80s", phone, text)
+
+        # /reset command
+        if text.strip().lower() == "/reset":
+            await _reset_conversation(phone)
+            return
 
         await save_message(phone, "user", text)
         await buffer_push(phone, text, process_message)
