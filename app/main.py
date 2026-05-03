@@ -338,8 +338,10 @@ async def _handle_chatwoot_payload(payload: dict) -> None:
     try:
         result = _extract_chatwoot_message(payload)
         if result is None:
+            print("CHATWOOT: _extract_chatwoot_message returned None", flush=True)
             return
         phone, text, conversation_id = result
+        print(f"CHATWOOT: extracted phone={phone} conv={conversation_id} text={text!r}", flush=True)
 
         from app.chatwoot import register_conversation
         register_conversation(phone, conversation_id)
