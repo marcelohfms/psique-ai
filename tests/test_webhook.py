@@ -137,7 +137,7 @@ def _chatwoot_payload(
     content: str = "olá",
     phone: str = "+5511999999999",
     conversation_id: int = 42,
-    message_type: int = 0,
+    message_type: int | str = "incoming",
 ) -> dict:
     return {
         "id": 1,
