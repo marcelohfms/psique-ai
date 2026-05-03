@@ -352,9 +352,13 @@ async def _handle_chatwoot_payload(payload: dict) -> None:
             await _reset_conversation(phone)
             return
 
+        print("CHATWOOT: calling save_message", flush=True)
         await save_message(phone, "user", text)
+        print("CHATWOOT: calling buffer_push", flush=True)
         await buffer_push(phone, text, process_message)
-    except Exception:
+        print("CHATWOOT: buffer_push done", flush=True)
+    except Exception as e:
+        print(f"CHATWOOT: exception in _handle_chatwoot_payload: {e}", flush=True)
         logger.exception("Error handling Chatwoot webhook payload")
 
 

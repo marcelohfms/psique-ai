@@ -45,7 +45,7 @@ async def push(
         combined = " ".join(entry.messages)
         entry.messages.clear()
         entry.handle = None
-        logger.debug("Buffer flush for %s: %r", phone, combined)
+        print(f"BUFFER: firing for {phone}: {combined!r}", flush=True)
         asyncio.create_task(_run(phone, combined, handler))
 
     entry.handle = loop.call_later(DEBOUNCE_SECONDS, _fire)
