@@ -1,4 +1,5 @@
 """Tests for extract_message() and the /webhook endpoint (Meta Cloud API format)."""
+import asyncio
 import pytest
 from unittest.mock import AsyncMock, patch
 
@@ -128,3 +129,76 @@ def test_webhook_verify_get_rejects_wrong_token(http_client):
         params={"hub.mode": "subscribe", "hub.verify_token": "wrong-token", "hub.challenge": "abc123"},
     )
     assert response.status_code == 403
+
+
+# ── Chatwoot webhook tests ────────────────────────────────────────────────────
+
+def _chatwoot_payload(
+    content: str = "olá",
+    phone: str = "+5511999999999",
+    conversation_id: int = 42,
+    message_type: int = 0,
+) -> dict:
+    return {
+        "id": 1,
+        "content": content,
+        "message_type": message_type,
+        "event": "message_created",
+        "conversation": {
+            "id": conversation_id,
+            "meta": {"sender": {"phone_number": phone}},
+        },
+        "sender": {"phone_number": phone, "type": "contact"},
+    }
+
+
+async def test_chatwoot_webhook_processes_incoming_message(async_client):
+    with patch("app.main.buffer_push") as mock_push, \
+         patch("app.main.save_message") as mock_save, \
+         patch("app.chatwoot.register_conversation") as mock_register:
+        mock_push.return_value = None
+        mock_save.return_value = None
+        mock_register.return_value = None
+
+        response = await async_client.post(
+            "/chatwoot-webhook",
+            json=_chatwoot_payload(content="Quero marcar consulta"),
+        )
+        assert response.status_code == 200
+        await asyncio.sleep(0.05)
+        mock_register.assert_called_once_with("5511999999999@s.whatsapp.net", 42)
+
+
+async def test_chatwoot_webhook_ignores_outgoing_messages(async_client):
+    with patch("app.main.buffer_push") as mock_push:
+        mock_push.return_value = None
+        response = await async_client.post(
+            "/chatwoot-webhook",
+            json=_chatwoot_payload(message_type=1),
+        )
+        assert response.status_code == 200
+        await asyncio.sleep(0.05)
+        mock_push.assert_not_called()
+
+
+async def test_chatwoot_webhook_ignores_activity_messages(async_client):
+    with patch("app.main.buffer_push") as mock_push:
+        mock_push.return_value = None
+        response = await async_client.post(
+            "/chatwoot-webhook",
+            json=_chatwoot_payload(message_type=2),
+        )
+        assert response.status_code == 200
+        await asyncio.sleep(0.05)
+        mock_push.assert_not_called()
+
+
+async def test_chatwoot_webhook_ignores_missing_content(async_client):
+    payload = _chatwoot_payload()
+    payload["content"] = ""
+    with patch("app.main.buffer_push") as mock_push:
+        mock_push.return_value = None
+        response = await async_client.post("/chatwoot-webhook", json=payload)
+        assert response.status_code == 200
+        await asyncio.sleep(0.05)
+        mock_push.assert_not_called()
