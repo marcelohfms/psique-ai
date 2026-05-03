@@ -57,6 +57,9 @@ async def _run(
     handler: Callable[[str, str], Awaitable[None]],
 ) -> None:
     try:
+        print(f"BUFFER: _run starting for {phone}", flush=True)
         await handler(phone, combined)
-    except Exception:
+        print(f"BUFFER: _run done for {phone}", flush=True)
+    except Exception as e:
+        print(f"BUFFER: error for {phone}: {e}", flush=True)
         logger.exception("Error in buffer flush for %s", phone)

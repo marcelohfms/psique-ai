@@ -200,9 +200,11 @@ async def admin_resume(request: Request, x_admin_secret: str | None = Header(def
 
 async def process_message(phone: str, text: str) -> None:
     """Route a (possibly debounced) message through the LangGraph chatbot."""
+    print(f"PROCESS: starting for {phone}", flush=True)
     config = {"configurable": {"thread_id": phone, "phone": phone}}
 
     existing = await get_user_by_phone(phone)
+    print(f"PROCESS: got user existing={bool(existing)}", flush=True)
     if existing and existing.get("manual_hold"):
         return  # permanent hold — never reactivates
     if existing and existing.get("active") is False:
