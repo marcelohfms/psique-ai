@@ -708,7 +708,10 @@ async def transfer_to_human(
             notification = f"👤 Um paciente precisa de atendimento.\nNúmero: {number}"
         if reason:
             notification += f"\nMotivo: {reason}"
-        await send_text(notify_phone, notification)
+        try:
+            await send_text(notify_phone, notification)
+        except Exception:
+            logger.warning("Failed to notify clinic phone %s on human transfer", notify_phone)
 
     await log_event("human_transfer", phone, {"reason": reason})
 
