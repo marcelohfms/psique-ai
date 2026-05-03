@@ -383,6 +383,32 @@ async def test_register_payment_rename_failure_still_succeeds():
     assert "✅" in result
 
 
+async def test_transfer_to_human_unassigns_chatwoot_bot(mock_send_text):
+    """When bot hands off to human, Chatwoot agent bot is unassigned for that conversation."""
+    from app.graph.tools import transfer_to_human
+    from app.chatwoot import register_conversation, _store
+    _store.clear()
+    register_conversation("5511999999999@s.whatsapp.net", 77)
+
+    config = {
+        "configurable": {
+            "phone": "5511999999999@s.whatsapp.net",
+            "thread_id": "5511999999999@s.whatsapp.net",
+        }
+    }
+    state = {"user_name": "João", "patient_name": "João"}
+
+    with patch("app.graph.tools.upsert_user", new_callable=AsyncMock), \
+         patch("app.graph.tools.log_event", new_callable=AsyncMock), \
+         patch("app.graph.tools.send_text", new_callable=AsyncMock), \
+         patch("app.graph.tools.unassign_agent_bot", new_callable=AsyncMock) as mock_unassign:
+        await transfer_to_human.ainvoke(
+            {"reason": "paciente quer falar com atendente", "state": state},
+            config=config,
+        )
+        mock_unassign.assert_called_once_with(77)
+
+
 async def test_register_payment_sets_paid_at():
     from app.graph.tools import register_payment
     client, table, execute = _make_supabase_client_with_appointment()

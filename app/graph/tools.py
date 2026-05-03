@@ -7,8 +7,13 @@ from langchain_core.tools import tool
 from langchain_core.runnables import RunnableConfig
 from langgraph.prebuilt import InjectedState
 
+import logging
+
 from app.whatsapp import send_text
 from app.database import get_supabase, log_event, upsert_user, get_user_by_phone, DOCTOR_IDS, DOCTOR_NAMES
+from app.chatwoot import get_conversation_id, unassign_agent_bot
+
+logger = logging.getLogger(__name__)
 
 TZ = ZoneInfo("America/Recife")
 
@@ -684,6 +689,13 @@ async def transfer_to_human(
 
     # Disable bot for this user
     await upsert_user(phone, {"active": False, "deactivated_at": datetime.now(TZ).isoformat()})
+
+    conv_id = get_conversation_id(phone)
+    if conv_id is not None:
+        try:
+            await unassign_agent_bot(conv_id)
+        except Exception:
+            logger.warning("Failed to unassign Chatwoot agent bot for conv %s", conv_id)
 
     # Notify the clinic's internal number
     notify_phone = os.getenv("NOTIFY_PHONE", "")
