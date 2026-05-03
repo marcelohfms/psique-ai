@@ -306,6 +306,64 @@ async def webhook(request: Request):
     return {"status": "ok"}
 
 
+# ── Chatwoot Agent Bot webhook ─────────────────────────────────────────────────
+
+def _extract_chatwoot_message(payload: dict) -> tuple[str, str, int] | None:
+    """
+    Extract (phone, text, conversation_id) from a Chatwoot Agent Bot webhook.
+    Returns None for outgoing/activity messages or missing content.
+    message_type: 0=incoming, 1=outgoing, 2=activity
+    """
+    if payload.get("message_type") != 0:
+        return None
+    content = (payload.get("content") or "").strip()
+    if not content:
+        return None
+    conversation = payload.get("conversation", {})
+    conversation_id = conversation.get("id")
+    if not conversation_id:
+        return None
+    phone_raw = (
+        payload.get("sender", {}).get("phone_number")
+        or conversation.get("meta", {}).get("sender", {}).get("phone_number")
+        or ""
+    ).strip()
+    if not phone_raw:
+        return None
+    phone = phone_raw.lstrip("+") + "@s.whatsapp.net"
+    return phone, content, conversation_id
+
+
+async def _handle_chatwoot_payload(payload: dict) -> None:
+    try:
+        result = _extract_chatwoot_message(payload)
+        if result is None:
+            return
+        phone, text, conversation_id = result
+
+        from app.chatwoot import register_conversation
+        register_conversation(phone, conversation_id)
+
+        logger.info("Chatwoot message from %s (conv=%s): %.80s", phone, conversation_id, text)
+
+        if text.strip().lower() == "/reset":
+            await _reset_conversation(phone)
+            return
+
+        await save_message(phone, "user", text)
+        await buffer_push(phone, text, process_message)
+    except Exception:
+        logger.exception("Error handling Chatwoot webhook payload")
+
+
+@app.post("/chatwoot-webhook")
+async def chatwoot_webhook(request: Request):
+    payload = await request.json()
+    logger.debug("Chatwoot webhook payload: %s", payload)
+    asyncio.create_task(_handle_chatwoot_payload(payload))
+    return {"status": "ok"}
+
+
 @app.get("/health")
 async def health():
     return {"status": "ok"}

@@ -65,3 +65,13 @@ def http_client(mock_chatbot):
     from app.main import app
     with TestClient(app, raise_server_exceptions=False) as client:
         yield client
+
+
+@pytest.fixture
+async def async_client(mock_chatbot):
+    """Async HTTPX client for tests that use asyncio.create_task."""
+    import httpx
+    from app.main import app
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        yield client
