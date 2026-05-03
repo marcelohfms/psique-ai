@@ -64,3 +64,41 @@ async def test_unassign_agent_bot_calls_api():
         mock_client.delete.assert_called_once()
         call_url = mock_client.delete.call_args[0][0]
         assert "/conversations/42/assignments" in call_url
+
+
+async def test_send_text_uses_chatwoot_when_conversation_known():
+    """send_text routes through Chatwoot for known phones."""
+    from app.chatwoot import register_conversation, _store
+    _store.clear()
+    register_conversation("5511999999999@s.whatsapp.net", 99)
+
+    with patch("app.chatwoot.send_message", new_callable=AsyncMock) as mock_send:
+        from app.whatsapp import send_text
+        await send_text("5511999999999@s.whatsapp.net", "Testando")
+        mock_send.assert_called_once_with(99, "Testando")
+
+
+async def test_send_text_falls_back_to_meta_when_no_conversation():
+    """send_text falls back to Meta Graph API for unknown phones (e.g. NOTIFY_PHONE)."""
+    from app.chatwoot import _store
+    _store.clear()
+
+    with patch("httpx.AsyncClient") as mock_cls:
+        mock_c = AsyncMock()
+        mock_c.__aenter__ = AsyncMock(return_value=mock_c)
+        mock_c.__aexit__ = AsyncMock(return_value=False)
+        mock_resp = MagicMock()
+        mock_resp.raise_for_status = MagicMock()
+        mock_c.post = AsyncMock(return_value=mock_resp)
+        mock_cls.return_value = mock_c
+
+        with patch.dict("os.environ", {
+            "WHATSAPP_TOKEN": "tok",
+            "WHATSAPP_PHONE_NUMBER_ID": "123",
+        }):
+            from app.whatsapp import send_text
+            await send_text("5583998566516", "Notificação interna")
+
+        mock_c.post.assert_called_once()
+        call_url = mock_c.post.call_args[0][0]
+        assert "graph.facebook.com" in call_url
