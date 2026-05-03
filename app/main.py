@@ -200,11 +200,9 @@ async def admin_resume(request: Request, x_admin_secret: str | None = Header(def
 
 async def process_message(phone: str, text: str) -> None:
     """Route a (possibly debounced) message through the LangGraph chatbot."""
-    print(f"PROCESS: starting for {phone}", flush=True)
     config = {"configurable": {"thread_id": phone, "phone": phone}}
 
     existing = await get_user_by_phone(phone)
-    print(f"PROCESS: got user existing={bool(existing)}", flush=True)
     if existing and existing.get("manual_hold"):
         return  # permanent hold — never reactivates
     if existing and existing.get("active") is False:
@@ -340,10 +338,8 @@ async def _handle_chatwoot_payload(payload: dict) -> None:
     try:
         result = _extract_chatwoot_message(payload)
         if result is None:
-            print("CHATWOOT: _extract_chatwoot_message returned None", flush=True)
             return
         phone, text, conversation_id = result
-        print(f"CHATWOOT: extracted phone={phone} conv={conversation_id} text={text!r}", flush=True)
 
         from app.chatwoot import register_conversation
         register_conversation(phone, conversation_id)
@@ -354,13 +350,9 @@ async def _handle_chatwoot_payload(payload: dict) -> None:
             await _reset_conversation(phone)
             return
 
-        print("CHATWOOT: calling save_message", flush=True)
         await save_message(phone, "user", text)
-        print("CHATWOOT: calling buffer_push", flush=True)
         await buffer_push(phone, text, process_message)
-        print("CHATWOOT: buffer_push done", flush=True)
-    except Exception as e:
-        print(f"CHATWOOT: exception in _handle_chatwoot_payload: {e}", flush=True)
+    except Exception:
         logger.exception("Error handling Chatwoot webhook payload")
 
 

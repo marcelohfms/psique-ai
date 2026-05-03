@@ -39,10 +39,8 @@ def _headers() -> dict:
 async def send_message(conversation_id: int, text: str) -> None:
     url = f"{_base_url()}/api/v1/accounts/{_account_id()}/conversations/{conversation_id}/messages"
     payload = {"content": text, "message_type": "outgoing", "private": False}
-    print(f"CHATWOOT: send_message conv={conversation_id} url={url}", flush=True)
     async with httpx.AsyncClient(timeout=10) as client:
         response = await client.post(url, json=payload, headers=_headers())
-        print(f"CHATWOOT: send_message response={response.status_code}", flush=True)
         response.raise_for_status()
 
 
