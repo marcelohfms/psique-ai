@@ -314,7 +314,7 @@ def _extract_chatwoot_message(payload: dict) -> tuple[str, str, int] | None:
     Returns None for outgoing/activity messages or missing content.
     message_type: 0=incoming, 1=outgoing, 2=activity
     """
-    if payload.get("message_type") != 0:
+    if payload.get("message_type") not in (0, "incoming"):
         return None
     content = (payload.get("content") or "").strip()
     if not content:
@@ -359,7 +359,7 @@ async def _handle_chatwoot_payload(payload: dict) -> None:
 @app.post("/chatwoot-webhook")
 async def chatwoot_webhook(request: Request):
     payload = await request.json()
-    print("CHATWOOT_PAYLOAD:", payload, flush=True)
+    logger.debug("Chatwoot webhook payload: %s", payload)
     asyncio.create_task(_handle_chatwoot_payload(payload))
     return {"status": "ok"}
 
