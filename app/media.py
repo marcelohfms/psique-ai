@@ -31,9 +31,8 @@ def _get_openai() -> AsyncOpenAI:
     return _openai
 
 
-async def transcribe_audio(media_id: str) -> str:
-    """Download audio and transcribe with Whisper."""
-    audio_bytes = await download_media(media_id)
+async def transcribe_audio_bytes(audio_bytes: bytes) -> str:
+    """Transcribe raw audio bytes with Whisper."""
     result = await _get_openai().audio.transcriptions.create(
         model="whisper-1",
         file=("audio.ogg", audio_bytes, "audio/ogg"),
@@ -42,9 +41,14 @@ async def transcribe_audio(media_id: str) -> str:
     return f"[áudio transcrito]: {result.text}"
 
 
-async def describe_image(media_id: str) -> str:
-    """Download image, classify, upload to Drive, and describe with GPT-4o vision."""
-    image_bytes = await download_media(media_id)
+async def transcribe_audio(media_id: str) -> str:
+    """Download audio from Meta and transcribe with Whisper."""
+    audio_bytes = await download_media(media_id)
+    return await transcribe_audio_bytes(audio_bytes)
+
+
+async def describe_image_bytes(image_bytes: bytes) -> str:
+    """Classify, upload to Drive, and describe raw image bytes with GPT-4o vision."""
 
     b64 = base64.b64encode(image_bytes).decode()
     resp = await _get_openai().chat.completions.create(
@@ -95,6 +99,12 @@ async def describe_image(media_id: str) -> str:
             except Exception:
                 logger.exception("DRIVE_UPLOAD DOCUMENT FAILED folder_id=%s", folder_id)
         return f"[imagem]: {description}"
+
+
+async def describe_image(media_id: str) -> str:
+    """Download image from Meta, classify, upload to Drive, and describe with GPT-4o vision."""
+    image_bytes = await download_media(media_id)
+    return await describe_image_bytes(image_bytes)
 
 
 async def process_media(media_id: str, media_type: str, phone: str = "") -> str | None:

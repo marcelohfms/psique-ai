@@ -202,3 +202,32 @@ async def test_chatwoot_webhook_ignores_missing_content(async_client):
         assert response.status_code == 200
         await asyncio.sleep(0.05)
         mock_push.assert_not_called()
+
+
+async def test_chatwoot_webhook_processes_audio_attachment(async_client):
+    payload = _chatwoot_payload(content="")
+    payload["attachments"] = [
+        {"file_type": "audio", "data_url": "https://storage.example.com/audio.ogg"}
+    ]
+    with patch("app.main.buffer_push") as mock_push, \
+         patch("app.main.save_message") as mock_save, \
+         patch("app.main._process_chatwoot_attachments", new_callable=AsyncMock, return_value="[áudio transcrito]: consulta amanhã") as mock_att:
+        mock_push.return_value = None
+        mock_save.return_value = None
+        response = await async_client.post("/chatwoot-webhook", json=payload)
+        assert response.status_code == 200
+        await asyncio.sleep(0.05)
+        mock_att.assert_called_once()
+        mock_push.assert_called_once()
+
+
+async def test_chatwoot_webhook_ignores_empty_attachment(async_client):
+    payload = _chatwoot_payload(content="")
+    payload["attachments"] = [{"file_type": "audio", "data_url": ""}]
+    with patch("app.main.buffer_push") as mock_push, \
+         patch("app.main._process_chatwoot_attachments", new_callable=AsyncMock, return_value=None) as mock_att:
+        mock_push.return_value = None
+        response = await async_client.post("/chatwoot-webhook", json=payload)
+        assert response.status_code == 200
+        await asyncio.sleep(0.05)
+        mock_push.assert_not_called()

@@ -308,16 +308,18 @@ async def webhook(request: Request):
 
 # ── Chatwoot Agent Bot webhook ─────────────────────────────────────────────────
 
-def _extract_chatwoot_message(payload: dict) -> tuple[str, str, int] | None:
+def _extract_chatwoot_message(payload: dict) -> tuple[str, str | None, int] | None:
     """
-    Extract (phone, text, conversation_id) from a Chatwoot Agent Bot webhook.
-    Returns None for outgoing/activity messages or missing content.
+    Extract (phone, text_or_None, conversation_id) from a Chatwoot Agent Bot webhook.
+    Returns None for outgoing/activity messages or missing phone/conversation.
+    text is None when the message has no body but may have attachments.
     message_type: 0=incoming, 1=outgoing, 2=activity
     """
     if payload.get("message_type") not in (0, "incoming"):
         return None
-    content = (payload.get("content") or "").strip()
-    if not content:
+    content = (payload.get("content") or "").strip() or None
+    attachments = payload.get("attachments", [])
+    if not content and not attachments:
         return None
     conversation = payload.get("conversation", {})
     conversation_id = conversation.get("id")
@@ -334,6 +336,30 @@ def _extract_chatwoot_message(payload: dict) -> tuple[str, str, int] | None:
     return phone, content, conversation_id
 
 
+async def _process_chatwoot_attachments(attachments: list) -> str | None:
+    """Download and process the first recognisable attachment (audio or image)."""
+    import httpx
+    from app.media import transcribe_audio_bytes, describe_image_bytes
+
+    for att in attachments:
+        file_type = (att.get("file_type") or "").lower()
+        data_url = att.get("data_url") or att.get("thumb_url") or ""
+        if not data_url:
+            continue
+        try:
+            async with httpx.AsyncClient(timeout=30) as client:
+                resp = await client.get(data_url, follow_redirects=True)
+                resp.raise_for_status()
+                media_bytes = resp.content
+            if file_type == "audio":
+                return await transcribe_audio_bytes(media_bytes)
+            if file_type in ("image", "file"):
+                return await describe_image_bytes(media_bytes)
+        except Exception:
+            logger.exception("Failed to process Chatwoot attachment type=%s url=%.80s", file_type, data_url)
+    return None
+
+
 async def _handle_chatwoot_payload(payload: dict) -> None:
     try:
         result = _extract_chatwoot_message(payload)
@@ -343,6 +369,11 @@ async def _handle_chatwoot_payload(payload: dict) -> None:
 
         from app.chatwoot import register_conversation
         register_conversation(phone, conversation_id)
+
+        if text is None:
+            text = await _process_chatwoot_attachments(payload.get("attachments", []))
+            if not text:
+                return
 
         logger.info("Chatwoot message from %s (conv=%s): %.80s", phone, conversation_id, text)
 
