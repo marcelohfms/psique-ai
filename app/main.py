@@ -200,6 +200,12 @@ async def admin_resume(request: Request, x_admin_secret: str | None = Header(def
 
 async def process_message(phone: str, text: str) -> None:
     """Route a (possibly debounced) message through the LangGraph chatbot."""
+    allowed = os.getenv("BOT_ALLOWED_PHONES", "")
+    if allowed:
+        allowed_set = {p.strip() for p in allowed.split(",") if p.strip()}
+        if phone not in allowed_set:
+            return
+
     config = {"configurable": {"thread_id": phone, "phone": phone}}
 
     existing = await get_user_by_phone(phone)
