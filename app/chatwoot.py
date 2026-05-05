@@ -5,9 +5,13 @@ Environment variables:
   CHATWOOT_BASE_URL         — e.g. https://evolution-chatwoot.5pqooc.easypanel.host
   CHATWOOT_ACCOUNT_ID       — numeric account ID (e.g. "1")
   CHATWOOT_AGENT_BOT_TOKEN  — access token from the Agent Bot settings page
+  CHATWOOT_INBOX_ID         — numeric ID of the WhatsApp inbox the bot writes to
 """
+import logging
 import os
 import httpx
+
+logger = logging.getLogger(__name__)
 
 # In-memory map: phone (with @s.whatsapp.net) -> Chatwoot conversation_id
 _store: dict[str, int] = {}
@@ -29,11 +33,20 @@ def _account_id() -> str:
     return os.getenv("CHATWOOT_ACCOUNT_ID", "1")
 
 
+def _inbox_id() -> int:
+    return int(os.getenv("CHATWOOT_INBOX_ID", "0"))
+
+
 def _headers() -> dict:
     return {
         "api_access_token": os.getenv("CHATWOOT_AGENT_BOT_TOKEN", ""),
         "Content-Type": "application/json",
     }
+
+
+def _strip_phone(phone: str) -> str:
+    """Return the bare digits (no @s.whatsapp.net suffix, no leading +)."""
+    return phone.split("@", 1)[0].lstrip("+")
 
 
 async def send_message(conversation_id: int, text: str) -> None:
@@ -50,3 +63,81 @@ async def unassign_agent_bot(conversation_id: int) -> None:
     async with httpx.AsyncClient(timeout=10) as client:
         response = await client.delete(url, headers=_headers())
         response.raise_for_status()
+
+
+# ── Contact / conversation lookup-or-create ───────────────────────────────────
+
+
+async def _search_contact(client: httpx.AsyncClient, phone_digits: str) -> dict | None:
+    """Return the first matching Chatwoot contact for a phone, or None."""
+    url = f"{_base_url()}/api/v1/accounts/{_account_id()}/contacts/search"
+    resp = await client.get(url, params={"q": phone_digits, "include": "contact_inboxes"}, headers=_headers())
+    resp.raise_for_status()
+    payload = resp.json().get("payload") or []
+    return payload[0] if payload else None
+
+
+async def _create_contact(client: httpx.AsyncClient, phone_digits: str) -> dict:
+    """Create a Chatwoot contact for the phone in the configured inbox."""
+    url = f"{_base_url()}/api/v1/accounts/{_account_id()}/contacts"
+    body = {
+        "inbox_id": _inbox_id(),
+        "name": phone_digits,
+        "phone_number": f"+{phone_digits}",
+        "identifier": phone_digits,
+    }
+    resp = await client.post(url, json=body, headers=_headers())
+    resp.raise_for_status()
+    return resp.json().get("payload", {}).get("contact", {})
+
+
+async def _open_conversation_for_contact(client: httpx.AsyncClient, contact_id: int) -> int | None:
+    """Return the id of an open/pending conversation for the contact in our inbox, if any."""
+    url = f"{_base_url()}/api/v1/accounts/{_account_id()}/contacts/{contact_id}/conversations"
+    resp = await client.get(url, headers=_headers())
+    resp.raise_for_status()
+    convs = resp.json().get("payload") or []
+    inbox = _inbox_id()
+    for c in convs:
+        if c.get("inbox_id") == inbox and c.get("status") in ("open", "pending"):
+            return c.get("id")
+    return None
+
+
+async def _create_conversation(client: httpx.AsyncClient, contact_id: int, phone_digits: str) -> int:
+    """Create a new conversation for the contact in the configured inbox."""
+    url = f"{_base_url()}/api/v1/accounts/{_account_id()}/conversations"
+    body = {
+        "source_id": phone_digits,
+        "inbox_id": _inbox_id(),
+        "contact_id": contact_id,
+    }
+    resp = await client.post(url, json=body, headers=_headers())
+    resp.raise_for_status()
+    return resp.json().get("id")
+
+
+async def find_or_create_conversation(phone: str) -> int:
+    """
+    Resolve a Chatwoot conversation_id for a WhatsApp phone, creating contact
+    and conversation if needed. Caches the result in the in-memory store.
+    """
+    cached = _store.get(phone)
+    if cached is not None:
+        return cached
+
+    digits = _strip_phone(phone)
+    async with httpx.AsyncClient(timeout=10) as client:
+        contact = await _search_contact(client, digits)
+        if contact is None:
+            contact = await _create_contact(client, digits)
+        contact_id = contact.get("id")
+        if not contact_id:
+            raise RuntimeError(f"Chatwoot returned no contact id for {digits}")
+
+        conv_id = await _open_conversation_for_contact(client, contact_id)
+        if conv_id is None:
+            conv_id = await _create_conversation(client, contact_id, digits)
+
+    _store[phone] = conv_id
+    return conv_id
