@@ -49,6 +49,28 @@ async def send_text(phone: str, text: str) -> None:
         await _send_via_meta(phone, text)
 
 
+async def send_template(phone: str, template_name: str, language: str, components: list) -> None:
+    """Send a WhatsApp template message via Meta Cloud API."""
+    number = phone.replace("@s.whatsapp.net", "")
+    payload = {
+        "messaging_product": "whatsapp",
+        "to": number,
+        "type": "template",
+        "template": {
+            "name": template_name,
+            "language": {"code": language},
+            "components": components,
+        },
+    }
+    async with httpx.AsyncClient(timeout=10) as client:
+        response = await client.post(
+            f"{_GRAPH_URL}/{_phone_number_id()}/messages",
+            json=payload,
+            headers=_headers(),
+        )
+        response.raise_for_status()
+
+
 async def download_media(media_id: str) -> bytes:
     """Download media bytes given a Meta media_id."""
     token = os.getenv("WHATSAPP_TOKEN", "")
