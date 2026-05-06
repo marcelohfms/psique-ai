@@ -1,5 +1,5 @@
 """
-Send WhatsApp appointment reminders.
+Send WhatsApp appointment reminders via Meta Cloud API templates.
 Runs daily at 8h (Recife time) via GitHub Actions.
 
 - Day before: asks patient to confirm the appointment
@@ -13,14 +13,10 @@ import os
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
-import httpx
 from dotenv import load_dotenv
 load_dotenv()
 
 TZ = ZoneInfo("America/Recife")
-
-UAZAPI_BASE_URL = os.environ.get("UAZAPI_BASE_URL", "https://psique.uazapi.com")
-UAZAPI_TOKEN = os.environ.get("UAZAPI_TOKEN", "")
 
 DOCTOR_LABELS = {
     "d5baa58b-a788-4f40-b8c0-512c189150be": "Dr. Júlio",
@@ -32,32 +28,33 @@ DOCTOR_KEYS = {
 }
 
 
-async def send_whatsapp(phone: str, text: str) -> None:
-    if not UAZAPI_TOKEN:
-        print("  UAZAPI_TOKEN not set, skipping send.")
-        return
-    url = f"{UAZAPI_BASE_URL}/send/text"
-    headers = {"token": UAZAPI_TOKEN, "Content-Type": "application/json"}
-    payload = {"number": phone, "text": text}
-    async with httpx.AsyncClient(timeout=10) as client:
-        await client.post(url, json=payload, headers=headers)
+def _template_components(first_name: str, doctor_label: str, time_str: str) -> list:
+    return [{
+        "type": "body",
+        "parameters": [
+            {"type": "text", "text": first_name},
+            {"type": "text", "text": doctor_label},
+            {"type": "text", "text": time_str},
+        ],
+    }]
 
 
-def day_before_message(patient_name: str, doctor_label: str, time_str: str) -> str:
-    first_name = patient_name.split()[0] if patient_name else "paciente"
+async def send_reminder_template(phone: str, template_name: str, first_name: str, doctor_label: str, time_str: str) -> None:
+    from app.whatsapp import send_template
+    components = _template_components(first_name, doctor_label, time_str)
+    await send_template(phone, template_name, "pt_BR", components)
+
+
+def _plain_message(template_name: str, first_name: str, doctor_label: str, time_str: str) -> str:
+    """Reconstruct the plain text to save into LangGraph checkpoint."""
+    if template_name == "lembrete_dia_anterior":
+        return (
+            f"Olá! Lembrete da Psiquê: {first_name} tem consulta amanhã "
+            f"com {doctor_label} às {time_str}. Consegue confirmar a presença?"
+        )
     return (
-        f"Olá! 👋 Lembrete da Clínica Psique: *{first_name}* tem consulta amanhã "
-        f"com *{doctor_label}* às *{time_str}*. "
-        f"Consegue confirmar a presença pra gente?"
-    )
-
-
-def day_of_message(patient_name: str, doctor_label: str, time_str: str) -> str:
-    first_name = patient_name.split()[0] if patient_name else "paciente"
-    return (
-        f"Bom dia! ☀️ Hoje é o dia da consulta de *{first_name}* "
-        f"com *{doctor_label}* às *{time_str}*. "
-        f"Estamos te esperando na Clínica Psique! 💙"
+        f"Bom dia! Hoje é o dia da consulta de {first_name} "
+        f"com {doctor_label} às {time_str}. Estamos esperando na Psiquê!"
     )
 
 
@@ -88,7 +85,6 @@ async def save_to_checkpoint(graph, phone: str, message: str, appt: dict) -> Non
     """Inject the reminder message into the LangGraph checkpoint for this patient."""
     from langchain_core.messages import AIMessage
 
-    # UAZAPI uses bare numbers; LangGraph thread_id uses the WhatsApp JID format
     thread_phone = f"{phone}@s.whatsapp.net"
     config = {"configurable": {"thread_id": thread_phone, "phone": thread_phone}}
 
@@ -96,8 +92,6 @@ async def save_to_checkpoint(graph, phone: str, message: str, appt: dict) -> Non
     update: dict = {"messages": [AIMessage(content=message)]}
 
     if not snapshot.values:
-        # No existing conversation — initialise basic state so the graph
-        # routes correctly when the patient replies.
         user = appt.get("users") or {}
         patient_name = user.get("patient_name") or user.get("name") or "paciente"
         doctor_key = DOCTOR_KEYS.get(appt.get("doctor_id", ""), "")
@@ -126,7 +120,6 @@ async def main():
     tomorrow_str = (now.date() + timedelta(days=1)).isoformat()
     day_after_tomorrow_str = (now.date() + timedelta(days=2)).isoformat()
 
-    # Fetch scheduled appointments for today and tomorrow
     result = await (
         client.from_("appointments")
         .select("appointment_id, start_time, doctor_id, users(number, patient_name, name)")
@@ -139,7 +132,6 @@ async def main():
     appointments = result.data or []
     print(f"Found {len(appointments)} appointment(s) for today/tomorrow.")
 
-    # Set up LangGraph checkpointer if connection string is available
     conn_string = os.environ.get("SUPABASE_CONNECTION_STRING")
     graph = None
     if conn_string:
@@ -160,6 +152,7 @@ async def main():
             user = appt.get("users") or {}
             phone = user.get("number", "")
             patient_name = user.get("patient_name") or user.get("name") or "paciente"
+            first_name = patient_name.split()[0] if patient_name else "paciente"
             doctor_label = DOCTOR_LABELS.get(appt.get("doctor_id", ""), "médico(a)")
 
             if not phone:
@@ -167,21 +160,21 @@ async def main():
 
             if appt_date == tomorrow_str:
                 event_type = "reminder_day_before"
-                message = day_before_message(patient_name, doctor_label, time_str)
+                template_name = "lembrete_dia_anterior"
             elif appt_date == today_str:
                 event_type = "reminder_day_of"
-                message = day_of_message(patient_name, doctor_label, time_str)
+                template_name = "lembrete_dia_consulta"
             else:
                 continue
 
-            # Skip if already sent
             if await already_sent(client, appointment_id, event_type):
                 print(f"  Already sent {event_type} for {appointment_id}, skipping.")
                 continue
 
             try:
-                await send_whatsapp(phone, message)
+                await send_reminder_template(phone, template_name, first_name, doctor_label, time_str)
                 await log_reminder(client, phone, appointment_id, event_type)
+                message = _plain_message(template_name, first_name, doctor_label, time_str)
                 if graph:
                     await save_to_checkpoint(graph, phone, message, appt)
                 print(f"  [{event_type}] Sent to {phone} — {patient_name} @ {time_str}")

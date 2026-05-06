@@ -65,6 +65,15 @@ async def unassign_agent_bot(conversation_id: int) -> None:
         response.raise_for_status()
 
 
+async def reopen_conversation(conversation_id: int) -> None:
+    """Reopen a pending/resolved conversation so it appears in the agent's open queue."""
+    url = f"{_base_url()}/api/v1/accounts/{_account_id()}/conversations/{conversation_id}/toggle_status"
+    payload = {"status": "open"}
+    async with httpx.AsyncClient(timeout=10) as client:
+        response = await client.post(url, json=payload, headers=_headers())
+        response.raise_for_status()
+
+
 # ── Contact / conversation lookup-or-create ───────────────────────────────────
 
 
