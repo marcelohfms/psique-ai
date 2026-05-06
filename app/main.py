@@ -376,11 +376,11 @@ async def _handle_chatwoot_payload(payload: dict) -> None:
         from app.chatwoot import register_conversation, reopen_conversation
         register_conversation(phone, conversation_id)
 
-        # Reopen resolved conversations so they appear in the agent's queue
-        if payload.get("conversation", {}).get("status") == "resolved":
+        # Reopen pending conversations (patient replied to a resolved conversation)
+        if payload.get("conversation", {}).get("status") == "pending":
             try:
                 await reopen_conversation(conversation_id)
-                logger.info("Reopened resolved conversation %s for %s", conversation_id, phone)
+                logger.info("Reopened pending conversation %s for %s", conversation_id, phone)
             except Exception:
                 logger.warning("Failed to reopen conversation %s", conversation_id)
 
