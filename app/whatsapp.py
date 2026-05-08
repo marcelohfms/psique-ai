@@ -5,12 +5,25 @@ Inbound media (audio/image) still arrives via the Meta Cloud API webhook,
 so download_media() remains here using Meta's Graph API.
 
 Environment variables required:
-  WHATSAPP_TOKEN          — Meta permanent access token (used only for media download)
+  WHATSAPP_TOKEN            — Meta permanent access token
+  WHATSAPP_PHONE_NUMBER_ID  — Meta phone number ID (for template messages)
 """
 import os
 import httpx
 
 _GRAPH_URL = "https://graph.facebook.com/v19.0"
+
+
+def _phone_number_id() -> str:
+    return os.getenv("WHATSAPP_PHONE_NUMBER_ID", "")
+
+
+def _headers() -> dict:
+    token = os.getenv("WHATSAPP_TOKEN", "")
+    return {
+        "Authorization": f"Bearer {token}",
+        "Content-Type": "application/json",
+    }
 
 
 async def send_text(phone: str, text: str) -> None:
