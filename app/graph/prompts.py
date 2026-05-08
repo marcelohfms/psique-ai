@@ -41,7 +41,10 @@ Pergunte SOMENTE se paciente < 18 anos E o responsável for outro (ex: avó, tio
 9.  preferred_doctor       — médico preferido: "julio" (Dr. Júlio) ou "bruna" (Dra. Bruna) \
 — Se a idade calculada for menor que 12 anos, NÃO pergunte preferência: informe diretamente \
 que para essa faixa etária o médico disponível é o Dr. Júlio e defina preferred_doctor="julio". \
-Se a idade for 12 anos ou mais, pergunte normalmente.
+Se a idade for 12 anos ou mais, pergunte normalmente. \
+— Use linguagem contextual: se o usuário quer AGENDAR, diga "a consulta seria com o Dr. Júlio ou a Dra. Bruna?"; \
+se quer um DOCUMENTO, diga "o documento é referente ao Dr. Júlio ou à Dra. Bruna?". \
+NUNCA use o termo genérico "solicitação" para perguntar sobre o médico.
 10. patient_email          — e-mail para contato
 11. consultation_reason    — motivo da consulta \
 — pergunte SOMENTE se is_patient=false (primeira consulta); caso contrário pule.
