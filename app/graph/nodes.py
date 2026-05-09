@@ -68,6 +68,11 @@ async def collect_info_node(state: ConversationState, config: RunnableConfig) ->
     ).lower()
     _is_receita = "receita" in _messages_text
 
+    # Detect document requests (email is only needed for these, not for scheduling)
+    _doc_keywords = ["receita", "laudo", "nota fiscal", "declaração", "declaracao",
+                     "relatório", "relatorio", "exame", "atestado"]
+    _is_document = any(kw in _messages_text for kw in _doc_keywords)
+
     # Detect if this is the very first bot response (no prior AIMessages)
     _has_greeted = any(getattr(m, "type", None) == "ai" for m in state["messages"])
 
@@ -109,6 +114,7 @@ async def collect_info_node(state: ConversationState, config: RunnableConfig) ->
     _PATIENT_Q = "O paciente já é paciente da clínica?"
     _DOCTOR_Q = "Você tem preferência pelo Dr. Júlio ou pela Dra. Bruna?"
     _EMAIL_Q = "Qual o e-mail para envio?"
+    _EMAIL_Q_CADASTRO = "Qual o seu e-mail para cadastro?"
     _MED_Q = "Qual medicação você precisa na receita?"
 
     # Step 1: greeting + first question only when user already made a specific request
@@ -181,12 +187,13 @@ async def collect_info_node(state: ConversationState, config: RunnableConfig) ->
                 else:
                     doctor = None
                 if doctor:
-                    return await _extract_and_ask({"preferred_doctor": doctor}, _EMAIL_Q)
+                    next_email_q = _EMAIL_Q if _is_document else _EMAIL_Q_CADASTRO
+                    return await _extract_and_ask({"preferred_doctor": doctor}, next_email_q)
             return await _ask(_DOCTOR_Q)
 
         # Step 7: email
         if not state.get("patient_email"):
-            if last_ai == _EMAIL_Q and last_human:
+            if last_ai in (_EMAIL_Q, _EMAIL_Q_CADASTRO) and last_human:
                 if _is_receita and not state.get("medication_note"):
                     return await _extract_and_ask({"patient_email": last_human}, _MED_Q)
                 else:
@@ -194,7 +201,7 @@ async def collect_info_node(state: ConversationState, config: RunnableConfig) ->
                     _extracted["patient_email"] = last_human
                     collected["patient_email"] = last_human
             else:
-                return await _ask(_EMAIL_Q)
+                return await _ask(_EMAIL_Q if _is_document else _EMAIL_Q_CADASTRO)
 
         # Step 8: medication — only for receita (last step)
         if _is_receita and not state.get("medication_note"):
