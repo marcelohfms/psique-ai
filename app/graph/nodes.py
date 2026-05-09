@@ -107,7 +107,7 @@ async def collect_info_node(state: ConversationState, config: RunnableConfig) ->
     _CPF_Q = "Qual o CPF do paciente?"
     _BIRTH_Q = "Qual a data de nascimento do paciente? (formato dd/mm/aaaa)"
     _PATIENT_Q = "O paciente já é paciente da clínica?"
-    _DOCTOR_Q = "Essa solicitação é para o Dr. Júlio ou para a Dra. Bruna?"
+    _DOCTOR_Q = "Você tem preferência pelo Dr. Júlio ou pela Dra. Bruna?"
     _EMAIL_Q = "Qual o e-mail para envio?"
     _MED_Q = "Qual medicação você precisa na receita?"
 
