@@ -14,6 +14,7 @@ RUN uv sync --frozen --no-dev
 
 # Copy source
 COPY app/ ./app/
+COPY scripts/ ./scripts/
 
 EXPOSE 8000
 
