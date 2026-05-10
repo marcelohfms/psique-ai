@@ -65,7 +65,10 @@ async def describe_image_bytes(image_bytes: bytes) -> str:
                     "text": (
                         "Descreva o conteúdo desta imagem em português de forma objetiva. "
                         "Se for um comprovante de pagamento (PIX, TED, DOC, transferência bancária ou recibo de pagamento), "
-                        "comece com 'COMPROVANTE DE PAGAMENTO:'. "
+                        "comece com 'COMPROVANTE DE PAGAMENTO:' e inclua obrigatoriamente: "
+                        "valor transferido, chave PIX ou CPF/CNPJ do destinatário (campo 'Chave', 'Para', 'Favorecido' ou similar), "
+                        "nome do destinatário se visível, data/hora da transação, "
+                        "e qualquer texto adicional visível no comprovante (como 'agendamento', 'taxa', descrição etc.). "
                         "Para qualquer outro tipo de imagem ou documento, comece com 'DOCUMENTO:'."
                     ),
                 },
