@@ -241,13 +241,15 @@ async def get_available_slots(
         None, _get_busy, service, calendar_id, overall_start, overall_end
     )
 
-    busy_ranges = [
-        (
-            datetime.fromisoformat(b["start"]).astimezone(TZ),
-            datetime.fromisoformat(b["end"]).astimezone(TZ),
-        )
-        for b in busy_raw
-    ]
+    busy_ranges = []
+    for b in busy_raw:
+        bs = datetime.fromisoformat(b["start"]).astimezone(TZ)
+        be = datetime.fromisoformat(b["end"]).astimezone(TZ)
+        # Zero-duration events (start == end) would be missed by the overlap
+        # check — expand them to slot_delta so the containing slot is blocked.
+        if be <= bs:
+            be = bs + slot_delta
+        busy_ranges.append((bs, be))
 
     slots: list[tuple[datetime, str]] = []
     for window_start, window_end, modality in windows:
