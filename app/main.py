@@ -412,3 +412,21 @@ async def chatwoot_webhook(request: Request):
 @app.get("/health")
 async def health():
     return {"status": "ok"}
+
+
+# ── Admin: trigger appointment reminders ──────────────────────────────────────
+
+@app.post("/admin/send-reminders")
+async def admin_send_reminders(x_admin_secret: str | None = Header(default=None)):
+    """
+    Trigger appointment reminder messages (lembrete_dia_anterior / lembrete_dia_consulta).
+    Protected by X-Admin-Secret header. Intended to be called by a daily cron job.
+    """
+    _check_admin_secret(x_admin_secret)
+    from scripts.send_appointment_reminders import main as run_reminders
+    try:
+        await run_reminders()
+        return {"status": "ok"}
+    except Exception as exc:
+        logger.exception("send-reminders failed")
+        raise HTTPException(status_code=500, detail=str(exc))
