@@ -146,13 +146,17 @@ def _normalize_shift(shift: str) -> str:
 
 
 def _get_busy(service, calendar_id: str, window_start: datetime, window_end: datetime) -> list:
+    import logging as _log
+    _logger = _log.getLogger(__name__)
     body = {
         "timeMin": window_start.isoformat(),
         "timeMax": window_end.isoformat(),
         "items": [{"id": calendar_id}],
     }
     result = service.freebusy().query(body=body).execute()
-    return result["calendars"][calendar_id]["busy"]
+    busy = result["calendars"][calendar_id]["busy"]
+    _logger.warning("FREEBUSY calendar=%s window=%s→%s busy=%s", calendar_id, window_start, window_end, busy)
+    return busy
 
 
 def _create_event(service, calendar_id: str, event: dict) -> str:

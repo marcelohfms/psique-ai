@@ -143,6 +143,23 @@ async def confirm_appointment(
     except ValueError:
         return f"Formato de data inválido: {slot_datetime}. Use ISO 8601 (ex: 2026-03-19T09:00:00)."
 
+    # Double-check slot is still free before booking
+    from app.google_calendar import _get_busy, _credentials
+    from googleapiclient.discovery import build as _build
+    slot_end_check = start + timedelta(minutes=slot_duration_minutes)
+    try:
+        _creds = _credentials()
+        _service = _build("calendar", "v3", credentials=_creds)
+        loop = asyncio.get_event_loop()
+        busy = await loop.run_in_executor(None, _get_busy, _service, calendar_id, start, slot_end_check)
+        if busy:
+            return (
+                f"Este horário ({start.strftime('%d/%m/%Y às %H:%M')}) acabou de ser ocupado. "
+                "Chame get_available_slots novamente para buscar outro horário disponível."
+            )
+    except Exception:
+        pass  # If check fails, proceed anyway — better to double-book than block
+
     # Enforce modality constraints from schedule
     from app.google_calendar import get_modality_for_slot
     slot_constraint = get_modality_for_slot(doctor, start)
