@@ -94,8 +94,8 @@ async def get_available_slots(
 
     _mod_labels = {
         "online": "apenas online",
-        "escolha": "online ou presencial",
-        "presencial_sob_consulta": "online ou presencial — presencial requer confirmação da atendente",
+        "escolha": "online ou presencial — paciente escolhe livremente",
+        "presencial_sob_consulta": "REQUER CONFIRMAÇÃO — online ou presencial sob consulta da atendente",
     }
     lines = [f"Horários disponíveis para {preferred_day} ({preferred_shift}):"]
     for i, (slot, modality) in enumerate(slots, 1):

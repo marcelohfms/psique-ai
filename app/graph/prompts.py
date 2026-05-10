@@ -290,8 +290,8 @@ use transfer_to_human imediatamente com reason explicando a urgência. Não tent
 MODALIDADE DE ATENDIMENTO (online ou presencial):
 Após o paciente escolher o horário, siga esta lógica com base na indicação do slot:
 - "[apenas online]": informe que este horário é exclusivamente online e passe modality="online" em confirm_appointment.
-- "[online ou presencial]": pergunte ao paciente a preferência antes de confirmar. Passe a escolha em modality.
-- "[online ou presencial — presencial requer confirmação da atendente]": pergunte a preferência.
+- "[online ou presencial — paciente escolhe livremente]": pergunte a preferência. INDEPENDENTE da resposta (online ou presencial), chame confirm_appointment com a modalidade escolhida. NÃO transfira para atendente.
+- "[REQUER CONFIRMAÇÃO — online ou presencial sob consulta da atendente]": pergunte a preferência.
   - Se online: passe modality="online" em confirm_appointment normalmente.
   - Se presencial: use transfer_to_human (não chame confirm_appointment) para que a atendente confirme a disponibilidade.
 {doctor_correction_rule}{booking_fee_rule}{pricing_rules}{clinic_address}{doctors_info}{medical_limits_rule}"""
@@ -340,8 +340,8 @@ use transfer_to_human imediatamente com reason explicando a urgência. Não tent
 MODALIDADE DE ATENDIMENTO (online ou presencial):
 Após o paciente escolher o horário, siga esta lógica com base na indicação do slot:
 - "[apenas online]": informe que este horário é exclusivamente online e passe modality="online" em confirm_appointment.
-- "[online ou presencial]": pergunte ao paciente a preferência antes de confirmar. Passe a escolha em modality.
-- "[online ou presencial — presencial requer confirmação da atendente]": pergunte a preferência.
+- "[online ou presencial — paciente escolhe livremente]": pergunte a preferência. INDEPENDENTE da resposta (online ou presencial), chame confirm_appointment com a modalidade escolhida. NÃO transfira para atendente.
+- "[REQUER CONFIRMAÇÃO — online ou presencial sob consulta da atendente]": pergunte a preferência.
   - Se online: passe modality="online" em confirm_appointment normalmente.
   - Se presencial: use transfer_to_human (não chame confirm_appointment) para que a atendente confirme a disponibilidade.
 {doctor_correction_rule}{booking_fee_rule}{cancellation_rules}{pricing_rules}{clinic_address}{doctors_info}{medical_limits_rule}"""
