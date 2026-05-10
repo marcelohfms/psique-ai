@@ -255,8 +255,8 @@ async def test_transfer_to_human_deactivates_user():
     from app.graph.tools import transfer_to_human
     with patch("app.graph.tools.upsert_user", new_callable=AsyncMock) as mock_upsert, \
          patch("app.graph.tools.log_event", new_callable=AsyncMock), \
-         patch("app.graph.tools.send_text", new_callable=AsyncMock):
-        os.environ.pop("NOTIFY_PHONE", None)
+         patch("app.graph.tools.send_text", new_callable=AsyncMock), \
+         patch("app.chatwoot.add_private_note", new_callable=AsyncMock):
         result = await transfer_to_human.coroutine(
             reason="Paciente quer falar com humano",
             state=_make_state(),
@@ -266,39 +266,44 @@ async def test_transfer_to_human_deactivates_user():
     call_kwargs = mock_upsert.call_args[0]
     assert call_kwargs[1]["active"] is False
     assert "deactivated_at" in call_kwargs[1]
-    assert "transferid" in result.lower() or "transferida" in result.lower() or "transferid" in result.lower()
+    assert "transferid" in result.lower() or "transferida" in result.lower()
 
 
-async def test_transfer_to_human_notifies_clinic_when_notify_phone_set():
+async def test_transfer_to_human_adds_private_note_to_chatwoot():
+    """On human transfer, a private note with patient context is added to Chatwoot."""
     from app.graph.tools import transfer_to_human
+    from app.chatwoot import register_conversation, _store
+    _store.clear()
+    register_conversation(PHONE, 42)
+
     with patch("app.graph.tools.upsert_user", new_callable=AsyncMock), \
          patch("app.graph.tools.log_event", new_callable=AsyncMock), \
-         patch("app.graph.tools.send_text", new_callable=AsyncMock) as mock_send:
-        os.environ["NOTIFY_PHONE"] = "5583900000001"
-        try:
-            await transfer_to_human.coroutine(
-                reason="teste",
-                state=_make_state(),
-                config=CONFIG,
-            )
-        finally:
-            os.environ.pop("NOTIFY_PHONE", None)
-    # send_text called twice: once to clinic, once to user
-    assert mock_send.await_count == 2
-
-
-async def test_transfer_to_human_no_notify_phone_sends_only_to_user():
-    from app.graph.tools import transfer_to_human
-    with patch("app.graph.tools.upsert_user", new_callable=AsyncMock), \
-         patch("app.graph.tools.log_event", new_callable=AsyncMock), \
-         patch("app.graph.tools.send_text", new_callable=AsyncMock) as mock_send:
-        os.environ.pop("NOTIFY_PHONE", None)
+         patch("app.graph.tools.send_text", new_callable=AsyncMock), \
+         patch("app.graph.tools.unassign_agent_bot", new_callable=AsyncMock), \
+         patch("app.chatwoot.add_private_note", new_callable=AsyncMock) as mock_note:
         await transfer_to_human.coroutine(
-            reason="sem número de notificação",
+            reason="Paciente escolheu presencial",
             state=_make_state(),
             config=CONFIG,
         )
-    # send_text called only once: to the user
+    mock_note.assert_awaited_once()
+    note_text = mock_note.call_args[0][1]
+    assert "Transferido pelo bot" in note_text
+    assert "Paciente escolheu presencial" in note_text
+
+
+async def test_transfer_to_human_sends_only_to_user():
+    """send_text is called exactly once (to the patient), no longer to a NOTIFY_PHONE."""
+    from app.graph.tools import transfer_to_human
+    with patch("app.graph.tools.upsert_user", new_callable=AsyncMock), \
+         patch("app.graph.tools.log_event", new_callable=AsyncMock), \
+         patch("app.graph.tools.send_text", new_callable=AsyncMock) as mock_send, \
+         patch("app.chatwoot.add_private_note", new_callable=AsyncMock):
+        await transfer_to_human.coroutine(
+            reason="teste",
+            state=_make_state(),
+            config=CONFIG,
+        )
     assert mock_send.await_count == 1
     assert mock_send.call_args[0][0] == PHONE
 
@@ -401,6 +406,7 @@ async def test_transfer_to_human_unassigns_chatwoot_bot(mock_send_text):
     with patch("app.graph.tools.upsert_user", new_callable=AsyncMock), \
          patch("app.graph.tools.log_event", new_callable=AsyncMock), \
          patch("app.graph.tools.send_text", new_callable=AsyncMock), \
+         patch("app.chatwoot.add_private_note", new_callable=AsyncMock), \
          patch("app.graph.tools.unassign_agent_bot", new_callable=AsyncMock) as mock_unassign:
         await transfer_to_human.ainvoke(
             {"reason": "paciente quer falar com atendente", "state": state},

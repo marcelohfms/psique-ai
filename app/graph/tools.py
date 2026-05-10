@@ -684,7 +684,8 @@ async def transfer_to_human(
     config: RunnableConfig,
 ) -> str:
     """Transfere a conversa para um atendente humano quando o bot não consegue ajudar."""
-    import os
+    from app.chatwoot import add_private_note
+
     phone = config["configurable"]["phone"]
 
     # Disable bot for this user
@@ -692,26 +693,28 @@ async def transfer_to_human(
 
     conv_id = get_conversation_id(phone)
     if conv_id is not None:
+        # Add private note with context for the human agent
+        patient_name = state.get("patient_name") or state.get("user_name") or "Não informado"
+        doctor = state.get("preferred_doctor", "")
+        doctor_label = {"julio": "Dr. Júlio", "bruna": "Dra. Bruna"}.get(doctor, "Não informado")
+        number = phone.replace("@s.whatsapp.net", "")
+        note_lines = [
+            "📋 *Transferido pelo bot*",
+            f"👤 Paciente: {patient_name}",
+            f"📞 Número: {number}",
+            f"🩺 Médico: {doctor_label}",
+        ]
+        if reason:
+            note_lines.append(f"💬 Motivo: {reason}")
+        try:
+            await add_private_note(conv_id, "\n".join(note_lines))
+        except Exception:
+            logger.warning("Failed to add private note to Chatwoot conv %s", conv_id)
+
         try:
             await unassign_agent_bot(conv_id)
         except Exception:
             logger.warning("Failed to unassign Chatwoot agent bot for conv %s", conv_id)
-
-    # Notify the clinic's internal number
-    notify_phone = os.getenv("NOTIFY_PHONE", "")
-    if notify_phone:
-        patient_name = state.get("patient_name") or state.get("user_name")
-        number = phone.replace("@s.whatsapp.net", "")
-        if patient_name:
-            notification = f"👤 *{patient_name}* precisa de atendimento.\nNúmero: {number}"
-        else:
-            notification = f"👤 Um paciente precisa de atendimento.\nNúmero: {number}"
-        if reason:
-            notification += f"\nMotivo: {reason}"
-        try:
-            await send_text(notify_phone, notification)
-        except Exception:
-            logger.warning("Failed to notify clinic phone %s on human transfer", notify_phone)
 
     await log_event("human_transfer", phone, {"reason": reason})
 
