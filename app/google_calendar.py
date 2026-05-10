@@ -245,10 +245,10 @@ async def get_available_slots(
     for b in busy_raw:
         bs = datetime.fromisoformat(b["start"]).astimezone(TZ)
         be = datetime.fromisoformat(b["end"]).astimezone(TZ)
-        # Zero-duration events (start == end) would be missed by the overlap
-        # check — expand them to slot_delta so the containing slot is blocked.
+        # Zero-duration events (from external apps) would be missed by the
+        # overlap check — treat them as 1h so the containing slot is blocked.
         if be <= bs:
-            be = bs + slot_delta
+            be = bs + timedelta(hours=1)
         busy_ranges.append((bs, be))
 
     slots: list[tuple[datetime, str]] = []
