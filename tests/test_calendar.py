@@ -47,10 +47,22 @@ def test_parse_day_invalid_returns_none():
 # ── get_available_slots (with mocked Google API) ──────────────────────────────
 
 def _make_service(busy_periods: list[dict]) -> MagicMock:
-    """Build a mock Google Calendar service that returns the given busy list."""
-    result = {"calendars": {"cal-test": {"busy": busy_periods}}}
+    """Build a mock Google Calendar service that returns the given busy list.
+
+    busy_periods: list of {"start": iso_str, "end": iso_str} dicts.
+    These are now returned via events().list() (not freebusy) so we convert
+    each period to a minimal calendar event object.
+    """
+    events_items = [
+        {
+            "status": "confirmed",
+            "start": {"dateTime": p["start"]},
+            "end": {"dateTime": p["end"]},
+        }
+        for p in busy_periods
+    ]
     service = MagicMock()
-    service.freebusy.return_value.query.return_value.execute.return_value = result
+    service.events.return_value.list.return_value.execute.return_value = {"items": events_items}
     return service
 
 

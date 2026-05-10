@@ -146,20 +146,37 @@ def _normalize_shift(shift: str) -> str:
 
 
 def _get_busy(service, calendar_id: str, window_start: datetime, window_end: datetime) -> list:
+    """
+    Return busy ranges using events().list() so that ALL events are considered,
+    including those marked as 'free' (transparent) by external apps.
+    freebusy() only returns opaque events, missing many external bookings.
+    """
     import logging as _log
     _logger = _log.getLogger(__name__)
-    body = {
-        "timeMin": window_start.isoformat(),
-        "timeMax": window_end.isoformat(),
-        "items": [{"id": calendar_id}],
-    }
-    result = service.freebusy().query(body=body).execute()
-    cal_data = result["calendars"].get(calendar_id, {})
-    errors = cal_data.get("errors", [])
-    busy = cal_data.get("busy", [])
-    _logger.warning("FREEBUSY calendar=%s window=%s→%s busy=%s errors=%s", calendar_id, window_start, window_end, busy, errors)
-    if errors:
-        raise RuntimeError(f"freebusy error for {calendar_id}: {errors}")
+
+    result = service.events().list(
+        calendarId=calendar_id,
+        timeMin=window_start.isoformat(),
+        timeMax=window_end.isoformat(),
+        singleEvents=True,
+        orderBy="startTime",
+    ).execute()
+
+    events = result.get("items", [])
+    busy = []
+    for evt in events:
+        # Skip cancelled events
+        if evt.get("status") == "cancelled":
+            continue
+        start_raw = evt.get("start", {})
+        end_raw = evt.get("end", {})
+        # Skip all-day events (they use 'date' not 'dateTime')
+        if "dateTime" not in start_raw:
+            continue
+        busy.append({"start": start_raw["dateTime"], "end": end_raw["dateTime"]})
+
+    _logger.warning("EVENTS_BUSY calendar=%s window=%s→%s found=%d events=%s",
+                    calendar_id, window_start, window_end, len(busy), busy)
     return busy
 
 
