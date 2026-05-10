@@ -17,14 +17,10 @@ import os
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
-import httpx
 from dotenv import load_dotenv
 load_dotenv()
 
 TZ = ZoneInfo("America/Recife")
-
-UAZAPI_BASE_URL = os.environ.get("UAZAPI_BASE_URL", "https://psique.uazapi.com")
-UAZAPI_TOKEN = os.environ.get("UAZAPI_TOKEN", "")
 
 DOCTOR_LABELS = {
     "d5baa58b-a788-4f40-b8c0-512c189150be": "Dr. Júlio",
@@ -41,7 +37,7 @@ def payment_reminder_message(first_name: str, doctor_label: str, date_str: str) 
         f"Olá, {first_name}! 😊 Só passando para lembrar que sua consulta com "
         f"*{doctor_label}* no dia *{date_str}* ainda aguarda o pagamento da taxa "
         f"de reserva de R$ 100,00.\n\n"
-        f"💳 PIX: 42006848000178\n\n"
+        f"💳 PIX: {os.environ.get('PIX_KEY', '42006684000178')}\n\n"
         f"Assim que o pagamento for realizado, sua vaga estará garantida! "
         f"Precisa de alguma ajuda ou tem alguma dúvida sobre o pagamento? É só me chamar aqui. 🙏"
     )
@@ -58,16 +54,9 @@ def payment_cancel_message(first_name: str, doctor_label: str, date_str: str) ->
 
 
 async def send_whatsapp(phone: str, text: str) -> None:
-    if not UAZAPI_TOKEN:
-        print("  UAZAPI_TOKEN not set, skipping send.")
-        return
-    headers = {"token": UAZAPI_TOKEN, "Content-Type": "application/json"}
-    async with httpx.AsyncClient(timeout=10) as client:
-        await client.post(
-            f"{UAZAPI_BASE_URL}/send/text",
-            json={"number": phone, "text": text},
-            headers=headers,
-        )
+    from app.whatsapp import send_text
+    phone_fmt = f"{phone}@s.whatsapp.net" if "@" not in phone else phone
+    await send_text(phone_fmt, text)
 
 
 async def save_to_checkpoint(graph, phone: str, message: str, appt: dict) -> None:
