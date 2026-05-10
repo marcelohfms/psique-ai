@@ -154,8 +154,12 @@ def _get_busy(service, calendar_id: str, window_start: datetime, window_end: dat
         "items": [{"id": calendar_id}],
     }
     result = service.freebusy().query(body=body).execute()
-    busy = result["calendars"][calendar_id]["busy"]
-    _logger.warning("FREEBUSY calendar=%s window=%s→%s busy=%s", calendar_id, window_start, window_end, busy)
+    cal_data = result["calendars"].get(calendar_id, {})
+    errors = cal_data.get("errors", [])
+    busy = cal_data.get("busy", [])
+    _logger.warning("FREEBUSY calendar=%s window=%s→%s busy=%s errors=%s", calendar_id, window_start, window_end, busy, errors)
+    if errors:
+        raise RuntimeError(f"freebusy error for {calendar_id}: {errors}")
     return busy
 
 
