@@ -17,16 +17,47 @@ logger = logging.getLogger(__name__)
 
 TZ = ZoneInfo("America/Recife")
 
-APPOINTMENT_NOTIFY_PHONE = os.getenv("APPOINTMENT_NOTIFY_PHONE", "5583998566516")
+APPOINTMENT_NOTIFY_PHONE = os.getenv("APPOINTMENT_NOTIFY_PHONE", "")
 
 
-async def _notify_clinic(message: str) -> None:
-    """Envia notificação de agendamento para a atendente da clínica."""
+async def _notify_clinic(message: str, phone: str = "", subject: str = "Notificação Eva") -> None:
+    """Envia notificação para a clínica via WhatsApp, nota privada no Chatwoot e e-mail."""
+    import asyncio as _asyncio
+    from app.email_sender import send_clinic_notification_email
+
+    tasks = []
+
+    # WhatsApp para número externo (opcional)
     if APPOINTMENT_NOTIFY_PHONE:
+        async def _wa():
+            try:
+                await send_text(APPOINTMENT_NOTIFY_PHONE, message)
+            except Exception:
+                pass
+        tasks.append(_wa())
+
+    # Nota privada no Chatwoot (na conversa do paciente)
+    if phone:
+        from app.chatwoot import get_conversation_id, add_private_note
+        conv_id = get_conversation_id(phone)
+        if conv_id is not None:
+            async def _note():
+                try:
+                    await add_private_note(conv_id, message)
+                except Exception:
+                    pass
+            tasks.append(_note())
+
+    # E-mail para a clínica
+    async def _email():
         try:
-            await send_text(APPOINTMENT_NOTIFY_PHONE, message)
+            await send_clinic_notification_email(subject, message)
         except Exception:
-            pass  # Não interrompe o fluxo se a notificação falhar
+            pass
+    tasks.append(_email())
+
+    if tasks:
+        await _asyncio.gather(*tasks)
 
 
 async def _resolve_doctor(state: dict, config: RunnableConfig) -> str:
@@ -246,7 +277,9 @@ async def confirm_appointment(
         f"Data e horário: {formatted}\n"
         f"Médico(a): {doctor_label}"
         f"{modality_line}\n\n"
-        f"📋 Lembrete: enviar o *Termo de Compromisso* para o e-mail do paciente ({patient_email})."
+        f"📋 Lembrete: enviar o *Termo de Compromisso* para o e-mail do paciente ({patient_email}).",
+        phone=phone,
+        subject=f"Agendamento realizado — {patient_name}",
     )
 
     return f"Consulta agendada com sucesso! ✅\n{doctor_label} — {formatted}{session_label}\nID: {event_id}"
@@ -296,7 +329,9 @@ async def cancel_appointment(
         f"Agendamento cancelado! ❌\n"
         f"Paciente: {patient_name}\n"
         f"Data e horário: {formatted_old}\n"
-        f"Médico(a): {doctor_label}"
+        f"Médico(a): {doctor_label}",
+        phone=phone,
+        subject=f"Agendamento cancelado — {patient_name}",
     )
 
     return "Consulta cancelada com sucesso. ✅"
@@ -383,7 +418,9 @@ async def reschedule_appointment(
         f"Paciente: {patient_name}\n"
         f"Horário anterior: {formatted_old}\n"
         f"Novo horário: {formatted_new}\n"
-        f"Médico(a): {doctor_label}"
+        f"Médico(a): {doctor_label}",
+        phone=phone,
+        subject=f"Agendamento alterado — {patient_name}",
     )
 
     return f"Consulta remarcada com sucesso! ✅\n{doctor_label} — {formatted_new}"

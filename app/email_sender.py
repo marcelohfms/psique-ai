@@ -39,6 +39,33 @@ def _send_email(
         server.sendmail(smtp_user, to_email, msg.as_string())
 
 
+async def send_clinic_notification_email(subject: str, body: str) -> None:
+    """Send a notification email to the clinic address (CLINIC_NOTIFY_EMAIL).
+    Does nothing if SMTP credentials or CLINIC_NOTIFY_EMAIL are not configured.
+    """
+    smtp_host = os.environ.get("SMTP_HOST")
+    smtp_port = int(os.environ.get("SMTP_PORT", "465"))
+    smtp_user = os.environ.get("SMTP_USER")
+    smtp_password = os.environ.get("SMTP_PASSWORD")
+    to_email = os.environ.get("CLINIC_NOTIFY_EMAIL")
+
+    if not all([smtp_host, smtp_user, smtp_password, to_email]):
+        return
+
+    loop = asyncio.get_running_loop()
+    await loop.run_in_executor(
+        None,
+        _send_email,
+        smtp_host,
+        smtp_port,
+        smtp_user,
+        smtp_password,
+        to_email,
+        subject,
+        body,
+    )
+
+
 async def send_document_request_email(
     doctor_key: str,
     doctor_email: str,
