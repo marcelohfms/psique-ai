@@ -83,6 +83,19 @@ async def reopen_conversation(conversation_id: int) -> None:
         response.raise_for_status()
 
 
+async def add_label(conversation_id: int, label: str) -> None:
+    """Add a label to a Chatwoot conversation."""
+    url = f"{_base_url()}/api/v1/accounts/{_account_id()}/conversations/{conversation_id}/labels"
+    async with httpx.AsyncClient(timeout=10) as client:
+        resp = await client.get(url, headers=_headers())
+        resp.raise_for_status()
+        current = resp.json().get("payload") or []
+        if label not in current:
+            current.append(label)
+            response = await client.post(url, json={"labels": current}, headers=_headers())
+            response.raise_for_status()
+
+
 # ── Contact / conversation lookup-or-create ───────────────────────────────────
 
 
