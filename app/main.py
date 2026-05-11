@@ -396,15 +396,15 @@ async def _apply_eva_label_action(payload: dict, added: set, removed: set) -> bo
 
     if _EVA_INACTIVE_LABEL in added:
         await _pause_bot_for_patient(phone)
-        print(f"[CHATWOOT] Eva pausada via label para {phone}", flush=True)
+        logger.info("Eva pausada via label para %s", phone)
 
     elif _EVA_INACTIVE_LABEL in removed:
         await _resume_bot_for_patient(phone)
-        print(f"[CHATWOOT] Eva reativada via remoção de eva-inativa para {phone}", flush=True)
+        logger.info("Eva reativada via remoção de eva-inativa para %s", phone)
 
     elif _EVA_ACTIVE_LABEL in added:
         await _resume_bot_for_patient(phone)
-        print(f"[CHATWOOT] Eva reativada via label eva-ativa para {phone}", flush=True)
+        logger.info("Eva reativada via label eva-ativa para %s", phone)
 
         conversation_id = payload.get("conversation", {}).get("id")
         if conversation_id:
@@ -412,7 +412,6 @@ async def _apply_eva_label_action(payload: dict, added: set, removed: set) -> bo
                 from app.chatwoot import get_last_patient_message
                 last_msg = await get_last_patient_message(conversation_id)
                 if last_msg:
-                    print(f"[CHATWOOT] Reprocessando última msg de {phone}: {last_msg[:80]}", flush=True)
                     await buffer_push(phone, last_msg, process_message)
             except Exception:
                 logger.warning("Failed to fetch/reprocess last message for %s", phone)
@@ -462,8 +461,6 @@ async def _handle_label_change(payload: dict) -> bool:
         added = labels_now - previous
         removed = previous - labels_now
 
-        print(f"[CHATWOOT] label_tracker conv={conv_id} prev={set(previous)} now={set(labels_now)} added={added} removed={removed}", flush=True)
-
         # eva-ativa takes priority: resume always beats pause
         if _EVA_ACTIVE_LABEL in added:
             return await _apply_eva_label_action(payload, added={_EVA_ACTIVE_LABEL}, removed=set())
@@ -505,10 +502,8 @@ async def _handle_chatwoot_payload(payload: dict) -> None:
         # (server restart, race condition, etc.).
         conv_labels = set(payload.get("conversation", {}).get("labels") or [])
         if _EVA_ACTIVE_LABEL in conv_labels:
-            print(f"[CHATWOOT] eva-ativa detectada em message_created, reativando {phone}", flush=True)
             await _resume_bot_for_patient(phone)
         elif _EVA_INACTIVE_LABEL in conv_labels:
-            print(f"[CHATWOOT] eva-inativa detectada em message_created, ignorando msg de {phone}", flush=True)
             return
 
         if text is None:
@@ -531,23 +526,6 @@ async def _handle_chatwoot_payload(payload: dict) -> None:
 @app.post("/chatwoot-webhook")
 async def chatwoot_webhook(request: Request):
     payload = await request.json()
-    event = payload.get("event")
-    print(f"[CHATWOOT] event={event} keys={list(payload.keys())}", flush=True)
-    if event == "conversation_updated":
-        print(f"[CHATWOOT] changed_attributes={payload.get('changed_attributes')}", flush=True)
-        print(f"[CHATWOOT] labels={payload.get('conversation', {}).get('labels')}", flush=True)
-    if event == "message_updated":
-        print(
-            f"[CHATWOOT] msg_updated"
-            f" message_type={payload.get('message_type')!r}"
-            f" content_type={payload.get('content_type')!r}"
-            f" content={payload.get('content')!r}"
-            f" content_attributes={payload.get('content_attributes')!r}"
-            f" labels={payload.get('conversation', {}).get('labels')!r}",
-            flush=True,
-        )
-    if event == "conversation_resolved":
-        print(f"[CHATWOOT] resolved labels={payload.get('labels')!r} meta={payload.get('meta')!r}", flush=True)
     asyncio.create_task(_handle_chatwoot_payload(payload))
     return {"status": "ok"}
 
