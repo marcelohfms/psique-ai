@@ -500,6 +500,17 @@ async def _handle_chatwoot_payload(payload: dict) -> None:
             except Exception:
                 logger.warning("Failed to reopen conversation %s", conversation_id)
 
+        # If eva-ativa label is present on the conversation, force-reactivate Eva now.
+        # This handles cases where the label was added but the activation event was missed
+        # (server restart, race condition, etc.).
+        conv_labels = set(payload.get("conversation", {}).get("labels") or [])
+        if _EVA_ACTIVE_LABEL in conv_labels:
+            print(f"[CHATWOOT] eva-ativa detectada em message_created, reativando {phone}", flush=True)
+            await _resume_bot_for_patient(phone)
+        elif _EVA_INACTIVE_LABEL in conv_labels:
+            print(f"[CHATWOOT] eva-inativa detectada em message_created, ignorando msg de {phone}", flush=True)
+            return
+
         if text is None:
             text = await _process_chatwoot_attachments(payload.get("attachments", []))
             if not text:
