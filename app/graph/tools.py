@@ -1,3 +1,4 @@
+import asyncio
 import os
 from datetime import datetime, timedelta
 from typing import Annotated, Literal
@@ -310,7 +311,7 @@ async def confirm_appointment(
     modality_line = f"\nModalidade: {'Online' if effective_modality == 'online' else 'Presencial'}" if effective_modality else ""
     patient_email = state.get("patient_email") or "não informado"
     registration_block = _build_registration_block(state)
-    await _notify_clinic(
+    asyncio.create_task(_notify_clinic(
         f"Agendamento realizado! ✅\n"
         f"Paciente: {patient_name}{session_label}\n"
         f"Data e horário: {formatted}\n"
@@ -320,7 +321,7 @@ async def confirm_appointment(
         f"{registration_block}",
         phone=phone,
         subject=f"Agendamento realizado — {patient_name}",
-    )
+    ))
 
     return f"Consulta agendada com sucesso! ✅\n{doctor_label} — {formatted}{session_label}\nID: {event_id}"
 
@@ -365,14 +366,14 @@ async def cancel_appointment(
     else:
         formatted_old = "horário não disponível"
 
-    await _notify_clinic(
+    asyncio.create_task(_notify_clinic(
         f"Agendamento cancelado! ❌\n"
         f"Paciente: {patient_name}\n"
         f"Data e horário: {formatted_old}\n"
         f"Médico(a): {doctor_label}",
         phone=phone,
         subject=f"Agendamento cancelado — {patient_name}",
-    )
+    ))
 
     return "Consulta cancelada com sucesso. ✅"
 
@@ -453,7 +454,7 @@ async def reschedule_appointment(
     else:
         formatted_old = "horário não disponível"
 
-    await _notify_clinic(
+    asyncio.create_task(_notify_clinic(
         f"Agendamento alterado! 🔄\n"
         f"Paciente: {patient_name}\n"
         f"Horário anterior: {formatted_old}\n"
@@ -461,7 +462,7 @@ async def reschedule_appointment(
         f"Médico(a): {doctor_label}",
         phone=phone,
         subject=f"Agendamento alterado — {patient_name}",
-    )
+    ))
 
     return f"Consulta remarcada com sucesso! ✅\n{doctor_label} — {formatted_new}"
 
@@ -562,7 +563,7 @@ async def request_document(
         notify_msg += f"\nMedicação: {medication_note}"
     if is_controlled:
         notify_msg += "\n\n⚠️ RECEITA FÍSICA — o paciente deverá retirar presencialmente na clínica."
-    await _notify_clinic(notify_msg)
+    asyncio.create_task(_notify_clinic(notify_msg))
 
     if is_controlled:
         return (
@@ -722,9 +723,9 @@ async def register_payment(
     except Exception:
         _logger.exception("PAID_AT UPDATE FAILED patient=%s", patient_name)
 
-    await _notify_clinic(
+    asyncio.create_task(_notify_clinic(
         f"💰 Comprovante recebido!\nPaciente: {patient_name}\nValor: R$ {amount}\nConsulta: {appointment_dt}\nLink: {drive_link}"
-    )
+    ))
 
     await log_event("payment_receipt_registered", phone, {
         "patient_name": patient_name,
