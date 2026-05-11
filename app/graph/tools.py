@@ -66,7 +66,7 @@ def _build_registration_block(state: dict) -> str:
         return ""
 
     phone_raw = ""  # phone is in config, not state — caller adds it if needed
-    lines = ["\n📋 *Cadastro do paciente:*"]
+    lines = ["\n\n📋 CADASTRO DO PACIENTE:"]
 
     contact = state.get("user_name") or ""
     patient = state.get("patient_name") or ""
@@ -316,7 +316,7 @@ async def confirm_appointment(
         f"Data e horário: {formatted}\n"
         f"Médico(a): {doctor_label}"
         f"{modality_line}\n\n"
-        f"📋 Lembrete: enviar o *Termo de Compromisso* para o e-mail do paciente ({patient_email})."
+        f"📋 LEMBRETE: enviar o Termo de Compromisso para o e-mail do paciente ({patient_email})."
         f"{registration_block}",
         phone=phone,
         subject=f"Agendamento realizado — {patient_name}",
