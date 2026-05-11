@@ -469,12 +469,13 @@ async def _handle_label_change(payload: dict) -> bool:
 
     # Path 3: conversation_resolved — Chatwoot fires this when labels are applied (observed behavior)
     # Labels are at the top level of this payload, not inside payload['conversation']
+    # Check eva-ativa first so it takes priority over eva-inativa when both are present
     if event == "conversation_resolved":
         labels_now = set(payload.get("labels") or [])
-        if _EVA_INACTIVE_LABEL in labels_now:
-            return await _apply_eva_label_action(payload, added={_EVA_INACTIVE_LABEL}, removed=set())
         if _EVA_ACTIVE_LABEL in labels_now:
             return await _apply_eva_label_action(payload, added={_EVA_ACTIVE_LABEL}, removed=set())
+        if _EVA_INACTIVE_LABEL in labels_now:
+            return await _apply_eva_label_action(payload, added={_EVA_INACTIVE_LABEL}, removed=set())
         return False
 
     return False
@@ -538,6 +539,8 @@ async def chatwoot_webhook(request: Request):
             f" labels={payload.get('conversation', {}).get('labels')!r}",
             flush=True,
         )
+    if event == "conversation_resolved":
+        print(f"[CHATWOOT] resolved labels={payload.get('labels')!r} meta={payload.get('meta')!r}", flush=True)
     asyncio.create_task(_handle_chatwoot_payload(payload))
     return {"status": "ok"}
 
