@@ -60,6 +60,44 @@ async def _notify_clinic(message: str, phone: str = "", subject: str = "Notifica
         await _asyncio.gather(*tasks)
 
 
+def _build_registration_block(state: dict) -> str:
+    """Return a formatted registration summary for new patients, or empty string."""
+    if state.get("is_patient"):
+        return ""
+
+    phone_raw = ""  # phone is in config, not state — caller adds it if needed
+    lines = ["\n📋 *Cadastro do paciente:*"]
+
+    contact = state.get("user_name") or ""
+    patient = state.get("patient_name") or ""
+    is_for_self = state.get("is_for_self")
+
+    if is_for_self is False and contact and contact != patient:
+        lines.append(f"  Responsável: {contact}")
+
+    lines.append(f"  Nome: {patient or '—'}")
+    lines.append(f"  Idade: {state.get('patient_age') or '—'}")
+    lines.append(f"  Data de nascimento: {state.get('birth_date') or '—'}")
+    lines.append(f"  CPF paciente: {state.get('patient_cpf') or '—'}")
+    lines.append(f"  E-mail: {state.get('patient_email') or '—'}")
+
+    guardian_name = state.get("guardian_name")
+    guardian_cpf = state.get("guardian_cpf")
+    if guardian_name:
+        lines.append(f"  Responsável legal: {guardian_name}")
+    if guardian_cpf:
+        lines.append(f"  CPF responsável: {guardian_cpf}")
+
+    reason = state.get("consultation_reason")
+    referral = state.get("referral_professional")
+    if reason:
+        lines.append(f"  Motivo da consulta: {reason}")
+    if referral:
+        lines.append(f"  Encaminhado por: {referral}")
+
+    return "\n".join(lines)
+
+
 async def _resolve_doctor(state: dict, config: RunnableConfig) -> str:
     """Return preferred_doctor key, falling back to DB if not in state."""
     doctor = state.get("preferred_doctor") or ""
@@ -271,13 +309,15 @@ async def confirm_appointment(
     session_label = f" ({session_note})" if session_note else ""
     modality_line = f"\nModalidade: {'Online' if effective_modality == 'online' else 'Presencial'}" if effective_modality else ""
     patient_email = state.get("patient_email") or "não informado"
+    registration_block = _build_registration_block(state)
     await _notify_clinic(
         f"Agendamento realizado! ✅\n"
         f"Paciente: {patient_name}{session_label}\n"
         f"Data e horário: {formatted}\n"
         f"Médico(a): {doctor_label}"
         f"{modality_line}\n\n"
-        f"📋 Lembrete: enviar o *Termo de Compromisso* para o e-mail do paciente ({patient_email}).",
+        f"📋 Lembrete: enviar o *Termo de Compromisso* para o e-mail do paciente ({patient_email})."
+        f"{registration_block}",
         phone=phone,
         subject=f"Agendamento realizado — {patient_name}",
     )
