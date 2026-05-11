@@ -760,12 +760,9 @@ async def transfer_to_human(
     await log_event("human_transfer", phone, {"reason": reason})
 
     if _is_attendant_available():
-        msg = "👤 Vou transferir você para um de nossos atendentes. Um momento, por favor!"
+        return "👤 Vou transferir você para um de nossos atendentes. Um momento, por favor!"
     else:
-        msg = (
+        return (
             "👤 Vou encaminhar você para um de nossos atendentes!\n\n"
             + _ATTENDANT_HOURS_MSG
         )
-
-    await send_text(phone, msg)
-    return "Conversa transferida para atendente humano."
