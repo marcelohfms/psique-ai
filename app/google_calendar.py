@@ -268,12 +268,14 @@ async def get_available_slots(
             be = bs + timedelta(hours=1)
         busy_ranges.append((bs, be))
 
+    min_start = datetime.now(TZ) + timedelta(hours=4)
+
     slots: list[tuple[datetime, str]] = []
     for window_start, window_end, modality in windows:
         current = window_start
         while current + slot_delta <= window_end:
             slot_end = current + slot_delta
-            if not any(current < be and slot_end > bs for bs, be in busy_ranges):
+            if current >= min_start and not any(current < be and slot_end > bs for bs, be in busy_ranges):
                 slots.append((current, modality))
             current += slot_delta
 
