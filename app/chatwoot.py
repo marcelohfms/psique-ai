@@ -96,6 +96,20 @@ async def add_label(conversation_id: int, label: str) -> None:
             response.raise_for_status()
 
 
+async def get_last_patient_message(conversation_id: int) -> str | None:
+    """Return the text of the last incoming message from the patient, or None."""
+    url = f"{_base_url()}/api/v1/accounts/{_account_id()}/conversations/{conversation_id}/messages"
+    async with httpx.AsyncClient(timeout=10) as client:
+        resp = await client.get(url, headers=_headers())
+        resp.raise_for_status()
+        messages = resp.json().get("payload", {}).get("messages") or []
+    incoming = [m for m in messages if m.get("message_type") == 0 and (m.get("content") or "").strip()]
+    if not incoming:
+        return None
+    last = max(incoming, key=lambda m: m.get("created_at", 0))
+    return last.get("content", "").strip() or None
+
+
 # ── Contact / conversation lookup-or-create ───────────────────────────────────
 
 

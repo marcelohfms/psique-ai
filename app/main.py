@@ -367,6 +367,7 @@ async def _process_chatwoot_attachments(attachments: list) -> str | None:
 
 
 _EVA_INACTIVE_LABEL = "eva-inativa"
+_EVA_ACTIVE_LABEL = "eva-ativa"
 
 
 def _extract_phone_from_payload(payload: dict) -> str | None:
@@ -403,7 +404,7 @@ async def _handle_label_change(payload: dict) -> bool:
     added = labels_now - labels_before
     removed = labels_before - labels_now
 
-    if _EVA_INACTIVE_LABEL not in added and _EVA_INACTIVE_LABEL not in removed:
+    if _EVA_INACTIVE_LABEL not in added and _EVA_INACTIVE_LABEL not in removed and _EVA_ACTIVE_LABEL not in added:
         return False
 
     phone = _extract_phone_from_payload(payload)
@@ -413,9 +414,26 @@ async def _handle_label_change(payload: dict) -> bool:
     if _EVA_INACTIVE_LABEL in added:
         await _pause_bot_for_patient(phone)
         logger.info("Eva pausada via label eva-inativa para %s", phone)
+
     elif _EVA_INACTIVE_LABEL in removed:
         await _resume_bot_for_patient(phone)
         logger.info("Eva reativada via remoção de eva-inativa para %s", phone)
+
+    elif _EVA_ACTIVE_LABEL in added:
+        await _resume_bot_for_patient(phone)
+        logger.info("Eva reativada via label eva-ativa para %s", phone)
+
+        # Fetch last patient message and reprocess so Eva responds immediately
+        conversation_id = payload.get("conversation", {}).get("id")
+        if conversation_id:
+            try:
+                from app.chatwoot import get_last_patient_message
+                last_msg = await get_last_patient_message(conversation_id)
+                if last_msg:
+                    logger.info("Reprocessing last message for %s: %.80s", phone, last_msg)
+                    await buffer_push(phone, last_msg, process_message)
+            except Exception:
+                logger.warning("Failed to fetch/reprocess last message for %s", phone)
 
     return True
 
