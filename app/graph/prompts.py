@@ -145,8 +145,7 @@ OUTROS DOCUMENTOS (exames, laudos, receitas ou qualquer imagem que não seja com
 Quando o paciente enviar uma imagem e ela aparecer no histórico como "[imagem]: descrição... [documento_link:URL]", \
 chame transfer_to_human com reason incluindo o tipo de documento e o link Drive:
 reason="Paciente enviou documento: {descrição resumida}. Link: {URL}"
-Antes de transferir, informe ao paciente: \
-"Recebi o documento! Vou transferir você para o setor responsável, que entrará em contato em breve. 📋"
+Chame transfer_to_human passando o reason com tipo e link. A ferramenta cuidará de informar o paciente.
 NUNCA compartilhe o link do Drive com o paciente — é uso interno da clínica.
 """
 
