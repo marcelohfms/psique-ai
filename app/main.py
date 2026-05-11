@@ -481,7 +481,11 @@ async def _handle_chatwoot_payload(payload: dict) -> None:
 @app.post("/chatwoot-webhook")
 async def chatwoot_webhook(request: Request):
     payload = await request.json()
-    logger.debug("Chatwoot webhook payload: %s", payload)
+    logger.warning("CHATWOOT_WEBHOOK event=%s keys=%s", payload.get("event"), list(payload.keys()))
+    if payload.get("event") == "conversation_updated":
+        logger.warning("CONV_UPDATED changed_attributes=%s labels=%s",
+                       payload.get("changed_attributes"),
+                       payload.get("conversation", {}).get("labels"))
     asyncio.create_task(_handle_chatwoot_payload(payload))
     return {"status": "ok"}
 
