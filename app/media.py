@@ -11,6 +11,8 @@ Flow:
 import base64
 import logging
 import os
+import re
+import unicodedata
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
@@ -31,6 +33,27 @@ def _get_openai() -> AsyncOpenAI:
     return _openai
 
 
+def _safe_name(name: str) -> str:
+    """Normalize name for use in a filename (no accents, no special chars)."""
+    normalized = unicodedata.normalize("NFD", name)
+    ascii_name = normalized.encode("ascii", "ignore").decode()
+    return re.sub(r"[^a-zA-Z0-9_-]", "_", ascii_name).strip("_")
+
+
+async def _get_patient_name(phone: str) -> str:
+    """Look up patient name from DB for use in filenames. Returns 'paciente' on failure."""
+    try:
+        from app.database import get_user_by_phone
+        user = await get_user_by_phone(phone)
+        if user:
+            name = user.get("patient_name") or user.get("name") or ""
+            if name:
+                return _safe_name(name.split()[0])
+    except Exception:
+        pass
+    return "paciente"
+
+
 async def transcribe_audio_bytes(audio_bytes: bytes) -> str:
     """Transcribe raw audio bytes with Whisper."""
     result = await _get_openai().audio.transcriptions.create(
@@ -47,7 +70,7 @@ async def transcribe_audio(media_id: str) -> str:
     return await transcribe_audio_bytes(audio_bytes)
 
 
-async def describe_image_bytes(image_bytes: bytes) -> str:
+async def describe_image_bytes(image_bytes: bytes, phone: str = "") -> str:
     """Classify, upload to Drive, and describe raw image bytes with GPT-4o vision."""
 
     b64 = base64.b64encode(image_bytes).decode()
@@ -79,13 +102,14 @@ async def describe_image_bytes(image_bytes: bytes) -> str:
     description = resp.choices[0].message.content
     is_payment = description.upper().startswith("COMPROVANTE DE PAGAMENTO")
     now = datetime.now(TZ).strftime("%Y%m%d_%H%M%S")
+    patient = await _get_patient_name(phone) if phone else "paciente"
 
     if is_payment:
         folder_id = os.getenv("GOOGLE_DRIVE_PAYMENTS_FOLDER_ID")
         if folder_id:
             try:
                 from app.google_drive import upload_image
-                drive_link = await upload_image(image_bytes, f"comprovante_{now}.jpg")
+                drive_link = await upload_image(image_bytes, f"comprovante_{patient}_{now}.jpg")
                 logger.info("DRIVE_UPLOAD OK link=%s", drive_link)
                 return f"[imagem]: {description} [drive_link:{drive_link}]"
             except Exception:
@@ -96,7 +120,7 @@ async def describe_image_bytes(image_bytes: bytes) -> str:
         if folder_id:
             try:
                 from app.google_drive import upload_document
-                drive_link = await upload_document(image_bytes, f"documento_{now}.jpg")
+                drive_link = await upload_document(image_bytes, f"documento_{patient}_{now}.jpg")
                 logger.info("DRIVE_UPLOAD DOCUMENT OK link=%s", drive_link)
                 return f"[imagem]: {description} [documento_link:{drive_link}]"
             except Exception:
@@ -104,10 +128,10 @@ async def describe_image_bytes(image_bytes: bytes) -> str:
         return f"[imagem]: {description}"
 
 
-async def describe_image(media_id: str) -> str:
+async def describe_image(media_id: str, phone: str = "") -> str:
     """Download image from Meta, classify, upload to Drive, and describe with GPT-4o vision."""
     image_bytes = await download_media(media_id)
-    return await describe_image_bytes(image_bytes)
+    return await describe_image_bytes(image_bytes, phone)
 
 
 async def process_media(media_id: str, media_type: str, phone: str = "") -> str | None:
@@ -120,7 +144,7 @@ async def process_media(media_id: str, media_type: str, phone: str = "") -> str 
         if media_type == "audio":
             return await transcribe_audio(media_id)
         if media_type == "image":
-            return await describe_image(media_id)
+            return await describe_image(media_id, phone)
     except Exception:
         logger.exception("Failed to process media %s (type=%s)", media_id, media_type)
     return None
