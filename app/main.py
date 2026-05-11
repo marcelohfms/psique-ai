@@ -375,6 +375,7 @@ def _extract_phone_from_payload(payload: dict) -> str | None:
     conversation = payload.get("conversation", {})
     phone_raw = (
         conversation.get("meta", {}).get("sender", {}).get("phone_number")
+        or payload.get("meta", {}).get("sender", {}).get("phone_number")
         or payload.get("sender", {}).get("phone_number")
         or ""
     ).strip()
@@ -446,7 +447,6 @@ async def _handle_label_change(payload: dict) -> bool:
     # Path 2: message_updated — Chatwoot fires this as an activity message when labels are applied
     if event == "message_updated":
         content = (payload.get("content") or "").lower()
-        labels_now = set(payload.get("conversation", {}).get("labels") or [])
 
         # Check content for label name (Chatwoot includes it in activity messages)
         if _EVA_INACTIVE_LABEL in content:
@@ -465,6 +465,16 @@ async def _handle_label_change(payload: dict) -> bool:
                 if label_val == _EVA_ACTIVE_LABEL:
                     return await _apply_eva_label_action(payload, added={_EVA_ACTIVE_LABEL}, removed=set())
 
+        return False
+
+    # Path 3: conversation_resolved — Chatwoot fires this when labels are applied (observed behavior)
+    # Labels are at the top level of this payload, not inside payload['conversation']
+    if event == "conversation_resolved":
+        labels_now = set(payload.get("labels") or [])
+        if _EVA_INACTIVE_LABEL in labels_now:
+            return await _apply_eva_label_action(payload, added={_EVA_INACTIVE_LABEL}, removed=set())
+        if _EVA_ACTIVE_LABEL in labels_now:
+            return await _apply_eva_label_action(payload, added={_EVA_ACTIVE_LABEL}, removed=set())
         return False
 
     return False
