@@ -1,12 +1,16 @@
 """
 Send WhatsApp appointment reminders via Meta Cloud API templates.
-Runs daily at 8h (Recife time) via GitHub Actions.
+Runs every 30 minutes via GitHub Actions.
 
-- Day before: asks patient to confirm the appointment
-- Day of:     reminds patient the appointment is today
+- Day before: sends between 07h-10h Recife the day before the appointment
+- Day of:     sends up to 2h before the appointment starts (never after)
 
-After sending, the reminder message is saved to the LangGraph checkpoint
-so the LLM has full conversation context when the patient replies.
+After sending, the reminder timestamp is saved directly on the appointment row
+(same pattern as payment_reminder_sent_at).
+
+Requires in Supabase:
+  ALTER TABLE appointments ADD COLUMN IF NOT EXISTS reminder_day_before_sent_at timestamptz;
+  ALTER TABLE appointments ADD COLUMN IF NOT EXISTS reminder_day_of_sent_at timestamptz;
 """
 import asyncio
 import os
@@ -46,7 +50,6 @@ async def send_reminder_template(phone: str, template_name: str, first_name: str
 
 
 def _plain_message(template_name: str, first_name: str, doctor_label: str, time_str: str) -> str:
-    """Reconstruct the plain text to save into LangGraph checkpoint."""
     if template_name == "lembrete_dia_anterior":
         return (
             f"Olá! Lembrete da Psiquê: {first_name} tem consulta amanhã "
@@ -58,31 +61,7 @@ def _plain_message(template_name: str, first_name: str, doctor_label: str, time_
     )
 
 
-async def already_sent(client, appointment_id: str, event_type: str) -> bool:
-    result = await (
-        client.from_("events")
-        .select("id")
-        .eq("event_type", event_type)
-        .eq("metadata->>appointment_id", appointment_id)
-        .limit(1)
-        .execute()
-    )
-    return bool(result.data)
-
-
-async def log_reminder(client, phone: str, appointment_id: str, event_type: str) -> None:
-    try:
-        await client.from_("events").insert({
-            "event_type": event_type,
-            "phone": phone,
-            "metadata": {"appointment_id": appointment_id},
-        }).execute()
-    except Exception:
-        pass
-
-
 async def save_to_checkpoint(graph, phone: str, message: str, appt: dict) -> None:
-    """Inject the reminder message into the LangGraph checkpoint for this patient."""
     from langchain_core.messages import AIMessage
 
     thread_phone = f"{phone}@s.whatsapp.net"
@@ -116,37 +95,67 @@ async def main():
     )
 
     now = datetime.now(TZ)
-    today_str = now.date().isoformat()
-    tomorrow_str = (now.date() + timedelta(days=1)).isoformat()
-    day_after_tomorrow_str = (now.date() + timedelta(days=2)).isoformat()
+    tomorrow_start = (now.date() + timedelta(days=1)).isoformat()
+    tomorrow_end = (now.date() + timedelta(days=2)).isoformat()
+    two_hours_later = (now + timedelta(hours=2)).isoformat()
 
-    result = await (
+    # ── Day-before reminders: send between 07h-10h Recife ────────────────────
+    day_before_appts = []
+    if 7 <= now.hour < 10:
+        result = await (
+            client.from_("appointments")
+            .select("appointment_id, start_time, doctor_id, users(number, patient_name, name)")
+            .eq("status", "scheduled")
+            .is_("reminder_day_before_sent_at", "null")
+            .gte("start_time", f"{tomorrow_start}T00:00:00")
+            .lt("start_time", f"{tomorrow_end}T00:00:00")
+            .execute()
+        )
+        day_before_appts = result.data or []
+
+    # ── Day-of reminders: start_time between now and now+2h ──────────────────
+    day_of_result = await (
         client.from_("appointments")
         .select("appointment_id, start_time, doctor_id, users(number, patient_name, name)")
         .eq("status", "scheduled")
-        .gte("start_time", f"{today_str}T00:00:00")
-        .lt("start_time", f"{day_after_tomorrow_str}T00:00:00")
+        .is_("reminder_day_of_sent_at", "null")
+        .gt("start_time", now.isoformat())
+        .lte("start_time", two_hours_later)
         .execute()
     )
+    day_of_appts = day_of_result.data or []
 
-    appointments = result.data or []
-    print(f"Found {len(appointments)} appointment(s) for today/tomorrow.")
+    print(f"Day-before reminders to send: {len(day_before_appts)}")
+    print(f"Day-of reminders to send: {len(day_of_appts)}")
 
     conn_string = os.environ.get("SUPABASE_CONNECTION_STRING")
     graph = None
+    pg_conn = None
     if conn_string:
+        from psycopg import AsyncConnection
+        from psycopg.rows import dict_row
         from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
         from app.graph.graph import build_graph
-        checkpointer = AsyncPostgresSaver.from_conn_string(conn_string)
-        graph = build_graph(await checkpointer.__aenter__())
+        pg_conn = await AsyncConnection.connect(
+            conn_string,
+            autocommit=True,
+            prepare_threshold=None,
+            row_factory=dict_row,
+        )
+        checkpointer = AsyncPostgresSaver(pg_conn)
+        graph = build_graph(checkpointer=checkpointer)
     else:
         print("SUPABASE_CONNECTION_STRING not set — reminders won't be saved to LangGraph checkpoint.")
 
     try:
-        for appt in appointments:
+        batch = [
+            *((a, "lembrete_dia_anterior", "reminder_day_before_sent_at") for a in day_before_appts),
+            *((a, "lembrete_dia_consulta", "reminder_day_of_sent_at") for a in day_of_appts),
+        ]
+
+        for appt, template_name, sent_col in batch:
             appointment_id = appt["appointment_id"]
             start_dt = datetime.fromisoformat(appt["start_time"]).astimezone(TZ)
-            appt_date = start_dt.date().isoformat()
             time_str = start_dt.strftime("%H:%M")
 
             user = appt.get("users") or {}
@@ -158,31 +167,20 @@ async def main():
             if not phone:
                 continue
 
-            if appt_date == tomorrow_str:
-                event_type = "reminder_day_before"
-                template_name = "lembrete_dia_anterior"
-            elif appt_date == today_str:
-                event_type = "reminder_day_of"
-                template_name = "lembrete_dia_consulta"
-            else:
-                continue
-
-            if await already_sent(client, appointment_id, event_type):
-                print(f"  Already sent {event_type} for {appointment_id}, skipping.")
-                continue
-
             try:
                 await send_reminder_template(phone, template_name, first_name, doctor_label, time_str)
-                await log_reminder(client, phone, appointment_id, event_type)
+                await client.from_("appointments").update({
+                    sent_col: now.isoformat(),
+                }).eq("appointment_id", appointment_id).execute()
                 message = _plain_message(template_name, first_name, doctor_label, time_str)
                 if graph:
                     await save_to_checkpoint(graph, phone, message, appt)
-                print(f"  [{event_type}] Sent to {phone} — {patient_name} @ {time_str}")
+                print(f"  [{template_name}] Sent to {phone} — {patient_name} @ {time_str}")
             except Exception as e:
                 print(f"  Failed to send to {phone}: {e}")
     finally:
-        if conn_string and graph:
-            await checkpointer.__aexit__(None, None, None)
+        if pg_conn:
+            await pg_conn.close()
 
 
 if __name__ == "__main__":

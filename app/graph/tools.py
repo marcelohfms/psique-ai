@@ -11,7 +11,7 @@ import logging
 
 from app.whatsapp import send_text
 from app.database import get_supabase, log_event, upsert_user, get_user_by_phone, DOCTOR_IDS, DOCTOR_NAMES
-from app.chatwoot import get_conversation_id, unassign_agent_bot
+from app.chatwoot import get_conversation_id, unassign_agent_bot, add_label
 
 logger = logging.getLogger(__name__)
 
@@ -751,6 +751,11 @@ async def transfer_to_human(
             await unassign_agent_bot(conv_id)
         except Exception:
             logger.warning("Failed to unassign Chatwoot agent bot for conv %s", conv_id)
+
+        try:
+            await add_label(conv_id, "eva-inativa")
+        except Exception:
+            logger.warning("Failed to add eva-inativa label to conv %s", conv_id)
 
     await log_event("human_transfer", phone, {"reason": reason})
 

@@ -1,7 +1,10 @@
 import asyncio
+import logging
 import os
 from datetime import datetime
 from zoneinfo import ZoneInfo
+
+logger = logging.getLogger(__name__)
 
 from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import build
@@ -68,7 +71,7 @@ async def append_payment_receipt(
 
     creds = _credentials()
     service = build("sheets", "v4", credentials=creds)
-    loop = asyncio.get_event_loop()
+    loop = asyncio.get_running_loop()
     await loop.run_in_executor(None, _append_row_payments, service, spreadsheet_id, row)
 
 
@@ -110,6 +113,7 @@ async def append_document_request(
     """
     spreadsheet_id = os.environ.get("GOOGLE_SHEETS_DOC_ID")
     if not spreadsheet_id:
+        logger.error("GOOGLE_SHEETS_DOC_ID not set — document request NOT recorded in spreadsheet")
         return
 
     now = datetime.now(TZ).strftime("%d/%m/%Y %H:%M")
@@ -119,5 +123,5 @@ async def append_document_request(
 
     creds = _credentials()
     service = build("sheets", "v4", credentials=creds)
-    loop = asyncio.get_event_loop()
+    loop = asyncio.get_running_loop()
     await loop.run_in_executor(None, _append_row, service, spreadsheet_id, row)

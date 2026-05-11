@@ -366,8 +366,85 @@ async def _process_chatwoot_attachments(attachments: list) -> str | None:
     return None
 
 
+_EVA_INACTIVE_LABEL = "eva-inativa"
+_EVA_ACTIVE_LABEL = "eva-ativa"
+
+
+def _extract_phone_from_payload(payload: dict) -> str | None:
+    """Extract the patient phone from any Chatwoot payload."""
+    conversation = payload.get("conversation", {})
+    phone_raw = (
+        conversation.get("meta", {}).get("sender", {}).get("phone_number")
+        or payload.get("sender", {}).get("phone_number")
+        or ""
+    ).strip()
+    if not phone_raw:
+        return None
+    return phone_raw.lstrip("+") + "@s.whatsapp.net"
+
+
+async def _handle_label_change(payload: dict) -> bool:
+    """
+    Handle conversation_updated events where the eva-inativa label was added or removed.
+    Returns True if the event was a label change we handled, False otherwise.
+    """
+    if payload.get("event") != "conversation_updated":
+        return False
+
+    changed = payload.get("changed_attributes") or []
+    label_change = next(
+        (c for c in changed if isinstance(c, dict) and "labels" in c),
+        None,
+    )
+    if label_change is None:
+        return False
+
+    labels_now = set(payload.get("conversation", {}).get("labels") or [])
+    labels_before = set((label_change.get("labels") or {}).get("previous_value") or [])
+    added = labels_now - labels_before
+    removed = labels_before - labels_now
+
+    if _EVA_INACTIVE_LABEL not in added and _EVA_INACTIVE_LABEL not in removed and _EVA_ACTIVE_LABEL not in added:
+        return False
+
+    phone = _extract_phone_from_payload(payload)
+    if not phone:
+        return True
+
+    if _EVA_INACTIVE_LABEL in added:
+        await _pause_bot_for_patient(phone)
+        logger.info("Eva pausada via label eva-inativa para %s", phone)
+
+    elif _EVA_INACTIVE_LABEL in removed:
+        await _resume_bot_for_patient(phone)
+        logger.info("Eva reativada via remoção de eva-inativa para %s", phone)
+
+    elif _EVA_ACTIVE_LABEL in added:
+        await _resume_bot_for_patient(phone)
+        logger.info("Eva reativada via label eva-ativa para %s", phone)
+
+        # Fetch last patient message and reprocess so Eva responds immediately
+        conversation_id = payload.get("conversation", {}).get("id")
+        if conversation_id:
+            try:
+                from app.chatwoot import get_last_patient_message
+                last_msg = await get_last_patient_message(conversation_id)
+                if last_msg:
+                    logger.info("Reprocessing last message for %s: %.80s", phone, last_msg)
+                    await buffer_push(phone, last_msg, process_message)
+            except Exception:
+                logger.warning("Failed to fetch/reprocess last message for %s", phone)
+
+    return True
+
+
 async def _handle_chatwoot_payload(payload: dict) -> None:
     try:
+        # ── Label change: eva-inativa added/removed ───────────────────────────
+        if await _handle_label_change(payload):
+            return
+
+        # ── Incoming patient message ──────────────────────────────────────────
         result = _extract_chatwoot_message(payload)
         if result is None:
             return
@@ -404,7 +481,10 @@ async def _handle_chatwoot_payload(payload: dict) -> None:
 @app.post("/chatwoot-webhook")
 async def chatwoot_webhook(request: Request):
     payload = await request.json()
-    logger.debug("Chatwoot webhook payload: %s", payload)
+    print(f"[CHATWOOT] event={payload.get('event')} keys={list(payload.keys())}", flush=True)
+    if payload.get("event") == "conversation_updated":
+        print(f"[CHATWOOT] changed_attributes={payload.get('changed_attributes')}", flush=True)
+        print(f"[CHATWOOT] labels={payload.get('conversation', {}).get('labels')}", flush=True)
     asyncio.create_task(_handle_chatwoot_payload(payload))
     return {"status": "ok"}
 
