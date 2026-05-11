@@ -369,6 +369,10 @@ async def _process_chatwoot_attachments(attachments: list) -> str | None:
 _EVA_INACTIVE_LABEL = "eva-inativa"
 _EVA_ACTIVE_LABEL = "eva-ativa"
 
+# In-memory label tracker: conv_id (str) → frozenset of current labels
+# Used to detect label changes from message_updated events (Chatwoot doesn't send a dedicated label-change event)
+_conv_labels: dict[str, frozenset] = {}
+
 
 def _extract_phone_from_payload(payload: dict) -> str | None:
     """Extract the patient phone from any Chatwoot payload."""
@@ -444,38 +448,30 @@ async def _handle_label_change(payload: dict) -> bool:
 
         return await _apply_eva_label_action(payload, added, removed)
 
-    # Path 2: message_updated — Chatwoot fires this as an activity message when labels are applied
-    if event == "message_updated":
-        content = (payload.get("content") or "").lower()
+    # Path 2: message_updated / conversation_resolved — Chatwoot fires these when labels change.
+    # We track labels per conversation in memory to detect actual changes.
+    if event in ("message_updated", "conversation_resolved"):
+        conv = payload.get("conversation") or {}
+        conv_id = str(conv.get("id") or payload.get("id") or "")
+        # Labels live inside conversation{} for message_updated, at top level for conversation_resolved
+        labels_now = frozenset(conv.get("labels") or payload.get("labels") or [])
 
-        # Check content for label name (Chatwoot includes it in activity messages)
-        if _EVA_INACTIVE_LABEL in content:
-            return await _apply_eva_label_action(payload, added={_EVA_INACTIVE_LABEL}, removed=set())
-        if _EVA_ACTIVE_LABEL in content:
+        previous = _conv_labels.get(conv_id, frozenset())
+        _conv_labels[conv_id] = labels_now
+
+        added = labels_now - previous
+        removed = previous - labels_now
+
+        print(f"[CHATWOOT] label_tracker conv={conv_id} prev={set(previous)} now={set(labels_now)} added={added} removed={removed}", flush=True)
+
+        # eva-ativa takes priority: resume always beats pause
+        if _EVA_ACTIVE_LABEL in added:
             return await _apply_eva_label_action(payload, added={_EVA_ACTIVE_LABEL}, removed=set())
-
-        # Fallback: check content_attributes for label action info
-        attrs = payload.get("content_attributes") or {}
-        if isinstance(attrs, dict):
-            action_type = attrs.get("action_name") or attrs.get("type") or ""
-            label_val = attrs.get("label") or attrs.get("value") or ""
-            if "label" in action_type.lower() or label_val in (_EVA_INACTIVE_LABEL, _EVA_ACTIVE_LABEL):
-                if label_val == _EVA_INACTIVE_LABEL:
-                    return await _apply_eva_label_action(payload, added={_EVA_INACTIVE_LABEL}, removed=set())
-                if label_val == _EVA_ACTIVE_LABEL:
-                    return await _apply_eva_label_action(payload, added={_EVA_ACTIVE_LABEL}, removed=set())
-
-        return False
-
-    # Path 3: conversation_resolved — Chatwoot fires this when labels are applied (observed behavior)
-    # Labels are at the top level of this payload, not inside payload['conversation']
-    # Check eva-ativa first so it takes priority over eva-inativa when both are present
-    if event == "conversation_resolved":
-        labels_now = set(payload.get("labels") or [])
-        if _EVA_ACTIVE_LABEL in labels_now:
-            return await _apply_eva_label_action(payload, added={_EVA_ACTIVE_LABEL}, removed=set())
-        if _EVA_INACTIVE_LABEL in labels_now:
+        if _EVA_INACTIVE_LABEL in added:
             return await _apply_eva_label_action(payload, added={_EVA_INACTIVE_LABEL}, removed=set())
+        if _EVA_INACTIVE_LABEL in removed:
+            return await _apply_eva_label_action(payload, added=set(), removed={_EVA_INACTIVE_LABEL})
+
         return False
 
     return False
