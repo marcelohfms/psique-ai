@@ -47,6 +47,15 @@ def _headers() -> dict:
     }
 
 
+def _bot_headers() -> dict:
+    # Always uses the agent-bot token so outgoing messages appear as sent by the bot,
+    # not by the human agent whose token is in CHATWOOT_USER_TOKEN.
+    return {
+        "api_access_token": os.getenv("CHATWOOT_AGENT_BOT_TOKEN", ""),
+        "Content-Type": "application/json",
+    }
+
+
 def _strip_phone(phone: str) -> str:
     """Return the bare digits (no @s.whatsapp.net suffix, no leading +)."""
     return phone.split("@", 1)[0].lstrip("+")
@@ -56,7 +65,7 @@ async def send_message(conversation_id: int, text: str) -> None:
     url = f"{_base_url()}/api/v1/accounts/{_account_id()}/conversations/{conversation_id}/messages"
     payload = {"content": text, "message_type": "outgoing", "private": False}
     async with httpx.AsyncClient(timeout=10) as client:
-        response = await client.post(url, json=payload, headers=_headers())
+        response = await client.post(url, json=payload, headers=_bot_headers())
         response.raise_for_status()
 
 
@@ -64,7 +73,7 @@ async def unassign_agent_bot(conversation_id: int) -> None:
     """Remove agent bot assignment so human agents can take over in Chatwoot."""
     url = f"{_base_url()}/api/v1/accounts/{_account_id()}/conversations/{conversation_id}/assignments"
     async with httpx.AsyncClient(timeout=10) as client:
-        response = await client.delete(url, headers=_headers())
+        response = await client.delete(url, headers=_bot_headers())
         response.raise_for_status()
 
 
@@ -73,7 +82,7 @@ async def add_private_note(conversation_id: int, text: str) -> None:
     url = f"{_base_url()}/api/v1/accounts/{_account_id()}/conversations/{conversation_id}/messages"
     payload = {"content": text, "message_type": "outgoing", "private": True}
     async with httpx.AsyncClient(timeout=10) as client:
-        response = await client.post(url, json=payload, headers=_headers())
+        response = await client.post(url, json=payload, headers=_bot_headers())
         response.raise_for_status()
 
 
@@ -82,7 +91,7 @@ async def reopen_conversation(conversation_id: int) -> None:
     url = f"{_base_url()}/api/v1/accounts/{_account_id()}/conversations/{conversation_id}/toggle_status"
     payload = {"status": "open"}
     async with httpx.AsyncClient(timeout=10) as client:
-        response = await client.post(url, json=payload, headers=_headers())
+        response = await client.post(url, json=payload, headers=_bot_headers())
         response.raise_for_status()
 
 
