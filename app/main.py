@@ -200,7 +200,7 @@ async def admin_resume(request: Request, x_admin_secret: str | None = Header(def
 
 async def process_message(phone: str, text: str) -> None:
     """Route a (possibly debounced) message through the LangGraph chatbot."""
-    config = {"configurable": {"thread_id": phone, "phone": phone}}
+    config = {"configurable": {"thread_id": phone, "phone": phone}, "recursion_limit": 15}
 
     existing = await get_user_by_phone(phone)
     if existing and existing.get("manual_hold"):
