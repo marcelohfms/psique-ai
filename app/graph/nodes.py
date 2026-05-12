@@ -330,6 +330,7 @@ async def patient_agent_node(state: ConversationState, config: RunnableConfig) -
     system_prompt = template.format(
         patient_name=first_name,
         patient_age=patient_age,
+        birth_date=state.get("birth_date") or "não informada",
         doctor=doctor_label,
         duration_rule=duration_rule,
         today=today,
