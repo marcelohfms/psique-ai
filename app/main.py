@@ -202,6 +202,71 @@ async def admin_resume(request: Request, x_admin_secret: str | None = Header(def
     return {"status": "resumed", "phone": phone}
 
 
+@app.post("/admin/patch-state")
+async def admin_patch_state(request: Request, x_admin_secret: str | None = Header(default=None)):
+    """Patch the live LangGraph state for a patient mid-conversation.
+
+    Useful when a patient already sent correct info but the bot didn't capture it.
+    Accepted fields: birth_date (dd/mm/yyyy), patient_age, patient_name, preferred_doctor,
+    is_patient, patient_email, stage.
+
+    Body: {"phone": "5583...", "birth_date": "15/01/1990"}
+    """
+    _check_admin_secret(x_admin_secret)
+    body = await request.json()
+    phone = body.get("phone", "").strip()
+    if not phone:
+        raise HTTPException(status_code=400, detail="phone required")
+    if not phone.endswith("@s.whatsapp.net"):
+        phone += "@s.whatsapp.net"
+
+    _PATCHABLE = {
+        "birth_date", "patient_age", "patient_name", "user_name",
+        "preferred_doctor", "is_patient", "patient_email", "stage",
+    }
+    patch: dict = {k: v for k, v in body.items() if k in _PATCHABLE}
+    if not patch:
+        raise HTTPException(status_code=400, detail=f"No patchable fields. Accepted: {sorted(_PATCHABLE)}")
+
+    # Auto-calculate age from birth_date if not provided
+    if "birth_date" in patch and "patient_age" not in patch:
+        from app.graph.schemas import _parse_birth_date
+        from datetime import datetime as _dt
+        normalised = _parse_birth_date(patch["birth_date"])
+        if not normalised:
+            raise HTTPException(status_code=400, detail="Invalid birth_date format. Use dd/mm/yyyy.")
+        patch["birth_date"] = normalised
+        bd = _dt.strptime(normalised, "%d/%m/%Y")
+        today = _dt.now()
+        patch["patient_age"] = today.year - bd.year - ((today.month, today.day) < (bd.month, bd.day))
+
+    config = {"configurable": {"thread_id": phone, "phone": phone}}
+
+    # Update LangGraph checkpoint
+    await graph_module.chatbot.aupdate_state(config, patch)
+
+    # Mirror to Supabase
+    db_patch: dict = {}
+    if "birth_date" in patch:
+        db_patch["birth_date"] = patch["birth_date"]
+    if "patient_age" in patch:
+        db_patch["age"] = patch["patient_age"]
+    if "patient_name" in patch:
+        db_patch["patient_name"] = patch["patient_name"]
+    if "user_name" in patch:
+        db_patch["name"] = patch["user_name"]
+    if "preferred_doctor" in patch:
+        db_patch["doctor_id"] = DOCTOR_NAMES.get(patch["preferred_doctor"])
+    if "patient_email" in patch:
+        db_patch["email"] = patch["patient_email"]
+    if db_patch:
+        from app.database import upsert_user
+        await upsert_user(phone, db_patch)
+
+    logger.info("PATCH_STATE phone=%s patch=%s", phone, patch)
+    return {"status": "patched", "phone": phone, "applied": patch}
+
+
 # ── Core message processing ───────────────────────────────────────────────────
 
 async def process_message(phone: str, text: str) -> None:
