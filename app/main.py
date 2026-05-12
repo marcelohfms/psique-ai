@@ -491,8 +491,42 @@ async def _handle_label_change(payload: dict) -> bool:
     return False
 
 
+async def _handle_attendant_note(payload: dict) -> None:
+    """
+    Process a private note written by a human agent when eva-ativa label is present.
+    The note is injected into Eva's pipeline as an internal instruction so she can
+    continue the conversation without transferring to a human.
+    """
+    sender = payload.get("sender", {})
+    # Ignore private notes sent by the bot itself (agent_bot type)
+    if sender.get("type") in ("agent_bot", "bot"):
+        return
+
+    conversation = payload.get("conversation", {})
+    conv_labels = set(conversation.get("labels") or [])
+    if _EVA_ACTIVE_LABEL not in conv_labels:
+        return  # only act when Eva is the active handler
+
+    phone = _extract_phone_from_payload(payload)
+    if not phone:
+        return
+
+    content = (payload.get("content") or "").strip()
+    if not content:
+        return
+
+    logger.info("ATTENDANT_NOTE phone=%s content=%.120s", phone, content)
+    instruction = f"[Instrução da atendente]: {content}"
+    await buffer_push(phone, instruction, process_message)
+
+
 async def _handle_chatwoot_payload(payload: dict) -> None:
     try:
+        # ── Private note from human agent → Eva instruction ───────────────────
+        if payload.get("private") and payload.get("message_type") == 1:
+            await _handle_attendant_note(payload)
+            return
+
         # ── Label change: eva-inativa added/removed ───────────────────────────
         if await _handle_label_change(payload):
             return
