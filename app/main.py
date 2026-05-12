@@ -264,6 +264,14 @@ async def admin_patch_state(request: Request, x_admin_secret: str | None = Heade
         await upsert_user(phone, db_patch)
 
     logger.info("PATCH_STATE phone=%s patch=%s", phone, patch)
+
+    # Trigger Eva to continue immediately without waiting for the patient
+    from langchain_core.messages import HumanMessage as _HM
+    await graph_module.chatbot.ainvoke(
+        {"messages": [_HM(content="[sistema-interno]: retomar")]},
+        config,
+    )
+
     return {"status": "patched", "phone": phone, "applied": patch}
 
 
