@@ -14,6 +14,35 @@ TZ = ZoneInfo("America/Recife")
 # Column order: Data, Nome completo, Idade, Telefone, E-mail, Tipo de solicitação, Observação
 _SHEET_RANGE = "Solicitações!A:G"
 
+# Controlled medications that always require a physical prescription (receita especial/azul/amarela).
+# Used as fallback when the "Receita" sheet tab is not configured or empty.
+# Brand names and generic names are both listed (lowercase).
+_CONTROLLED_FALLBACK: list[str] = [
+    # Benzodiazepínicos
+    "rivotril", "clonazepam",
+    "diazepam", "valium",
+    "alprazolam", "xanax", "frontal",
+    "lorazepam", "lorax",
+    "bromazepam", "lexotan",
+    "midazolam", "dormicum",
+    "nitrazepam", "mogadon",
+    "flurazepam", "dalmadorm",
+    "clobazam", "frisium",
+    "zolpidem", "stilnox",
+    # Estimulantes (TDAH)
+    "metilfenidato", "ritalina", "ritalin", "concerta", "rubifen",
+    "lisdexanfetamina", "venvanse", "vyvanse",
+    "atomoxetina", "strattera",
+    "dexanfetamina", "dextroamphetamine",
+    # Outros controlados comuns em psiquiatria
+    "clomipramina", "anafranil",
+    "buprenorfina",
+    "tramadol",
+    "morfina",
+    "codeína", "codeina",
+    "fentanil",
+]
+
 # Column order: Data do Pagamento, Paciente, Médico, Data da Consulta, Valor, Telefone, Comprovante, Conferência Humana
 _PAYMENTS_SHEET_RANGE = "Pagamentos!A:H"
 
@@ -76,28 +105,30 @@ async def append_payment_receipt(
 
 
 async def get_controlled_medications() -> list[str]:
-    """Return list of controlled medication names (lowercase) from the 'Receita' tab, column A.
-    Returns empty list if sheet is not configured or tab is empty.
+    """Return list of controlled medication names (lowercase).
+    Merges the hardcoded fallback list with any entries in the 'Receita' sheet tab (column A).
+    The sheet can be used to extend or add clinic-specific medications.
     """
+    sheet_meds: list[str] = []
     spreadsheet_id = os.environ.get("GOOGLE_SHEETS_DOC_ID")
-    if not spreadsheet_id:
-        return []
+    if spreadsheet_id:
+        def _read(service) -> list[str]:
+            result = service.spreadsheets().values().get(
+                spreadsheetId=spreadsheet_id,
+                range="Receita!A:A",
+            ).execute()
+            rows = result.get("values", [])
+            return [row[0].strip().lower() for row in rows if row and row[0].strip()]
 
-    def _read(service) -> list[str]:
-        result = service.spreadsheets().values().get(
-            spreadsheetId=spreadsheet_id,
-            range="Receita!A:A",
-        ).execute()
-        rows = result.get("values", [])
-        return [row[0].strip().lower() for row in rows if row and row[0].strip()]
+        creds = _credentials()
+        service = build("sheets", "v4", credentials=creds)
+        loop = asyncio.get_event_loop()
+        try:
+            sheet_meds = await loop.run_in_executor(None, _read, service)
+        except Exception:
+            pass
 
-    creds = _credentials()
-    service = build("sheets", "v4", credentials=creds)
-    loop = asyncio.get_event_loop()
-    try:
-        return await loop.run_in_executor(None, _read, service)
-    except Exception:
-        return []
+    return list(set(_CONTROLLED_FALLBACK + sheet_meds))
 
 
 async def append_document_request(
