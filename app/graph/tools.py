@@ -151,11 +151,11 @@ async def get_available_slots(
     if doctor == "bruna":
         slot_duration_minutes = 60
 
-    from app.google_calendar import _parse_day
-    from datetime import datetime as _dt
+    from app.google_calendar import _parse_day, DOCTOR_SCHEDULES, SHIFT_HOURS
+
     target_date = _parse_day(preferred_day)
-    min_advance = _dt.now(TZ) + timedelta(hours=4)
-    is_too_soon = target_date is not None and target_date <= min_advance.date()
+    now = datetime.now(TZ)
+    min_advance = now + timedelta(hours=4)
 
     slots = await _get_slots(
         calendar_id=calendar_id,
@@ -166,12 +166,24 @@ async def get_available_slots(
     )
 
     if not slots:
-        if is_too_soon:
-            return (
-                "AGENDAMENTO_URGENTE: O paciente quer agendar para hoje ou em menos de 4 horas. "
-                "Não tenho permissão para agendar com tão pouca antecedência. "
-                "Use transfer_to_human para encaminhar ao atendente humano."
+        # Detect if empty result is due to 4h filter (not because doctor doesn't work)
+        if target_date is not None and target_date == now.date():
+            shift_norm = preferred_shift.lower().replace("ã", "a").replace("manhã", "manha").strip()
+            shift_start_h, shift_end_h = SHIFT_HOURS.get(shift_norm, (8, 18))
+            weekday = target_date.weekday()
+            doctor_windows = DOCTOR_SCHEDULES.get(doctor, {}).get(weekday, [])
+            # Doctor works today in this shift but all slots are within the 4h window
+            shift_has_windows = any(
+                entry[0] < shift_end_h and entry[2] > shift_start_h
+                for entry in doctor_windows
             )
+            if shift_has_windows and min_advance.hour < shift_end_h:
+                return (
+                    "AGENDAMENTO_URGENTE: O paciente quer um horário hoje dentro das próximas 4 horas. "
+                    "Não tenho permissão para agendar com tão pouca antecedência — apenas a atendente "
+                    "pode verificar disponibilidade para encaixes urgentes. "
+                    "Use transfer_to_human para encaminhar ao atendente humano."
+                )
         return f"Não há horários disponíveis para {preferred_day} no turno da {preferred_shift}. Deseja tentar outro dia ou turno?"
 
     _mod_labels = {
