@@ -132,7 +132,13 @@ async def extract_message(payload: dict) -> tuple[str, str] | None:
             return None
         return phone, text
 
-    # reaction, sticker, document, location, etc. — ignore
+    if msg_type == "document":
+        mime = msg.get("document", {}).get("mime_type", "").lower()
+        if "pdf" in mime:
+            return phone, "[pdf-recebido]"
+        return None  # other document types: ignore
+
+    # reaction, sticker, location, etc. — ignore
     logger.info("Unsupported message type ignored: %s", msg_type)
     return None
 
@@ -353,8 +359,11 @@ async def _process_chatwoot_attachments(attachments: list) -> str | None:
                 media_bytes = resp.content
             if file_type == "audio":
                 return await transcribe_audio_bytes(media_bytes)
-            if file_type in ("image", "file"):
+            if file_type == "image":
                 return await describe_image_bytes(media_bytes)
+            if file_type == "file":
+                # Non-image file (PDF, etc.) — ask patient to resend as image
+                return "[pdf-recebido]"
         except Exception:
             logger.exception("Failed to process Chatwoot attachment type=%s url=%.80s", file_type, data_url)
     return None
