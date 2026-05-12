@@ -151,6 +151,12 @@ async def get_available_slots(
     if doctor == "bruna":
         slot_duration_minutes = 60
 
+    from app.google_calendar import _parse_day, DOCTOR_SCHEDULES, SHIFT_HOURS
+
+    target_date = _parse_day(preferred_day)
+    now = datetime.now(TZ)
+    min_advance = now + timedelta(hours=4)
+
     slots = await _get_slots(
         calendar_id=calendar_id,
         preferred_day=preferred_day,
@@ -160,6 +166,24 @@ async def get_available_slots(
     )
 
     if not slots:
+        # Detect if empty result is due to 4h filter (not because doctor doesn't work)
+        if target_date is not None and target_date == now.date():
+            shift_norm = preferred_shift.lower().replace("ã", "a").replace("manhã", "manha").strip()
+            shift_start_h, shift_end_h = SHIFT_HOURS.get(shift_norm, (8, 18))
+            weekday = target_date.weekday()
+            doctor_windows = DOCTOR_SCHEDULES.get(doctor, {}).get(weekday, [])
+            # Doctor works today in this shift but all slots are within the 4h window
+            shift_has_windows = any(
+                entry[0] < shift_end_h and entry[2] > shift_start_h
+                for entry in doctor_windows
+            )
+            if shift_has_windows and min_advance.hour < shift_end_h:
+                return (
+                    "AGENDAMENTO_URGENTE: O paciente quer um horário hoje dentro das próximas 4 horas. "
+                    "Não tenho permissão para agendar com tão pouca antecedência — apenas a atendente "
+                    "pode verificar disponibilidade para encaixes urgentes. "
+                    "Use transfer_to_human para encaminhar ao atendente humano."
+                )
         return f"Não há horários disponíveis para {preferred_day} no turno da {preferred_shift}. Deseja tentar outro dia ou turno?"
 
     _mod_labels = {
@@ -798,14 +822,21 @@ async def transfer_to_human(
     config: RunnableConfig,
 ) -> str:
     """Transfere a conversa para um atendente humano quando o bot não consegue ajudar."""
-    from app.chatwoot import add_private_note
+    from app.chatwoot import add_private_note, find_or_create_conversation, set_labels
 
     phone = config["configurable"]["phone"]
 
     # Disable bot for this user
     await upsert_user(phone, {"active": False, "deactivated_at": datetime.now(TZ).isoformat()})
 
+    # Resolve conv_id — fall back to Chatwoot API if not in memory cache (e.g. after server restart)
     conv_id = get_conversation_id(phone)
+    if conv_id is None:
+        try:
+            conv_id = await find_or_create_conversation(phone)
+        except Exception:
+            logger.warning("Could not resolve Chatwoot conversation for %s", phone)
+
     if conv_id is not None:
         # Add private note with context for the human agent
         patient_name = state.get("patient_name") or state.get("user_name") or "Não informado"
@@ -823,17 +854,17 @@ async def transfer_to_human(
         try:
             await add_private_note(conv_id, "\n".join(note_lines))
         except Exception:
-            logger.warning("Failed to add private note to Chatwoot conv %s", conv_id)
+            logger.exception("Failed to add private note to Chatwoot conv %s", conv_id)
 
         try:
             await unassign_agent_bot(conv_id)
         except Exception:
-            logger.warning("Failed to unassign Chatwoot agent bot for conv %s", conv_id)
+            logger.exception("Failed to unassign Chatwoot agent bot for conv %s", conv_id)
 
         try:
-            await add_label(conv_id, "eva-inativa")
+            await set_labels(conv_id, add=["eva-inativa"], remove=["eva-ativa"])
         except Exception:
-            logger.warning("Failed to add eva-inativa label to conv %s", conv_id)
+            logger.exception("Failed to update eva labels on Chatwoot conv %s", conv_id)
 
     await log_event("human_transfer", phone, {"reason": reason})
 
