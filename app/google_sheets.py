@@ -34,13 +34,6 @@ _CONTROLLED_FALLBACK: list[str] = [
     "lisdexanfetamina", "venvanse", "vyvanse",
     "atomoxetina", "strattera",
     "dexanfetamina", "dextroamphetamine",
-    # Outros controlados comuns em psiquiatria
-    "clomipramina", "anafranil",
-    "buprenorfina",
-    "tramadol",
-    "morfina",
-    "codeína", "codeina",
-    "fentanil",
 ]
 
 # Column order: Data do Pagamento, Paciente, Médico, Data da Consulta, Valor, Telefone, Comprovante, Conferência Humana
