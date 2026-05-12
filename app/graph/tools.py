@@ -822,14 +822,21 @@ async def transfer_to_human(
     config: RunnableConfig,
 ) -> str:
     """Transfere a conversa para um atendente humano quando o bot não consegue ajudar."""
-    from app.chatwoot import add_private_note
+    from app.chatwoot import add_private_note, find_or_create_conversation, set_labels
 
     phone = config["configurable"]["phone"]
 
     # Disable bot for this user
     await upsert_user(phone, {"active": False, "deactivated_at": datetime.now(TZ).isoformat()})
 
+    # Resolve conv_id — fall back to Chatwoot API if not in memory cache (e.g. after server restart)
     conv_id = get_conversation_id(phone)
+    if conv_id is None:
+        try:
+            conv_id = await find_or_create_conversation(phone)
+        except Exception:
+            logger.warning("Could not resolve Chatwoot conversation for %s", phone)
+
     if conv_id is not None:
         # Add private note with context for the human agent
         patient_name = state.get("patient_name") or state.get("user_name") or "Não informado"
@@ -855,9 +862,9 @@ async def transfer_to_human(
             logger.warning("Failed to unassign Chatwoot agent bot for conv %s", conv_id)
 
         try:
-            await add_label(conv_id, "eva-inativa")
+            await set_labels(conv_id, add=["eva-inativa"], remove=["eva-ativa"])
         except Exception:
-            logger.warning("Failed to add eva-inativa label to conv %s", conv_id)
+            logger.warning("Failed to update eva labels on Chatwoot conv %s", conv_id)
 
     await log_event("human_transfer", phone, {"reason": reason})
 

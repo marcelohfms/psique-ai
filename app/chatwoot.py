@@ -83,17 +83,24 @@ async def reopen_conversation(conversation_id: int) -> None:
         response.raise_for_status()
 
 
-async def add_label(conversation_id: int, label: str) -> None:
-    """Add a label to a Chatwoot conversation."""
+async def set_labels(conversation_id: int, add: list[str], remove: list[str] | None = None) -> None:
+    """Set labels on a conversation: adds the given labels and removes others atomically."""
     url = f"{_base_url()}/api/v1/accounts/{_account_id()}/conversations/{conversation_id}/labels"
     async with httpx.AsyncClient(timeout=10) as client:
         resp = await client.get(url, headers=_headers())
         resp.raise_for_status()
-        current = resp.json().get("payload") or []
-        if label not in current:
-            current.append(label)
-            response = await client.post(url, json={"labels": current}, headers=_headers())
-            response.raise_for_status()
+        current = set(resp.json().get("payload") or [])
+        for label in (remove or []):
+            current.discard(label)
+        for label in add:
+            current.add(label)
+        response = await client.post(url, json={"labels": list(current)}, headers=_headers())
+        response.raise_for_status()
+
+
+async def add_label(conversation_id: int, label: str) -> None:
+    """Add a label to a Chatwoot conversation."""
+    await set_labels(conversation_id, add=[label])
 
 
 async def get_last_patient_message(conversation_id: int) -> str | None:
