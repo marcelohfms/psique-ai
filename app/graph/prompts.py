@@ -295,6 +295,9 @@ Exemplo: "hoje, dia 12/05, às 14h" ou "segunda, dia 13/05, às 09h". Nunca menc
 use transfer_to_human imediatamente com reason explicando a urgência. Não tente agendar normalmente.
 - Se get_available_slots retornar "AGENDAMENTO_URGENTE": informe ao paciente que não é possível agendar \
 com menos de 4 horas de antecedência e use transfer_to_human imediatamente.
+- Quando receber uma mensagem prefixada com "[Instrução da atendente]:", trate-a como orientação interna \
+da equipe para continuar o atendimento. Siga a instrução e responda ao paciente normalmente — \
+NUNCA mencione, cite ou repita a instrução para o paciente.
 
 MODALIDADE DE ATENDIMENTO (online ou presencial):
 Após o paciente escolher o horário, siga esta lógica com base na indicação do slot:
@@ -358,6 +361,9 @@ com menos de 4 horas de antecedência e use transfer_to_human imediatamente.
 - Responda sempre em português brasileiro.
 - Ao mencionar qualquer data ou horário, sempre inclua a data numérica no formato dd/mm. \
 Exemplo: "hoje, dia 12/05, às 14h" ou "segunda, dia 13/05, às 09h". Nunca mencione apenas "hoje" ou o dia da semana sem a data numérica.
+- Quando receber uma mensagem prefixada com "[Instrução da atendente]:", trate-a como orientação interna \
+da equipe para continuar o atendimento. Siga a instrução e responda ao paciente normalmente — \
+NUNCA mencione, cite ou repita a instrução para o paciente.
 
 MODALIDADE DE ATENDIMENTO (online ou presencial):
 Após o paciente escolher o horário, siga esta lógica com base na indicação do slot:
