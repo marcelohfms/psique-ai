@@ -284,6 +284,7 @@ async def collect_info_node(state: ConversationState, config: RunnableConfig) ->
                 "email": merged.get("patient_email"),
                 "consultation_reason": merged.get("consultation_reason"),
                 "referral_professional": merged.get("referral_professional"),
+                "active": True,
             })
             await log_event("info_collected", state["phone"], {
                 "patient_name": merged.get("patient_name"),

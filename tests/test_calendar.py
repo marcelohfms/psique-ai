@@ -6,6 +6,21 @@ from zoneinfo import ZoneInfo
 
 TZ = ZoneInfo("America/Recife")
 
+_real_dt = datetime
+
+
+class _FrozenDT(_real_dt):
+    """datetime subclass that returns a fixed 'now' so past-date tests pass."""
+    @classmethod
+    def now(cls, tz=None):
+        return _real_dt(2026, 3, 22, 4, 0, tzinfo=tz) if tz else _real_dt(2026, 3, 22, 4, 0)
+
+
+@pytest.fixture
+def freeze_calendar_now():
+    with patch("app.google_calendar.datetime", _FrozenDT):
+        yield
+
 
 # ── _parse_day ────────────────────────────────────────────────────────────────
 
@@ -66,7 +81,7 @@ def _make_service(busy_periods: list[dict]) -> MagicMock:
     return service
 
 
-async def test_slots_60min_julio_monday_morning():
+async def test_slots_60min_julio_monday_morning(freeze_calendar_now):
     """Dr. Júlio works Mon 9-12; expect three 60-min slots when calendar is free."""
     from app.google_calendar import get_available_slots
 
@@ -85,7 +100,7 @@ async def test_slots_60min_julio_monday_morning():
     assert slots[0][0].hour == 9
 
 
-async def test_slots_120min_julio_monday():
+async def test_slots_120min_julio_monday(freeze_calendar_now):
     """120-min slots on Mon 9-12 → only one slot fits (9:00-11:00)."""
     from app.google_calendar import get_available_slots
 
@@ -123,7 +138,7 @@ async def test_slots_empty_on_off_day():
     assert slots == []
 
 
-async def test_busy_period_removes_slot():
+async def test_busy_period_removes_slot(freeze_calendar_now):
     """A busy period that overlaps a slot must exclude that slot."""
     from app.google_calendar import get_available_slots
 
@@ -144,7 +159,7 @@ async def test_busy_period_removes_slot():
     assert 10 in hours
 
 
-async def test_bruna_wednesday_returns_slots():
+async def test_bruna_wednesday_returns_slots(freeze_calendar_now):
     """Dra. Bruna works Wed 8-12 and 14-18; both windows should produce slots."""
     from app.google_calendar import get_available_slots
 
@@ -162,7 +177,7 @@ async def test_bruna_wednesday_returns_slots():
     assert all(dt.weekday() == 2 for dt, _ in slots)  # Wednesday
 
 
-async def test_timezone_america_recife():
+async def test_timezone_america_recife(freeze_calendar_now):
     """Returned slots must carry America/Recife tzinfo."""
     from app.google_calendar import get_available_slots
 
