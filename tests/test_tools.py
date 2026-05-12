@@ -71,7 +71,7 @@ async def test_get_available_slots_no_slots_returns_message():
             state=_make_state(),
             config=CONFIG,
         )
-    assert "Não há horários" in result
+    assert "Não encontrei horários disponíveis para segunda-feira" in result
 
 
 async def test_get_available_slots_bruna_always_60min():
