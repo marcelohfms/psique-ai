@@ -266,7 +266,7 @@ async def test_transfer_to_human_deactivates_user():
     call_kwargs = mock_upsert.call_args[0]
     assert call_kwargs[1]["active"] is False
     assert "deactivated_at" in call_kwargs[1]
-    assert any(w in result.lower() for w in ("transferid", "transferida", "encaminhar"))
+    assert "atendente" in result.lower()
 
 
 async def test_transfer_to_human_adds_private_note_to_chatwoot():
