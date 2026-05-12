@@ -148,7 +148,9 @@ async def collect_info_node(state: ConversationState, config: RunnableConfig) ->
 
         # Step 4: birth date
         if not state.get("birth_date"):
-            if last_ai == _BIRTH_Q and last_human:
+            # Use semantic match so any phrasing of the birth-date question is accepted
+            asked_birth = "nascimento" in last_ai.lower()
+            if asked_birth and last_human:
                 parsed = _parse_birth_date(last_human)
                 if parsed:
                     # Calculate age
@@ -324,13 +326,41 @@ async def patient_agent_node(state: ConversationState, config: RunnableConfig) -
         else ADULT_RULE
     )
 
+    # ── Auto-extract birth_date from recent messages if still missing ─────────
+    # Handles the case where the LLM asked for birth_date but the node never
+    # saved the patient's answer to state (patient_agent_node is stateless by default).
+    birth_date = state.get("birth_date")
+    if not birth_date:
+        from app.graph.schemas import _parse_birth_date as _pbd
+        msgs = list(state["messages"])
+        for i in range(len(msgs) - 1, 0, -1):
+            m = msgs[i]
+            if m.type != "human" or not isinstance(m.content, str):
+                continue
+            parsed_bd = _pbd(m.content.strip())
+            if not parsed_bd:
+                break  # last human message is not a date — stop looking
+            # Find the preceding AI message and check it asked about birth date
+            prev_ai = next(
+                (msgs[j] for j in range(i - 1, max(i - 5, -1), -1) if msgs[j].type == "ai"),
+                None,
+            )
+            if prev_ai and "nascimento" in (prev_ai.content or "").lower():
+                bd = datetime.strptime(parsed_bd, "%d/%m/%Y")
+                today_dt = datetime.now()
+                _age = today_dt.year - bd.year - ((today_dt.month, today_dt.day) < (bd.month, bd.day))
+                await upsert_user(state["phone"], {"birth_date": parsed_bd, "age": _age})
+                birth_date = parsed_bd
+                patient_age = _age
+            break
+
     from app.google_calendar import format_doctor_schedules
     template = EXISTING_PATIENT_SYSTEM if state.get("is_patient") else NEW_PATIENT_SYSTEM
     today = datetime.now(ZoneInfo("America/Recife")).strftime("%d/%m/%Y %H:%M")
     system_prompt = template.format(
         patient_name=first_name,
         patient_age=patient_age,
-        birth_date=state.get("birth_date") or "não informada",
+        birth_date=birth_date or "não informada",
         doctor=doctor_label,
         duration_rule=duration_rule,
         today=today,
