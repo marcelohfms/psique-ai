@@ -408,7 +408,7 @@ async def _apply_eva_label_action(payload: dict, added: set, removed: set) -> bo
                 if last_msg:
                     await buffer_push(phone, last_msg, process_message)
             except Exception:
-                logger.warning("Failed to fetch/reprocess last message for %s", phone)
+                logger.exception("Failed to fetch/reprocess last message for %s", phone)
 
     return True
 
