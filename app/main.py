@@ -615,6 +615,14 @@ async def _handle_attendant_note(payload: dict) -> None:
 async def _handle_chatwoot_payload(payload: dict) -> None:
     try:
         # ── Private note from human agent → Eva instruction ───────────────────
+        logger.info(
+            "CHATWOOT_PAYLOAD event=%s private=%s message_type=%s sender_type=%s labels=%s",
+            payload.get("event"),
+            payload.get("private"),
+            payload.get("message_type"),
+            payload.get("sender", {}).get("type"),
+            payload.get("conversation", {}).get("labels"),
+        )
         if payload.get("private") and payload.get("message_type") == 1:
             await _handle_attendant_note(payload)
             return
