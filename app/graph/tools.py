@@ -854,17 +854,17 @@ async def transfer_to_human(
         try:
             await add_private_note(conv_id, "\n".join(note_lines))
         except Exception:
-            logger.warning("Failed to add private note to Chatwoot conv %s", conv_id)
+            logger.exception("Failed to add private note to Chatwoot conv %s", conv_id)
 
         try:
             await unassign_agent_bot(conv_id)
         except Exception:
-            logger.warning("Failed to unassign Chatwoot agent bot for conv %s", conv_id)
+            logger.exception("Failed to unassign Chatwoot agent bot for conv %s", conv_id)
 
         try:
             await set_labels(conv_id, add=["eva-inativa"], remove=["eva-ativa"])
         except Exception:
-            logger.warning("Failed to update eva labels on Chatwoot conv %s", conv_id)
+            logger.exception("Failed to update eva labels on Chatwoot conv %s", conv_id)
 
     await log_event("human_transfer", phone, {"reason": reason})
 
