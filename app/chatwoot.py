@@ -38,8 +38,11 @@ def _inbox_id() -> int:
 
 
 def _headers() -> dict:
+    # CHATWOOT_USER_TOKEN is a human-agent API token with contact/search permissions.
+    # Falls back to the agent-bot token when not set.
+    token = os.getenv("CHATWOOT_USER_TOKEN") or os.getenv("CHATWOOT_AGENT_BOT_TOKEN", "")
     return {
-        "api_access_token": os.getenv("CHATWOOT_AGENT_BOT_TOKEN", ""),
+        "api_access_token": token,
         "Content-Type": "application/json",
     }
 
