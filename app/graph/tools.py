@@ -151,6 +151,12 @@ async def get_available_slots(
     if doctor == "bruna":
         slot_duration_minutes = 60
 
+    from app.google_calendar import _parse_day
+    from datetime import datetime as _dt
+    target_date = _parse_day(preferred_day)
+    min_advance = _dt.now(TZ) + timedelta(hours=4)
+    is_too_soon = target_date is not None and target_date <= min_advance.date()
+
     slots = await _get_slots(
         calendar_id=calendar_id,
         preferred_day=preferred_day,
@@ -160,6 +166,12 @@ async def get_available_slots(
     )
 
     if not slots:
+        if is_too_soon:
+            return (
+                "AGENDAMENTO_URGENTE: O paciente quer agendar para hoje ou em menos de 4 horas. "
+                "Não tenho permissão para agendar com tão pouca antecedência. "
+                "Use transfer_to_human para encaminhar ao atendente humano."
+            )
         return f"Não há horários disponíveis para {preferred_day} no turno da {preferred_shift}. Deseja tentar outro dia ou turno?"
 
     _mod_labels = {

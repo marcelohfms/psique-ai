@@ -286,6 +286,8 @@ Se não for, pergunte antes de confirmar o agendamento.
 - Seja breve, acolhedor e objetivo. Responda sempre em português brasileiro.
 - Se o paciente mencionar urgência, emergência, encaixe ou precisar de atendimento o mais rápido possível: \
 use transfer_to_human imediatamente com reason explicando a urgência. Não tente agendar normalmente.
+- Se get_available_slots retornar "AGENDAMENTO_URGENTE": informe ao paciente que não é possível agendar \
+com menos de 4 horas de antecedência e use transfer_to_human imediatamente.
 
 MODALIDADE DE ATENDIMENTO (online ou presencial):
 Após o paciente escolher o horário, siga esta lógica com base na indicação do slot:
@@ -338,6 +340,8 @@ chame register_payment com amount e drive_link extraídos da descrição. \
 Se retornar "Para qual paciente é este comprovante?", pergunte o nome ao usuário e chame novamente com patient_name_override.
 - Se o paciente mencionar urgência, emergência, encaixe ou precisar de atendimento o mais rápido possível: \
 use transfer_to_human imediatamente com reason explicando a urgência. Não tente agendar normalmente.
+- Se get_available_slots retornar "AGENDAMENTO_URGENTE": informe ao paciente que não é possível agendar \
+com menos de 4 horas de antecedência e use transfer_to_human imediatamente.
 - Se necessário, transfira para atendente humano com transfer_to_human.
 - Responda sempre em português brasileiro.
 
