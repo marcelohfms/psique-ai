@@ -119,6 +119,18 @@ async def _get_doctor_calendar_id(preferred_doctor: str) -> str | None:
     return result.data.get("agenda_id") if result.data else None
 
 
+_WEEKDAY_LABELS_PT = {
+    0: "segunda-feira", 1: "terça-feira", 2: "quarta-feira",
+    3: "quinta-feira",  4: "sexta-feira",  5: "sábado", 6: "domingo",
+}
+
+_MOD_LABELS = {
+    "online": "apenas online",
+    "escolha": "online ou presencial — paciente escolhe livremente",
+    "presencial_sob_consulta": "REQUER CONFIRMAÇÃO — online ou presencial sob consulta da atendente",
+}
+
+
 @tool
 async def get_available_slots(
     preferred_day: str,
@@ -129,10 +141,12 @@ async def get_available_slots(
 ) -> str:
     """
     Busca horários disponíveis no Google Calendar para o médico do paciente.
+    Quando preferred_day for um dia da semana (ex: "quarta"), a ferramenta busca
+    automaticamente nas próximas semanas até encontrar um horário disponível (máx. 4 semanas).
     Use slot_duration_minutes=120 para primeira consulta de paciente menor de 18 anos,
     60 para todos os outros casos.
     """
-    from app.google_calendar import get_available_slots as _get_slots
+    from app.google_calendar import get_available_slots as _get_slots, _parse_day, DOCTOR_SCHEDULES, SHIFT_HOURS, _WEEKDAYS_PT
 
     doctor = await _resolve_doctor(state, config)
     calendar_id = await _get_doctor_calendar_id(doctor)
@@ -151,10 +165,54 @@ async def get_available_slots(
     if doctor == "bruna":
         slot_duration_minutes = 60
 
-    from app.google_calendar import _parse_day, DOCTOR_SCHEDULES, SHIFT_HOURS
-
-    target_date = _parse_day(preferred_day)
     now = datetime.now(TZ)
+    shift_norm = preferred_shift.lower().replace("ã", "a").replace("manhã", "manha").strip()
+    shift_start_h, shift_end_h = SHIFT_HOURS.get(shift_norm, (8, 18))
+
+    # ── Detect weekday name → multi-week search ───────────────────────────────
+    preferred_day_norm = preferred_day.lower().strip()
+    weekday_key = next(
+        (wd for name, wd in _WEEKDAYS_PT.items() if name in preferred_day_norm),
+        None,
+    )
+
+    if weekday_key is not None:
+        # Verify doctor works this weekday/shift at all before iterating
+        day_windows = DOCTOR_SCHEDULES.get(doctor, {}).get(weekday_key, [])
+        if not any(entry[0] < shift_end_h and entry[2] > shift_start_h for entry in day_windows):
+            day_label = _WEEKDAY_LABELS_PT.get(weekday_key, preferred_day)
+            return (
+                f"O médico não atende no turno da {preferred_shift} na {day_label}. "
+                "Deseja tentar outro turno ou outro dia?"
+            )
+
+        base_date = _parse_day(preferred_day)  # nearest future occurrence
+        day_label = _WEEKDAY_LABELS_PT.get(weekday_key, preferred_day)
+
+        for week_offset in range(4):
+            try_date = base_date + timedelta(weeks=week_offset)
+            slots = await _get_slots(
+                calendar_id=calendar_id,
+                preferred_day=try_date.isoformat(),
+                preferred_shift=preferred_shift,
+                slot_minutes=slot_duration_minutes,
+                doctor_key=doctor,
+            )
+            if slots:
+                date_str = try_date.strftime("%d/%m")
+                lines = [f"Horários disponíveis para {day_label}, dia {date_str} ({preferred_shift}):"]
+                for i, (slot, modality) in enumerate(slots, 1):
+                    lines.append(f"{i}. {slot.strftime('%H:%M')} [{_MOD_LABELS.get(modality, modality)}]")
+                return "\n".join(lines)
+            # No slots this week — silently try the next one
+
+        return (
+            f"Não encontrei horários disponíveis para {day_label} no turno da {preferred_shift} "
+            "nas próximas 4 semanas. Deseja tentar outro turno ou outro dia?"
+        )
+
+    # ── Specific day (hoje, amanhã, ISO date): single attempt ─────────────────
+    target_date = _parse_day(preferred_day)
     min_advance = now + timedelta(hours=4)
 
     slots = await _get_slots(
@@ -166,13 +224,8 @@ async def get_available_slots(
     )
 
     if not slots:
-        # Detect if empty result is due to 4h filter (not because doctor doesn't work)
         if target_date is not None and target_date == now.date():
-            shift_norm = preferred_shift.lower().replace("ã", "a").replace("manhã", "manha").strip()
-            shift_start_h, shift_end_h = SHIFT_HOURS.get(shift_norm, (8, 18))
-            weekday = target_date.weekday()
-            doctor_windows = DOCTOR_SCHEDULES.get(doctor, {}).get(weekday, [])
-            # Doctor works today in this shift but all slots are within the 4h window
+            doctor_windows = DOCTOR_SCHEDULES.get(doctor, {}).get(target_date.weekday(), [])
             shift_has_windows = any(
                 entry[0] < shift_end_h and entry[2] > shift_start_h
                 for entry in doctor_windows
@@ -186,15 +239,9 @@ async def get_available_slots(
                 )
         return f"Não há horários disponíveis para {preferred_day} no turno da {preferred_shift}. Deseja tentar outro dia ou turno?"
 
-    _mod_labels = {
-        "online": "apenas online",
-        "escolha": "online ou presencial — paciente escolhe livremente",
-        "presencial_sob_consulta": "REQUER CONFIRMAÇÃO — online ou presencial sob consulta da atendente",
-    }
     lines = [f"Horários disponíveis para {preferred_day} ({preferred_shift}):"]
     for i, (slot, modality) in enumerate(slots, 1):
-        mod_label = _mod_labels.get(modality, modality)
-        lines.append(f"{i}. {slot.strftime('%H:%M')} [{mod_label}]")
+        lines.append(f"{i}. {slot.strftime('%H:%M')} [{_MOD_LABELS.get(modality, modality)}]")
 
     return "\n".join(lines)
 

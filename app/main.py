@@ -385,7 +385,9 @@ def _extract_phone_from_payload(payload: dict) -> str | None:
 async def _apply_eva_label_action(payload: dict, added: set, removed: set) -> bool:
     """Pause/resume Eva based on which control labels were added or removed."""
     phone = _extract_phone_from_payload(payload)
+    logger.info("EVA_LABEL_ACTION phone=%s added=%s removed=%s", phone, added, removed)
     if not phone:
+        logger.warning("EVA_LABEL_ACTION: could not extract phone from payload keys=%s", list(payload.keys()))
         return True
 
     if _EVA_INACTIVE_LABEL in added:
@@ -423,6 +425,11 @@ async def _handle_label_change(payload: dict) -> bool:
 
     # Path 1: conversation_updated with changed_attributes (standard Chatwoot account webhook)
     if event == "conversation_updated":
+        logger.info("CHATWOOT_CONV_UPDATED payload_keys=%s labels=%s conv_labels=%s changed_attrs=%s",
+                    list(payload.keys()),
+                    payload.get("labels"),
+                    payload.get("conversation", {}).get("labels"),
+                    payload.get("changed_attributes"))
         changed = payload.get("changed_attributes") or []
         label_change = next(
             (c for c in changed if isinstance(c, dict) and "labels" in c),
@@ -431,10 +438,21 @@ async def _handle_label_change(payload: dict) -> bool:
         if label_change is None:
             return False
 
-        labels_now = set(payload.get("conversation", {}).get("labels") or [])
+        # Labels may be at payload["conversation"]["labels"] (agent-bot format)
+        # or at payload["labels"] (account webhook format) — check both.
+        labels_now = set(
+            payload.get("conversation", {}).get("labels")
+            or payload.get("labels")
+            or []
+        )
         labels_before = set((label_change.get("labels") or {}).get("previous_value") or [])
         added = labels_now - labels_before
         removed = labels_before - labels_now
+
+        logger.info(
+            "LABEL_CHANGE conversation_updated labels_now=%s labels_before=%s added=%s removed=%s",
+            labels_now, labels_before, added, removed,
+        )
 
         if _EVA_INACTIVE_LABEL not in added and _EVA_INACTIVE_LABEL not in removed and _EVA_ACTIVE_LABEL not in added:
             return False
@@ -454,6 +472,11 @@ async def _handle_label_change(payload: dict) -> bool:
 
         added = labels_now - previous
         removed = previous - labels_now
+
+        logger.info(
+            "LABEL_CHANGE %s conv=%s labels_now=%s previous=%s added=%s removed=%s",
+            event, conv_id, labels_now, previous, added, removed,
+        )
 
         # eva-ativa takes priority: resume always beats pause
         if _EVA_ACTIVE_LABEL in added:
