@@ -200,7 +200,7 @@ async def admin_resume(request: Request, x_admin_secret: str | None = Header(def
 
 async def process_message(phone: str, text: str) -> None:
     """Route a (possibly debounced) message through the LangGraph chatbot."""
-    config = {"configurable": {"thread_id": phone, "phone": phone}}
+    config = {"configurable": {"thread_id": phone, "phone": phone}, "recursion_limit": 15}
 
     existing = await get_user_by_phone(phone)
     if existing and existing.get("manual_hold"):
@@ -408,7 +408,7 @@ async def _apply_eva_label_action(payload: dict, added: set, removed: set) -> bo
                 if last_msg:
                     await buffer_push(phone, last_msg, process_message)
             except Exception:
-                logger.warning("Failed to fetch/reprocess last message for %s", phone)
+                logger.exception("Failed to fetch/reprocess last message for %s", phone)
 
     return True
 

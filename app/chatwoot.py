@@ -102,7 +102,8 @@ async def get_last_patient_message(conversation_id: int) -> str | None:
     async with httpx.AsyncClient(timeout=10) as client:
         resp = await client.get(url, headers=_headers())
         resp.raise_for_status()
-        messages = resp.json().get("payload", {}).get("messages") or []
+        data = resp.json().get("payload") or {}
+        messages = data.get("messages") or data if isinstance(data, list) else []
     incoming = [m for m in messages if m.get("message_type") == 0 and (m.get("content") or "").strip()]
     if not incoming:
         return None
