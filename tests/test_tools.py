@@ -116,7 +116,7 @@ async def test_confirm_appointment_creates_event_and_notifies():
          patch("app.graph.tools.get_supabase", new_callable=AsyncMock, return_value=client), \
          patch("app.graph.tools.get_user_by_phone", new_callable=AsyncMock, return_value={"id": "user-1"}), \
          patch("app.graph.tools.log_event", new_callable=AsyncMock), \
-         patch("app.graph.tools.send_text", new_callable=AsyncMock) as mock_notify:
+         patch("app.graph.tools._notify_clinic", new_callable=AsyncMock) as mock_notify:
         result = await confirm_appointment.coroutine(
             slot_datetime="2026-03-23T09:00:00",
             slot_duration_minutes=60,
@@ -179,7 +179,7 @@ async def test_cancel_appointment_cancels_and_notifies():
          patch("app.google_calendar.cancel_event", new_callable=AsyncMock) as mock_cancel, \
          patch("app.graph.tools.get_supabase", new_callable=AsyncMock, return_value=client), \
          patch("app.graph.tools.log_event", new_callable=AsyncMock), \
-         patch("app.graph.tools.send_text", new_callable=AsyncMock) as mock_notify:
+         patch("app.graph.tools._notify_clinic", new_callable=AsyncMock) as mock_notify:
         result = await cancel_appointment.coroutine(
             appointment_id="evt-abc",
             state=_make_state(),
@@ -200,7 +200,7 @@ async def test_reschedule_appointment_updates_event_and_notifies():
          patch("app.google_calendar.update_event", new_callable=AsyncMock) as mock_update, \
          patch("app.graph.tools.get_supabase", new_callable=AsyncMock, return_value=client), \
          patch("app.graph.tools.log_event", new_callable=AsyncMock), \
-         patch("app.graph.tools.send_text", new_callable=AsyncMock) as mock_notify:
+         patch("app.graph.tools._notify_clinic", new_callable=AsyncMock) as mock_notify:
         result = await reschedule_appointment.coroutine(
             appointment_id="evt-abc",
             new_slot_datetime="2026-03-25T10:00:00",
@@ -266,7 +266,7 @@ async def test_transfer_to_human_deactivates_user():
     call_kwargs = mock_upsert.call_args[0]
     assert call_kwargs[1]["active"] is False
     assert "deactivated_at" in call_kwargs[1]
-    assert "transferid" in result.lower() or "transferida" in result.lower()
+    assert any(w in result.lower() for w in ("transferid", "transferida", "encaminhar"))
 
 
 async def test_transfer_to_human_adds_private_note_to_chatwoot():
@@ -293,19 +293,19 @@ async def test_transfer_to_human_adds_private_note_to_chatwoot():
 
 
 async def test_transfer_to_human_sends_only_to_user():
-    """send_text is called exactly once (to the patient), no longer to a NOTIFY_PHONE."""
+    """transfer_to_human returns the message directly (no send_text call); message goes to patient via LangGraph."""
     from app.graph.tools import transfer_to_human
     with patch("app.graph.tools.upsert_user", new_callable=AsyncMock), \
          patch("app.graph.tools.log_event", new_callable=AsyncMock), \
          patch("app.graph.tools.send_text", new_callable=AsyncMock) as mock_send, \
          patch("app.chatwoot.add_private_note", new_callable=AsyncMock):
-        await transfer_to_human.coroutine(
+        result = await transfer_to_human.coroutine(
             reason="teste",
             state=_make_state(),
             config=CONFIG,
         )
-    assert mock_send.await_count == 1
-    assert mock_send.call_args[0][0] == PHONE
+    assert mock_send.await_count == 0
+    assert "transferir" in result.lower() or "encaminhar" in result.lower()
 
 
 # ── confirm_attendance ────────────────────────────────────────────────────────
@@ -350,7 +350,7 @@ async def test_register_payment_appends_sheet_and_notifies():
          patch("app.graph.tools.log_event", new_callable=AsyncMock), \
          patch("app.google_drive.rename_file", new_callable=AsyncMock), \
          patch("app.google_sheets.append_payment_receipt", new_callable=AsyncMock) as mock_sheets, \
-         patch("app.graph.tools.send_text", new_callable=AsyncMock) as mock_notify:
+         patch("app.graph.tools._notify_clinic", new_callable=AsyncMock) as mock_notify:
         result = await register_payment.coroutine(
             amount="100,00",
             drive_link="https://drive.google.com/file/d/abc/view",
@@ -365,7 +365,7 @@ async def test_register_payment_appends_sheet_and_notifies():
     assert "100,00" in sheets_kwargs[0][4]         # amount
     assert "https://drive.google.com" in sheets_kwargs[0][5]  # drive_link
     mock_notify.assert_called()
-    notify_msg = mock_notify.call_args[0][1]
+    notify_msg = mock_notify.call_args[0][0]       # message is first positional arg
     assert "Maria" in notify_msg
     assert "https://drive.google.com" in notify_msg
 
