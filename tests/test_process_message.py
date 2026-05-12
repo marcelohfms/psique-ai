@@ -33,6 +33,21 @@ def test_collect_info_output_rejects_unparseable_date():
     assert obj.birth_date is None
 
 
+@pytest.mark.parametrize("raw,expected", [
+    ("15/01/85",   "15/01/1985"),   # 2-digit year slash
+    ("15-01-85",   "15/01/1985"),   # 2-digit year dash
+    ("15.01.85",   "15/01/1985"),   # 2-digit year dot
+    ("15 01 1985", "15/01/1985"),   # space separator
+    ("15 01 85",   "15/01/1985"),   # space + 2-digit year
+    ("15011985",   "15/01/1985"),   # no separator 8 digits
+    ("150185",     "15/01/1985"),   # no separator 6 digits
+    ("05/06/2010", "05/06/2010"),   # normal format still works
+])
+def test_parse_birth_date_flexible_formats(raw, expected):
+    from app.graph.schemas import _parse_birth_date
+    assert _parse_birth_date(raw) == expected
+
+
 async def test_collect_info_node_overrides_reply_on_invalid_birth_date():
     """When the LLM extracts an invalid birth_date, the node sends a correction message."""
     from app.graph.nodes import collect_info_node
