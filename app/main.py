@@ -266,13 +266,23 @@ async def admin_patch_state(request: Request, x_admin_secret: str | None = Heade
     logger.info("PATCH_STATE phone=%s patch=%s", phone, patch)
 
     # Trigger Eva to continue immediately without waiting for the patient
-    from langchain_core.messages import HumanMessage as _HM
-    await graph_module.chatbot.ainvoke(
-        {"messages": [_HM(content="[sistema-interno]: retomar")]},
-        config,
-    )
+    triggered = False
+    trigger_error = None
+    try:
+        from langchain_core.messages import HumanMessage as _HM
+        await graph_module.chatbot.ainvoke(
+            {"messages": [_HM(content="[sistema-interno]: retomar")]},
+            config,
+        )
+        triggered = True
+    except Exception as exc:
+        trigger_error = str(exc)
+        logger.warning("PATCH_STATE trigger failed phone=%s error=%s", phone, exc)
 
-    return {"status": "patched", "phone": phone, "applied": patch}
+    result: dict = {"status": "patched", "phone": phone, "applied": patch, "triggered": triggered}
+    if trigger_error:
+        result["trigger_error"] = trigger_error
+    return result
 
 
 # ── Core message processing ───────────────────────────────────────────────────
