@@ -176,6 +176,14 @@ async def get_available_slots(
         None,
     )
 
+    # ── Vague expressions (e.g. "próxima semana") → ask for specific day ─────
+    _vague_patterns = ("semana", "mês", "mes", "em breve", "qualquer", "tanto faz")
+    if weekday_key is None and any(p in preferred_day_norm for p in _vague_patterns):
+        return (
+            "CLARIFICAÇÃO NECESSÁRIA: O paciente disse uma expressão vaga (ex: 'próxima semana'). "
+            "Pergunte qual dia da semana prefere (segunda a sexta) antes de chamar get_available_slots novamente."
+        )
+
     if weekday_key is not None:
         # Verify doctor works this weekday/shift at all before iterating
         day_windows = DOCTOR_SCHEDULES.get(doctor, {}).get(weekday_key, [])
