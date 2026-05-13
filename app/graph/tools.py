@@ -161,6 +161,14 @@ async def get_available_slots(
             "Por favor, informe o paciente e pergunte se deseja agendar com o Dr. Júlio."
         )
 
+    # Dr. Júlio only attends patients up to 65 years old
+    if doctor == "julio" and (state.get("patient_age") or 0) > 65:
+        return (
+            "Dr. Júlio atende pacientes até 65 anos. "
+            "Este paciente tem mais de 65 anos e precisa ser atendido pela Dra. Bruna. "
+            "Por favor, informe o paciente e pergunte se deseja agendar com a Dra. Bruna."
+        )
+
     # Dra. Bruna always uses 1h slots regardless of patient age
     if doctor == "bruna":
         slot_duration_minutes = 60
