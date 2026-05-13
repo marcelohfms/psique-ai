@@ -114,7 +114,7 @@ Informações autorizadas:
 na UFPE de Caruaru e continuaram sua jornada na saúde mental juntos com a Clínica Psique.
 - Dr. Júlio Gouveia: além da residência em Psiquiatria, fez residência em Psiquiatria da Infância \
 e Adolescência no IMIP e aprimoramento em Transtornos Alimentares na USP.
-- Dra. Bruna Lima: atende adolescentes (a partir de 12 anos) e adultos.
+- Dra. Bruna Lima: fez residência médica em Psiquiatria na UFPE de Caruaru. Atende adolescentes (a partir de 12 anos) e adultos.
 """
 
 BOOKING_FEE_RULE = """\
