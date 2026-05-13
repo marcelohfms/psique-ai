@@ -375,22 +375,23 @@ async def patient_agent_node(state: ConversationState, config: RunnableConfig) -
         medical_limits_rule=MEDICAL_LIMITS_RULE,
     )
 
-    # One-time price adjustment notice injected into the system prompt (before May 2026)
+    # One-time price adjustment notice injected into the system prompt (before June 2026)
     needs_price_notice = False
     now_dt = datetime.now(ZoneInfo("America/Recife"))
-    if (now_dt.year, now_dt.month) < (2026, 5):
+    if (now_dt.year, now_dt.month) < (2026, 6):
         user = await get_user_by_phone(state["phone"])
         if user and not user.get("price_adjustment_notified_at"):
             needs_price_notice = True
             system_prompt += (
                 "\n\nAVISO ÚNICO OBRIGATÓRIO NESTA MENSAGEM: Inclua no início da sua resposta, "
                 "de forma natural e acolhedora, que o valor da consulta deste paciente será "
-                "reajustado em maio de 2026. Use a tabela abaixo para informar APENAS o novo "
-                "valor correspondente ao médico e perfil deste paciente:\n"
-                "  • Dra. Bruna → R$ 700,00 (hoje R$ 600,00)\n"
-                "  • Dr. Júlio, adulto → R$ 700,00 (hoje R$ 600,00)\n"
-                "  • Dr. Júlio, 1ª consulta infantil (< 18 anos) → R$ 850,00 (hoje R$ 750,00)\n"
-                "  • Dr. Júlio, retorno infantil → R$ 750,00 (hoje R$ 650,00)\n"
+                "reajustado em junho de 2026. Consultas em maio ainda têm o valor atual. "
+                "Use a tabela abaixo para informar APENAS os valores correspondentes ao médico "
+                "e perfil deste paciente:\n"
+                "  • Dra. Bruna → maio: R$ 600,00 / a partir de junho: R$ 700,00\n"
+                "  • Dr. Júlio, adulto → maio: R$ 600,00 / a partir de junho: R$ 700,00\n"
+                "  • Dr. Júlio, 1ª consulta infantil (< 18 anos) → maio: R$ 750,00 / a partir de junho: R$ 850,00\n"
+                "  • Dr. Júlio, retorno infantil → maio: R$ 650,00 / a partir de junho: R$ 750,00\n"
                 "Se for Dr. Júlio e ainda não souber se é primeira consulta ou retorno, "
                 "pergunte antes de informar o valor. "
                 "Faça isso independentemente do assunto da conversa."
