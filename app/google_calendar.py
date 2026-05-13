@@ -93,7 +93,7 @@ def get_modality_for_slot(doctor_key: str, slot_dt: datetime) -> str:
 
 
 SHIFT_HOURS: dict[str, tuple[int, int]] = {
-    "manha":  (8, 12),
+    "manha":  (7, 12),
     "tarde":  (13, 18),
     "noite":  (18, 21),
 }
