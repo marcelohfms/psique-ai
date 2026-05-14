@@ -134,7 +134,7 @@ _MOD_LABELS = {
 @tool
 async def get_available_slots(
     preferred_day: str,
-    preferred_shift: Literal["manha", "tarde", "noite"],
+    preferred_shift: Literal["manha", "tarde", "noite", "qualquer"],
     slot_duration_minutes: Literal[60, 120],
     state: Annotated[dict, InjectedState],
     config: RunnableConfig,
@@ -145,6 +145,9 @@ async def get_available_slots(
     automaticamente nas próximas semanas até encontrar um horário disponível (máx. 4 semanas).
     Use slot_duration_minutes=120 para primeira consulta de paciente menor de 18 anos,
     60 para todos os outros casos.
+    Use preferred_shift="qualquer" quando o paciente informar um dia mas ainda não tiver
+    dito preferência de turno — isso verifica todos os turnos e retorna os disponíveis
+    para que você possa apresentar opções reais ao paciente antes de perguntar o turno.
     """
     from app.google_calendar import get_available_slots as _get_slots, _parse_day, DOCTOR_SCHEDULES, SHIFT_HOURS, _WEEKDAYS_PT
 
@@ -172,6 +175,30 @@ async def get_available_slots(
     # Dra. Bruna always uses 1h slots regardless of patient age
     if doctor == "bruna":
         slot_duration_minutes = 60
+
+    # ── "qualquer" shift: check all shifts and return summary ─────────────────
+    if preferred_shift == "qualquer":
+        target_date = _parse_day(preferred_day)
+        if target_date is None:
+            return "Não entendi a data. Por favor informe um dia específico (ex: segunda, 19/05, amanhã)."
+        day_of_week = _WEEKDAY_LABELS_PT.get(target_date.weekday(), "")
+        date_label = target_date.strftime("%d/%m")
+        header = f"{day_of_week}, dia {date_label}" if day_of_week else date_label
+        sections = []
+        for shift_key, shift_label in [("manha", "manhã"), ("tarde", "tarde"), ("noite", "noite")]:
+            slots = await _get_slots(
+                calendar_id=calendar_id,
+                preferred_day=preferred_day,
+                preferred_shift=shift_key,
+                slot_minutes=slot_duration_minutes,
+                doctor_key=doctor,
+            )
+            if slots:
+                times = ", ".join(s[0].strftime("%H:%M") for s in slots)
+                sections.append(f"- {shift_label.capitalize()}: {times}")
+        if not sections:
+            return f"Não há horários disponíveis para {header}. Deseja tentar outro dia?"
+        return f"Horários disponíveis para {header}:\n" + "\n".join(sections)
 
     now = datetime.now(TZ)
     shift_norm = preferred_shift.lower().replace("ã", "a").replace("manhã", "manha").strip()
