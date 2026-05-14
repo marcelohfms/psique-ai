@@ -162,36 +162,29 @@ async def _create_contact(client: httpx.AsyncClient, phone_digits: str) -> dict:
     return resp.json().get("payload", {}).get("contact", {})
 
 
-async def _open_conversation_for_contact(client: httpx.AsyncClient, contact_id: int) -> int | None:
-    """Return the id of an open/pending conversation for the contact in our inbox, if any."""
+async def _find_conversation_for_contact(client: httpx.AsyncClient, contact_id: int) -> tuple[int, str] | None:
+    """Return (conv_id, status) of the most recent conversation for the contact in our inbox, or None."""
     url = f"{_base_url()}/api/v1/accounts/{_account_id()}/contacts/{contact_id}/conversations"
     resp = await client.get(url, headers=_headers())
     resp.raise_for_status()
     convs = resp.json().get("payload") or []
     inbox = _inbox_id()
-    for c in convs:
-        if c.get("inbox_id") == inbox and c.get("status") in ("open", "pending"):
-            return c.get("id")
+    # Prefer open/pending; fall back to most recent resolved
+    open_conv = next((c for c in convs if c.get("inbox_id") == inbox and c.get("status") in ("open", "pending")), None)
+    if open_conv:
+        return open_conv["id"], open_conv["status"]
+    resolved = [c for c in convs if c.get("inbox_id") == inbox]
+    if resolved:
+        latest = max(resolved, key=lambda c: c.get("id", 0))
+        return latest["id"], latest.get("status", "resolved")
     return None
-
-
-async def _create_conversation(client: httpx.AsyncClient, contact_id: int, phone_digits: str) -> int:
-    """Create a new conversation for the contact in the configured inbox."""
-    url = f"{_base_url()}/api/v1/accounts/{_account_id()}/conversations"
-    body = {
-        "source_id": phone_digits,
-        "inbox_id": _inbox_id(),
-        "contact_id": contact_id,
-    }
-    resp = await client.post(url, json=body, headers=_headers())
-    resp.raise_for_status()
-    return resp.json().get("id")
 
 
 async def find_or_create_conversation(phone: str) -> int:
     """
-    Resolve a Chatwoot conversation_id for a WhatsApp phone, creating contact
-    and conversation if needed. Caches the result in the in-memory store.
+    Resolve a Chatwoot conversation_id for a WhatsApp phone. Reopens a resolved
+    conversation rather than creating a new one (POST /conversations fails for
+    WhatsApp inboxes). Caches the result in the in-memory store.
     """
     cached = _store.get(phone)
     if cached is not None:
@@ -206,9 +199,12 @@ async def find_or_create_conversation(phone: str) -> int:
         if not contact_id:
             raise RuntimeError(f"Chatwoot returned no contact id for {digits}")
 
-        conv_id = await _open_conversation_for_contact(client, contact_id)
-        if conv_id is None:
-            conv_id = await _create_conversation(client, contact_id, digits)
+        result = await _find_conversation_for_contact(client, contact_id)
+        if result is None:
+            raise RuntimeError(f"No Chatwoot conversation found for {digits} and cannot create one for WhatsApp inboxes")
+        conv_id, status = result
+        if status not in ("open", "pending"):
+            await reopen_conversation(conv_id)
 
     _store[phone] = conv_id
     return conv_id
