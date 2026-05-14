@@ -31,23 +31,49 @@ def _strip_phone(phone: str) -> str:
     return phone.replace("@s.whatsapp.net", "")
 
 
+def _phone_variants(phone: str) -> list[str]:
+    """Return both the 9-digit and 8-digit variants of a Brazilian mobile number.
+
+    Brazilian mobiles gained a leading 9 in 2012–2016. Chatwoot/Evolution may
+    deliver the same number with or without the extra 9, causing duplicate users.
+    We normalise to the WITH-9 form (current standard) and also try the legacy form.
+    """
+    digits = _strip_phone(phone)
+    # Must be a Brazilian mobile: 55 + 2-digit DDD + 8 or 9 digits
+    if len(digits) == 13 and digits.startswith("55"):
+        # Has the 9 already (55 + DDD + 9XXXXXXXX)
+        return [digits, digits[:4] + digits[5:]]   # also try without the 9
+    if len(digits) == 12 and digits.startswith("55"):
+        # Missing the 9 (55 + DDD + 8XXXXXXXX)
+        return [digits[:4] + "9" + digits[4:], digits]  # canonical with-9 first
+    return [digits]
+
+
 async def get_user_by_phone(phone: str) -> dict | None:
-    """Return the users row for this phone number, or None if not found."""
+    """Return the users row for this phone number, or None if not found.
+    Tries both the 9-digit and 8-digit variants to handle Chatwoot inconsistency.
+    """
     client = await get_supabase()
-    result = (
-        await client.from_("users")
-        .select("*")
-        .eq("number", _strip_phone(phone))
-        .limit(1)
-        .execute()
-    )
-    return result.data[0] if result.data else None
+    for variant in _phone_variants(phone):
+        result = (
+            await client.from_("users")
+            .select("*")
+            .eq("number", variant)
+            .limit(1)
+            .execute()
+        )
+        if result.data:
+            return result.data[0]
+    return None
 
 
 async def upsert_user(phone: str, data: dict) -> None:
-    """Insert or update a user record keyed by phone number."""
+    """Insert or update a user record keyed by phone number.
+    Always uses the canonical with-9 form to avoid duplicates.
+    """
     client = await get_supabase()
-    payload = {"number": _strip_phone(phone), **data}
+    canonical = _phone_variants(phone)[0]  # first variant is always the with-9 form
+    payload = {"number": canonical, **data}
     await client.from_("users").upsert(payload, on_conflict="number").execute()
 
 
