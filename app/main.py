@@ -596,11 +596,6 @@ async def _handle_attendant_note(payload: dict) -> None:
     if sender.get("type") in ("agent_bot", "bot"):
         return
 
-    conversation = payload.get("conversation", {})
-    conv_labels = set(conversation.get("labels") or [])
-    if _EVA_ACTIVE_LABEL not in conv_labels:
-        return  # only act when Eva is the active handler
-
     phone = _extract_phone_from_payload(payload)
     if not phone:
         return
@@ -609,9 +604,20 @@ async def _handle_attendant_note(payload: dict) -> None:
     if not content:
         return
 
-    logger.info("ATTENDANT_NOTE phone=%s content=%.120s", phone, content)
+    conv_id = payload.get("conversation", {}).get("id")
+    if conv_id:
+        from app.chatwoot import register_conversation
+        register_conversation(phone, conv_id)
+
+    logger.info("ATTENDANT_NOTE phone=%s conv=%s content=%.120s", phone, conv_id, content)
+
+    async def _run_silent(p: str, text: str) -> None:
+        config = {"configurable": {"thread_id": p}}
+        state_update = {"messages": [HumanMessage(content=text)], "silent_mode": True}
+        await graph_module.chatbot.ainvoke(state_update, config=config)
+
     instruction = f"[Instrução da atendente]: {content}"
-    await buffer_push(phone, instruction, process_message)
+    await buffer_push(phone, instruction, _run_silent)
 
 
 async def _handle_chatwoot_payload(payload: dict) -> None:
