@@ -70,11 +70,12 @@ async def send_message(conversation_id: int, text: str) -> None:
 
 
 async def unassign_agent_bot(conversation_id: int) -> None:
-    """Remove agent bot assignment so human agents can take over in Chatwoot."""
+    """Remove human agent assignment so agents can take over in Chatwoot. 404 = no agent assigned, safe to ignore."""
     url = f"{_base_url()}/api/v1/accounts/{_account_id()}/conversations/{conversation_id}/assignments"
     async with httpx.AsyncClient(timeout=10) as client:
         response = await client.delete(url, headers=_bot_headers())
-        response.raise_for_status()
+        if response.status_code != 404:
+            response.raise_for_status()
 
 
 async def add_private_note(conversation_id: int, text: str) -> None:
