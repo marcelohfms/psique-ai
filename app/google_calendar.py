@@ -251,12 +251,23 @@ async def get_available_slots(
     overall_start = min(w[0] for w in windows)
     overall_end = max(w[1] for w in windows)
 
+    import logging as _log2
+    _log2.getLogger(__name__).warning(
+        "GET_SLOTS_START doctor=%s calendar=%s date=%s windows=%s",
+        doctor_key, calendar_id, target_date,
+        [(w[0].strftime("%H:%M"), w[1].strftime("%H:%M")) for w in windows],
+    )
+
     creds = _credentials()
     service = build("calendar", "v3", credentials=creds)
     loop = asyncio.get_event_loop()
-    busy_raw = await loop.run_in_executor(
-        None, _get_busy, service, calendar_id, overall_start, overall_end
-    )
+    try:
+        busy_raw = await loop.run_in_executor(
+            None, _get_busy, service, calendar_id, overall_start, overall_end
+        )
+    except Exception as _e:
+        _log2.getLogger(__name__).error("GET_SLOTS_BUSY_ERROR doctor=%s calendar=%s error=%s", doctor_key, calendar_id, _e)
+        busy_raw = []
 
     busy_ranges = []
     for b in busy_raw:
