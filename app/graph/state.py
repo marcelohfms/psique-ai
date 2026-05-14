@@ -46,3 +46,10 @@ class ConversationState(TypedDict):
     # When True, Eva executes silently (attendant instruction via private note):
     # posts result as a Chatwoot private note instead of sending a WhatsApp message.
     silent_mode: bool | None
+
+    # Multi-patient support: when a phone has more than one patient, stores the list
+    # while the bot waits for the guardian to pick one.
+    pending_patients: list | None
+
+    # DB id of the patient selected during disambiguation (used for targeted upserts).
+    user_db_id: str | None

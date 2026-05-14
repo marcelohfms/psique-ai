@@ -69,7 +69,8 @@ async def test_collect_info_node_overrides_reply_on_invalid_birth_date():
     }
     with patch("app.graph.nodes._get_collect_llm") as mock_llm_fn, \
          patch("app.graph.nodes.send_text", new_callable=AsyncMock) as mock_send, \
-         patch("app.graph.nodes.save_message", new_callable=AsyncMock):
+         patch("app.graph.nodes.save_message", new_callable=AsyncMock), \
+         patch("app.graph.nodes.get_users_by_phone", new_callable=AsyncMock, return_value=[]):
         mock_llm = MagicMock()
         mock_llm.ainvoke = AsyncMock(return_value=invalid_result)
         mock_llm_fn.return_value = mock_llm
