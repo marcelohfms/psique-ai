@@ -625,7 +625,7 @@ async def _handle_chatwoot_payload(payload: dict) -> None:
             payload.get("sender", {}).get("type"),
             payload.get("conversation", {}).get("labels"),
         )
-        if payload.get("private") and payload.get("message_type") == 1:
+        if payload.get("private") and payload.get("message_type") in (1, "outgoing"):
             await _handle_attendant_note(payload)
             return
 
