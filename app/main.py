@@ -469,8 +469,14 @@ def _extract_phone_from_payload(payload: dict) -> str | None:
         conversation.get("meta", {}).get("sender", {}).get("phone_number")
         or payload.get("meta", {}).get("sender", {}).get("phone_number")
         or payload.get("sender", {}).get("phone_number")
+        # fallback: contact identifier (Evolution stores the raw number here)
+        or conversation.get("meta", {}).get("sender", {}).get("identifier")
+        or payload.get("contact", {}).get("phone_number")
         or ""
     ).strip()
+    logger.info("EXTRACT_PHONE raw=%r conversation_meta=%s",
+                phone_raw,
+                conversation.get("meta", {}).get("sender", {}))
     if not phone_raw:
         return None
     return phone_raw.lstrip("+") + "@s.whatsapp.net"
@@ -525,11 +531,27 @@ async def _handle_label_change(payload: dict) -> bool:
                     payload.get("conversation", {}).get("labels"),
                     payload.get("changed_attributes"))
         changed = payload.get("changed_attributes") or []
+        logger.info("CONV_UPDATED_CHANGED_ATTRS type=%s value=%s", type(changed).__name__, changed)
         label_change = next(
             (c for c in changed if isinstance(c, dict) and "labels" in c),
             None,
         )
         if label_change is None:
+            # Fallback: if eva-ativa is in current labels and not tracked yet, treat as added
+            conv_id = str(payload.get("conversation", {}).get("id") or "")
+            labels_now = frozenset(
+                payload.get("conversation", {}).get("labels")
+                or payload.get("labels")
+                or []
+            )
+            if conv_id:
+                previous = _conv_labels.get(conv_id, frozenset())
+                _conv_labels[conv_id] = labels_now
+                added = labels_now - previous
+                removed = previous - labels_now
+                logger.info("CONV_UPDATED_FALLBACK conv=%s added=%s removed=%s", conv_id, added, removed)
+                if _EVA_ACTIVE_LABEL in added or _EVA_INACTIVE_LABEL in added or _EVA_INACTIVE_LABEL in removed:
+                    return await _apply_eva_label_action(payload, added, removed)
             return False
 
         # Labels may be at payload["conversation"]["labels"] (agent-bot format)
