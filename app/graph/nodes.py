@@ -430,9 +430,15 @@ async def patient_agent_node(state: ConversationState, config: RunnableConfig) -
 
     # Only send to WhatsApp when the LLM produces a final text (no tool calls)
     if not response.tool_calls and response.content:
-        await send_text(state["phone"], response.content)
-        await save_message(state["phone"], "assistant", response.content)
-        if needs_price_notice:
-            await upsert_user(state["phone"], {"price_adjustment_notified_at": now_dt.isoformat()})
+        if state.get("silent_mode"):
+            from app.chatwoot import get_conversation_id, add_private_note
+            conv_id = get_conversation_id(state["phone"])
+            if conv_id:
+                await add_private_note(conv_id, f"[Eva - resultado]: {response.content}")
+        else:
+            await send_text(state["phone"], response.content)
+            await save_message(state["phone"], "assistant", response.content)
+            if needs_price_notice:
+                await upsert_user(state["phone"], {"price_adjustment_notified_at": now_dt.isoformat()})
 
     return {"messages": [response]}
