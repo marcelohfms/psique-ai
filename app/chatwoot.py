@@ -122,7 +122,12 @@ async def get_last_patient_message(conversation_id: int) -> str | None:
         resp = await client.get(url, headers=_headers())
         resp.raise_for_status()
         data = resp.json().get("payload") or {}
-        messages = data.get("messages") or data if isinstance(data, list) else []
+        if isinstance(data, list):
+            messages = data
+        elif isinstance(data, dict):
+            messages = data.get("messages") or []
+        else:
+            messages = []
     incoming = [m for m in messages if m.get("message_type") == 0 and (m.get("content") or "").strip()]
     if not incoming:
         return None
