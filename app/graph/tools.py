@@ -255,7 +255,10 @@ async def get_available_slots(
                 )
         return f"Não há horários disponíveis para {preferred_day} no turno da {preferred_shift}. Deseja tentar outro dia ou turno?"
 
-    lines = [f"Horários disponíveis para {preferred_day} ({preferred_shift}):"]
+    day_of_week = _WEEKDAY_LABELS_PT.get(target_date.weekday(), "") if target_date else ""
+    date_label = target_date.strftime("%d/%m") if target_date else preferred_day
+    header = f"{day_of_week}, dia {date_label}" if day_of_week else date_label
+    lines = [f"Horários disponíveis para {header} ({preferred_shift}):"]
     for i, (slot, modality) in enumerate(slots, 1):
         lines.append(f"{i}. {slot.strftime('%H:%M')} [{_MOD_LABELS.get(modality, modality)}]")
 
