@@ -105,12 +105,12 @@ async def test_find_or_create_returns_cached_conversation():
     mock_cls.assert_not_called()
 
 
-async def test_find_or_create_creates_contact_and_conversation_when_missing():
-    """When contact and conversation don't exist, both are created via Chatwoot API."""
+async def test_find_or_create_raises_when_no_conversation_exists():
+    """When a contact exists but has no conversations, raise RuntimeError (can't create for WhatsApp inboxes)."""
     from app.chatwoot import find_or_create_conversation, _store
+    import pytest
     _store.clear()
 
-    # Build a mock client whose responses depend on URL/method
     mock_client = AsyncMock()
     mock_client.__aenter__ = AsyncMock(return_value=mock_client)
     mock_client.__aexit__ = AsyncMock(return_value=False)
@@ -123,20 +123,12 @@ async def test_find_or_create_creates_contact_and_conversation_when_missing():
 
     async def fake_get(url: str, **_kw):
         if "/contacts/search" in url:
-            return _resp({"payload": []})  # no contact
+            return _resp({"payload": [{"id": 555}]})  # contact found
         if "/conversations" in url:
-            return _resp({"payload": []})  # no existing conversation
+            return _resp({"payload": []})  # no conversations
         raise AssertionError(f"unexpected GET {url}")
 
-    async def fake_post(url: str, **_kw):
-        if url.endswith("/contacts"):
-            return _resp({"payload": {"contact": {"id": 555}}})
-        if url.endswith("/conversations"):
-            return _resp({"id": 999})
-        raise AssertionError(f"unexpected POST {url}")
-
     mock_client.get = AsyncMock(side_effect=fake_get)
-    mock_client.post = AsyncMock(side_effect=fake_post)
 
     with patch("httpx.AsyncClient", return_value=mock_client), \
          patch.dict("os.environ", {
@@ -145,11 +137,8 @@ async def test_find_or_create_creates_contact_and_conversation_when_missing():
              "CHATWOOT_AGENT_BOT_TOKEN": "test-token",
              "CHATWOOT_INBOX_ID": "1",
          }):
-        result = await find_or_create_conversation("5583998566516@s.whatsapp.net")
-
-    assert result == 999
-    assert _store["5583998566516@s.whatsapp.net"] == 999
-    assert mock_client.post.await_count == 2  # contact + conversation
+        with pytest.raises(RuntimeError, match="No Chatwoot conversation found"):
+            await find_or_create_conversation("5583998566516@s.whatsapp.net")
 
 
 async def test_find_or_create_reuses_existing_open_conversation():
