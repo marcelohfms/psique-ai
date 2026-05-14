@@ -6,6 +6,8 @@ from datetime import datetime, timezone, timedelta
 from dotenv import load_dotenv
 load_dotenv()
 
+logging.basicConfig(level=logging.INFO, format="%(levelname)s:%(name)s:%(message)s")
+
 
 from fastapi import FastAPI, Request, Response, Header, HTTPException
 from langchain_core.messages import HumanMessage
