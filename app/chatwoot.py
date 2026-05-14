@@ -205,11 +205,20 @@ async def find_or_create_conversation(phone: str) -> int:
     digits = _strip_phone(phone)
     async with httpx.AsyncClient(timeout=10) as client:
         contact = await _search_contact(client, digits)
+        logger.info("FIND_CONV digits=%s contact=%s", digits, contact.get("id") if contact else None)
         if contact is None:
             contact = await _create_contact(client, digits)
         contact_id = contact.get("id")
         if not contact_id:
             raise RuntimeError(f"Chatwoot returned no contact id for {digits}")
+
+        # Log all conversations for this contact to diagnose inbox_id mismatches
+        url = f"{_base_url()}/api/v1/accounts/{_account_id()}/contacts/{contact_id}/conversations"
+        _dbg = await client.get(url, headers=_headers())
+        _all_convs = (_dbg.json().get("payload") or []) if _dbg.status_code == 200 else []
+        logger.info("FIND_CONV contact_id=%s inbox_id_cfg=%s all_convs=%s",
+                    contact_id, _inbox_id(),
+                    [(c.get("id"), c.get("inbox_id"), c.get("status")) for c in _all_convs])
 
         result = await _find_conversation_for_contact(client, contact_id)
         if result is None:
