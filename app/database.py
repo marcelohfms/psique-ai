@@ -49,32 +49,57 @@ def _phone_variants(phone: str) -> list[str]:
     return [digits]
 
 
-async def get_user_by_phone(phone: str) -> dict | None:
-    """Return the users row for this phone number, or None if not found.
-    Tries both the 9-digit and 8-digit variants to handle Chatwoot inconsistency.
-    """
+async def get_users_by_phone(phone: str) -> list[dict]:
+    """Return ALL users rows for this phone number (both digit variants)."""
     client = await get_supabase()
+    seen_ids: set[str] = set()
+    rows: list[dict] = []
     for variant in _phone_variants(phone):
         result = (
             await client.from_("users")
             .select("*")
             .eq("number", variant)
-            .limit(1)
             .execute()
         )
-        if result.data:
-            return result.data[0]
-    return None
+        for row in (result.data or []):
+            if row["id"] not in seen_ids:
+                seen_ids.add(row["id"])
+                rows.append(row)
+    return rows
 
 
-async def upsert_user(phone: str, data: dict) -> None:
-    """Insert or update a user record keyed by phone number.
-    Always uses the canonical with-9 form to avoid duplicates.
+async def get_user_by_phone(phone: str) -> dict | None:
+    """Return the users row for this phone number, or None if not found.
+    When multiple patients share a phone, returns the active one (or first found).
+    """
+    rows = await get_users_by_phone(phone)
+    if not rows:
+        return None
+    active = next((r for r in rows if r.get("active")), None)
+    return active or rows[0]
+
+
+async def upsert_user(phone: str, data: dict, user_id: str | None = None) -> None:
+    """Insert or update a user record.
+
+    When user_id is given, updates that specific record.
+    Otherwise resolves the record by phone: updates if exactly one found,
+    inserts if none found, updates the active one if multiple found.
     """
     client = await get_supabase()
-    canonical = _phone_variants(phone)[0]  # first variant is always the with-9 form
-    payload = {"number": canonical, **data}
-    await client.from_("users").upsert(payload, on_conflict="number").execute()
+    if user_id:
+        await client.from_("users").update(data).eq("id", user_id).execute()
+        return
+    rows = await get_users_by_phone(phone)
+    if len(rows) == 0:
+        canonical = _phone_variants(phone)[0]
+        await client.from_("users").insert({"number": canonical, **data}).execute()
+    elif len(rows) == 1:
+        await client.from_("users").update(data).eq("id", rows[0]["id"]).execute()
+    else:
+        # Multiple patients — update the active one to avoid overwriting the wrong record
+        target = next((r for r in rows if r.get("active")), rows[0])
+        await client.from_("users").update(data).eq("id", target["id"]).execute()
 
 
 # ── Event tracking ────────────────────────────────────────────────────────────

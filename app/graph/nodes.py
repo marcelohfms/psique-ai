@@ -14,7 +14,7 @@ from app.graph.tools import (
 )
 from app.graph.prompts import COLLECT_SYSTEM, MINOR_RULE, ADULT_RULE, EXISTING_PATIENT_SYSTEM, NEW_PATIENT_SYSTEM, CANCELLATION_RULES, CLINIC_ADDRESS, DOCTORS_INFO, BOOKING_FEE_RULE, MEDICAL_LIMITS_RULE, DOCTOR_CORRECTION_RULE, get_pricing_rules
 from app.whatsapp import send_text
-from app.database import upsert_user, log_event, get_upcoming_appointments, get_user_by_phone, DOCTOR_IDS, save_message
+from app.database import upsert_user, log_event, get_upcoming_appointments, get_user_by_phone, get_users_by_phone, DOCTOR_IDS, DOCTOR_NAMES, save_message
 
 # ── LLM setup (lazy — instantiated on first use after .env is loaded) ─────────
 
@@ -60,6 +60,65 @@ async def collect_info_node(state: ConversationState, config: RunnableConfig) ->
         "consultation_reason": state.get("consultation_reason"),
         "referral_professional": state.get("referral_professional"),
     }
+
+    # ── Multi-patient disambiguation ─────────────────────────────────────────────
+    # Runs only when the phone has multiple registered patients and no patient has
+    # been selected yet for this conversation.
+    if not state.get("user_name"):
+        pending = state.get("pending_patients")
+
+        if pending is None:
+            all_users = await get_users_by_phone(state["phone"])
+            if len(all_users) > 1:
+                names = [u.get("patient_name") or u.get("name") or "Paciente" for u in all_users]
+                options = "\n".join(f"{i + 1}. {n}" for i, n in enumerate(names))
+                reply = f"Olá! Para qual paciente você está entrando em contato?\n\n{options}"
+                await send_text(state["phone"], reply)
+                await save_message(state["phone"], "assistant", reply)
+                return {"pending_patients": all_users, "messages": [AIMessage(content=reply)]}
+
+        elif pending:
+            last_human = ""
+            for msg in reversed(state["messages"]):
+                if getattr(msg, "type", None) == "human":
+                    last_human = (msg.content or "").strip().lower()
+                    break
+
+            selected = None
+            for i, u in enumerate(pending):
+                name = (u.get("patient_name") or u.get("name") or "").lower()
+                name_parts = name.split()
+                if str(i + 1) == last_human or any(part in last_human for part in name_parts if len(part) > 2):
+                    selected = u
+                    break
+
+            if selected:
+                doc_key = DOCTOR_NAMES.get(selected.get("doctor_id", ""), None)
+                return {
+                    "pending_patients": None,
+                    "user_db_id": selected["id"],
+                    "user_name": selected.get("name"),
+                    "patient_name": selected.get("patient_name") or selected.get("name"),
+                    "patient_age": selected.get("age"),
+                    "birth_date": selected.get("birth_date"),
+                    "is_patient": selected.get("is_patient"),
+                    "preferred_doctor": doc_key,
+                    "patient_email": selected.get("email"),
+                    "guardian_name": selected.get("guardian_name"),
+                    "guardian_cpf": selected.get("guardian_cpf"),
+                    "guardian_relationship": selected.get("guardian_relationship"),
+                    "patient_cpf": selected.get("patient_cpf"),
+                    "stage": "patient_agent",
+                    "messages": [],
+                }
+            else:
+                # Could not parse — ask again
+                names = [u.get("patient_name") or u.get("name") or "Paciente" for u in pending]
+                options = "\n".join(f"{i + 1}. {n}" for i, n in enumerate(names))
+                reply = f"Não consegui identificar. Pode digitar o número ou o nome do paciente?\n\n{options}"
+                await send_text(state["phone"], reply)
+                await save_message(state["phone"], "assistant", reply)
+                return {"messages": [AIMessage(content=reply)]}
 
     # Detect receita request from any user message
     _messages_text = " ".join(
@@ -287,7 +346,7 @@ async def collect_info_node(state: ConversationState, config: RunnableConfig) ->
                 "consultation_reason": merged.get("consultation_reason"),
                 "referral_professional": merged.get("referral_professional"),
                 "active": True,
-            })
+            }, user_id=state.get("user_db_id"))
             await log_event("info_collected", state["phone"], {
                 "patient_name": merged.get("patient_name"),
                 "patient_age": merged.get("patient_age"),
@@ -349,7 +408,7 @@ async def patient_agent_node(state: ConversationState, config: RunnableConfig) -
                 bd = datetime.strptime(parsed_bd, "%d/%m/%Y")
                 today_dt = datetime.now()
                 _age = today_dt.year - bd.year - ((today_dt.month, today_dt.day) < (bd.month, bd.day))
-                await upsert_user(state["phone"], {"birth_date": parsed_bd, "age": _age})
+                await upsert_user(state["phone"], {"birth_date": parsed_bd, "age": _age}, user_id=state.get("user_db_id"))
                 birth_date = parsed_bd
                 patient_age = _age
             break
@@ -439,6 +498,6 @@ async def patient_agent_node(state: ConversationState, config: RunnableConfig) -
             await send_text(state["phone"], response.content)
             await save_message(state["phone"], "assistant", response.content)
             if needs_price_notice:
-                await upsert_user(state["phone"], {"price_adjustment_notified_at": now_dt.isoformat()})
+                await upsert_user(state["phone"], {"price_adjustment_notified_at": now_dt.isoformat()}, user_id=state.get("user_db_id"))
 
     return {"messages": [response]}
