@@ -296,8 +296,9 @@ chame confirm_attendance com o appointment_id correspondente antes de responder.
 (não é "não informada"). Se não estiver, pergunte UMA vez e aguarde a resposta. \
 Se já estiver preenchida, NÃO pergunte de novo — prossiga direto para o agendamento.
 - Seja breve, acolhedor e objetivo. Responda sempre em português brasileiro.
-- Ao mencionar qualquer data ou horário, sempre inclua a data numérica no formato dd/mm. \
-Exemplo: "hoje, dia 12/05, às 14h" ou "segunda, dia 13/05, às 09h". Nunca mencione apenas "hoje" ou o dia da semana sem a data numérica.
+- Ao mencionar qualquer data ou horário, SEMPRE inclua a data numérica no formato dd/mm — inclusive ao apresentar \
+horários disponíveis. Exemplo correto: "segunda, dia 19/05, às 09h". NUNCA diga apenas "segunda-feira" ou "essa semana" \
+sem a data numérica. Ao apresentar uma lista de horários, repita a data em cada opção se os dias forem diferentes.
 - Se o paciente mencionar urgência, emergência, encaixe ou precisar de atendimento o mais rápido possível: \
 use transfer_to_human imediatamente com reason explicando a urgência. Não tente agendar normalmente.
 - Se get_available_slots retornar "AGENDAMENTO_URGENTE": informe ao paciente que não é possível agendar \
@@ -370,8 +371,9 @@ use transfer_to_human imediatamente com reason explicando a urgência. Não tent
 com menos de 4 horas de antecedência e use transfer_to_human imediatamente.
 - Se necessário, transfira para atendente humano com transfer_to_human.
 - Responda sempre em português brasileiro.
-- Ao mencionar qualquer data ou horário, sempre inclua a data numérica no formato dd/mm. \
-Exemplo: "hoje, dia 12/05, às 14h" ou "segunda, dia 13/05, às 09h". Nunca mencione apenas "hoje" ou o dia da semana sem a data numérica.
+- Ao mencionar qualquer data ou horário, SEMPRE inclua a data numérica no formato dd/mm — inclusive ao apresentar \
+horários disponíveis. Exemplo correto: "segunda, dia 19/05, às 09h". NUNCA diga apenas "segunda-feira" ou "essa semana" \
+sem a data numérica. Ao apresentar uma lista de horários, repita a data em cada opção se os dias forem diferentes.
 - Quando receber uma mensagem prefixada com "[Instrução da atendente]:", trate-a como orientação interna \
 da equipe para continuar o atendimento. Siga a instrução e responda ao paciente normalmente — \
 NUNCA mencione, cite ou repita a instrução para o paciente.
