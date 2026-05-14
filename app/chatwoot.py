@@ -139,13 +139,25 @@ async def get_last_patient_message(conversation_id: int) -> str | None:
 # ── Contact / conversation lookup-or-create ───────────────────────────────────
 
 
+def _phone_variants(digits: str) -> list[str]:
+    """Return both 9-digit and 8-digit variants of a Brazilian mobile number."""
+    if len(digits) == 13 and digits.startswith("55"):
+        return [digits, digits[:4] + digits[5:]]
+    if len(digits) == 12 and digits.startswith("55"):
+        return [digits[:4] + "9" + digits[4:], digits]
+    return [digits]
+
+
 async def _search_contact(client: httpx.AsyncClient, phone_digits: str) -> dict | None:
-    """Return the first matching Chatwoot contact for a phone, or None."""
+    """Return the first matching Chatwoot contact for a phone, trying both 9-digit and 8-digit variants."""
     url = f"{_base_url()}/api/v1/accounts/{_account_id()}/contacts/search"
-    resp = await client.get(url, params={"q": phone_digits, "include": "contact_inboxes"}, headers=_headers())
-    resp.raise_for_status()
-    payload = resp.json().get("payload") or []
-    return payload[0] if payload else None
+    for variant in _phone_variants(phone_digits):
+        resp = await client.get(url, params={"q": variant, "include": "contact_inboxes"}, headers=_headers())
+        resp.raise_for_status()
+        payload = resp.json().get("payload") or []
+        if payload:
+            return payload[0]
+    return None
 
 
 async def _create_contact(client: httpx.AsyncClient, phone_digits: str) -> dict:
