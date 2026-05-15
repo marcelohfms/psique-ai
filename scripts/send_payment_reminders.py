@@ -119,9 +119,8 @@ async def main():
 
     now = datetime.now(TZ)
     two_hours_ago = (now - timedelta(hours=2)).isoformat()
-    four_hours_ago = (now - timedelta(hours=4)).isoformat()
 
-    # ── Step 1: 2h reminder (not yet reminded, booked >= 2h ago) ──────────────
+    # ── Step 1: 1st reminder (not yet reminded, booked >= 2h ago) ─────────────
     reminder_result = await (
         client.from_("appointments")
         .select("appointment_id, start_time, doctor_id, created_at, users(number, patient_name, name)")
@@ -132,20 +131,20 @@ async def main():
         .execute()
     )
     reminder_appts = reminder_result.data or []
-    print(f"Appointments needing 2h payment reminder: {len(reminder_appts)}")
+    print(f"Appointments needing payment reminder: {len(reminder_appts)}")
 
-    # ── Step 2: 4h cancellation (reminder sent, still unpaid, booked >= 4h ago)
+    # ── Step 2: cancellation (reminder sent >= 2h ago, still unpaid) ──────────
     cancel_result = await (
         client.from_("appointments")
-        .select("appointment_id, start_time, doctor_id, created_at, users(number, patient_name, name)")
+        .select("appointment_id, start_time, doctor_id, created_at, payment_reminder_sent_at, users(number, patient_name, name)")
         .eq("status", "scheduled")
         .is_("paid_at", "null")
         .not_.is_("payment_reminder_sent_at", "null")
-        .lte("created_at", four_hours_ago)
+        .lte("payment_reminder_sent_at", two_hours_ago)
         .execute()
     )
     cancel_appts = cancel_result.data or []
-    print(f"Appointments to auto-cancel (unpaid after 4h): {len(cancel_appts)}")
+    print(f"Appointments to auto-cancel (unpaid 2h after reminder): {len(cancel_appts)}")
 
     # Set up LangGraph checkpointer — same connection options as the main app
     # (prepare_threshold=None is required for pgbouncer in transaction mode)
