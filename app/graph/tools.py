@@ -788,9 +788,10 @@ async def register_payment(
 
     doctor_label = {"julio": "Dr. Júlio", "bruna": "Dra. Bruna"}.get(doctor_key, "médico(a)")
 
-    # ── Fetch next scheduled appointment (or last canceled one) ───────────────
+    # ── Fetch scheduled appointment or try to reactivate canceled one ─────────
     appointment_dt = "—"
-    canceled_appt = None
+    confirmation_msg = "Comprovante recebido e registrado com sucesso! ✅ Sua vaga está garantida."
+    appt_id_to_pay: str | None = None
 
     appt_result = await client.from_("appointments").select(
         "appointment_id, start_time, end_time, doctor_id"
@@ -799,28 +800,82 @@ async def register_payment(
     if appt_result.data:
         apt_start = datetime.fromisoformat(appt_result.data[0]["start_time"]).astimezone(TZ)
         appointment_dt = apt_start.strftime("%d/%m/%Y %H:%M")
+        appt_id_to_pay = appt_result.data[0]["appointment_id"]
     else:
-        # No scheduled appointment — check for a recently canceled one
+        # No scheduled appointment — try to reactivate the most recent canceled one
         canceled_result = await client.from_("appointments").select(
             "appointment_id, start_time, end_time, doctor_id"
         ).eq("user_id", user_id).eq("status", "canceled").order("updated_at", desc=True).limit(1).execute()
+
         if canceled_result.data:
             canceled_appt = canceled_result.data[0]
-            apt_start = datetime.fromisoformat(canceled_appt["start_time"]).astimezone(TZ)
-            appointment_dt = apt_start.strftime("%d/%m/%Y %H:%M")
+            try:
+                from app.google_calendar import get_available_slots, create_event
+                slot_start   = datetime.fromisoformat(canceled_appt["start_time"]).astimezone(TZ)
+                slot_end     = datetime.fromisoformat(canceled_appt["end_time"]).astimezone(TZ)
+                slot_minutes = int((slot_end - slot_start).total_seconds() / 60)
+
+                canceled_doctor_id    = canceled_appt.get("doctor_id", "")
+                canceled_doctor_key   = {v: k for k, v in DOCTOR_IDS.items()}.get(canceled_doctor_id, "")
+                canceled_doctor_label = {"julio": "Dr. Júlio", "bruna": "Dra. Bruna"}.get(canceled_doctor_key, "médico(a)")
+
+                doc_result  = await client.from_("doctors").select("agenda_id").eq("doctor_id", canceled_doctor_id).single().execute()
+                calendar_id = doc_result.data.get("agenda_id") if doc_result.data else None
+
+                slot_available = False
+                if calendar_id:
+                    day_str        = slot_start.strftime("%Y-%m-%d")
+                    shift          = "manhã" if slot_start.hour < 12 else ("tarde" if slot_start.hour < 18 else "noite")
+                    available_slots = await get_available_slots(calendar_id, day_str, shift, slot_minutes, canceled_doctor_key)
+                    slot_available  = any(s == slot_start for s, _ in available_slots)
+
+                if slot_available and calendar_id:
+                    # Slot still free — recreate event and reactivate
+                    new_event_id = await create_event(
+                        calendar_id, slot_start, slot_minutes, patient_name,
+                        canceled_doctor_label.replace("Dr. ", "").replace("Dra. ", ""),
+                    )
+                    await client.from_("appointments").update({
+                        "status": "scheduled",
+                        "paid_at": datetime.now(TZ).isoformat(),
+                        "appointment_id": new_event_id,
+                        "updated_at": datetime.now(TZ).isoformat(),
+                    }).eq("appointment_id", canceled_appt["appointment_id"]).execute()
+                    appointment_dt   = slot_start.strftime("%d/%m/%Y %H:%M")
+                    appt_id_to_pay   = None  # already paid above
+                    confirmation_msg = (
+                        f"Comprovante recebido e registrado com sucesso! ✅\n"
+                        f"Sua consulta com *{canceled_doctor_label}* no dia *{appointment_dt}* "
+                        f"está reagendada e sua vaga está garantida! 🎉"
+                    )
+                else:
+                    # Slot taken — register payment but inform patient
+                    appointment_dt   = slot_start.strftime("%d/%m/%Y %H:%M")
+                    appt_id_to_pay   = canceled_appt["appointment_id"]
+                    confirmation_msg = (
+                        f"Comprovante recebido e registrado! ✅\n"
+                        f"Infelizmente o horário original ({appointment_dt} com {canceled_doctor_label}) "
+                        f"não está mais disponível. Vou verificar os próximos horários disponíveis para você."
+                    )
+            except Exception:
+                _logger.exception("REACTIVATE_CANCELED_APPT FAILED patient=%s", patient_name)
+                if canceled_result.data:
+                    apt_start      = datetime.fromisoformat(canceled_result.data[0]["start_time"]).astimezone(TZ)
+                    appointment_dt = apt_start.strftime("%d/%m/%Y %H:%M")
+                    appt_id_to_pay = canceled_result.data[0]["appointment_id"]
 
     # ── Rename Drive file ──────────────────────────────────────────────────────
     if drive_link:
         try:
             from app.google_drive import rename_file
-            file_id = drive_link.split("/d/")[1].split("/")[0]
+            file_id     = drive_link.split("/d/")[1].split("/")[0]
             amount_clean = amount.replace("R$", "").replace(" ", "").strip()
-            date_clean = (
+            date_clean  = (
                 appointment_dt.split(" ")[0].replace("/", "-")
                 if appointment_dt != "—"
                 else datetime.now(TZ).strftime("%d-%m-%Y")
             )
-            safe_name = patient_name.replace(" ", "_")
+            safe_name    = patient_name.replace(" ", "_")
             new_filename = f"{safe_name}_{date_clean}_R${amount_clean}.jpg"
             await rename_file(file_id, new_filename)
         except Exception:
@@ -831,81 +886,12 @@ async def register_payment(
     except Exception:
         _logger.exception("SHEETS_APPEND FAILED patient=%s", patient_name)
 
-    # ── Mark appointment as paid / reactivate canceled appointment ────────────
-    confirmation_msg = "Comprovante recebido e registrado com sucesso! ✅ Sua vaga está garantida."
-
-    if canceled_appt:
-        # Try to reactivate the canceled appointment
+    # ── Mark paid_at if not already set during reactivation ───────────────────
+    if appt_id_to_pay:
         try:
-            from app.google_calendar import get_available_slots, create_event
-            slot_start = datetime.fromisoformat(canceled_appt["start_time"]).astimezone(TZ)
-            slot_end   = datetime.fromisoformat(canceled_appt["end_time"]).astimezone(TZ)
-            slot_minutes = int((slot_end - slot_start).total_seconds() / 60)
-
-            canceled_doctor_id = canceled_appt.get("doctor_id", "")
-            canceled_doctor_key = {v: k for k, v in DOCTOR_IDS.items()}.get(canceled_doctor_id, "")
-            canceled_doctor_label = {"julio": "Dr. Júlio", "bruna": "Dra. Bruna"}.get(canceled_doctor_key, "médico(a)")
-
-            doc_result = await client.from_("doctors").select("agenda_id").eq("doctor_id", canceled_doctor_id).single().execute()
-            calendar_id = doc_result.data.get("agenda_id") if doc_result.data else None
-
-            slot_available = False
-            if calendar_id:
-                # Check if the specific slot is still free
-                day_str = slot_start.strftime("%Y-%m-%d")
-                shift = "manhã" if slot_start.hour < 12 else ("tarde" if slot_start.hour < 18 else "noite")
-                available_slots = await get_available_slots(
-                    calendar_id, day_str, shift, slot_minutes, canceled_doctor_key
-                )
-                slot_available = any(s == slot_start for s, _ in available_slots)
-
-            if slot_available and calendar_id:
-                # Recreate calendar event and reactivate appointment
-                new_event_id = await create_event(
-                    calendar_id, slot_start, slot_minutes, patient_name,
-                    canceled_doctor_label.replace("Dr. ", "").replace("Dra. ", ""),
-                )
-                await client.from_("appointments").update({
-                    "status": "scheduled",
-                    "paid_at": datetime.now(TZ).isoformat(),
-                    "appointment_id": new_event_id,
-                    "updated_at": datetime.now(TZ).isoformat(),
-                }).eq("appointment_id", canceled_appt["appointment_id"]).execute()
-                appointment_dt = slot_start.strftime("%d/%m/%Y %H:%M")
-                confirmation_msg = (
-                    f"Comprovante recebido e registrado com sucesso! ✅\n"
-                    f"Sua consulta com *{canceled_doctor_label}* no dia *{appointment_dt}* "
-                    f"está reagendada e sua vaga está garantida! 🎉"
-                )
-            elif not slot_available:
-                # Slot no longer available — offer nearby alternatives
-                await client.from_("appointments").update({
-                    "paid_at": datetime.now(TZ).isoformat(),
-                    "updated_at": datetime.now(TZ).isoformat(),
-                }).eq("appointment_id", canceled_appt["appointment_id"]).execute()
-                confirmation_msg = (
-                    f"Comprovante recebido e registrado! ✅\n"
-                    f"Infelizmente o horário original ({appointment_dt} com {canceled_doctor_label}) "
-                    f"não está mais disponível. Vou verificar os próximos horários disponíveis para você."
-                )
-            else:
-                # Calendar unavailable — just mark as paid and alert clinic
-                await client.from_("appointments").update({
-                    "paid_at": datetime.now(TZ).isoformat(),
-                    "updated_at": datetime.now(TZ).isoformat(),
-                }).eq("appointment_id", canceled_appt["appointment_id"]).execute()
-        except Exception:
-            _logger.exception("REACTIVATE_CANCELED_APPT FAILED patient=%s", patient_name)
-    else:
-        # Normal flow: mark scheduled appointment as paid
-        try:
-            appt_id_result = await client.from_("appointments").select("appointment_id").eq(
-                "user_id", user_id
-            ).eq("status", "scheduled").order("start_time").limit(1).execute()
-            if appt_id_result.data:
-                await client.from_("appointments").update({
-                    "paid_at": datetime.now(TZ).isoformat(),
-                }).eq("appointment_id", appt_id_result.data[0]["appointment_id"]).execute()
+            await client.from_("appointments").update({
+                "paid_at": datetime.now(TZ).isoformat(),
+            }).eq("appointment_id", appt_id_to_pay).execute()
         except Exception:
             _logger.exception("PAID_AT UPDATE FAILED patient=%s", patient_name)
 
