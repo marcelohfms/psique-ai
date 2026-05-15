@@ -655,8 +655,9 @@ async def _handle_chatwoot_payload(payload: dict) -> None:
             payload.get("sender", {}).get("type"),
             payload.get("conversation", {}).get("labels"),
         )
-        if payload.get("private") and payload.get("message_type") in (1, "outgoing"):
-            await _handle_attendant_note(payload)
+        if payload.get("message_type") in (1, "outgoing"):
+            if payload.get("private"):
+                await _handle_attendant_note(payload)
             return
 
         # ── Label change: eva-inativa added/removed ───────────────────────────
