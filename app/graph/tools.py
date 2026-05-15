@@ -821,9 +821,14 @@ async def register_payment(
 
     # ── Mark appointment as paid ───────────────────────────────────────────────
     try:
-        await client.from_("appointments").update({
-            "paid_at": datetime.now(TZ).isoformat(),
-        }).eq("user_id", user_id).eq("status", "scheduled").order("start_time").limit(1).execute()
+        appt_id_result = await client.from_("appointments").select("appointment_id").eq(
+            "user_id", user_id
+        ).eq("status", "scheduled").order("start_time").limit(1).execute()
+        if appt_id_result.data:
+            appt_id_to_pay = appt_id_result.data[0]["appointment_id"]
+            await client.from_("appointments").update({
+                "paid_at": datetime.now(TZ).isoformat(),
+            }).eq("appointment_id", appt_id_to_pay).execute()
     except Exception:
         _logger.exception("PAID_AT UPDATE FAILED patient=%s", patient_name)
 
