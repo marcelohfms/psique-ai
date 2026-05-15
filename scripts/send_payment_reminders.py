@@ -136,7 +136,7 @@ async def main():
     # ── Step 2: cancellation (reminder sent >= 2h ago, still unpaid) ──────────
     cancel_result = await (
         client.from_("appointments")
-        .select("appointment_id, start_time, doctor_id, created_at, payment_reminder_sent_at, users(number, patient_name, name, email)")
+        .select("appointment_id, start_time, doctor_id, created_at, payment_reminder_sent_at, users(number, patient_name, name)")
         .eq("status", "scheduled")
         .is_("paid_at", "null")
         .not_.is_("payment_reminder_sent_at", "null")
@@ -213,7 +213,6 @@ async def main():
             patient_first = patient_name_full.split()[0] if patient_name_full and patient_name_full != contact_name else None
             doctor_label = DOCTOR_LABELS.get(appt.get("doctor_id", ""), "médico(a)")
             doctor_id = appt.get("doctor_id", "")
-            patient_email = user.get("email", "")
 
             if not phone:
                 continue
@@ -234,13 +233,22 @@ async def main():
                 if graph:
                     await save_to_checkpoint(graph, phone, message, appt)
 
-                if patient_email:
-                    try:
-                        from app.email_sender import send_cancellation_email
-                        await send_cancellation_email(contact_name, patient_name_full or contact_name, doctor_label, date_str, patient_email)
-                        print(f"  [payment_cancel] Cancellation email sent to {patient_email}")
-                    except Exception as e:
-                        print(f"  Failed to send cancellation email to {patient_email}: {e}")
+                try:
+                    from app.email_sender import send_clinic_notification_email
+                    subject = f"Consulta cancelada por falta de pagamento — {patient_name_full or contact_name}"
+                    body = (
+                        f"A consulta abaixo foi cancelada automaticamente por falta de pagamento da taxa de reserva.\n\n"
+                        f"Paciente: {patient_name_full or contact_name}\n"
+                        f"Responsável: {contact_name}\n"
+                        f"Médico(a): {doctor_label}\n"
+                        f"Data/hora: {date_str}\n"
+                        f"WhatsApp: {phone}\n\n"
+                        f"A vaga foi liberada no Google Calendar."
+                    )
+                    await send_clinic_notification_email(subject, body)
+                    print(f"  [payment_cancel] Clinic notification email sent.")
+                except Exception as e:
+                    print(f"  Failed to send clinic notification email: {e}")
 
                 print(f"  [payment_cancel] Canceled and notified {phone} — {patient_name_full}")
             except Exception as e:
