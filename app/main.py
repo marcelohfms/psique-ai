@@ -408,6 +408,8 @@ def _extract_chatwoot_message(payload: dict) -> tuple[str, str | None, int] | No
     """
     if payload.get("message_type") not in (0, "incoming"):
         return None
+    if payload.get("sender", {}).get("type") in ("agent_bot", "bot"):
+        return None
     content = (payload.get("content") or "").strip() or None
     attachments = payload.get("attachments", [])
     if not content and not attachments:
