@@ -32,21 +32,23 @@ DOCTOR_KEYS = {
 }
 
 
-def payment_reminder_message(first_name: str, doctor_label: str, date_str: str) -> str:
+def payment_reminder_message(contact_first_name: str, doctor_label: str, date_str: str, patient_first_name: str | None = None) -> str:
+    consulta = f"a consulta de *{patient_first_name}*" if patient_first_name else "sua consulta"
     return (
-        f"Olá, {first_name}! 😊 Só passando para lembrar que sua consulta com "
+        f"Olá, {contact_first_name}! 😊 Só passando para lembrar que {consulta} com "
         f"*{doctor_label}* no dia *{date_str}* ainda aguarda o pagamento da taxa "
         f"de reserva de R$ 100,00.\n\n"
         f"💳 PIX: {os.environ.get('PIX_KEY', '42006684000178')}\n\n"
-        f"Assim que o pagamento for realizado, sua vaga estará garantida! "
+        f"Assim que o pagamento for realizado, a vaga estará garantida! "
         f"Precisa de alguma ajuda ou tem alguma dúvida sobre o pagamento? É só me chamar aqui. 🙏"
     )
 
 
-def payment_cancel_message(first_name: str, doctor_label: str, date_str: str) -> str:
+def payment_cancel_message(contact_first_name: str, doctor_label: str, date_str: str, patient_first_name: str | None = None) -> str:
+    consulta = f"a consulta de *{patient_first_name}*" if patient_first_name else "sua consulta"
     return (
-        f"Olá, {first_name}. Infelizmente, como não recebemos o pagamento da taxa "
-        f"de reserva da sua consulta com *{doctor_label}* no dia *{date_str}* dentro "
+        f"Olá, {contact_first_name}. Infelizmente, como não recebemos o pagamento da taxa "
+        f"de reserva de {consulta} com *{doctor_label}* no dia *{date_str}* dentro "
         f"do prazo de 4 horas, precisamos liberar a vaga. 😔\n\n"
         f"Caso queira reagendar, é só nos chamar aqui! "
         f"Ficaremos felizes em atendê-lo(a). 💙"
@@ -175,14 +177,17 @@ async def main():
 
             user = appt.get("users") or {}
             phone = user.get("number", "")
-            patient_name = user.get("patient_name") or user.get("name") or "paciente"
-            first_name = patient_name.split()[0]
+            contact_name = user.get("name") or user.get("patient_name") or "paciente"
+            patient_name = user.get("patient_name") or ""
+            contact_first = contact_name.split()[0]
+            # Only pass patient name separately when contact and patient are different people
+            patient_first = patient_name.split()[0] if patient_name and patient_name != contact_name else None
             doctor_label = DOCTOR_LABELS.get(appt.get("doctor_id", ""), "médico(a)")
 
             if not phone:
                 continue
 
-            message = payment_reminder_message(first_name, doctor_label, date_str)
+            message = payment_reminder_message(contact_first, doctor_label, date_str, patient_first)
 
             try:
                 await send_whatsapp(phone, message)
@@ -203,15 +208,17 @@ async def main():
 
             user = appt.get("users") or {}
             phone = user.get("number", "")
-            patient_name = user.get("patient_name") or user.get("name") or "paciente"
-            first_name = patient_name.split()[0]
+            contact_name = user.get("name") or user.get("patient_name") or "paciente"
+            patient_name = user.get("patient_name") or ""
+            contact_first = contact_name.split()[0]
+            patient_first = patient_name.split()[0] if patient_name and patient_name != contact_name else None
             doctor_label = DOCTOR_LABELS.get(appt.get("doctor_id", ""), "médico(a)")
             doctor_id = appt.get("doctor_id", "")
 
             if not phone:
                 continue
 
-            message = payment_cancel_message(first_name, doctor_label, date_str)
+            message = payment_cancel_message(contact_first, doctor_label, date_str, patient_first)
 
             try:
                 # Cancel Google Calendar event
