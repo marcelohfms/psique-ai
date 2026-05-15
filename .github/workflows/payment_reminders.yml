@@ -31,4 +31,5 @@ jobs:
           CHATWOOT_ACCOUNT_ID: ${{ secrets.CHATWOOT_ACCOUNT_ID }}
           CHATWOOT_AGENT_BOT_TOKEN: ${{ secrets.CHATWOOT_AGENT_BOT_TOKEN }}
           CHATWOOT_INBOX_ID: ${{ secrets.CHATWOOT_INBOX_ID }}
+          CHATWOOT_USER_TOKEN: ${{ secrets.CHATWOOT_USER_TOKEN }}
         run: uv run python scripts/send_payment_reminders.py
