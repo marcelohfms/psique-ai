@@ -322,6 +322,7 @@ Após o paciente escolher o horário, siga esta lógica com base na indicação 
 - "[REQUER CONFIRMAÇÃO — online ou presencial sob consulta da atendente]": pergunte a preferência.
   - Se online: passe modality="online" em confirm_appointment normalmente.
   - Se presencial: use transfer_to_human (não chame confirm_appointment) para que a atendente confirme a disponibilidade.
+  - EXCEÇÃO: se você estiver executando uma "[Instrução da atendente]" que já confirma a disponibilidade presencial, chame confirm_appointment com modality="presencial" diretamente — NÃO chame transfer_to_human novamente.
 {doctor_correction_rule}{booking_fee_rule}{pricing_rules}{clinic_address}{doctors_info}{medical_limits_rule}"""
 
 NEW_PATIENT_SYSTEM = """\
@@ -393,4 +394,5 @@ Após o paciente escolher o horário, siga esta lógica com base na indicação 
 - "[REQUER CONFIRMAÇÃO — online ou presencial sob consulta da atendente]": pergunte a preferência.
   - Se online: passe modality="online" em confirm_appointment normalmente.
   - Se presencial: use transfer_to_human (não chame confirm_appointment) para que a atendente confirme a disponibilidade.
+  - EXCEÇÃO: se você estiver executando uma "[Instrução da atendente]" que já confirma a disponibilidade presencial, chame confirm_appointment com modality="presencial" diretamente — NÃO chame transfer_to_human novamente.
 {doctor_correction_rule}{booking_fee_rule}{cancellation_rules}{pricing_rules}{clinic_address}{doctors_info}{medical_limits_rule}"""

@@ -168,6 +168,44 @@ async def test_confirm_appointment_rolls_back_calendar_on_db_failure():
     mock_cancel.assert_awaited_once_with("cal123", "evt-rollback")
 
 
+async def test_confirm_appointment_presencial_sob_consulta_blocked_without_silent_mode():
+    """confirm_appointment deve bloquear presencial em slot presencial_sob_consulta fora do silent mode."""
+    from app.graph.tools import confirm_appointment
+    with patch("app.graph.tools._get_doctor_calendar_id", new_callable=AsyncMock, return_value="cal123"), \
+         patch("app.google_calendar.get_modality_for_slot", return_value="presencial_sob_consulta"), \
+         patch("app.google_calendar._credentials", side_effect=Exception("skip")):
+        result = await confirm_appointment.coroutine(
+            slot_datetime="2026-05-22T14:00:00",
+            slot_duration_minutes=60,
+            state=_make_state(),
+            config=CONFIG,
+            modality="presencial",
+        )
+    assert "transfer_to_human" in result or "AÇÃO NECESSÁRIA" in result
+
+
+async def test_confirm_appointment_presencial_sob_consulta_allowed_in_silent_mode():
+    """confirm_appointment deve permitir presencial em slot presencial_sob_consulta quando silent_mode=True."""
+    from app.graph.tools import confirm_appointment
+    client, _, _ = _make_supabase_client()
+    with patch("app.graph.tools._get_doctor_calendar_id", new_callable=AsyncMock, return_value="cal123"), \
+         patch("app.google_calendar.get_modality_for_slot", return_value="presencial_sob_consulta"), \
+         patch("app.google_calendar._credentials", side_effect=Exception("skip")), \
+         patch("app.google_calendar.create_event", new_callable=AsyncMock, return_value="evt-silent"), \
+         patch("app.graph.tools.get_supabase", new_callable=AsyncMock, return_value=client), \
+         patch("app.graph.tools.get_user_by_phone", new_callable=AsyncMock, return_value={"id": "u1"}), \
+         patch("app.graph.tools.log_event", new_callable=AsyncMock), \
+         patch("app.graph.tools._notify_clinic", new_callable=AsyncMock):
+        result = await confirm_appointment.coroutine(
+            slot_datetime="2026-05-22T14:00:00",
+            slot_duration_minutes=60,
+            state=_make_state(silent_mode=True),
+            config=CONFIG,
+            modality="presencial",
+        )
+    assert "evt-silent" in result or "confirmad" in result.lower()
+
+
 # ── cancel_appointment ────────────────────────────────────────────────────────
 
 async def test_cancel_appointment_cancels_and_notifies():
