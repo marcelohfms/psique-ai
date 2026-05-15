@@ -136,7 +136,7 @@ async def main():
     # ── Step 2: cancellation (reminder sent >= 2h ago, still unpaid) ──────────
     cancel_result = await (
         client.from_("appointments")
-        .select("appointment_id, start_time, doctor_id, created_at, payment_reminder_sent_at, users(number, patient_name, name)")
+        .select("appointment_id, start_time, doctor_id, created_at, payment_reminder_sent_at, users(number, patient_name, name, email)")
         .eq("status", "scheduled")
         .is_("paid_at", "null")
         .not_.is_("payment_reminder_sent_at", "null")
@@ -208,11 +208,12 @@ async def main():
             user = appt.get("users") or {}
             phone = user.get("number", "")
             contact_name = user.get("name") or user.get("patient_name") or "paciente"
-            patient_name = user.get("patient_name") or ""
+            patient_name_full = user.get("patient_name") or ""
             contact_first = contact_name.split()[0]
-            patient_first = patient_name.split()[0] if patient_name and patient_name != contact_name else None
+            patient_first = patient_name_full.split()[0] if patient_name_full and patient_name_full != contact_name else None
             doctor_label = DOCTOR_LABELS.get(appt.get("doctor_id", ""), "médico(a)")
             doctor_id = appt.get("doctor_id", "")
+            patient_email = user.get("email", "")
 
             if not phone:
                 continue
@@ -232,7 +233,16 @@ async def main():
                 await send_whatsapp(phone, message)
                 if graph:
                     await save_to_checkpoint(graph, phone, message, appt)
-                print(f"  [payment_cancel] Canceled and notified {phone} — {patient_name}")
+
+                if patient_email:
+                    try:
+                        from app.email_sender import send_cancellation_email
+                        await send_cancellation_email(contact_name, patient_name_full or contact_name, doctor_label, date_str, patient_email)
+                        print(f"  [payment_cancel] Cancellation email sent to {patient_email}")
+                    except Exception as e:
+                        print(f"  Failed to send cancellation email to {patient_email}: {e}")
+
+                print(f"  [payment_cancel] Canceled and notified {phone} — {patient_name_full}")
             except Exception as e:
                 print(f"  Failed to cancel for {phone}: {e}")
 
