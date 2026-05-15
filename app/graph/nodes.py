@@ -490,15 +490,10 @@ async def patient_agent_node(state: ConversationState, config: RunnableConfig) -
     # Only send to WhatsApp when the LLM produces a final text (no tool calls)
     if not response.tool_calls and response.content:
         if state.get("silent_mode"):
-            # Send to patient normally and post a brief note so the attendant knows what was sent
+            # Send to patient normally and reactivate bot so conversation can continue
             await send_text(state["phone"], response.content)
             await save_message(state["phone"], "assistant", response.content)
-            # Reactivate bot so patient can continue the conversation
             await upsert_user(state["phone"], {"active": True, "deactivated_at": None})
-            from app.chatwoot import get_conversation_id, add_private_note
-            conv_id = get_conversation_id(state["phone"])
-            if conv_id:
-                await add_private_note(conv_id, f"[Eva] Mensagem enviada ao paciente ✅\n{response.content[:300]}")
         else:
             await send_text(state["phone"], response.content)
             await save_message(state["phone"], "assistant", response.content)
