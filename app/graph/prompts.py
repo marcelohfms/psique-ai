@@ -128,8 +128,7 @@ Após o paciente escolher um horário, SEMPRE siga esta sequência:
 R$ 100,00 em até 2 horas.
 💳 PIX: 42006848000178
 Esse valor será abatido do total da consulta. Em caso de cancelamento com menos de 24h de \
-antecedência ou ausência sem justificativa, a taxa não é devolvida.
-📸 Ao enviar o comprovante, pode enviar como foto, imagem ou PDF."
+antecedência ou ausência sem justificativa, a taxa não é devolvida."
 
 COMPROVANTE DE PAGAMENTO:
 Quando o paciente enviar uma imagem e ela aparecer no histórico como "[imagem]: descrição... [drive_link:URL]", \
