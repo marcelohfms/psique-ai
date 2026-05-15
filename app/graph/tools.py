@@ -353,11 +353,15 @@ async def confirm_appointment(
     if slot_constraint == "online":
         effective_modality = "online"
     elif slot_constraint == "presencial_sob_consulta" and modality == "presencial":
-        return (
-            "AÇÃO NECESSÁRIA: Este horário (quinta à tarde com o Dr. Júlio) pode ser presencial, "
-            "mas a disponibilidade precisa ser confirmada pela atendente. "
-            "Use transfer_to_human para que ela confirme antes de prosseguir."
-        )
+        if state.get("silent_mode"):
+            # Running under an attendant instruction — attendant has already confirmed availability
+            effective_modality = "presencial"
+        else:
+            return (
+                "AÇÃO NECESSÁRIA: Este horário (quinta à tarde com o Dr. Júlio) pode ser presencial, "
+                "mas a disponibilidade precisa ser confirmada pela atendente. "
+                "Use transfer_to_human para que ela confirme antes de prosseguir."
+            )
     else:
         effective_modality = modality if modality in ("online", "presencial") else ""
 
