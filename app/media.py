@@ -128,6 +128,17 @@ async def describe_image_bytes(image_bytes: bytes, phone: str = "") -> str:
         return f"[imagem]: {description}"
 
 
+async def describe_pdf_bytes(pdf_bytes: bytes, phone: str = "") -> str:
+    """Convert first page of PDF to image and describe with GPT-4o vision."""
+    import fitz  # pymupdf
+    doc = fitz.open(stream=pdf_bytes, filetype="pdf")
+    page = doc[0]
+    pix = page.get_pixmap(dpi=150)
+    image_bytes = pix.tobytes("jpeg")
+    doc.close()
+    return await describe_image_bytes(image_bytes, phone)
+
+
 async def describe_image(media_id: str, phone: str = "") -> str:
     """Download image from Meta, classify, upload to Drive, and describe with GPT-4o vision."""
     image_bytes = await download_media(media_id)
