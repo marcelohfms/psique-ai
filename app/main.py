@@ -313,7 +313,7 @@ async def process_message(phone: str, text: str) -> None:
 
     snapshot = await graph_module.chatbot.aget_state(config)
     if snapshot.values:
-        state_update = {"messages": [HumanMessage(content=text)]}
+        state_update = {"messages": [HumanMessage(content=text)], "silent_mode": False}
     else:
         await log_event("conversation_started", phone)
         _REQUIRED = ("name", "patient_name", "age", "is_patient", "birth_date", "email")
