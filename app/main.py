@@ -634,7 +634,7 @@ async def _handle_attendant_note(payload: dict) -> None:
     logger.info("ATTENDANT_NOTE phone=%s conv=%s content=%.120s", phone, conv_id, content)
 
     async def _run_silent(p: str, text: str) -> None:
-        config = {"configurable": {"thread_id": p}}
+        config = {"configurable": {"thread_id": p, "phone": p}}
         state_update = {"messages": [HumanMessage(content=text)], "silent_mode": True}
         await graph_module.chatbot.ainvoke(state_update, config=config)
 
