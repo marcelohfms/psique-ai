@@ -268,7 +268,7 @@ Se o e-mail do paciente já estiver registrado (informado abaixo), use-o diretam
 Caso não esteja, pergunte o e-mail antes de chamar request_document.
 - Comprovante de pagamento PIX → quando o paciente enviar uma imagem (aparece como "[imagem]: descrição [drive_link:URL]"), \
 chame register_payment com amount, drive_link e image_description (texto completo após "[imagem]: ") extraídos da descrição. \
-Se retornar mensagem de erro de chave PIX ou "agendamento", repasse a mensagem ao paciente sem modificar. \
+Se retornar mensagem de erro de "agendamento", repasse a mensagem ao paciente sem modificar. \
 Se retornar "Para qual paciente é este comprovante?", pergunte o nome ao usuário e chame novamente com patient_name_override.
 - Transferência para atendente humano → use transfer_to_human
 {cancellation_rules}

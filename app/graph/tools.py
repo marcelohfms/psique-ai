@@ -737,7 +737,7 @@ async def register_payment(
     "[imagem]: descrição... [drive_link:URL]".
     amount: valor pago extraído da descrição (ex: "100,00"). Use "?" se não identificado.
     drive_link: URL extraída da tag [drive_link:URL] na descrição. Passe "" se não houver.
-    image_description: texto completo da descrição da imagem (para validação da chave PIX).
+    image_description: texto completo da descrição da imagem.
     patient_name_override: use quando este número não tem agendamento e o remetente informou
       o nome do paciente — busca pelo nome no cadastro e envia confirmação ao número original do paciente.
     """
@@ -745,23 +745,6 @@ async def register_payment(
     _logger = _log.getLogger(__name__)
 
     from app.google_sheets import append_payment_receipt
-
-    # ── Validação da chave PIX ────────────────────────────────────────────────
-    expected_pix_key = os.getenv("PIX_KEY", "").strip()
-    description_lower = image_description.lower()
-
-    if "agendamento" in description_lower:
-        return (
-            "❌ Este comprovante parece ser de um agendamento/serviço e não de uma taxa de reserva. "
-            "Por favor, envie o comprovante do PIX de R$ 100,00 para a chave da clínica."
-        )
-
-    if expected_pix_key and image_description:
-        if expected_pix_key.replace(".", "").replace("-", "").replace("/", "") not in description_lower.replace(".", "").replace("-", "").replace("/", ""):
-            return (
-                f"❌ A chave PIX do comprovante não corresponde à chave da clínica ({expected_pix_key}). "
-                "Por favor, verifique e envie o comprovante correto."
-            )
 
     phone = config["configurable"]["phone"]
     client = await get_supabase()
