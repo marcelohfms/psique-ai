@@ -137,6 +137,16 @@ async def extract_message(payload: dict) -> tuple[str, str] | None:
     if msg_type == "document":
         mime = msg.get("document", {}).get("mime_type", "").lower()
         if "pdf" in mime:
+            media_id = msg.get("document", {}).get("id", "")
+            if media_id:
+                try:
+                    from app.whatsapp import download_media
+                    from app.media import describe_pdf_bytes
+                    pdf_bytes = await download_media(media_id)
+                    text = await describe_pdf_bytes(pdf_bytes, phone)
+                    return phone, text
+                except Exception:
+                    logger.exception("Failed to process PDF media_id=%s", media_id)
             return phone, "[pdf-recebido]"
         return None  # other document types: ignore
 
@@ -432,7 +442,7 @@ def _extract_chatwoot_message(payload: dict) -> tuple[str, str | None, int] | No
 async def _process_chatwoot_attachments(attachments: list) -> str | None:
     """Download and process the first recognisable attachment (audio or image)."""
     import httpx
-    from app.media import transcribe_audio_bytes, describe_image_bytes
+    from app.media import transcribe_audio_bytes, describe_image_bytes, describe_pdf_bytes
 
     for att in attachments:
         file_type = (att.get("file_type") or "").lower()
@@ -449,7 +459,9 @@ async def _process_chatwoot_attachments(attachments: list) -> str | None:
             if file_type == "image":
                 return await describe_image_bytes(media_bytes)
             if file_type == "file":
-                # Non-image file (PDF, etc.) — ask patient to resend as image
+                content_type = (att.get("content_type") or "").lower()
+                if "pdf" in content_type or data_url.lower().endswith(".pdf"):
+                    return await describe_pdf_bytes(media_bytes)
                 return "[pdf-recebido]"
         except Exception:
             logger.exception("Failed to process Chatwoot attachment type=%s url=%.80s", file_type, data_url)
