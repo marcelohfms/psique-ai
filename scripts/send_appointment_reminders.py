@@ -183,6 +183,14 @@ async def main():
                 message = _plain_message(template_name, first_name, doctor_label, time_str)
                 if graph:
                     await save_to_checkpoint(graph, phone, message, appt)
+                # Mirror message to Chatwoot so agents can see it
+                try:
+                    from app.chatwoot import find_or_create_conversation, send_message
+                    phone_wpp = phone if "@s.whatsapp.net" in phone else f"{phone}@s.whatsapp.net"
+                    conv_id = await find_or_create_conversation(phone_wpp)
+                    await send_message(conv_id, message)
+                except Exception as cw_err:
+                    print(f"  Chatwoot mirror failed for {phone}: {cw_err}")
                 print(f"  [{template_name}] Sent to {phone} — {patient_name} @ {time_str}")
             except Exception as e:
                 print(f"  Failed to send to {phone}: {e}")
