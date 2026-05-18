@@ -324,6 +324,34 @@ async def process_message(phone: str, text: str) -> None:
     snapshot = await graph_module.chatbot.aget_state(config)
     if snapshot.values:
         state_update = {"messages": [HumanMessage(content=text)], "silent_mode": False}
+        # If the conversation is still in collect_info, re-sync any fields that
+        # were filled in the DB since the conversation started (e.g. by an attendant).
+        if snapshot.values.get("stage") == "collect_info" and existing:
+            db_sync: dict = {}
+            _syncable = {
+                "name":       "user_name",
+                "patient_name": "patient_name",
+                "age":        "patient_age",
+                "birth_date": "birth_date",
+                "email":      "patient_email",
+                "doctor_id":  None,   # handled separately below
+                "is_patient": "is_patient",
+                "guardian_name": "guardian_name",
+                "guardian_cpf":  "guardian_cpf",
+                "guardian_relationship": "guardian_relationship",
+                "patient_cpf": "patient_cpf",
+            }
+            for db_field, state_field in _syncable.items():
+                if state_field is None:
+                    continue
+                db_val = existing.get(db_field)
+                if db_val is not None and snapshot.values.get(state_field) is None:
+                    db_sync[state_field] = db_val
+            # doctor_id → preferred_doctor key
+            if existing.get("doctor_id") and snapshot.values.get("preferred_doctor") is None:
+                db_sync["preferred_doctor"] = DOCTOR_NAMES.get(existing["doctor_id"])
+            if db_sync:
+                state_update.update(db_sync)
     else:
         await log_event("conversation_started", phone)
         # Only name + is_patient are required to route to patient_agent.
