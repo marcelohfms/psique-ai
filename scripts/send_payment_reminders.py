@@ -121,11 +121,13 @@ async def main():
     two_hours_ago = (now - timedelta(hours=2)).isoformat()
 
     # ── Step 1: 1st reminder (not yet reminded, booked >= 2h ago) ─────────────
+    # Check booking_fee_paid_at — paying the R$100 reserve fee is what holds the slot.
+    # paid_at is only set on full consultation payment (after the appointment).
     reminder_result = await (
         client.from_("appointments")
         .select("appointment_id, start_time, doctor_id, created_at, users(number, patient_name, name)")
         .eq("status", "scheduled")
-        .is_("paid_at", "null")
+        .is_("booking_fee_paid_at", "null")
         .is_("payment_reminder_sent_at", "null")
         .lte("created_at", two_hours_ago)
         .execute()
@@ -138,7 +140,7 @@ async def main():
         client.from_("appointments")
         .select("appointment_id, start_time, doctor_id, created_at, payment_reminder_sent_at, users(number, patient_name, name)")
         .eq("status", "scheduled")
-        .is_("paid_at", "null")
+        .is_("booking_fee_paid_at", "null")
         .not_.is_("payment_reminder_sent_at", "null")
         .lte("payment_reminder_sent_at", two_hours_ago)
         .execute()
