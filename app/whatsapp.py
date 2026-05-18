@@ -11,7 +11,7 @@ Environment variables required:
 import os
 import httpx
 
-_GRAPH_URL = "https://graph.facebook.com/v19.0"
+_GRAPH_URL = "https://graph.facebook.com/v22.0"
 
 
 def _phone_number_id() -> str:
@@ -52,7 +52,12 @@ async def send_template(phone: str, template_name: str, language: str, component
             json=payload,
             headers=_headers(),
         )
-        response.raise_for_status()
+        if not response.is_success:
+            raise httpx.HTTPStatusError(
+                f"{response.status_code} — {response.text}",
+                request=response.request,
+                response=response,
+            )
 
 
 async def download_media(media_id: str) -> bytes:
