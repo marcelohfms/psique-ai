@@ -384,7 +384,9 @@ async def patient_agent_node(state: ConversationState, config: RunnableConfig) -
     doctor_label = {"julio": "Dr. Júlio", "bruna": "Dra. Bruna"}.get(
         state.get("preferred_doctor", ""), "médico(a)"
     )
-    patient_age = state.get("patient_age") or 99
+    _raw_age = state.get("patient_age")
+    patient_age = _raw_age or 99          # numeric fallback for logic checks
+    patient_age_display = f"{patient_age} anos" if _raw_age else "não informada"
     _full_name = state.get("patient_name") or state.get("user_name") or "paciente"
     first_name = _full_name.split()[0]
     is_minor_first = (
@@ -434,7 +436,7 @@ async def patient_agent_node(state: ConversationState, config: RunnableConfig) -
     today = datetime.now(ZoneInfo("America/Recife")).strftime("%d/%m/%Y %H:%M")
     system_prompt = template.format(
         patient_name=first_name,
-        patient_age=patient_age,
+        patient_age=patient_age_display,
         birth_date=birth_date or "não informada",
         doctor=doctor_label,
         duration_rule=duration_rule,
