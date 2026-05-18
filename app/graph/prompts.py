@@ -174,7 +174,7 @@ POLÍTICA DE PREÇOS:
     • Adultos (e consultas de retorno em geral): R$ 600,00
     • Primeira consulta infantil (paciente < 18 anos): R$ 750,00 (duração 2h)
     • Demais consultas infantis (retorno): R$ 650,00
-- Desconto de R$ 50,00 para pagamento à vista ou PIX (válido para qualquer consulta/médico).
+- Desconto de R$ 50,00 para pagamento em dinheiro ou PIX (válido para qualquer consulta/médico).
 
 AO RESPONDER SOBRE PREÇOS — siga este fluxo:
 1. Se ainda não souber o médico preferido: apresente os dois médicos brevemente e pergunte \
@@ -189,10 +189,10 @@ NÃO peça data de nascimento.
 consulta ou retorno antes de informar o valor. Se for primeira consulta, informe o valor \
 da primeira consulta (R$ 750,00) E já mencione o valor das demais consultas (R$ 650,00).
 
-Sempre que informar um preço, mostre o valor cheio E o valor com desconto PIX/à vista:
-  Exemplo: "A consulta custa R$ 600,00. No pagamento à vista ou PIX, fica por R$ 550,00."
+Sempre que informar um preço, mostre o valor cheio E o valor com desconto em dinheiro/PIX:
+  Exemplo: "A consulta custa R$ 600,00. No pagamento em dinheiro ou PIX, fica por R$ 550,00."
 ⚠️ AVISO OBRIGATÓRIO: Sempre que informar qualquer valor de consulta, acrescente o aviso \
-de reajuste em maio de 2026 com os novos valores correspondentes ao perfil do paciente:
+de reajuste a partir de junho de 2026 com os novos valores correspondentes ao perfil do paciente:
   • Dra. Bruna → R$ 700,00 (hoje R$ 600,00)
   • Dr. Júlio, adulto → R$ 700,00 (hoje R$ 600,00)
   • Dr. Júlio, 1ª consulta infantil (< 18 anos) → R$ 850,00 (hoje R$ 750,00)
@@ -201,13 +201,13 @@ de reajuste em maio de 2026 com os novos valores correspondentes ao perfil do pa
 
 _PRICING_BODY_POS = """\
 
-POLÍTICA DE PREÇOS (valores reajustados em maio de 2026):
+POLÍTICA DE PREÇOS (valores reajustados a partir de junho de 2026):
 - Dra. Bruna: R$ 700,00 para todos (adultos e adolescentes).
 - Dr. Júlio:
     • Adultos (e consultas de retorno em geral): R$ 700,00
     • Primeira consulta infantil (paciente < 18 anos): R$ 850,00 (duração 2h)
     • Demais consultas infantis (retorno): R$ 750,00
-- Desconto de R$ 50,00 para pagamento à vista ou PIX (válido para qualquer consulta/médico).
+- Desconto de R$ 50,00 para pagamento em dinheiro ou PIX (válido para qualquer consulta/médico).
 
 AO RESPONDER SOBRE PREÇOS — siga este fluxo:
 1. Se ainda não souber o médico preferido: apresente os dois médicos brevemente e pergunte \
@@ -219,13 +219,13 @@ se tem preferência antes de informar qualquer valor.
 consulta ou retorno antes de informar o valor. Se for primeira consulta, informe o valor \
 da primeira consulta (R$ 850,00) E já mencione o valor das demais consultas (R$ 750,00).
 
-Sempre que informar um preço, mostre o valor cheio E o valor com desconto PIX/à vista:
-  Exemplo: "A consulta custa R$ 700,00. No pagamento à vista ou PIX, fica por R$ 650,00."
+Sempre que informar um preço, mostre o valor cheio E o valor com desconto em dinheiro/PIX:
+  Exemplo: "A consulta custa R$ 700,00. No pagamento em dinheiro ou PIX, fica por R$ 650,00."
 """
 
 _PRICING_REMINDER = """\
 ℹ️ LEMBRETE OBRIGATÓRIO: Sempre que informar qualquer valor de consulta, acrescente: \
-"Informamos que os valores das consultas foram reajustados em maio de 2026."
+"Informamos que os valores das consultas foram reajustados a partir de junho de 2026."
 """
 
 
