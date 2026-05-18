@@ -177,6 +177,27 @@ async def test_bruna_wednesday_returns_slots(freeze_calendar_now):
     assert all(dt.weekday() == 2 for dt, _ in slots)  # Wednesday
 
 
+async def test_bruna_monday_morning_no_mid_morning_slots(freeze_calendar_now):
+    """Dra. Bruna on Monday works 07:30-08:30 and 16:30-18:30 only.
+    Requesting 'manha' must NOT return 9h/10h/11h slots."""
+    from app.google_calendar import get_available_slots
+
+    service = _make_service([])  # empty calendar
+    with patch("app.google_calendar._credentials", return_value=MagicMock()), \
+         patch("app.google_calendar.build", return_value=service):
+        slots = await get_available_slots(
+            calendar_id="cal-test",
+            preferred_day="2026-03-23",  # Monday
+            preferred_shift="manha",
+            slot_minutes=60,
+            doctor_key="bruna",
+        )
+    hours = [dt.hour for dt, _ in slots]
+    # 9, 10, 11 must never appear — Bruna's Monday morning window is 07:30-08:30
+    for bad_hour in (9, 10, 11, 12, 13, 14, 15):
+        assert bad_hour not in hours, f"Unexpected slot at {bad_hour}h for Bruna on Monday"
+
+
 async def test_timezone_america_recife(freeze_calendar_now):
     """Returned slots must carry America/Recife tzinfo."""
     from app.google_calendar import get_available_slots

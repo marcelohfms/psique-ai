@@ -311,6 +311,25 @@ async def get_available_slots(
                 slots.append((current, modality))
             current += slot_delta
 
+    # Safety net: discard any slot that falls outside the doctor's defined schedule
+    # windows (catches edge-cases where doctor_key was missing or mismatched).
+    if doctor_key and doctor_key in DOCTOR_SCHEDULES:
+        validated: list[tuple[datetime, str]] = []
+        exc_map = SCHEDULE_EXCEPTIONS.get(doctor_key, {})
+        for slot_dt, mod in slots:
+            slot_date_key = slot_dt.date().isoformat()
+            if slot_date_key in exc_map:
+                day_wins = exc_map[slot_date_key]
+            else:
+                day_wins = DOCTOR_SCHEDULES[doctor_key].get(slot_dt.weekday(), [])
+            slot_min = slot_dt.hour * 60 + slot_dt.minute
+            if any(
+                (sh * 60 + sm) <= slot_min < (eh * 60 + em)
+                for sh, sm, eh, em, _ in day_wins
+            ):
+                validated.append((slot_dt, mod))
+        slots = validated
+
     slots.sort(key=lambda x: x[0])
     return slots
 
