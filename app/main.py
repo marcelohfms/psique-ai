@@ -353,6 +353,7 @@ async def process_message(phone: str, text: str) -> None:
             "consultation_reason": existing.get("consultation_reason") if existing else None,
             "referral_professional": existing.get("referral_professional") if existing else None,
             "modality_restriction": existing.get("modality_restriction") if existing else None,
+            "age_exception": existing.get("age_exception") if existing else None,
         }
 
     config["metadata"] = {

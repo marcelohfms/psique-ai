@@ -56,3 +56,6 @@ class ConversationState(TypedDict):
 
     # Per-patient modality restriction set by the doctor ("online", "presencial", or None = no restriction).
     modality_restriction: str | None
+
+    # When True, patient is an approved exception to Dr. Júlio's 65-year age limit.
+    age_exception: bool | None

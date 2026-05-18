@@ -109,6 +109,7 @@ async def collect_info_node(state: ConversationState, config: RunnableConfig) ->
                     "guardian_relationship": selected.get("guardian_relationship"),
                     "patient_cpf": selected.get("patient_cpf"),
                     "modality_restriction": selected.get("modality_restriction"),
+                    "age_exception": selected.get("age_exception"),
                     "stage": "patient_agent",
                     "messages": [],
                 }
@@ -464,6 +465,13 @@ async def patient_agent_node(state: ConversationState, config: RunnableConfig) -
         system_prompt += (
             f"\n\nRESTRIÇÃO DE MODALIDADE: Este paciente só pode ser atendido em modo {label}. "
             f"NÃO pergunte a preferência de modalidade — use sempre {label} ao chamar confirm_appointment."
+        )
+
+    # Inject age exception if this patient is approved beyond Dr. Júlio's 65-year limit
+    if state.get("age_exception"):
+        system_prompt += (
+            "\n\nEXCEÇÃO DE IDADE: Este paciente foi aprovado pelo Dr. Júlio como exceção ao limite "
+            "de 65 anos. Prossiga normalmente com o agendamento sem mencionar restrição de idade."
         )
 
     # Inject upcoming appointments so the LLM knows what already exists
