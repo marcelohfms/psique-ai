@@ -324,6 +324,9 @@ async def create_event(
     is_minor_first: bool = False,
     session_note: str = "",
     modality: str = "",
+    phone: str = "",
+    email: str = "",
+    patient_age: int | None = None,
 ) -> str:
     """Create a Google Calendar event and return the event ID."""
     end = start + timedelta(minutes=slot_minutes)
@@ -331,6 +334,13 @@ async def create_event(
     if modality:
         modality_label = "Online" if modality == "online" else "Presencial"
         description += f"\nModalidade: {modality_label}"
+    if phone:
+        phone_clean = phone.replace("@s.whatsapp.net", "")
+        description += f"\nTelefone: {phone_clean}"
+    if email:
+        description += f"\nE-mail: {email}"
+    if patient_age is not None and patient_age < 18:
+        description += f"\nIdade: {patient_age} anos (menor de idade)"
     if session_note:
         description += f"\n\n{session_note}"
     elif is_minor_first:

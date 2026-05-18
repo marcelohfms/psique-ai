@@ -396,6 +396,9 @@ async def confirm_appointment(
             is_minor_first=is_minor_first,
             session_note=session_note,
             modality=effective_modality,
+            phone=config["configurable"].get("phone", ""),
+            email=state.get("patient_email") or "",
+            patient_age=state.get("patient_age"),
         )
     except Exception as e:
         _logger.error("CONFIRM_DEBUG create_event FAILED: %s", e, exc_info=True)
