@@ -148,7 +148,28 @@ async def collect_info_node(state: ConversationState, config: RunnableConfig) ->
         return {"messages": [AIMessage(content=reply)]}
 
     async def _extract_and_ask(extracted: dict, next_q: str) -> dict:
-        """Save extracted fields and ask the next question in one turn."""
+        """Persist extracted fields to Supabase and ask the next question in one turn."""
+        _STATE_TO_DB = {
+            "user_name": "name",
+            "patient_name": "patient_name",
+            "patient_cpf": "patient_cpf",
+            "birth_date": "birth_date",
+            "patient_age": "age",
+            "guardian_name": "guardian_name",
+            "guardian_cpf": "guardian_cpf",
+            "guardian_relationship": "guardian_relationship",
+            "is_patient": "is_patient",
+            "patient_email": "email",
+        }
+        db_payload = {_STATE_TO_DB[k]: v for k, v in extracted.items() if k in _STATE_TO_DB}
+        if "preferred_doctor" in extracted:
+            db_payload["doctor_id"] = DOCTOR_IDS.get(extracted["preferred_doctor"])
+        if db_payload:
+            try:
+                await upsert_user(state["phone"], db_payload, user_id=state.get("user_db_id"))
+            except Exception:
+                import logging as _log
+                _log.getLogger(__name__).exception("Failed to persist partial collect_info data")
         await send_text(state["phone"], next_q)
         await save_message(state["phone"], "assistant", next_q)
         return {**extracted, "messages": [AIMessage(content=next_q)]}
