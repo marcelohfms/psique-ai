@@ -16,6 +16,16 @@ TZ = ZoneInfo(TIMEZONE)
 #   "escolha"                 — patient chooses online or presencial
 #   "presencial_sob_consulta" — presencial possible but requires human confirmation
 # Edit here to change doctor availability — no other file needs to change.
+# Date-specific exceptions that override DOCTOR_SCHEDULES for a single day.
+# Key: "YYYY-MM-DD", Value: list of windows (same tuple format as DOCTOR_SCHEDULES).
+# Empty list means the doctor does not work on that date.
+SCHEDULE_EXCEPTIONS: dict[str, dict[str, list[tuple[int, int, int, int, str]]]] = {
+    "julio": {
+        "2026-06-01": [(9, 0, 12, 0, "escolha"), (14, 0, 19, 0, "escolha")],  # Segunda: adiciona tarde
+        "2026-06-02": [],                                                       # Terça: sem atendimento à tarde
+    },
+}
+
 DOCTOR_SCHEDULES: dict[str, dict[int, list[tuple[int, int, int, int, str]]]] = {
     "bruna": {
         0: [(7, 30, 8, 30, "online"), (16, 30, 18, 30, "online")],   # Segunda — tudo online
@@ -220,8 +230,17 @@ async def get_available_slots(
     shift = _normalize_shift(preferred_shift)
     shift_start_h, shift_end_h = SHIFT_HOURS.get(shift, (8, 18))
 
-    if doctor_schedule:
+    # Check for date-specific exception first
+    date_key = target_date.isoformat()
+    doctor_exceptions = SCHEDULE_EXCEPTIONS.get(doctor_key or "", {})
+    if date_key in doctor_exceptions:
+        day_windows_raw = doctor_exceptions[date_key]  # may be [] (no work that day)
+    elif doctor_schedule:
         day_windows_raw = doctor_schedule.get(weekday)
+    else:
+        day_windows_raw = None
+
+    if doctor_schedule or date_key in doctor_exceptions:
         if day_windows_raw is None:
             return []  # doctor doesn't work on this day
         # Keep only windows that overlap with the requested shift
