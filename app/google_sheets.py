@@ -85,6 +85,7 @@ async def append_payment_receipt(
     """
     spreadsheet_id = os.environ.get("GOOGLE_SHEETS_PAYMENTS_ID")
     if not spreadsheet_id:
+        logger.error("GOOGLE_SHEETS_PAYMENTS_ID not set — payment receipt NOT recorded in spreadsheet")
         return
 
     now = datetime.now(TZ).strftime("%d/%m/%Y %H:%M")

@@ -802,12 +802,16 @@ async def register_payment(
     appt_id_to_pay: str | None = None
 
     appt_result = await client.from_("appointments").select(
-        "appointment_id, start_time, end_time, doctor_id"
+        "appointment_id, start_time, end_time, doctor_id, paid_at"
     ).eq("user_id", user_id).eq("status", "scheduled").order("start_time").limit(1).execute()
 
     if appt_result.data:
         apt_start = datetime.fromisoformat(appt_result.data[0]["start_time"]).astimezone(TZ)
         appointment_dt = apt_start.strftime("%d/%m/%Y %H:%M")
+        # Guard against duplicate calls: if already paid, return immediately
+        if appt_result.data[0].get("paid_at"):
+            _logger.warning("REGISTER_PAYMENT duplicate call — already paid patient=%s", patient_name)
+            return f"Pagamento de {patient_name} para {appointment_dt} já estava registrado anteriormente. ✅"
         appt_id_to_pay = appt_result.data[0]["appointment_id"]
     else:
         # No scheduled appointment — try to reactivate the most recent canceled one
