@@ -170,6 +170,8 @@ async def collect_info_node(state: ConversationState, config: RunnableConfig) ->
     _NAME_Q = "Pode me informar o nome completo do paciente?"
     _CPF_Q = "Qual o CPF do paciente?"
     _BIRTH_Q = "Qual a data de nascimento do paciente? (formato dd/mm/aaaa)"
+    _GUARDIAN_NAME_Q = "Qual é o nome completo do responsável pelo paciente?"
+    _GUARDIAN_CPF_Q = "Qual é o CPF do responsável?"
     _PATIENT_Q = "O paciente já é paciente da clínica?"
     _DOCTOR_Q = "Você tem preferência pelo Dr. Júlio ou pela Dra. Bruna?"
     _EMAIL_Q = "Qual o e-mail para envio?"
@@ -216,12 +218,26 @@ async def collect_info_node(state: ConversationState, config: RunnableConfig) ->
                     bd = datetime.strptime(parsed, "%d/%m/%Y")
                     today = datetime.now()
                     age = today.year - bd.year - ((today.month, today.day) < (bd.month, bd.day))
+                    # For minors, collect guardian info before proceeding
+                    next_q = _GUARDIAN_NAME_Q if age < 18 else _PATIENT_Q
                     return await _extract_and_ask(
-                        {"birth_date": parsed, "patient_age": age}, _PATIENT_Q
+                        {"birth_date": parsed, "patient_age": age}, next_q
                     )
                 else:
                     return await _ask("Não consegui identificar a data. Pode informar no formato dd/mm/aaaa? Ex: 15/01/1990.")
             return await _ask(_BIRTH_Q)
+
+        # Step 4b: guardian name (only for minors)
+        if (state.get("patient_age") or 99) < 18 and not state.get("guardian_name"):
+            if last_ai == _GUARDIAN_NAME_Q and last_human:
+                return await _extract_and_ask({"guardian_name": last_human}, _GUARDIAN_CPF_Q)
+            return await _ask(_GUARDIAN_NAME_Q)
+
+        # Step 4c: guardian CPF (only for minors)
+        if (state.get("patient_age") or 99) < 18 and not state.get("guardian_cpf"):
+            if last_ai == _GUARDIAN_CPF_Q and last_human:
+                return await _extract_and_ask({"guardian_cpf": last_human}, _PATIENT_Q)
+            return await _ask(_GUARDIAN_CPF_Q)
 
         # Step 5: is_patient
         if state.get("is_patient") is None:
