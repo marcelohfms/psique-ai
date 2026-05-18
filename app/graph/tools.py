@@ -786,10 +786,12 @@ async def register_payment(
     confirmation_msg = "Comprovante recebido e registrado com sucesso! ✅ Sua vaga está garantida."
     appt_id_to_pay: str | None = None
 
-    now_iso = datetime.now(TZ).isoformat()
+    # Look back up to 12 h so post-consultation payments (same day) are captured,
+    # but far-past test/stale appointments are excluded.
+    lookback_iso = (datetime.now(TZ) - timedelta(hours=12)).isoformat()
     appt_result = await client.from_("appointments").select(
         "appointment_id, start_time, end_time, doctor_id, paid_at"
-    ).eq("user_id", user_id).eq("status", "scheduled").gte("start_time", now_iso).order("start_time").limit(1).execute()
+    ).eq("user_id", user_id).eq("status", "scheduled").gte("start_time", lookback_iso).order("start_time").limit(1).execute()
 
     if appt_result.data:
         apt_start = datetime.fromisoformat(appt_result.data[0]["start_time"]).astimezone(TZ)
@@ -915,7 +917,11 @@ async def register_payment(
         except Exception:
             _logger.exception("PATIENT_CONFIRM FAILED phone=%s", patient_phone)
 
-    return confirmation_msg
+    return (
+        f"{confirmation_msg}\n\n"
+        f"[INSTRUÇÃO PARA EVA: agradeça o pagamento e pergunte se o paciente já quer deixar "
+        f"a próxima consulta agendada com {doctor_label}.]"
+    )
 
 
 @tool
