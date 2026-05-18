@@ -11,7 +11,7 @@ from langgraph.prebuilt import InjectedState
 import logging
 
 from app.whatsapp import send_text
-from app.database import get_supabase, log_event, upsert_user, get_user_by_phone, DOCTOR_IDS, DOCTOR_NAMES
+from app.database import get_supabase, log_event, upsert_user, get_user_by_phone, get_users_by_phone, DOCTOR_IDS, DOCTOR_NAMES
 from app.chatwoot import get_conversation_id, unassign_agent_bot, add_label
 
 logger = logging.getLogger(__name__)
@@ -775,16 +775,32 @@ async def register_payment(
         doctor_key = DOCTOR_NAMES.get(matched.get("doctor_id", ""), "")
         is_third_party = True
     else:
-        user = await get_user_by_phone(phone)
-        if not user:
+        all_users = await get_users_by_phone(phone)
+        if not all_users:
             return "Para qual paciente é este comprovante? Por favor, informe o nome completo."
-        appt_check = await client.from_("appointments").select("appointment_id").eq(
-            "user_id", user["id"]
-        ).eq("status", "scheduled").limit(1).execute()
-        if not appt_check.data:
+
+        # Find which patients have a scheduled appointment
+        users_with_appt = []
+        for u in all_users:
+            appt_check = await client.from_("appointments").select("appointment_id").eq(
+                "user_id", u["id"]
+            ).eq("status", "scheduled").limit(1).execute()
+            if appt_check.data:
+                users_with_appt.append(u)
+
+        if len(users_with_appt) == 0:
             return "Para qual paciente é este comprovante? Por favor, informe o nome completo."
-        patient_name = user.get("patient_name") or user.get("name", "Paciente")
-        user_id = user["id"]
+        elif len(users_with_appt) > 1:
+            names = ", ".join(
+                u.get("patient_name") or u.get("name", "Paciente")
+                for u in users_with_appt
+            )
+            return f"Encontrei mais de um paciente com consulta agendada neste número: {names}. Para qual deles é o comprovante?"
+        else:
+            user = users_with_appt[0]
+            patient_name = user.get("patient_name") or user.get("name", "Paciente")
+            user_id = user["id"]
+            doctor_key = DOCTOR_NAMES.get(user.get("doctor_id", ""), "")
 
     doctor_label = {"julio": "Dr. Júlio", "bruna": "Dra. Bruna"}.get(doctor_key, "médico(a)")
 
