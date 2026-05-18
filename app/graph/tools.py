@@ -699,6 +699,23 @@ async def confirm_attendance(
     return "Presença confirmada! ✅"
 
 
+def _expected_consultation_amount(doctor_key: str, patient_age: int, is_patient: bool, now_dt) -> int:
+    """Return the expected full payment amount (with R$50 PIX discount)."""
+    post_june = (now_dt.year, now_dt.month) >= (2026, 6)
+    if doctor_key == "bruna":
+        base = 700 if post_june else 600
+    elif doctor_key == "julio":
+        if patient_age >= 18:
+            base = 700 if post_june else 600
+        elif is_patient:  # minor return visit
+            base = 750 if post_june else 650
+        else:  # minor first visit
+            base = 850 if post_june else 750
+    else:
+        base = 700 if post_june else 600
+    return base - 50  # R$50 PIX/cash discount
+
+
 @tool
 async def register_payment(
     amount: str,
@@ -707,6 +724,7 @@ async def register_payment(
     config: RunnableConfig,
     patient_name_override: str = "",
     image_description: str = "",
+    is_link: bool = False,
 ) -> str:
     """
     Registra um comprovante de pagamento PIX na planilha.
@@ -881,27 +899,90 @@ async def register_payment(
         except Exception:
             _logger.exception("DRIVE_RENAME FAILED")
 
+    # ── Classify payment and update DB fields ─────────────────────────────────
     try:
-        await append_payment_receipt(patient_name, patient_phone, doctor_label, appointment_dt, amount, drive_link)
+        amount_float = float(amount.replace("R$", "").replace(".", "").replace(",", ".").strip())
+    except (ValueError, AttributeError):
+        amount_float = 0.0
+
+    now_dt = datetime.now(TZ)
+    _age = state.get("patient_age") or 99
+    _is_pat = bool(state.get("is_patient"))
+    expected = _expected_consultation_amount(doctor_key, _age, _is_pat, now_dt)
+
+    if is_link:
+        # Link payment confirmed by attendant — no PIX discount applies
+        expected_link = expected + 50  # full price without discount
+        payment_type = "Consulta — link"
+        if appt_id_to_pay:
+            try:
+                await client.from_("appointments").update({
+                    "paid_at": now_dt.isoformat(),
+                    "booking_fee_paid_at": now_dt.isoformat(),
+                }).eq("appointment_id", appt_id_to_pay).execute()
+            except Exception:
+                _logger.exception("PAID_AT UPDATE FAILED patient=%s", patient_name)
+        payment_note = f"Valor pago: R$ {amount} — pagamento via link. Consulta QUITADA."
+    elif amount_float <= 0:
+        payment_type = "?"
+        payment_note = "Valor não identificado no comprovante."
+    elif abs(amount_float - 100) < 1:
+        # Taxa de reserva
+        payment_type = "Taxa de Reserva"
+        if appt_id_to_pay:
+            try:
+                await client.from_("appointments").update({
+                    "booking_fee_paid_at": now_dt.isoformat(),
+                }).eq("appointment_id", appt_id_to_pay).execute()
+            except Exception:
+                _logger.exception("BOOKING_FEE UPDATE FAILED patient=%s", patient_name)
+        saldo = expected - 100
+        payment_note = (
+            f"Valor pago: R$ {amount} — taxa de reserva registrada. "
+            f"Saldo restante para quitação: R$ {saldo:.0f},00 (com desconto PIX)."
+        )
+    elif amount_float >= expected:
+        # Full payment (with PIX discount)
+        payment_type = "Consulta"
+        if appt_id_to_pay:
+            try:
+                await client.from_("appointments").update({
+                    "paid_at": now_dt.isoformat(),
+                    "booking_fee_paid_at": now_dt.isoformat(),
+                }).eq("appointment_id", appt_id_to_pay).execute()
+            except Exception:
+                _logger.exception("PAID_AT UPDATE FAILED patient=%s", patient_name)
+        payment_note = f"Valor pago: R$ {amount} — consulta QUITADA. Nenhum valor adicional será cobrado."
+    else:
+        # Partial payment > 100 but < expected
+        payment_type = "Pagamento Parcial"
+        if appt_id_to_pay:
+            try:
+                await client.from_("appointments").update({
+                    "booking_fee_paid_at": now_dt.isoformat(),
+                }).eq("appointment_id", appt_id_to_pay).execute()
+            except Exception:
+                _logger.exception("BOOKING_FEE UPDATE FAILED patient=%s", patient_name)
+        saldo = expected - amount_float
+        payment_note = (
+            f"Valor pago: R$ {amount}. Consulta ainda NÃO quitada. "
+            f"Saldo restante: R$ {saldo:.2f} (valor total com desconto PIX: R$ {expected:.0f},00)."
+        )
+
+    # ── Record in Google Sheets ────────────────────────────────────────────────
+    try:
+        await append_payment_receipt(patient_name, patient_phone, doctor_label, appointment_dt, amount, drive_link, payment_type=payment_type)
     except Exception:
         _logger.exception("SHEETS_APPEND FAILED patient=%s", patient_name)
 
-    # ── Mark paid_at if not already set during reactivation ───────────────────
-    if appt_id_to_pay:
-        try:
-            await client.from_("appointments").update({
-                "paid_at": datetime.now(TZ).isoformat(),
-            }).eq("appointment_id", appt_id_to_pay).execute()
-        except Exception:
-            _logger.exception("PAID_AT UPDATE FAILED patient=%s", patient_name)
-
     asyncio.create_task(_notify_clinic(
-        f"💰 Comprovante recebido!\nPaciente: {patient_name}\nValor: R$ {amount}\nConsulta: {appointment_dt}\nLink: {drive_link}"
+        f"💰 Comprovante recebido!\nPaciente: {patient_name}\nValor: R$ {amount}\nTipo: {payment_type}\nConsulta: {appointment_dt}\nLink: {drive_link}"
     ))
 
     await log_event("payment_receipt_registered", phone, {
         "patient_name": patient_name,
         "amount": amount,
+        "payment_type": payment_type,
         "drive_link": drive_link,
     })
 
@@ -917,27 +998,10 @@ async def register_payment(
         except Exception:
             _logger.exception("PATIENT_CONFIRM FAILED phone=%s", patient_phone)
 
-    # Determine if this is a full payment (> taxa de reserva de R$ 100)
-    try:
-        amount_float = float(amount.replace("R$", "").replace(".", "").replace(",", ".").strip())
-    except (ValueError, AttributeError):
-        amount_float = 0.0
-
-    if amount_float > 100:
-        payment_note = (
-            f"Valor pago: R$ {amount} — pagamento INTEGRAL antecipado. "
-            f"A consulta está QUITADA. Não cobrar mais nenhum valor."
-        )
-    else:
-        payment_note = (
-            f"Valor pago: R$ {amount} — taxa de reserva. "
-            f"O saldo restante será cobrado no dia da consulta."
-        )
-
     return (
         f"{confirmation_msg}\n\n"
         f"{payment_note}\n\n"
-        f"[INSTRUÇÃO PARA EVA: agradeça o pagamento e pergunte se o paciente já quer deixar "
+        f"[INSTRUÇÃO PARA EVA: agradeça o pagamento conforme o tipo registrado e pergunte se o paciente já quer deixar "
         f"a próxima consulta agendada com {doctor_label}.]"
     )
 

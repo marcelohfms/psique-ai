@@ -453,7 +453,8 @@ async def test_transfer_to_human_unassigns_chatwoot_bot(mock_send_text):
         mock_unassign.assert_called_once_with(77)
 
 
-async def test_register_payment_sets_paid_at():
+async def test_register_payment_sets_booking_fee_paid_at():
+    """R$100 payment should set booking_fee_paid_at (taxa de reserva), not paid_at."""
     from app.graph.tools import register_payment
     client, table, execute = _make_supabase_client_with_appointment()
     with patch("app.graph.tools.get_supabase", new_callable=AsyncMock, return_value=client), \
@@ -462,15 +463,40 @@ async def test_register_payment_sets_paid_at():
          patch("app.google_drive.rename_file", new_callable=AsyncMock), \
          patch("app.google_sheets.append_payment_receipt", new_callable=AsyncMock), \
          patch("app.graph.tools.send_text", new_callable=AsyncMock):
-        await register_payment.coroutine(
+        result = await register_payment.coroutine(
             amount="100,00",
             drive_link="https://drive.google.com/file/d/abc/view",
             state=_make_state(),
             config=CONFIG,
         )
-    # Verify paid_at was set in an update call
+    # R$100 → taxa de reserva: only booking_fee_paid_at should be set, not paid_at
+    update_calls = [c for c in table.update.call_args_list if "booking_fee_paid_at" in c[0][0]]
+    assert len(update_calls) == 1
+    paid_at_calls = [c for c in table.update.call_args_list if "paid_at" in c[0][0] and "booking_fee_paid_at" not in c[0][0]]
+    assert len(paid_at_calls) == 0
+    assert "taxa de reserva registrada" in result
+
+
+async def test_register_payment_full_amount_sets_paid_at():
+    """Full payment (>= expected) should set both paid_at and booking_fee_paid_at."""
+    from app.graph.tools import register_payment
+    client, table, execute = _make_supabase_client_with_appointment()
+    with patch("app.graph.tools.get_supabase", new_callable=AsyncMock, return_value=client), \
+         patch("app.graph.tools.get_users_by_phone", new_callable=AsyncMock, return_value=[{"id": "user-123", "patient_name": "Maria"}]), \
+         patch("app.graph.tools.log_event", new_callable=AsyncMock), \
+         patch("app.google_drive.rename_file", new_callable=AsyncMock), \
+         patch("app.google_sheets.append_payment_receipt", new_callable=AsyncMock), \
+         patch("app.graph.tools.send_text", new_callable=AsyncMock):
+        result = await register_payment.coroutine(
+            amount="550,00",
+            drive_link="https://drive.google.com/file/d/abc/view",
+            state=_make_state(),
+            config=CONFIG,
+        )
+    # Full payment: both paid_at and booking_fee_paid_at should be set
     update_calls = [c for c in table.update.call_args_list if "paid_at" in c[0][0]]
     assert len(update_calls) == 1
+    assert "QUITADA" in result
 
 
 # ── update_patient_ages script logic ─────────────────────────────────────────

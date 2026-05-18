@@ -36,8 +36,8 @@ _CONTROLLED_FALLBACK: list[str] = [
     "dexanfetamina", "dextroamphetamine",
 ]
 
-# Column order: Data do Pagamento, Paciente, Médico, Data da Consulta, Valor, Telefone, Comprovante, Conferência Humana
-_PAYMENTS_SHEET_RANGE = "Pagamentos!A:H"
+# Column order: Data do Pagamento | Paciente | Médico | Data da Consulta | Valor | Telefone | Tipo | Comprovante | Conferência Humana
+_PAYMENTS_SHEET_RANGE = "Pagamentos!A:I"
 
 
 def _credentials() -> Credentials:
@@ -78,10 +78,11 @@ async def append_payment_receipt(
     appointment_dt: str,
     amount: str,
     drive_link: str,
+    payment_type: str = "",
 ) -> None:
     """Append a payment receipt row to the Pagamentos sheet.
     Does nothing if GOOGLE_SHEETS_PAYMENTS_ID is not configured.
-    Columns: Data do Pagamento | Paciente | Médico | Data da Consulta | Valor | Telefone | Comprovante | Conferência Humana
+    Columns: Data do Pagamento | Paciente | Médico | Data da Consulta | Valor | Telefone | Tipo | Comprovante | Conferência Humana
     """
     spreadsheet_id = os.environ.get("GOOGLE_SHEETS_PAYMENTS_ID")
     if not spreadsheet_id:
@@ -101,7 +102,7 @@ async def append_payment_receipt(
     else:
         comprovante_cell = ""
 
-    row = [now, patient_name, doctor_name, appointment_dt, amount, phone_clean, comprovante_cell, ""]
+    row = [now, patient_name, doctor_name, appointment_dt, amount, phone_clean, payment_type, comprovante_cell, ""]
 
     creds = _credentials()
     service = build("sheets", "v4", credentials=creds)
