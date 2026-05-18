@@ -801,9 +801,10 @@ async def register_payment(
     confirmation_msg = "Comprovante recebido e registrado com sucesso! ✅ Sua vaga está garantida."
     appt_id_to_pay: str | None = None
 
+    now_iso = datetime.now(TZ).isoformat()
     appt_result = await client.from_("appointments").select(
         "appointment_id, start_time, end_time, doctor_id, paid_at"
-    ).eq("user_id", user_id).eq("status", "scheduled").order("start_time").limit(1).execute()
+    ).eq("user_id", user_id).eq("status", "scheduled").gte("start_time", now_iso).order("start_time").limit(1).execute()
 
     if appt_result.data:
         apt_start = datetime.fromisoformat(appt_result.data[0]["start_time"]).astimezone(TZ)
