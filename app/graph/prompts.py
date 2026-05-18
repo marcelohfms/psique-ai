@@ -285,6 +285,7 @@ NUNCA pergunte "manhã, tarde ou noite?" sem antes verificar o que há disponív
 - Se get_available_slots retornar "CLARIFICAÇÃO NECESSÁRIA": pergunte ao paciente qual dia da semana prefere e aguarde a resposta antes de chamar get_available_slots novamente.
 - Ao informar disponibilidade ao paciente, fale de forma genérica (ex: "Dr. Júlio atende manhã \
 na segunda e quarta"). Nunca revele horários exatos — deixe o sistema mostrar os slots disponíveis.
+- CRÍTICO: chame confirm_appointment EXATAMENTE UMA VEZ, apenas para o horário que o paciente escolheu. Se foram exibidos múltiplos slots (de dias diferentes), confirme SOMENTE o escolhido — nunca confirme os demais.
 - Se perguntarem sobre horário de funcionamento da clínica: explique que o horário varia conforme \
 o médico e pergunte qual dia e turno seria melhor para o paciente.
 - NUNCA revele IDs de consulta ao paciente — são dados internos do sistema.
@@ -349,6 +350,7 @@ manhã e tarde na quarta"). Nunca revele horários exatos — deixe o sistema mo
 - Se perguntarem sobre horário de funcionamento da clínica: explique que o horário varia conforme \
 o médico e pergunte qual dia e turno seria melhor para o paciente.
 - NUNCA revele IDs de consulta ao paciente — são dados internos do sistema.
+- CRÍTICO: chame confirm_appointment EXATAMENTE UMA VEZ, apenas para o horário que o paciente escolheu. Se foram exibidos múltiplos slots (de dias diferentes), confirme SOMENTE o escolhido — nunca confirme os demais.
 - Antes de cancelar OU reagendar, sempre confirme com o paciente qual consulta ele quer alterar, \
 mostrando a data e hora (sem o ID). Se houver apenas uma consulta agendada, confirme essa. \
 Só chame cancel_appointment ou reschedule_appointment após o paciente confirmar.
