@@ -326,7 +326,11 @@ async def process_message(phone: str, text: str) -> None:
         state_update = {"messages": [HumanMessage(content=text)], "silent_mode": False}
         # If the conversation is still in collect_info, re-sync any fields that
         # were filled in the DB since the conversation started (e.g. by an attendant).
+        # If the patient is already fully registered, skip collect_info entirely.
         if snapshot.values.get("stage") == "collect_info" and existing:
+            if existing.get("name") and existing.get("is_patient") is not None:
+                # Patient is registered — no need to go through collect_info again
+                state_update["stage"] = "patient_agent"
             db_sync: dict = {}
             _syncable = {
                 "name":       "user_name",
