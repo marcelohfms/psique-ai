@@ -22,4 +22,9 @@ jobs:
           SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
           WHATSAPP_TOKEN: ${{ secrets.WHATSAPP_TOKEN }}
           WHATSAPP_PHONE_NUMBER_ID: ${{ secrets.WHATSAPP_PHONE_NUMBER_ID }}
+          CHATWOOT_BASE_URL: ${{ secrets.CHATWOOT_BASE_URL }}
+          CHATWOOT_ACCOUNT_ID: ${{ secrets.CHATWOOT_ACCOUNT_ID }}
+          CHATWOOT_AGENT_BOT_TOKEN: ${{ secrets.CHATWOOT_AGENT_BOT_TOKEN }}
+          CHATWOOT_USER_TOKEN: ${{ secrets.CHATWOOT_USER_TOKEN }}
+          CHATWOOT_INBOX_ID: ${{ secrets.CHATWOOT_INBOX_ID }}
         run: uv run python scripts/complete_appointments.py
