@@ -323,7 +323,7 @@ async def process_message(phone: str, text: str) -> None:
 
     snapshot = await graph_module.chatbot.aget_state(config)
     if snapshot.values:
-        state_update = {"messages": [HumanMessage(content=text)], "silent_mode": False}
+        state_update = {"messages": [HumanMessage(content=text)], "silent_mode": False, "phone": phone}
         # If the conversation is still in collect_info, re-sync any fields that
         # were filled in the DB since the conversation started (e.g. by an attendant).
         # If the patient is already fully registered, skip collect_info entirely.
@@ -684,7 +684,7 @@ async def _handle_attendant_note(payload: dict) -> None:
 
     async def _run_silent(p: str, text: str) -> None:
         config = {"configurable": {"thread_id": p, "phone": p}}
-        state_update = {"messages": [HumanMessage(content=text)], "silent_mode": True}
+        state_update = {"messages": [HumanMessage(content=text)], "silent_mode": True, "phone": p}
         await graph_module.chatbot.ainvoke(state_update, config=config)
 
     instruction = f"[Instrução da atendente]: {content}"
