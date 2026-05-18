@@ -80,17 +80,18 @@ async def test_collect_info_node_overrides_reply_on_invalid_birth_date():
     assert "dd/mm/aaaa" in sent_text
     assert "Anotei" not in sent_text  # original reply must not be sent
 
-# A user record that has all required fields filled in
+# A user record with only the minimum required fields (name + is_patient).
+# Intentionally missing birth_date, email, age — they should NOT trigger collect_info.
 _KNOWN_USER = {
     "id": "user-uuid-123",
     "number": "5583999999999",
     "name": "Maria",
     "patient_name": "Maria",
-    "age": 30,
+    "age": None,
     "is_patient": True,
     "doctor_id": "d5baa58b-a788-4f40-b8c0-512c189150be",  # julio
-    "birth_date": "1994-01-01",
-    "email": "maria@example.com",
+    "birth_date": None,
+    "email": None,
     "active": True,
 }
 
@@ -152,6 +153,29 @@ async def test_known_user_goes_to_patient_agent():
             state_update = chatbot.ainvoke.call_args[0][0]
             assert state_update["stage"] == "patient_agent"
             assert state_update["preferred_doctor"] == "julio"
+    finally:
+        gg.chatbot = original
+
+
+async def test_known_user_missing_optional_fields_goes_to_patient_agent():
+    """A registered patient missing birth_date/email/age must go to patient_agent, not collect_info."""
+    import app.graph.graph as gg
+    chatbot = _make_chatbot()
+    original = gg.chatbot
+    gg.chatbot = chatbot
+    incomplete_user = {
+        **_KNOWN_USER,
+        "birth_date": None,
+        "email": None,
+        "age": None,
+    }
+    try:
+        with patch("app.main.get_user_by_phone", new_callable=AsyncMock, return_value=incomplete_user), \
+             patch("app.main.log_event", new_callable=AsyncMock):
+            from app.main import process_message
+            await process_message(PHONE, "oi")
+            state_update = chatbot.ainvoke.call_args[0][0]
+            assert state_update["stage"] == "patient_agent"
     finally:
         gg.chatbot = original
 

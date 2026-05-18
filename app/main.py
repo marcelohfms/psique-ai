@@ -326,7 +326,10 @@ async def process_message(phone: str, text: str) -> None:
         state_update = {"messages": [HumanMessage(content=text)], "silent_mode": False}
     else:
         await log_event("conversation_started", phone)
-        _REQUIRED = ("name", "patient_name", "age", "is_patient", "birth_date", "email")
+        # Only name + is_patient are required to route to patient_agent.
+        # Missing birth_date, email, CPF etc. are collected in context when actually needed,
+        # not upfront — avoids interrogating registered patients at every conversation start.
+        _REQUIRED = ("name", "is_patient")
         user_known = existing and all(existing.get(f) is not None for f in _REQUIRED)
 
         if user_known:
