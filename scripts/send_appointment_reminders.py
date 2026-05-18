@@ -2,7 +2,7 @@
 Send WhatsApp appointment reminders via Meta Cloud API templates.
 Runs every 30 minutes via GitHub Actions.
 
-- Day before: sends between 07h-10h Recife the day before the appointment
+- Day before: sends between 07h-20h Recife the day before the appointment
 - Day of:     sends up to 2h before the appointment starts (never after)
 
 After sending, the reminder timestamp is saved directly on the appointment row
@@ -100,9 +100,9 @@ async def main():
     today_start = now.date().isoformat()
     two_hours_later = now + timedelta(hours=2)
 
-    # ── Day-before reminders: send between 07h-10h Recife ────────────────────
+    # ── Day-before reminders: send between 07h-20h Recife ────────────────────
     day_before_appts = []
-    if 7 <= now.hour < 10:
+    if 7 <= now.hour < 20:
         result = await (
             client.from_("appointments")
             .select("appointment_id, start_time, doctor_id, users(number, patient_name, name)")
