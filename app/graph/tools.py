@@ -544,16 +544,23 @@ async def reschedule_appointment(
     effective_modality = "online" if slot_constraint == "online" else (modality if modality in ("online", "presencial") else "")
 
     # Update Google Calendar event (same event_id, new time)
-    await update_event(
-        calendar_id=calendar_id,
-        event_id=appointment_id,
-        new_start=new_start,
-        slot_minutes=slot_duration_minutes,
-        patient_name=patient_name,
-        doctor_name=doctor_label,
-        is_minor_first=is_minor_first,
-        modality=effective_modality,
-    )
+    try:
+        await update_event(
+            calendar_id=calendar_id,
+            event_id=appointment_id,
+            new_start=new_start,
+            slot_minutes=slot_duration_minutes,
+            patient_name=patient_name,
+            doctor_name=doctor_label,
+            is_minor_first=is_minor_first,
+            modality=effective_modality,
+        )
+    except Exception as e:
+        _logger.error("RESCHEDULE_DEBUG update_event FAILED appt=%s error=%s", appointment_id, e, exc_info=True)
+        return (
+            f"Não foi possível atualizar o evento no Google Calendar (ID: {appointment_id}). "
+            f"Erro: {e}. Verifique se o ID do agendamento está correto e tente novamente."
+        )
 
     # Update DB record
     new_end = new_start + timedelta(minutes=slot_duration_minutes)
