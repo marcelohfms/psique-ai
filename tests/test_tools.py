@@ -471,3 +471,97 @@ async def test_register_payment_sets_paid_at():
     # Verify paid_at was set in an update call
     update_calls = [c for c in table.update.call_args_list if "paid_at" in c[0][0]]
     assert len(update_calls) == 1
+
+
+# ── update_patient_ages script logic ─────────────────────────────────────────
+
+def test_age_from_birth_date_dd_mm_yyyy():
+    from scripts.update_patient_ages import _age_from_birth_date
+    from datetime import date
+    today = date(2026, 5, 18)
+    # Birthday already passed this year
+    assert _age_from_birth_date("10/03/1990", today) == 36
+    # Birthday not yet reached this year
+    assert _age_from_birth_date("20/07/1990", today) == 35
+
+
+def test_age_from_birth_date_iso():
+    from scripts.update_patient_ages import _age_from_birth_date
+    from datetime import date
+    today = date(2026, 5, 18)
+    assert _age_from_birth_date("1990-03-10", today) == 36
+
+
+def test_age_from_birth_date_exact_birthday():
+    from scripts.update_patient_ages import _age_from_birth_date
+    from datetime import date
+    today = date(2026, 5, 18)
+    assert _age_from_birth_date("18/05/1990", today) == 36  # birthday today → counts
+
+
+def test_age_from_birth_date_minor():
+    from scripts.update_patient_ages import _age_from_birth_date
+    from datetime import date
+    today = date(2026, 5, 18)
+    assert _age_from_birth_date("15/03/2015", today) == 11
+    assert _age_from_birth_date("15/03/2015", today) < 18
+
+
+def test_age_from_birth_date_invalid_returns_none():
+    from scripts.update_patient_ages import _age_from_birth_date
+    assert _age_from_birth_date("not-a-date") is None
+    assert _age_from_birth_date("") is None
+    assert _age_from_birth_date(None) is None
+
+
+async def test_update_patient_ages_only_updates_changed():
+    """Script must update only rows where age differs from birth_date calculation."""
+    from scripts.update_patient_ages import main
+    from datetime import date
+    from unittest.mock import AsyncMock, MagicMock, patch
+
+    today = date(2026, 5, 18)
+
+    users = [
+        # age already correct — must NOT be updated
+        {"id": "u1", "name": "Alice", "patient_name": None, "birth_date": "10/03/1990", "age": 36},
+        # age wrong (didn't update last year) — must be updated
+        {"id": "u2", "name": "Bob",   "patient_name": None, "birth_date": "10/03/1990", "age": 35},
+        # no stored age — must be updated
+        {"id": "u3", "name": "Carol", "patient_name": None, "birth_date": "20/07/2015", "age": None},
+    ]
+
+    # Build a single chain mock that handles all builder patterns:
+    # .select().not_.is_().execute()  AND  .update().eq().execute()
+    chain = MagicMock()
+    chain.execute = AsyncMock(return_value=MagicMock(data=users))
+    chain.not_ = chain        # attribute access (not a call)
+    chain.is_.return_value = chain
+    chain.eq.return_value = chain
+
+    table = MagicMock()
+    table.select.return_value = chain
+    # Each .update() call must return a fresh chain with its own execute tracker
+    update_execute = AsyncMock(return_value=MagicMock(data=[]))
+    update_chain = MagicMock()
+    update_chain.eq.return_value = update_chain
+    update_chain.execute = update_execute
+    table.update.return_value = update_chain
+
+    client = MagicMock()
+    client.from_.return_value = table
+
+    with patch("scripts.update_patient_ages.date") as mock_date, \
+         patch("supabase.acreate_client", new_callable=AsyncMock, return_value=client):
+        mock_date.today.return_value = today
+        mock_date.side_effect = lambda *a, **kw: date(*a, **kw)
+        await main()
+
+    # update() should have been called exactly twice (u2 and u3)
+    assert table.update.call_count == 2
+    updated_ids = {call.args[0]["age"] for call in table.update.call_args_list}
+    # Both updates set age=36 (u2: corrects stale age; u3: was None → now 10)
+    # u3 born 20/07/2015, today 18/05/2026 → age 10
+    ages_written = [call.args[0]["age"] for call in table.update.call_args_list]
+    assert 36 in ages_written   # u2 corrected
+    assert 10 in ages_written   # u3 filled in
