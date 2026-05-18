@@ -726,21 +726,6 @@ async def register_payment(
     phone = config["configurable"]["phone"]
     client = await get_supabase()
 
-    # ── Validate PIX recipient key ────────────────────────────────────────────
-    _PIX_KEY = os.getenv("PIX_KEY", "42006848000178")
-    _PIX_VARIANTS = {
-        _PIX_KEY,
-        _PIX_KEY.replace(".", "").replace("/", "").replace("-", ""),  # digits only
-    }
-    if image_description:
-        desc_lower = image_description.lower().replace(".", "").replace("/", "").replace("-", "")
-        if not any(v in desc_lower for v in _PIX_VARIANTS):
-            return (
-                "⚠️ A chave PIX do destinatário no comprovante não corresponde à chave da Psiquê. "
-                "Por favor, verifique se o pagamento foi feito para a chave correta: "
-                f"{_PIX_KEY}. Caso tenha pago para outra chave, entre em contato com a clínica para resolver."
-            )
-
     # ── Resolve patient ────────────────────────────────────────────────────────
     is_third_party = False
     patient_phone = phone
