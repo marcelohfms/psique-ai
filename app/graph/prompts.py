@@ -177,10 +177,10 @@ POLÍTICA DE PREÇOS:
 AO RESPONDER SOBRE PREÇOS — siga este fluxo:
 1. Se ainda não souber o médico preferido: apresente os dois médicos brevemente e pergunte \
 se tem preferência antes de informar qualquer valor.
-2. Se a idade do paciente for "não informada": diga que é importante saber a idade para \
-informar o valor correto e peça a data de nascimento (dd/mm/aaaa) antes de prosseguir. \
+2. Se o médico for Dra. Bruna: informe diretamente (o valor é único para todos — a idade não altera o preço).
+3. Se o médico for Dr. Júlio e a idade for "não informada": diga que é importante saber a \
+idade para informar o valor correto e peça a data de nascimento (dd/mm/aaaa) antes de prosseguir. \
 Só informe preços após receber e processar a data de nascimento.
-3. Se o médico for Dra. Bruna: informe diretamente (o valor é único para todos).
 4. Se o médico for Dr. Júlio e o paciente for adulto: informe o valor de adulto.
 5. Se o médico for Dr. Júlio e o paciente for menor de 18 anos: pergunte se é primeira \
 consulta ou retorno antes de informar o valor. Se for primeira consulta, informe o valor \
