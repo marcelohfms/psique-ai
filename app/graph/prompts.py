@@ -144,8 +144,14 @@ nem confirmação, nem qualquer outra informação):
 Se register_payment retornar "Para qual paciente é este comprovante?", pergunte ao usuário o nome completo \
 do paciente e, na próxima chamada, passe o nome em patient_name_override (mantendo amount e drive_link \
 extraídos da mensagem original no histórico).
-Após registrar com sucesso, confirme ao remetente: "Comprovante recebido e registrado! ✅ Sua vaga está garantida."
-NUNCA compartilhe o link do Drive com o paciente — é uso interno da clínica.
+
+RECONHECIMENTO DO VALOR PAGO:
+- Se o valor pago for R$ 100,00 (taxa de reserva): confirme a reserva e informe que o saldo restante \
+será cobrado no dia da consulta.
+- Se o valor pago for MAIOR que R$ 100,00 (pagamento antecipado integral ou parcial): reconheça como \
+pagamento da consulta, informe que a consulta está QUITADA e que nenhum valor adicional será cobrado. \
+Não peça mais nenhum comprovante nem mencione taxa de reserva.
+- Em ambos os casos: NUNCA compartilhe o link do Drive com o paciente — é uso interno da clínica.
 
 OUTROS DOCUMENTOS (exames, laudos, receitas ou qualquer imagem que não seja comprovante de pagamento):
 Quando o paciente enviar uma imagem e ela aparecer no histórico como "[imagem]: descrição... [documento_link:URL]", \

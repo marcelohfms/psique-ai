@@ -917,8 +917,26 @@ async def register_payment(
         except Exception:
             _logger.exception("PATIENT_CONFIRM FAILED phone=%s", patient_phone)
 
+    # Determine if this is a full payment (> taxa de reserva de R$ 100)
+    try:
+        amount_float = float(amount.replace("R$", "").replace(".", "").replace(",", ".").strip())
+    except (ValueError, AttributeError):
+        amount_float = 0.0
+
+    if amount_float > 100:
+        payment_note = (
+            f"Valor pago: R$ {amount} — pagamento INTEGRAL antecipado. "
+            f"A consulta está QUITADA. Não cobrar mais nenhum valor."
+        )
+    else:
+        payment_note = (
+            f"Valor pago: R$ {amount} — taxa de reserva. "
+            f"O saldo restante será cobrado no dia da consulta."
+        )
+
     return (
         f"{confirmation_msg}\n\n"
+        f"{payment_note}\n\n"
         f"[INSTRUÇÃO PARA EVA: agradeça o pagamento e pergunte se o paciente já quer deixar "
         f"a próxima consulta agendada com {doctor_label}.]"
     )
