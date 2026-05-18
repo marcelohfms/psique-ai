@@ -22,7 +22,9 @@ TZ = ZoneInfo(TIMEZONE)
 SCHEDULE_EXCEPTIONS: dict[str, dict[str, list[tuple[int, int, int, int, str]]]] = {
     "julio": {
         "2026-06-01": [(9, 0, 12, 0, "escolha"), (14, 0, 19, 0, "escolha")],  # Segunda: adiciona tarde
-        "2026-06-02": [],                                                       # Terça: sem atendimento à tarde
+        "2026-06-02": [],                                                       # Terça: sem atendimento
+        "2026-06-03": [],                                                       # Quarta: sem atendimento
+        "2026-06-04": [],                                                       # Quinta: sem atendimento
     },
 }
 
