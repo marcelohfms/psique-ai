@@ -411,6 +411,7 @@ async def confirm_appointment(
             "start_time": start.isoformat(),
             "end_time": end.isoformat(),
             "status": "scheduled",
+            "modality": effective_modality or None,
         }).execute()
     except Exception:
         from app.google_calendar import cancel_event
@@ -556,11 +557,14 @@ async def reschedule_appointment(
 
     # Update DB record
     new_end = new_start + timedelta(minutes=slot_duration_minutes)
-    await client.from_("appointments").update({
+    reschedule_update: dict = {
         "start_time": new_start.isoformat(),
         "end_time": new_end.isoformat(),
         "updated_at": datetime.now(TZ).isoformat(),
-    }).eq("appointment_id", appointment_id).execute()
+    }
+    if effective_modality:
+        reschedule_update["modality"] = effective_modality
+    await client.from_("appointments").update(reschedule_update).eq("appointment_id", appointment_id).execute()
 
     phone = config["configurable"]["phone"]
     formatted_new = new_start.strftime("%d/%m/%Y às %H:%M")
