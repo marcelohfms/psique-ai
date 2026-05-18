@@ -164,15 +164,18 @@ async def collect_info_node(state: ConversationState, config: RunnableConfig) ->
         db_payload = {_STATE_TO_DB[k]: v for k, v in extracted.items() if k in _STATE_TO_DB}
         if "preferred_doctor" in extracted:
             db_payload["doctor_id"] = DOCTOR_IDS.get(extracted["preferred_doctor"])
+        result_update: dict = {**extracted, "messages": [AIMessage(content=next_q)]}
         if db_payload:
             try:
-                await upsert_user(state["phone"], db_payload, user_id=state.get("user_db_id"))
+                returned_id = await upsert_user(state["phone"], db_payload, user_id=state.get("user_db_id"))
+                if returned_id and not state.get("user_db_id"):
+                    result_update["user_db_id"] = returned_id
             except Exception:
                 import logging as _log
                 _log.getLogger(__name__).exception("Failed to persist partial collect_info data")
         await send_text(state["phone"], next_q)
         await save_message(state["phone"], "assistant", next_q)
-        return {**extracted, "messages": [AIMessage(content=next_q)]}
+        return result_update
 
     def _last_ai() -> str:
         for msg in reversed(state["messages"]):
@@ -199,14 +202,34 @@ async def collect_info_node(state: ConversationState, config: RunnableConfig) ->
     _EMAIL_Q_CADASTRO = "Qual o seu e-mail para cadastro?"
     _MED_Q = "Qual medicação você precisa na receita?"
 
-    # Step 1: greeting + first question only when user already made a specific request
+    # Step 1: greeting + first MISSING question (skip fields already in state)
     if not _has_greeted and _has_request:
-        greeting = (
-            "Olá! 😊 Sou a Eva, assistente virtual da Clínica Psique.\n\n"
-            "Claro, posso te ajudar com isso! Mas primeiro precisarei colher algumas informações.\n\n"
-            + _NAME_Q
-        )
-        return await _ask(greeting)
+        _pat_age_for_greeting = state.get("patient_age") or 99
+        if not state.get("user_name"):
+            first_q = _NAME_Q
+        elif not state.get("patient_cpf"):
+            first_q = _CPF_Q
+        elif not state.get("birth_date"):
+            first_q = _BIRTH_Q
+        elif _pat_age_for_greeting < 18 and not state.get("guardian_name"):
+            first_q = _GUARDIAN_NAME_Q
+        elif _pat_age_for_greeting < 18 and not state.get("guardian_cpf"):
+            first_q = _GUARDIAN_CPF_Q
+        elif state.get("is_patient") is None:
+            first_q = _PATIENT_Q
+        elif not state.get("preferred_doctor"):
+            first_q = _DOCTOR_Q
+        elif not state.get("patient_email"):
+            first_q = _EMAIL_Q if _is_document else _EMAIL_Q_CADASTRO
+        else:
+            first_q = None  # all fields present — fall through to LLM
+        if first_q:
+            greeting = (
+                "Olá! 😊 Sou a Eva, assistente virtual da Clínica Psique.\n\n"
+                "Claro, posso te ajudar com isso! Mas primeiro precisarei colher algumas informações.\n\n"
+                + first_q
+            )
+            return await _ask(greeting)
 
     # Steps 2-8 only run when user has made a specific request
     if _has_request:

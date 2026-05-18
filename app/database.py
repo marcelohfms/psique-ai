@@ -79,27 +79,47 @@ async def get_user_by_phone(phone: str) -> dict | None:
     return active or rows[0]
 
 
-async def upsert_user(phone: str, data: dict, user_id: str | None = None) -> None:
-    """Insert or update a user record.
+async def upsert_user(phone: str, data: dict, user_id: str | None = None) -> str | None:
+    """Insert or update a user record. Returns the user's ID.
 
-    When user_id is given, updates that specific record.
-    Otherwise resolves the record by phone: updates if exactly one found,
-    inserts if none found, updates the active one if multiple found.
+    Resolution order:
+    1. If user_id is given → update that specific row.
+    2. If data contains patient_name → look for an existing row with the same
+       (phone, patient_name). If found → update it (never create a duplicate).
+    3. If no rows exist → insert a new row.
+    4. Fallback → update the single row, or the active one among multiple rows.
     """
     client = await get_supabase()
     if user_id:
         await client.from_("users").update(data).eq("id", user_id).execute()
-        return
+        return user_id
+
     rows = await get_users_by_phone(phone)
-    if len(rows) == 0:
-        canonical = _phone_variants(phone)[0]
-        await client.from_("users").insert({"number": canonical, **data}).execute()
-    elif len(rows) == 1:
-        await client.from_("users").update(data).eq("id", rows[0]["id"]).execute()
-    else:
-        # Multiple patients — update the active one to avoid overwriting the wrong record
-        target = next((r for r in rows if r.get("active")), rows[0])
+
+    # Try to match an existing row by patient_name to avoid duplicates
+    target: dict | None = None
+    if rows and "patient_name" in data and data["patient_name"]:
+        name_lower = data["patient_name"].lower().strip()
+        target = next(
+            (r for r in rows
+             if (r.get("patient_name") or r.get("name") or "").lower().strip() == name_lower),
+            None,
+        )
+
+    if target:
         await client.from_("users").update(data).eq("id", target["id"]).execute()
+        return target["id"]
+
+    if not rows:
+        canonical = _phone_variants(phone)[0]
+        result = await client.from_("users").insert({"number": canonical, **data}).execute()
+        inserted = (result.data or [{}])[0]
+        return inserted.get("id")
+
+    # No name match — update single row or active one (safe fallback)
+    fallback = rows[0] if len(rows) == 1 else next((r for r in rows if r.get("active")), rows[0])
+    await client.from_("users").update(data).eq("id", fallback["id"]).execute()
+    return fallback["id"]
 
 
 # ── Event tracking ────────────────────────────────────────────────────────────
