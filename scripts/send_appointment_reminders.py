@@ -50,7 +50,7 @@ async def send_reminder_template(phone: str, template_name: str, first_name: str
 
 
 def _plain_message(template_name: str, first_name: str, doctor_label: str, time_str: str) -> str:
-    if template_name == "lembrete_dia_anterior":
+    if template_name == "lembrete_dia_anteior":
         return (
             f"Olá! Lembrete da Psiquê: {first_name} tem consulta amanhã "
             f"com {doctor_label} às {time_str}. Consegue confirmar a presença?"
@@ -157,7 +157,7 @@ async def main():
 
     try:
         batch = [
-            *((a, "lembrete_dia_anterior", "reminder_day_before_sent_at") for a in day_before_appts),
+            *((a, "lembrete_dia_anteior", "reminder_day_before_sent_at") for a in day_before_appts),
             *((a, "lembrete_dia_consulta", "reminder_day_of_sent_at") for a in day_of_appts),
         ]
 
