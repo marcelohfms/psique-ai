@@ -347,6 +347,11 @@ async def confirm_appointment(
     except Exception:
         pass  # If check fails, proceed anyway — better to double-book than block
 
+    # Enforce per-patient modality restriction (set by doctor, stored in users table)
+    patient_modality_restriction = state.get("modality_restriction")
+    if patient_modality_restriction in ("online", "presencial"):
+        modality = patient_modality_restriction
+
     # Enforce modality constraints from schedule
     from app.google_calendar import get_modality_for_slot
     slot_constraint = get_modality_for_slot(doctor, start)

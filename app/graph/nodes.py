@@ -108,6 +108,7 @@ async def collect_info_node(state: ConversationState, config: RunnableConfig) ->
                     "guardian_cpf": selected.get("guardian_cpf"),
                     "guardian_relationship": selected.get("guardian_relationship"),
                     "patient_cpf": selected.get("patient_cpf"),
+                    "modality_restriction": selected.get("modality_restriction"),
                     "stage": "patient_agent",
                     "messages": [],
                 }
@@ -455,6 +456,15 @@ async def patient_agent_node(state: ConversationState, config: RunnableConfig) -
                 "pergunte antes de informar o valor. "
                 "Faça isso independentemente do assunto da conversa."
             )
+
+    # Inject modality restriction if set for this patient
+    modality_restriction = state.get("modality_restriction")
+    if modality_restriction:
+        label = "apenas presencial" if modality_restriction == "presencial" else "apenas online"
+        system_prompt += (
+            f"\n\nRESTRIÇÃO DE MODALIDADE: Este paciente só pode ser atendido em modo {label}. "
+            f"NÃO pergunte a preferência de modalidade — use sempre {label} ao chamar confirm_appointment."
+        )
 
     # Inject upcoming appointments so the LLM knows what already exists
     upcoming = await get_upcoming_appointments(state["phone"])
