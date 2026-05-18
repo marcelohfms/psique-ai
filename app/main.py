@@ -283,7 +283,7 @@ async def admin_patch_state(request: Request, x_admin_secret: str | None = Heade
     try:
         from langchain_core.messages import HumanMessage as _HM
         await graph_module.chatbot.ainvoke(
-            {"messages": [_HM(content="[sistema-interno]: retomar")]},
+            {"messages": [_HM(content="[sistema-interno]: retomar")], "phone": phone},
             config,
         )
         triggered = True
