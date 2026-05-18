@@ -101,8 +101,10 @@ async def main():
     two_hours_later = now + timedelta(hours=2)
 
     # ── Day-before reminders: send between 07h-20h Recife ────────────────────
+    # Only remind patients who booked at least 12h ago (avoid reminding same-day bookings)
     day_before_appts = []
     if 7 <= now.hour < 20:
+        booked_before = (now - timedelta(hours=12)).isoformat()
         result = await (
             client.from_("appointments")
             .select("appointment_id, start_time, doctor_id, users(number, patient_name, name)")
@@ -110,6 +112,7 @@ async def main():
             .is_("reminder_day_before_sent_at", "null")
             .gte("start_time", f"{tomorrow_start}T00:00:00")
             .lt("start_time", f"{tomorrow_end}T00:00:00")
+            .lte("created_at", booked_before)
             .execute()
         )
         day_before_appts = result.data or []
