@@ -16,6 +16,18 @@ TZ = ZoneInfo(TIMEZONE)
 #   "escolha"                 — patient chooses online or presencial
 #   "presencial_sob_consulta" — presencial possible but requires human confirmation
 # Edit here to change doctor availability — no other file needs to change.
+# Date-specific exceptions that override DOCTOR_SCHEDULES for a single day.
+# Key: "YYYY-MM-DD", Value: list of windows (same tuple format as DOCTOR_SCHEDULES).
+# Empty list means the doctor does not work on that date.
+SCHEDULE_EXCEPTIONS: dict[str, dict[str, list[tuple[int, int, int, int, str]]]] = {
+    "julio": {
+        "2026-06-01": [(9, 0, 12, 0, "escolha"), (14, 0, 19, 0, "escolha")],  # Segunda: adiciona tarde
+        "2026-06-02": [],                                                       # Terça: sem atendimento
+        "2026-06-03": [],                                                       # Quarta: sem atendimento
+        "2026-06-04": [],                                                       # Quinta: sem atendimento
+    },
+}
+
 DOCTOR_SCHEDULES: dict[str, dict[int, list[tuple[int, int, int, int, str]]]] = {
     "bruna": {
         0: [(7, 30, 8, 30, "online"), (16, 30, 18, 30, "online")],   # Segunda — tudo online
@@ -93,7 +105,7 @@ def get_modality_for_slot(doctor_key: str, slot_dt: datetime) -> str:
 
 
 SHIFT_HOURS: dict[str, tuple[int, int]] = {
-    "manha":  (8, 12),
+    "manha":  (7, 12),
     "tarde":  (13, 18),
     "noite":  (18, 21),
 }
@@ -220,8 +232,17 @@ async def get_available_slots(
     shift = _normalize_shift(preferred_shift)
     shift_start_h, shift_end_h = SHIFT_HOURS.get(shift, (8, 18))
 
-    if doctor_schedule:
+    # Check for date-specific exception first
+    date_key = target_date.isoformat()
+    doctor_exceptions = SCHEDULE_EXCEPTIONS.get(doctor_key or "", {})
+    if date_key in doctor_exceptions:
+        day_windows_raw = doctor_exceptions[date_key]  # may be [] (no work that day)
+    elif doctor_schedule:
         day_windows_raw = doctor_schedule.get(weekday)
+    else:
+        day_windows_raw = None
+
+    if doctor_schedule or date_key in doctor_exceptions:
         if day_windows_raw is None:
             return []  # doctor doesn't work on this day
         # Keep only windows that overlap with the requested shift
@@ -251,12 +272,23 @@ async def get_available_slots(
     overall_start = min(w[0] for w in windows)
     overall_end = max(w[1] for w in windows)
 
+    import logging as _log2
+    _log2.getLogger(__name__).warning(
+        "GET_SLOTS_START doctor=%s calendar=%s date=%s windows=%s",
+        doctor_key, calendar_id, target_date,
+        [(w[0].strftime("%H:%M"), w[1].strftime("%H:%M")) for w in windows],
+    )
+
     creds = _credentials()
     service = build("calendar", "v3", credentials=creds)
     loop = asyncio.get_event_loop()
-    busy_raw = await loop.run_in_executor(
-        None, _get_busy, service, calendar_id, overall_start, overall_end
-    )
+    try:
+        busy_raw = await loop.run_in_executor(
+            None, _get_busy, service, calendar_id, overall_start, overall_end
+        )
+    except Exception as _e:
+        _log2.getLogger(__name__).error("GET_SLOTS_BUSY_ERROR doctor=%s calendar=%s error=%s", doctor_key, calendar_id, _e)
+        busy_raw = []
 
     busy_ranges = []
     for b in busy_raw:
@@ -278,6 +310,25 @@ async def get_available_slots(
             if current >= min_start and not any(current < be and slot_end > bs for bs, be in busy_ranges):
                 slots.append((current, modality))
             current += slot_delta
+
+    # Safety net: discard any slot that falls outside the doctor's defined schedule
+    # windows (catches edge-cases where doctor_key was missing or mismatched).
+    if doctor_key and doctor_key in DOCTOR_SCHEDULES:
+        validated: list[tuple[datetime, str]] = []
+        exc_map = SCHEDULE_EXCEPTIONS.get(doctor_key, {})
+        for slot_dt, mod in slots:
+            slot_date_key = slot_dt.date().isoformat()
+            if slot_date_key in exc_map:
+                day_wins = exc_map[slot_date_key]
+            else:
+                day_wins = DOCTOR_SCHEDULES[doctor_key].get(slot_dt.weekday(), [])
+            slot_min = slot_dt.hour * 60 + slot_dt.minute
+            if any(
+                (sh * 60 + sm) <= slot_min < (eh * 60 + em)
+                for sh, sm, eh, em, _ in day_wins
+            ):
+                validated.append((slot_dt, mod))
+        slots = validated
 
     slots.sort(key=lambda x: x[0])
     return slots

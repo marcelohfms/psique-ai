@@ -168,6 +168,44 @@ async def test_confirm_appointment_rolls_back_calendar_on_db_failure():
     mock_cancel.assert_awaited_once_with("cal123", "evt-rollback")
 
 
+async def test_confirm_appointment_presencial_sob_consulta_blocked_without_silent_mode():
+    """confirm_appointment deve bloquear presencial em slot presencial_sob_consulta fora do silent mode."""
+    from app.graph.tools import confirm_appointment
+    with patch("app.graph.tools._get_doctor_calendar_id", new_callable=AsyncMock, return_value="cal123"), \
+         patch("app.google_calendar.get_modality_for_slot", return_value="presencial_sob_consulta"), \
+         patch("app.google_calendar._credentials", side_effect=Exception("skip")):
+        result = await confirm_appointment.coroutine(
+            slot_datetime="2026-05-22T14:00:00",
+            slot_duration_minutes=60,
+            state=_make_state(),
+            config=CONFIG,
+            modality="presencial",
+        )
+    assert "transfer_to_human" in result or "AÇÃO NECESSÁRIA" in result
+
+
+async def test_confirm_appointment_presencial_sob_consulta_allowed_in_silent_mode():
+    """confirm_appointment deve permitir presencial em slot presencial_sob_consulta quando silent_mode=True."""
+    from app.graph.tools import confirm_appointment
+    client, _, _ = _make_supabase_client()
+    with patch("app.graph.tools._get_doctor_calendar_id", new_callable=AsyncMock, return_value="cal123"), \
+         patch("app.google_calendar.get_modality_for_slot", return_value="presencial_sob_consulta"), \
+         patch("app.google_calendar._credentials", side_effect=Exception("skip")), \
+         patch("app.google_calendar.create_event", new_callable=AsyncMock, return_value="evt-silent"), \
+         patch("app.graph.tools.get_supabase", new_callable=AsyncMock, return_value=client), \
+         patch("app.graph.tools.get_user_by_phone", new_callable=AsyncMock, return_value={"id": "u1"}), \
+         patch("app.graph.tools.log_event", new_callable=AsyncMock), \
+         patch("app.graph.tools._notify_clinic", new_callable=AsyncMock):
+        result = await confirm_appointment.coroutine(
+            slot_datetime="2026-05-22T14:00:00",
+            slot_duration_minutes=60,
+            state=_make_state(silent_mode=True),
+            config=CONFIG,
+            modality="presencial",
+        )
+    assert "evt-silent" in result or "confirmad" in result.lower()
+
+
 # ── cancel_appointment ────────────────────────────────────────────────────────
 
 async def test_cancel_appointment_cancels_and_notifies():
@@ -346,7 +384,7 @@ async def test_register_payment_appends_sheet_and_notifies():
     from app.graph.tools import register_payment
     client, table, execute = _make_supabase_client_with_appointment()
     with patch("app.graph.tools.get_supabase", new_callable=AsyncMock, return_value=client), \
-         patch("app.graph.tools.get_user_by_phone", new_callable=AsyncMock, return_value={"id": "user-123", "patient_name": "Maria"}), \
+         patch("app.graph.tools.get_users_by_phone", new_callable=AsyncMock, return_value=[{"id": "user-123", "patient_name": "Maria"}]), \
          patch("app.graph.tools.log_event", new_callable=AsyncMock), \
          patch("app.google_drive.rename_file", new_callable=AsyncMock), \
          patch("app.google_sheets.append_payment_receipt", new_callable=AsyncMock) as mock_sheets, \
@@ -374,7 +412,7 @@ async def test_register_payment_rename_failure_still_succeeds():
     from app.graph.tools import register_payment
     client, _, _ = _make_supabase_client_with_appointment()
     with patch("app.graph.tools.get_supabase", new_callable=AsyncMock, return_value=client), \
-         patch("app.graph.tools.get_user_by_phone", new_callable=AsyncMock, return_value={"id": "user-123"}), \
+         patch("app.graph.tools.get_users_by_phone", new_callable=AsyncMock, return_value=[{"id": "user-123", "patient_name": "Maria"}]), \
          patch("app.graph.tools.log_event", new_callable=AsyncMock), \
          patch("app.google_drive.rename_file", new_callable=AsyncMock, side_effect=Exception("Drive unavailable")), \
          patch("app.google_sheets.append_payment_receipt", new_callable=AsyncMock), \
@@ -415,21 +453,141 @@ async def test_transfer_to_human_unassigns_chatwoot_bot(mock_send_text):
         mock_unassign.assert_called_once_with(77)
 
 
-async def test_register_payment_sets_paid_at():
+async def test_register_payment_sets_booking_fee_paid_at():
+    """R$100 payment should set booking_fee_paid_at (taxa de reserva), not paid_at."""
     from app.graph.tools import register_payment
     client, table, execute = _make_supabase_client_with_appointment()
     with patch("app.graph.tools.get_supabase", new_callable=AsyncMock, return_value=client), \
-         patch("app.graph.tools.get_user_by_phone", new_callable=AsyncMock, return_value={"id": "user-123"}), \
+         patch("app.graph.tools.get_users_by_phone", new_callable=AsyncMock, return_value=[{"id": "user-123", "patient_name": "Maria"}]), \
          patch("app.graph.tools.log_event", new_callable=AsyncMock), \
          patch("app.google_drive.rename_file", new_callable=AsyncMock), \
          patch("app.google_sheets.append_payment_receipt", new_callable=AsyncMock), \
          patch("app.graph.tools.send_text", new_callable=AsyncMock):
-        await register_payment.coroutine(
+        result = await register_payment.coroutine(
             amount="100,00",
             drive_link="https://drive.google.com/file/d/abc/view",
             state=_make_state(),
             config=CONFIG,
         )
-    # Verify paid_at was set in an update call
+    # R$100 → taxa de reserva: only booking_fee_paid_at should be set, not paid_at
+    update_calls = [c for c in table.update.call_args_list if "booking_fee_paid_at" in c[0][0]]
+    assert len(update_calls) == 1
+    paid_at_calls = [c for c in table.update.call_args_list if "paid_at" in c[0][0] and "booking_fee_paid_at" not in c[0][0]]
+    assert len(paid_at_calls) == 0
+    assert "taxa de reserva registrada" in result
+
+
+async def test_register_payment_full_amount_sets_paid_at():
+    """Full payment (>= expected) should set both paid_at and booking_fee_paid_at."""
+    from app.graph.tools import register_payment
+    client, table, execute = _make_supabase_client_with_appointment()
+    with patch("app.graph.tools.get_supabase", new_callable=AsyncMock, return_value=client), \
+         patch("app.graph.tools.get_users_by_phone", new_callable=AsyncMock, return_value=[{"id": "user-123", "patient_name": "Maria"}]), \
+         patch("app.graph.tools.log_event", new_callable=AsyncMock), \
+         patch("app.google_drive.rename_file", new_callable=AsyncMock), \
+         patch("app.google_sheets.append_payment_receipt", new_callable=AsyncMock), \
+         patch("app.graph.tools.send_text", new_callable=AsyncMock):
+        result = await register_payment.coroutine(
+            amount="550,00",
+            drive_link="https://drive.google.com/file/d/abc/view",
+            state=_make_state(),
+            config=CONFIG,
+        )
+    # Full payment: both paid_at and booking_fee_paid_at should be set
     update_calls = [c for c in table.update.call_args_list if "paid_at" in c[0][0]]
     assert len(update_calls) == 1
+    assert "QUITADA" in result
+
+
+# ── update_patient_ages script logic ─────────────────────────────────────────
+
+def test_age_from_birth_date_dd_mm_yyyy():
+    from scripts.update_patient_ages import _age_from_birth_date
+    from datetime import date
+    today = date(2026, 5, 18)
+    # Birthday already passed this year
+    assert _age_from_birth_date("10/03/1990", today) == 36
+    # Birthday not yet reached this year
+    assert _age_from_birth_date("20/07/1990", today) == 35
+
+
+def test_age_from_birth_date_iso():
+    from scripts.update_patient_ages import _age_from_birth_date
+    from datetime import date
+    today = date(2026, 5, 18)
+    assert _age_from_birth_date("1990-03-10", today) == 36
+
+
+def test_age_from_birth_date_exact_birthday():
+    from scripts.update_patient_ages import _age_from_birth_date
+    from datetime import date
+    today = date(2026, 5, 18)
+    assert _age_from_birth_date("18/05/1990", today) == 36  # birthday today → counts
+
+
+def test_age_from_birth_date_minor():
+    from scripts.update_patient_ages import _age_from_birth_date
+    from datetime import date
+    today = date(2026, 5, 18)
+    assert _age_from_birth_date("15/03/2015", today) == 11
+    assert _age_from_birth_date("15/03/2015", today) < 18
+
+
+def test_age_from_birth_date_invalid_returns_none():
+    from scripts.update_patient_ages import _age_from_birth_date
+    assert _age_from_birth_date("not-a-date") is None
+    assert _age_from_birth_date("") is None
+    assert _age_from_birth_date(None) is None
+
+
+async def test_update_patient_ages_only_updates_changed():
+    """Script must update only rows where age differs from birth_date calculation."""
+    from scripts.update_patient_ages import main
+    from datetime import date
+    from unittest.mock import AsyncMock, MagicMock, patch
+
+    today = date(2026, 5, 18)
+
+    users = [
+        # age already correct — must NOT be updated
+        {"id": "u1", "name": "Alice", "patient_name": None, "birth_date": "10/03/1990", "age": 36},
+        # age wrong (didn't update last year) — must be updated
+        {"id": "u2", "name": "Bob",   "patient_name": None, "birth_date": "10/03/1990", "age": 35},
+        # no stored age — must be updated
+        {"id": "u3", "name": "Carol", "patient_name": None, "birth_date": "20/07/2015", "age": None},
+    ]
+
+    # Build a single chain mock that handles all builder patterns:
+    # .select().not_.is_().execute()  AND  .update().eq().execute()
+    chain = MagicMock()
+    chain.execute = AsyncMock(return_value=MagicMock(data=users))
+    chain.not_ = chain        # attribute access (not a call)
+    chain.is_.return_value = chain
+    chain.eq.return_value = chain
+
+    table = MagicMock()
+    table.select.return_value = chain
+    # Each .update() call must return a fresh chain with its own execute tracker
+    update_execute = AsyncMock(return_value=MagicMock(data=[]))
+    update_chain = MagicMock()
+    update_chain.eq.return_value = update_chain
+    update_chain.execute = update_execute
+    table.update.return_value = update_chain
+
+    client = MagicMock()
+    client.from_.return_value = table
+
+    with patch("scripts.update_patient_ages.date") as mock_date, \
+         patch("supabase.acreate_client", new_callable=AsyncMock, return_value=client):
+        mock_date.today.return_value = today
+        mock_date.side_effect = lambda *a, **kw: date(*a, **kw)
+        await main()
+
+    # update() should have been called exactly twice (u2 and u3)
+    assert table.update.call_count == 2
+    updated_ids = {call.args[0]["age"] for call in table.update.call_args_list}
+    # Both updates set age=36 (u2: corrects stale age; u3: was None → now 10)
+    # u3 born 20/07/2015, today 18/05/2026 → age 10
+    ages_written = [call.args[0]["age"] for call in table.update.call_args_list]
+    assert 36 in ages_written   # u2 corrected
+    assert 10 in ages_written   # u3 filled in

@@ -6,7 +6,7 @@ AI WhatsApp chatbot for Psique psychiatry clinic. Built with FastAPI + LangGraph
 - **FastAPI** — webhook receiver
 - **LangGraph** — conversation state machine
 - **OpenAI** — LLM (GPT-4o)
-- **UAZAPI** — WhatsApp API (`https://psique.uazapi.com`)
+- **Meta WhatsApp API** — envio via Chatwoot, recebimento via webhook Meta Cloud API
 - **Google Calendar** — appointment scheduling
 
 ## Run locally
@@ -37,7 +37,7 @@ Run: `uv run pytest --tb=short`
 **When implementing any new feature or modifying existing behavior, you MUST:**
 1. Check whether existing tests in `tests/` cover the affected code paths.
 2. Update tests that break due to the change.
-3. Add new tests for the new behavior — unit tests for pure logic, mocked integration tests for code that touches Supabase / Google Calendar / UAZAPI / OpenAI.
+3. Add new tests for the new behavior — unit tests for pure logic, mocked integration tests for code that touches Supabase / Google Calendar / Meta WhatsApp API / OpenAI.
 4. Keep the same structure: one file per layer (`test_webhook`, `test_process_message`, `test_tools`, `test_calendar`, `test_buffer`). Add a new file only when introducing an entirely new module.
 
 All tests must pass on CI (`.github/workflows/test.yml`) before merging to `main`.

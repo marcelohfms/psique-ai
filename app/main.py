@@ -6,6 +6,8 @@ from datetime import datetime, timezone, timedelta
 from dotenv import load_dotenv
 load_dotenv()
 
+logging.basicConfig(level=logging.INFO, format="%(levelname)s:%(name)s:%(message)s")
+
 
 from fastapi import FastAPI, Request, Response, Header, HTTPException
 from langchain_core.messages import HumanMessage
@@ -135,6 +137,16 @@ async def extract_message(payload: dict) -> tuple[str, str] | None:
     if msg_type == "document":
         mime = msg.get("document", {}).get("mime_type", "").lower()
         if "pdf" in mime:
+            media_id = msg.get("document", {}).get("id", "")
+            if media_id:
+                try:
+                    from app.whatsapp import download_media
+                    from app.media import describe_pdf_bytes
+                    pdf_bytes = await download_media(media_id)
+                    text = await describe_pdf_bytes(pdf_bytes, phone)
+                    return phone, text
+                except Exception:
+                    logger.exception("Failed to process PDF media_id=%s", media_id)
             return phone, "[pdf-recebido]"
         return None  # other document types: ignore
 
@@ -311,10 +323,45 @@ async def process_message(phone: str, text: str) -> None:
 
     snapshot = await graph_module.chatbot.aget_state(config)
     if snapshot.values:
-        state_update = {"messages": [HumanMessage(content=text)]}
+        state_update = {"messages": [HumanMessage(content=text)], "silent_mode": False}
+        # If the conversation is still in collect_info, re-sync any fields that
+        # were filled in the DB since the conversation started (e.g. by an attendant).
+        # If the patient is already fully registered, skip collect_info entirely.
+        if snapshot.values.get("stage") == "collect_info" and existing:
+            if existing.get("name") and existing.get("is_patient") is not None:
+                # Patient is registered — no need to go through collect_info again
+                state_update["stage"] = "patient_agent"
+            db_sync: dict = {}
+            _syncable = {
+                "name":       "user_name",
+                "patient_name": "patient_name",
+                "age":        "patient_age",
+                "birth_date": "birth_date",
+                "email":      "patient_email",
+                "doctor_id":  None,   # handled separately below
+                "is_patient": "is_patient",
+                "guardian_name": "guardian_name",
+                "guardian_cpf":  "guardian_cpf",
+                "guardian_relationship": "guardian_relationship",
+                "patient_cpf": "patient_cpf",
+            }
+            for db_field, state_field in _syncable.items():
+                if state_field is None:
+                    continue
+                db_val = existing.get(db_field)
+                if db_val is not None and snapshot.values.get(state_field) is None:
+                    db_sync[state_field] = db_val
+            # doctor_id → preferred_doctor key
+            if existing.get("doctor_id") and snapshot.values.get("preferred_doctor") is None:
+                db_sync["preferred_doctor"] = DOCTOR_NAMES.get(existing["doctor_id"])
+            if db_sync:
+                state_update.update(db_sync)
     else:
         await log_event("conversation_started", phone)
-        _REQUIRED = ("name", "patient_name", "age", "is_patient", "birth_date", "email")
+        # Only name + is_patient are required to route to patient_agent.
+        # Missing birth_date, email, CPF etc. are collected in context when actually needed,
+        # not upfront — avoids interrogating registered patients at every conversation start.
+        _REQUIRED = ("name", "is_patient")
         user_known = existing and all(existing.get(f) is not None for f in _REQUIRED)
 
         if user_known:
@@ -406,6 +453,8 @@ def _extract_chatwoot_message(payload: dict) -> tuple[str, str | None, int] | No
     """
     if payload.get("message_type") not in (0, "incoming"):
         return None
+    if payload.get("sender", {}).get("type") in ("agent_bot", "bot"):
+        return None
     content = (payload.get("content") or "").strip() or None
     attachments = payload.get("attachments", [])
     if not content and not attachments:
@@ -428,7 +477,7 @@ def _extract_chatwoot_message(payload: dict) -> tuple[str, str | None, int] | No
 async def _process_chatwoot_attachments(attachments: list) -> str | None:
     """Download and process the first recognisable attachment (audio or image)."""
     import httpx
-    from app.media import transcribe_audio_bytes, describe_image_bytes
+    from app.media import transcribe_audio_bytes, describe_image_bytes, describe_pdf_bytes
 
     for att in attachments:
         file_type = (att.get("file_type") or "").lower()
@@ -445,7 +494,9 @@ async def _process_chatwoot_attachments(attachments: list) -> str | None:
             if file_type == "image":
                 return await describe_image_bytes(media_bytes)
             if file_type == "file":
-                # Non-image file (PDF, etc.) — ask patient to resend as image
+                content_type = (att.get("content_type") or "").lower()
+                if "pdf" in content_type or data_url.lower().endswith(".pdf"):
+                    return await describe_pdf_bytes(media_bytes)
                 return "[pdf-recebido]"
         except Exception:
             logger.exception("Failed to process Chatwoot attachment type=%s url=%.80s", file_type, data_url)
@@ -467,8 +518,14 @@ def _extract_phone_from_payload(payload: dict) -> str | None:
         conversation.get("meta", {}).get("sender", {}).get("phone_number")
         or payload.get("meta", {}).get("sender", {}).get("phone_number")
         or payload.get("sender", {}).get("phone_number")
+        # fallback: contact identifier (Evolution stores the raw number here)
+        or conversation.get("meta", {}).get("sender", {}).get("identifier")
+        or payload.get("contact", {}).get("phone_number")
         or ""
     ).strip()
+    logger.info("EXTRACT_PHONE raw=%r conversation_meta=%s",
+                phone_raw,
+                conversation.get("meta", {}).get("sender", {}))
     if not phone_raw:
         return None
     return phone_raw.lstrip("+") + "@s.whatsapp.net"
@@ -523,11 +580,27 @@ async def _handle_label_change(payload: dict) -> bool:
                     payload.get("conversation", {}).get("labels"),
                     payload.get("changed_attributes"))
         changed = payload.get("changed_attributes") or []
+        logger.info("CONV_UPDATED_CHANGED_ATTRS type=%s value=%s", type(changed).__name__, changed)
         label_change = next(
             (c for c in changed if isinstance(c, dict) and "labels" in c),
             None,
         )
         if label_change is None:
+            # Fallback: if eva-ativa is in current labels and not tracked yet, treat as added
+            conv_id = str(payload.get("conversation", {}).get("id") or "")
+            labels_now = frozenset(
+                payload.get("conversation", {}).get("labels")
+                or payload.get("labels")
+                or []
+            )
+            if conv_id:
+                previous = _conv_labels.get(conv_id, frozenset())
+                _conv_labels[conv_id] = labels_now
+                added = labels_now - previous
+                removed = previous - labels_now
+                logger.info("CONV_UPDATED_FALLBACK conv=%s added=%s removed=%s", conv_id, added, removed)
+                if _EVA_ACTIVE_LABEL in added or _EVA_INACTIVE_LABEL in added or _EVA_INACTIVE_LABEL in removed:
+                    return await _apply_eva_label_action(payload, added, removed)
             return False
 
         # Labels may be at payload["conversation"]["labels"] (agent-bot format)
@@ -594,11 +667,6 @@ async def _handle_attendant_note(payload: dict) -> None:
     if sender.get("type") in ("agent_bot", "bot"):
         return
 
-    conversation = payload.get("conversation", {})
-    conv_labels = set(conversation.get("labels") or [])
-    if _EVA_ACTIVE_LABEL not in conv_labels:
-        return  # only act when Eva is the active handler
-
     phone = _extract_phone_from_payload(payload)
     if not phone:
         return
@@ -607,16 +675,36 @@ async def _handle_attendant_note(payload: dict) -> None:
     if not content:
         return
 
-    logger.info("ATTENDANT_NOTE phone=%s content=%.120s", phone, content)
+    conv_id = payload.get("conversation", {}).get("id")
+    if conv_id:
+        from app.chatwoot import register_conversation
+        register_conversation(phone, conv_id)
+
+    logger.info("ATTENDANT_NOTE phone=%s conv=%s content=%.120s", phone, conv_id, content)
+
+    async def _run_silent(p: str, text: str) -> None:
+        config = {"configurable": {"thread_id": p, "phone": p}}
+        state_update = {"messages": [HumanMessage(content=text)], "silent_mode": True}
+        await graph_module.chatbot.ainvoke(state_update, config=config)
+
     instruction = f"[Instrução da atendente]: {content}"
-    await buffer_push(phone, instruction, process_message)
+    await buffer_push(phone, instruction, _run_silent)
 
 
 async def _handle_chatwoot_payload(payload: dict) -> None:
     try:
         # ── Private note from human agent → Eva instruction ───────────────────
-        if payload.get("private") and payload.get("message_type") == 1:
-            await _handle_attendant_note(payload)
+        logger.info(
+            "CHATWOOT_PAYLOAD event=%s private=%s message_type=%s sender_type=%s labels=%s",
+            payload.get("event"),
+            payload.get("private"),
+            payload.get("message_type"),
+            payload.get("sender", {}).get("type"),
+            payload.get("conversation", {}).get("labels"),
+        )
+        if payload.get("message_type") in (1, "outgoing"):
+            if payload.get("private"):
+                await _handle_attendant_note(payload)
             return
 
         # ── Label change: eva-inativa added/removed ───────────────────────────

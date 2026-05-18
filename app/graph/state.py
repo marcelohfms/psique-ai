@@ -42,3 +42,14 @@ class ConversationState(TypedDict):
     consultation_reason: str | None # motivo da consulta (apenas novos pacientes)
     referral_professional: str | None  # profissional que encaminhou (apenas novos pacientes)
     medication_note: str | None      # medicação solicitada (apenas para receitas)
+
+    # When True, Eva executes silently (attendant instruction via private note):
+    # posts result as a Chatwoot private note instead of sending a WhatsApp message.
+    silent_mode: bool | None
+
+    # Multi-patient support: when a phone has more than one patient, stores the list
+    # while the bot waits for the guardian to pick one.
+    pending_patients: list | None
+
+    # DB id of the patient selected during disambiguation (used for targeted upserts).
+    user_db_id: str | None

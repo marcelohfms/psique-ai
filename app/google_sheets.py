@@ -36,8 +36,8 @@ _CONTROLLED_FALLBACK: list[str] = [
     "dexanfetamina", "dextroamphetamine",
 ]
 
-# Column order: Data do Pagamento, Paciente, Médico, Data da Consulta, Valor, Telefone, Comprovante, Conferência Humana
-_PAYMENTS_SHEET_RANGE = "Pagamentos!A:H"
+# Column order: Data do Pagamento | Paciente | Médico | Data da Consulta | Valor | Telefone | Tipo | Comprovante | Conferência Humana
+_PAYMENTS_SHEET_RANGE = "Pagamentos!A:I"
 
 
 def _credentials() -> Credentials:
@@ -78,18 +78,31 @@ async def append_payment_receipt(
     appointment_dt: str,
     amount: str,
     drive_link: str,
+    payment_type: str = "",
 ) -> None:
     """Append a payment receipt row to the Pagamentos sheet.
     Does nothing if GOOGLE_SHEETS_PAYMENTS_ID is not configured.
-    Columns: Data do Pagamento | Paciente | Médico | Data da Consulta | Valor | Telefone | Comprovante | Conferência Humana
+    Columns: Data do Pagamento | Paciente | Médico | Data da Consulta | Valor | Telefone | Tipo | Comprovante | Conferência Humana
     """
     spreadsheet_id = os.environ.get("GOOGLE_SHEETS_PAYMENTS_ID")
     if not spreadsheet_id:
+        logger.error("GOOGLE_SHEETS_PAYMENTS_ID not set — payment receipt NOT recorded in spreadsheet")
         return
 
     now = datetime.now(TZ).strftime("%d/%m/%Y %H:%M")
     phone_clean = phone.replace("@s.whatsapp.net", "")
-    row = [now, patient_name, doctor_name, appointment_dt, amount, phone_clean, drive_link, ""]
+
+    # Show a clickable hyperlink with the filename instead of the raw URL
+    if drive_link:
+        safe_name = patient_name.replace(" ", "_")
+        amount_clean = amount.replace("R$", "").replace(" ", "").strip()
+        date_clean = appointment_dt.split(" ")[0].replace("/", "-") if appointment_dt != "—" else datetime.now(TZ).strftime("%d-%m-%Y")
+        filename = f"{safe_name}_{date_clean}_R${amount_clean}.jpg"
+        comprovante_cell = f'=HYPERLINK("{drive_link}","{filename}")'
+    else:
+        comprovante_cell = ""
+
+    row = [now, patient_name, doctor_name, appointment_dt, amount, phone_clean, payment_type, comprovante_cell, ""]
 
     creds = _credentials()
     service = build("sheets", "v4", credentials=creds)

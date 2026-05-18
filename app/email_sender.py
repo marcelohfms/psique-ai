@@ -66,6 +66,50 @@ async def send_clinic_notification_email(subject: str, body: str) -> None:
     )
 
 
+async def send_cancellation_email(
+    contact_name: str,
+    patient_name: str,
+    doctor_label: str,
+    date_str: str,
+    to_email: str,
+) -> None:
+    """Send appointment cancellation email to the patient/guardian."""
+    smtp_host = os.environ.get("SMTP_HOST")
+    smtp_port = int(os.environ.get("SMTP_PORT", "465"))
+    smtp_user = os.environ.get("SMTP_USER")
+    smtp_password = os.environ.get("SMTP_PASSWORD")
+
+    if not all([smtp_host, smtp_user, smtp_password, to_email]):
+        return
+
+    is_third_party = contact_name.strip().lower() != patient_name.strip().lower()
+    greeting = contact_name.split()[0]
+    consulta = f"a consulta de {patient_name}" if is_third_party else "sua consulta"
+
+    subject = f"Consulta cancelada — {patient_name}"
+    body = (
+        f"Olá, {greeting}.\n\n"
+        f"Infelizmente, como não recebemos o pagamento da taxa de reserva de {consulta} "
+        f"com {doctor_label} no dia {date_str} dentro do prazo de 2 horas, "
+        f"precisamos liberar a vaga.\n\n"
+        f"Caso queira reagendar, entre em contato conosco pelo WhatsApp — ficaremos felizes em atendê-lo(a).\n\n"
+        f"— Eva, assistente virtual Psique"
+    )
+
+    loop = asyncio.get_running_loop()
+    await loop.run_in_executor(
+        None,
+        _send_email,
+        smtp_host,
+        smtp_port,
+        smtp_user,
+        smtp_password,
+        to_email,
+        subject,
+        body,
+    )
+
+
 async def send_document_request_email(
     doctor_key: str,
     doctor_email: str,

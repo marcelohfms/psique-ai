@@ -32,21 +32,23 @@ DOCTOR_KEYS = {
 }
 
 
-def payment_reminder_message(first_name: str, doctor_label: str, date_str: str) -> str:
+def payment_reminder_message(contact_first_name: str, doctor_label: str, date_str: str, patient_first_name: str | None = None) -> str:
+    consulta = f"a consulta de *{patient_first_name}*" if patient_first_name else "sua consulta"
     return (
-        f"Olá, {first_name}! 😊 Só passando para lembrar que sua consulta com "
+        f"Olá, {contact_first_name}! 😊 Só passando para lembrar que {consulta} com "
         f"*{doctor_label}* no dia *{date_str}* ainda aguarda o pagamento da taxa "
         f"de reserva de R$ 100,00.\n\n"
-        f"💳 PIX: {os.environ.get('PIX_KEY', '42006684000178')}\n\n"
-        f"Assim que o pagamento for realizado, sua vaga estará garantida! "
+        f"💳 PIX: {os.environ.get('PIX_KEY', '42006848000178')}\n\n"
+        f"Assim que o pagamento for realizado, a vaga estará garantida! "
         f"Precisa de alguma ajuda ou tem alguma dúvida sobre o pagamento? É só me chamar aqui. 🙏"
     )
 
 
-def payment_cancel_message(first_name: str, doctor_label: str, date_str: str) -> str:
+def payment_cancel_message(contact_first_name: str, doctor_label: str, date_str: str, patient_first_name: str | None = None) -> str:
+    consulta = f"a consulta de *{patient_first_name}*" if patient_first_name else "sua consulta"
     return (
-        f"Olá, {first_name}. Infelizmente, como não recebemos o pagamento da taxa "
-        f"de reserva da sua consulta com *{doctor_label}* no dia *{date_str}* dentro "
+        f"Olá, {contact_first_name}. Infelizmente, como não recebemos o pagamento da taxa "
+        f"de reserva de {consulta} com *{doctor_label}* no dia *{date_str}* dentro "
         f"do prazo de 4 horas, precisamos liberar a vaga. 😔\n\n"
         f"Caso queira reagendar, é só nos chamar aqui! "
         f"Ficaremos felizes em atendê-lo(a). 💙"
@@ -117,9 +119,8 @@ async def main():
 
     now = datetime.now(TZ)
     two_hours_ago = (now - timedelta(hours=2)).isoformat()
-    four_hours_ago = (now - timedelta(hours=4)).isoformat()
 
-    # ── Step 1: 2h reminder (not yet reminded, booked >= 2h ago) ──────────────
+    # ── Step 1: 1st reminder (not yet reminded, booked >= 2h ago) ─────────────
     reminder_result = await (
         client.from_("appointments")
         .select("appointment_id, start_time, doctor_id, created_at, users(number, patient_name, name)")
@@ -130,20 +131,20 @@ async def main():
         .execute()
     )
     reminder_appts = reminder_result.data or []
-    print(f"Appointments needing 2h payment reminder: {len(reminder_appts)}")
+    print(f"Appointments needing payment reminder: {len(reminder_appts)}")
 
-    # ── Step 2: 4h cancellation (reminder sent, still unpaid, booked >= 4h ago)
+    # ── Step 2: cancellation (reminder sent >= 2h ago, still unpaid) ──────────
     cancel_result = await (
         client.from_("appointments")
-        .select("appointment_id, start_time, doctor_id, created_at, users(number, patient_name, name)")
+        .select("appointment_id, start_time, doctor_id, created_at, payment_reminder_sent_at, users(number, patient_name, name)")
         .eq("status", "scheduled")
         .is_("paid_at", "null")
         .not_.is_("payment_reminder_sent_at", "null")
-        .lte("created_at", four_hours_ago)
+        .lte("payment_reminder_sent_at", two_hours_ago)
         .execute()
     )
     cancel_appts = cancel_result.data or []
-    print(f"Appointments to auto-cancel (unpaid after 4h): {len(cancel_appts)}")
+    print(f"Appointments to auto-cancel (unpaid 2h after reminder): {len(cancel_appts)}")
 
     # Set up LangGraph checkpointer — same connection options as the main app
     # (prepare_threshold=None is required for pgbouncer in transaction mode)
@@ -175,14 +176,17 @@ async def main():
 
             user = appt.get("users") or {}
             phone = user.get("number", "")
-            patient_name = user.get("patient_name") or user.get("name") or "paciente"
-            first_name = patient_name.split()[0]
+            contact_name = user.get("name") or user.get("patient_name") or "paciente"
+            patient_name = user.get("patient_name") or ""
+            contact_first = contact_name.split()[0]
+            # Only pass patient name separately when contact and patient are different people
+            patient_first = patient_name.split()[0] if patient_name and patient_name != contact_name else None
             doctor_label = DOCTOR_LABELS.get(appt.get("doctor_id", ""), "médico(a)")
 
             if not phone:
                 continue
 
-            message = payment_reminder_message(first_name, doctor_label, date_str)
+            message = payment_reminder_message(contact_first, doctor_label, date_str, patient_first)
 
             try:
                 await send_whatsapp(phone, message)
@@ -203,15 +207,17 @@ async def main():
 
             user = appt.get("users") or {}
             phone = user.get("number", "")
-            patient_name = user.get("patient_name") or user.get("name") or "paciente"
-            first_name = patient_name.split()[0]
+            contact_name = user.get("name") or user.get("patient_name") or "paciente"
+            patient_name_full = user.get("patient_name") or ""
+            contact_first = contact_name.split()[0]
+            patient_first = patient_name_full.split()[0] if patient_name_full and patient_name_full != contact_name else None
             doctor_label = DOCTOR_LABELS.get(appt.get("doctor_id", ""), "médico(a)")
             doctor_id = appt.get("doctor_id", "")
 
             if not phone:
                 continue
 
-            message = payment_cancel_message(first_name, doctor_label, date_str)
+            message = payment_cancel_message(contact_first, doctor_label, date_str, patient_first)
 
             try:
                 # Cancel Google Calendar event
@@ -226,7 +232,25 @@ async def main():
                 await send_whatsapp(phone, message)
                 if graph:
                     await save_to_checkpoint(graph, phone, message, appt)
-                print(f"  [payment_cancel] Canceled and notified {phone} — {patient_name}")
+
+                try:
+                    from app.email_sender import send_clinic_notification_email
+                    subject = f"Consulta cancelada por falta de pagamento — {patient_name_full or contact_name}"
+                    body = (
+                        f"A consulta abaixo foi cancelada automaticamente por falta de pagamento da taxa de reserva.\n\n"
+                        f"Paciente: {patient_name_full or contact_name}\n"
+                        f"Responsável: {contact_name}\n"
+                        f"Médico(a): {doctor_label}\n"
+                        f"Data/hora: {date_str}\n"
+                        f"WhatsApp: {phone}\n\n"
+                        f"A vaga foi liberada no Google Calendar."
+                    )
+                    await send_clinic_notification_email(subject, body)
+                    print(f"  [payment_cancel] Clinic notification email sent.")
+                except Exception as e:
+                    print(f"  Failed to send clinic notification email: {e}")
+
+                print(f"  [payment_cancel] Canceled and notified {phone} — {patient_name_full}")
             except Exception as e:
                 print(f"  Failed to cancel for {phone}: {e}")
 

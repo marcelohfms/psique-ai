@@ -69,7 +69,8 @@ async def test_collect_info_node_overrides_reply_on_invalid_birth_date():
     }
     with patch("app.graph.nodes._get_collect_llm") as mock_llm_fn, \
          patch("app.graph.nodes.send_text", new_callable=AsyncMock) as mock_send, \
-         patch("app.graph.nodes.save_message", new_callable=AsyncMock):
+         patch("app.graph.nodes.save_message", new_callable=AsyncMock), \
+         patch("app.graph.nodes.get_users_by_phone", new_callable=AsyncMock, return_value=[]):
         mock_llm = MagicMock()
         mock_llm.ainvoke = AsyncMock(return_value=invalid_result)
         mock_llm_fn.return_value = mock_llm
@@ -79,17 +80,18 @@ async def test_collect_info_node_overrides_reply_on_invalid_birth_date():
     assert "dd/mm/aaaa" in sent_text
     assert "Anotei" not in sent_text  # original reply must not be sent
 
-# A user record that has all required fields filled in
+# A user record with only the minimum required fields (name + is_patient).
+# Intentionally missing birth_date, email, age — they should NOT trigger collect_info.
 _KNOWN_USER = {
     "id": "user-uuid-123",
     "number": "5583999999999",
     "name": "Maria",
     "patient_name": "Maria",
-    "age": 30,
+    "age": None,
     "is_patient": True,
     "doctor_id": "d5baa58b-a788-4f40-b8c0-512c189150be",  # julio
-    "birth_date": "1994-01-01",
-    "email": "maria@example.com",
+    "birth_date": None,
+    "email": None,
     "active": True,
 }
 
@@ -155,6 +157,29 @@ async def test_known_user_goes_to_patient_agent():
         gg.chatbot = original
 
 
+async def test_known_user_missing_optional_fields_goes_to_patient_agent():
+    """A registered patient missing birth_date/email/age must go to patient_agent, not collect_info."""
+    import app.graph.graph as gg
+    chatbot = _make_chatbot()
+    original = gg.chatbot
+    gg.chatbot = chatbot
+    incomplete_user = {
+        **_KNOWN_USER,
+        "birth_date": None,
+        "email": None,
+        "age": None,
+    }
+    try:
+        with patch("app.main.get_user_by_phone", new_callable=AsyncMock, return_value=incomplete_user), \
+             patch("app.main.log_event", new_callable=AsyncMock):
+            from app.main import process_message
+            await process_message(PHONE, "oi")
+            state_update = chatbot.ainvoke.call_args[0][0]
+            assert state_update["stage"] == "patient_agent"
+    finally:
+        gg.chatbot = original
+
+
 async def test_inactive_user_returns_silently():
     inactive_user = {**_KNOWN_USER, "active": False}
     import app.graph.graph as gg
@@ -183,11 +208,160 @@ async def test_existing_snapshot_adds_only_human_message():
             from app.main import process_message
             await process_message(PHONE, "nova mensagem")
             state_update = chatbot.ainvoke.call_args[0][0]
-            # Only messages key — no stage re-initialization
-            assert list(state_update.keys()) == ["messages"]
+            # messages + silent_mode reset — no stage re-initialization
+            assert set(state_update.keys()) == {"messages", "silent_mode"}
+            assert state_update["silent_mode"] is False
             assert state_update["messages"][0].content == "nova mensagem"
     finally:
         gg.chatbot = original
+
+
+# ── Guardian info collection for minors ──────────────────────────────────────
+
+def _base_minor_state(**kwargs) -> dict:
+    """Minimal collect_info state for a minor patient."""
+    base = {
+        "phone": PHONE,
+        "stage": "collect_info",
+        "user_name": "Ana",
+        "patient_name": "Ana",
+        "patient_age": None,
+        "birth_date": None,
+        "patient_cpf": "111.222.333-00",
+        "guardian_name": None,
+        "guardian_cpf": None,
+        "guardian_relationship": None,
+        "is_for_self": None,
+        "is_patient": None,
+        "preferred_doctor": None,
+        "patient_email": None,
+        "consultation_reason": None,
+        "referral_professional": None,
+        "medication_note": None,
+        "pending_patients": None,
+        "user_db_id": None,
+        "silent_mode": None,
+        "messages": [],
+    }
+    base.update(kwargs)
+    return base
+
+
+async def test_collect_info_asks_guardian_name_after_minor_birth_date():
+    """After birth_date reveals patient < 18, the next question must be guardian name."""
+    from app.graph.nodes import collect_info_node
+    from langchain_core.messages import HumanMessage, AIMessage
+    from datetime import date
+
+    birth = date(2015, 3, 15)
+    today = date.today()
+    expected_age = today.year - birth.year - ((today.month, today.day) < (birth.month, birth.day))
+
+    state = _base_minor_state(
+        user_name="Ana",
+        patient_name="Ana",
+        patient_cpf="111.222.333-00",
+        messages=[
+            HumanMessage(content="quero agendar uma consulta"),
+            AIMessage(content="Qual a data de nascimento do paciente? (formato dd/mm/aaaa)"),
+            HumanMessage(content="15/03/2015"),
+        ],
+    )
+    with patch("app.graph.nodes.send_text", new_callable=AsyncMock) as mock_send, \
+         patch("app.graph.nodes.save_message", new_callable=AsyncMock), \
+         patch("app.graph.nodes.get_users_by_phone", new_callable=AsyncMock, return_value=[]):
+        result = await collect_info_node(state, {})
+
+    assert result.get("birth_date") == "15/03/2015"
+    assert result.get("patient_age") == expected_age
+    assert expected_age < 18, "Test pre-condition: patient must be a minor"
+    sent = mock_send.call_args[0][1]
+    assert "responsável" in sent.lower()
+
+
+async def test_collect_info_asks_guardian_cpf_after_guardian_name():
+    """After guardian_name is collected for a minor, the next step must be guardian CPF."""
+    from app.graph.nodes import collect_info_node
+    from langchain_core.messages import HumanMessage, AIMessage
+
+    state = _base_minor_state(
+        patient_age=10,
+        birth_date="15/03/2015",
+        messages=[
+            # request keyword so _has_request=True; AIMessage so _has_greeted=True
+            HumanMessage(content="quero agendar uma consulta"),
+            AIMessage(content="Qual é o nome completo do responsável pelo paciente?"),
+            HumanMessage(content="Maria Souza"),
+        ],
+    )
+    with patch("app.graph.nodes.send_text", new_callable=AsyncMock) as mock_send, \
+         patch("app.graph.nodes.save_message", new_callable=AsyncMock), \
+         patch("app.graph.nodes.get_users_by_phone", new_callable=AsyncMock, return_value=[]):
+        result = await collect_info_node(state, {})
+
+    assert result.get("guardian_name") == "Maria Souza"
+    sent = mock_send.call_args[0][1]
+    assert "cpf" in sent.lower()
+
+
+async def test_collect_info_proceeds_to_is_patient_after_guardian_cpf():
+    """After guardian_cpf is collected for a minor, the next step must be is_patient."""
+    from app.graph.nodes import collect_info_node
+    from langchain_core.messages import HumanMessage, AIMessage
+
+    state = _base_minor_state(
+        patient_age=10,
+        birth_date="15/03/2015",
+        guardian_name="Maria Souza",
+        messages=[
+            # request keyword so _has_request=True; AIMessage so _has_greeted=True
+            HumanMessage(content="quero agendar uma consulta"),
+            AIMessage(content="Qual é o CPF do responsável?"),
+            HumanMessage(content="123.456.789-00"),
+        ],
+    )
+    with patch("app.graph.nodes.send_text", new_callable=AsyncMock) as mock_send, \
+         patch("app.graph.nodes.save_message", new_callable=AsyncMock), \
+         patch("app.graph.nodes.get_users_by_phone", new_callable=AsyncMock, return_value=[]):
+        result = await collect_info_node(state, {})
+
+    assert result.get("guardian_cpf") == "123.456.789-00"
+    sent = mock_send.call_args[0][1]
+    # After guardian_cpf, next question is is_patient
+    assert "paciente" in sent.lower() or "clínica" in sent.lower()
+
+
+async def test_collect_info_adult_skips_guardian_steps():
+    """For an adult patient (age >= 18), guardian steps must be skipped entirely."""
+    from app.graph.nodes import collect_info_node
+    from langchain_core.messages import HumanMessage, AIMessage
+    from app.graph.schemas import CollectInfoOutput
+
+    state = _base_minor_state(
+        patient_age=30,
+        birth_date="15/03/1994",
+        messages=[
+            AIMessage(content="O paciente já é paciente da clínica?"),
+            HumanMessage(content="sim"),
+        ],
+    )
+    collect_result = CollectInfoOutput(
+        reply="Perfeito! Com qual médico prefere?",
+        is_patient=True,
+        is_complete=False,
+    )
+    with patch("app.graph.nodes.send_text", new_callable=AsyncMock), \
+         patch("app.graph.nodes.save_message", new_callable=AsyncMock), \
+         patch("app.graph.nodes.get_users_by_phone", new_callable=AsyncMock, return_value=[]), \
+         patch("app.graph.nodes._get_collect_llm") as mock_llm_fn:
+        mock_llm = MagicMock()
+        mock_llm.ainvoke = AsyncMock(return_value=collect_result)
+        mock_llm_fn.return_value = mock_llm
+        result = await collect_info_node(state, {})
+
+    # Guardian fields must NOT have been set
+    assert result.get("guardian_name") is None
+    assert result.get("guardian_cpf") is None
 
 
 async def test_log_event_called_for_new_conversation():

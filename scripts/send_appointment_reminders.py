@@ -97,7 +97,8 @@ async def main():
     now = datetime.now(TZ)
     tomorrow_start = (now.date() + timedelta(days=1)).isoformat()
     tomorrow_end = (now.date() + timedelta(days=2)).isoformat()
-    two_hours_later = (now + timedelta(hours=2)).isoformat()
+    today_start = now.date().isoformat()
+    two_hours_later = now + timedelta(hours=2)
 
     # ── Day-before reminders: send between 07h-10h Recife ────────────────────
     day_before_appts = []
@@ -113,17 +114,24 @@ async def main():
         )
         day_before_appts = result.data or []
 
-    # ── Day-of reminders: start_time between now and now+2h ──────────────────
+    # ── Day-of reminders: send at 08h or 2h before, whichever comes first ────
+    # Fetch all today's future scheduled appointments not yet reminded
     day_of_result = await (
         client.from_("appointments")
         .select("appointment_id, start_time, doctor_id, users(number, patient_name, name)")
         .eq("status", "scheduled")
         .is_("reminder_day_of_sent_at", "null")
         .gt("start_time", now.isoformat())
-        .lte("start_time", two_hours_later)
+        .gte("start_time", f"{today_start}T00:00:00")
+        .lt("start_time", f"{tomorrow_start}T00:00:00")
         .execute()
     )
-    day_of_appts = day_of_result.data or []
+    # Send if it's already 08h+ OR the appointment starts within 2h
+    day_of_appts = [
+        a for a in (day_of_result.data or [])
+        if now.hour >= 8
+        or datetime.fromisoformat(a["start_time"]).astimezone(TZ) <= two_hours_later
+    ]
 
     print(f"Day-before reminders to send: {len(day_before_appts)}")
     print(f"Day-of reminders to send: {len(day_of_appts)}")
