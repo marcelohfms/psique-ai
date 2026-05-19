@@ -88,10 +88,24 @@ async def upsert_user(phone: str, data: dict, user_id: str | None = None) -> str
        (phone, patient_name). If found → update it (never create a duplicate).
     3. If no rows exist → insert a new row.
     4. Fallback → update the single row, or the active one among multiple rows.
+
+    Shared fields (active, deactivated_at, price_adjustment_notified_at, manual_hold)
+    are always propagated to ALL rows with the same phone number when a contact
+    has multiple patients linked.
     """
+    # Fields that must stay in sync across all records for the same phone number
+    _SHARED_FIELDS = {"active", "deactivated_at", "price_adjustment_notified_at", "manual_hold"}
+
     client = await get_supabase()
     if user_id:
         await client.from_("users").update(data).eq("id", user_id).execute()
+        shared = {k: v for k, v in data.items() if k in _SHARED_FIELDS}
+        if shared:
+            # Propagate shared fields to all other rows with the same phone
+            rows = await get_users_by_phone(phone)
+            other_ids = [r["id"] for r in rows if r["id"] != user_id]
+            for oid in other_ids:
+                await client.from_("users").update(shared).eq("id", oid).execute()
         return user_id
 
     rows = await get_users_by_phone(phone)
@@ -108,6 +122,11 @@ async def upsert_user(phone: str, data: dict, user_id: str | None = None) -> str
 
     if target:
         await client.from_("users").update(data).eq("id", target["id"]).execute()
+        shared = {k: v for k, v in data.items() if k in _SHARED_FIELDS}
+        if shared:
+            other_ids = [r["id"] for r in rows if r["id"] != target["id"]]
+            for oid in other_ids:
+                await client.from_("users").update(shared).eq("id", oid).execute()
         return target["id"]
 
     if not rows:
@@ -119,6 +138,11 @@ async def upsert_user(phone: str, data: dict, user_id: str | None = None) -> str
     # No name match — update single row or active one (safe fallback)
     fallback = rows[0] if len(rows) == 1 else next((r for r in rows if r.get("active")), rows[0])
     await client.from_("users").update(data).eq("id", fallback["id"]).execute()
+    shared = {k: v for k, v in data.items() if k in _SHARED_FIELDS}
+    if shared:
+        other_ids = [r["id"] for r in rows if r["id"] != fallback["id"]]
+        for oid in other_ids:
+            await client.from_("users").update(shared).eq("id", oid).execute()
     return fallback["id"]
 
 
