@@ -521,7 +521,9 @@ async def patient_agent_node(state: ConversationState, config: RunnableConfig) -
 
     from app.google_calendar import format_doctor_schedules
     template = EXISTING_PATIENT_SYSTEM if state.get("is_patient") else NEW_PATIENT_SYSTEM
-    today = datetime.now(ZoneInfo("America/Recife")).strftime("%d/%m/%Y %H:%M")
+    _now_recife = datetime.now(ZoneInfo("America/Recife"))
+    _weekday_pt = ["segunda-feira", "terça-feira", "quarta-feira", "quinta-feira", "sexta-feira", "sábado", "domingo"][_now_recife.weekday()]
+    today = f"{_now_recife.strftime('%d/%m/%Y %H:%M')} ({_weekday_pt})"
     system_prompt = template.format(
         patient_name=first_name,
         patient_age=patient_age_display,
