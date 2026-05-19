@@ -1069,6 +1069,8 @@ async def register_refund_request(
     client = await get_supabase()
 
     patient_name = state.get("patient_name") or state.get("user_name", "Paciente")
+    doctor_key = state.get("preferred_doctor", "")
+    doctor_label = {"julio": "Dr. Júlio", "bruna": "Dra. Bruna"}.get(doctor_key, "médico(a)")
 
     # Fetch appointment date
     appt_result = await client.from_("appointments").select("start_time").eq("appointment_id", appointment_id).maybe_single().execute()

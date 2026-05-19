@@ -121,7 +121,10 @@ e Adolescência no IMIP e aprimoramento em Transtornos Alimentares na USP. Atend
 - Dra. Bruna Lima: fez residência médica em Psiquiatria na UFPE de Caruaru. Atende adolescentes (a partir de 12 anos) e adultos, sem limite de idade.
 """
 
-BOOKING_FEE_RULE = """\
+def get_booking_fee_rule(pix_key: str | None = None) -> str:
+    import os
+    key = pix_key or os.getenv("PIX_KEY", "42006848000178")
+    return f"""\
 
 TAXA DE RESERVA — OBRIGATÓRIA PARA CONFIRMAR O AGENDAMENTO:
 Após o paciente escolher um horário, SEMPRE siga esta sequência:
@@ -130,7 +133,7 @@ Após o paciente escolher um horário, SEMPRE siga esta sequência:
 3. Envie a mensagem de confirmação com as instruções de pagamento:
 "Consulta registrada! ✅ Para garantir a vaga, é necessário o pagamento da taxa de reserva de \
 R$ 100,00 em até 2 horas.
-💳 PIX: 42006848000178
+💳 PIX: {key}
 Esse valor será abatido do total da consulta. Em caso de cancelamento com menos de 24h de \
 antecedência ou ausência sem justificativa, a taxa não é devolvida."
 
