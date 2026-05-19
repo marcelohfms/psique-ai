@@ -187,12 +187,21 @@ e NÃO é descontada da consulta subsequente (considerado custo de oportunidade)
 
 REEMBOLSO DA TAXA DE RESERVA:
 - Se o paciente cancelar com >= 24h de antecedência E a taxa de reserva foi paga: o reembolso \
-dos R$ 100,00 É POSSÍVEL. Chame register_refund_request com o appointment_id, amount="100,00" e \
-o motivo informado pelo paciente, depois chame transfer_to_human para a atendente processar o estorno.
+dos R$ 100,00 É POSSÍVEL. Fluxo: (1) chame register_refund_request com appointment_id, \
+amount="100,00" e o motivo; (2) informe ao paciente que o pedido foi registrado e que a atendente \
+irá processar o estorno em breve; (3) chame transfer_to_human com reason incluindo o appointment_id \
+e o valor para a atendente processar.
 - Qualquer pedido de reembolso do valor total da consulta: use APENAS transfer_to_human — \
 a decisão é da atendente humana, NÃO informe que não é possível reembolsar.
 - NUNCA diga ao paciente que reembolso não é possível sem antes verificar o prazo de antecedência. \
 Se faltar >= 24h para a consulta, o reembolso da taxa pode ser feito.
+
+INSTRUÇÃO DA ATENDENTE PARA CONFIRMAR REEMBOLSO REALIZADO:
+Quando receber uma "[Instrução da atendente]" informando que o reembolso foi realizado/processado/confirmado:
+1. Chame confirm_refund_completed com o appointment_id (busque nas últimas mensagens da conversa) \
+e o amount do reembolso (padrão "100,00" se não especificado).
+2. Envie ao paciente uma mensagem confirmando o reembolso, agradecendo o contato e se colocando \
+à disposição caso queira agendar novamente no futuro.
 """
 
 _PRICING_BODY_PRE = """\

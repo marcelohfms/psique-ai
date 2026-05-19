@@ -1057,10 +1057,49 @@ async def register_refund_request(
     state: Annotated[dict, InjectedState],
     config: RunnableConfig,
 ) -> str:
-    """Registra uma solicitação de reembolso na planilha de pagamentos e na tabela de agendamentos.
+    """Registra uma solicitação de reembolso na tabela de agendamentos e sinaliza para a atendente humana.
     Deve ser chamada quando o paciente solicita reembolso da taxa de reserva (cancelamento com >= 24h de antecedência).
-    Após registrar, a conversa é transferida automaticamente para a atendente humana finalizar o processo.
+    NÃO registra na planilha ainda — isso só ocorre após a atendente confirmar que o reembolso foi realizado.
     amount: valor a ser reembolsado (ex: '100,00' ou 'R$ 100,00').
+    """
+    phone = config["configurable"]["phone"]
+    client = await get_supabase()
+
+    patient_name = state.get("patient_name") or state.get("user_name", "Paciente")
+
+    # Fetch appointment date
+    appt_result = await client.from_("appointments").select("start_time").eq("appointment_id", appointment_id).maybe_single().execute()
+    appointment_dt = "—"
+    if appt_result.data and appt_result.data.get("start_time"):
+        start_dt = datetime.fromisoformat(appt_result.data["start_time"]).astimezone(TZ)
+        appointment_dt = start_dt.strftime("%d/%m/%Y às %H:%M")
+
+    # Mark refund_requested_at in DB
+    now_iso = datetime.now(TZ).isoformat()
+    await client.from_("appointments").update({
+        "refund_requested_at": now_iso,
+        "updated_at": now_iso,
+    }).eq("appointment_id", appointment_id).execute()
+
+    await log_event("refund_requested", phone, {"appointment_id": appointment_id, "amount": amount, "reason": reason})
+
+    return (
+        f"Solicitação de reembolso de R$ {amount} registrada para {patient_name} "
+        f"(consulta {appointment_dt}). Aguardando confirmação da atendente para finalizar."
+    )
+
+
+@tool
+async def confirm_refund_completed(
+    appointment_id: str,
+    amount: str,
+    state: Annotated[dict, InjectedState],
+    config: RunnableConfig,
+) -> str:
+    """Confirma que a atendente realizou o reembolso: registra na planilha de pagamentos,
+    marca refund_completed_at na tabela de agendamentos e retorna mensagem de confirmação ao paciente.
+    Chamar somente quando a atendente enviar nota privada confirmando que o estorno foi realizado.
+    amount: valor reembolsado (ex: '100,00').
     """
     from app.google_sheets import append_refund_request as _append_refund
 
@@ -1078,10 +1117,10 @@ async def register_refund_request(
         start_dt = datetime.fromisoformat(appt_result.data["start_time"]).astimezone(TZ)
         appointment_dt = start_dt.strftime("%d/%m/%Y às %H:%M")
 
-    # Mark refund_requested_at in DB
+    # Mark refund_completed_at in DB
     now_iso = datetime.now(TZ).isoformat()
     await client.from_("appointments").update({
-        "refund_requested_at": now_iso,
+        "refund_completed_at": now_iso,
         "updated_at": now_iso,
     }).eq("appointment_id", appointment_id).execute()
 
@@ -1093,17 +1132,14 @@ async def register_refund_request(
             doctor_name=doctor_label,
             appointment_dt=appointment_dt,
             amount=amount,
-            reason=reason,
+            reason="Reembolso confirmado pela atendente",
         )
     except Exception:
-        logger.exception("Failed to append refund request to spreadsheet")
+        logger.exception("Failed to append refund confirmation to spreadsheet")
 
-    await log_event("refund_requested", phone, {"appointment_id": appointment_id, "amount": amount, "reason": reason})
+    await log_event("refund_completed", phone, {"appointment_id": appointment_id, "amount": amount})
 
-    return (
-        f"Solicitação de reembolso de R$ {amount} registrada para {patient_name} "
-        f"(consulta {appointment_dt}). A atendente irá processar o estorno."
-    )
+    return f"Reembolso de R$ {amount} confirmado e registrado para {patient_name}."
 
 
 @tool
