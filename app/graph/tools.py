@@ -633,7 +633,10 @@ async def request_document(
     _doc_logger = _log.getLogger(__name__)
     _doc_logger.warning("DOC_SHEETS_ATTEMPT patient=%s type=%s", patient_name, document_type)
     try:
-        await append_document_request(patient_name, patient_age, phone, patient_email, document_type, medication_note)
+        doctor_key = state.get("preferred_doctor", "")
+        doctor_label_doc = {"julio": "Dr. Júlio", "bruna": "Dra. Bruna"}.get(doctor_key, "")
+        patient_cpf_doc = state.get("patient_cpf") or ""
+        await append_document_request(patient_name, patient_age, phone, patient_email, document_type, medication_note, doctor_name=doctor_label_doc, patient_cpf=patient_cpf_doc)
         _doc_logger.warning("DOC_SHEETS_OK patient=%s", patient_name)
     except Exception:
         _doc_logger.exception("DOC_SHEETS_FAILED patient=%s type=%s", patient_name, document_type)
@@ -1086,6 +1089,7 @@ async def register_refund_request(
     try:
         patient_age = state.get("patient_age")
         patient_email = state.get("patient_email") or ""
+        patient_cpf = state.get("patient_cpf") or ""
         await _append_doc(
             patient_name=patient_name,
             patient_age=patient_age,
@@ -1093,6 +1097,8 @@ async def register_refund_request(
             patient_email=patient_email,
             document_type="Solicitação de Reembolso",
             medication_note=f"Valor: R$ {amount} | Consulta: {appointment_dt} | Motivo: {reason}",
+            doctor_name=doctor_label,
+            patient_cpf=patient_cpf,
         )
     except Exception:
         logger.exception("Failed to append refund request to Solicitações spreadsheet")
