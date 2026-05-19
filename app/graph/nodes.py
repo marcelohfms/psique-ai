@@ -10,7 +10,7 @@ from app.graph.tools import (
     get_available_slots, confirm_appointment,
     cancel_appointment, reschedule_appointment,
     request_document, transfer_to_human, confirm_attendance,
-    register_payment, update_preferred_doctor,
+    register_payment, update_preferred_doctor, register_refund_request,
 )
 from app.graph.prompts import COLLECT_SYSTEM, MINOR_RULE, ADULT_RULE, EXISTING_PATIENT_SYSTEM, NEW_PATIENT_SYSTEM, CANCELLATION_RULES, CLINIC_ADDRESS, DOCTORS_INFO, BOOKING_FEE_RULE, MEDICAL_LIMITS_RULE, DOCTOR_CORRECTION_RULE, get_pricing_rules
 from app.whatsapp import send_text
@@ -22,7 +22,7 @@ TOOLS = [
     get_available_slots, confirm_appointment,
     cancel_appointment, reschedule_appointment,
     request_document, transfer_to_human, confirm_attendance,
-    register_payment, update_preferred_doctor,
+    register_payment, update_preferred_doctor, register_refund_request,
 ]
 
 _collect_llm = None

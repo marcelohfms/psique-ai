@@ -184,6 +184,15 @@ NÃO é devolvida (considerado compensação pela oportunidade de atendimento pe
 - Reagendamento dentro do prazo de 24h: a taxa de reserva é mantida para a nova data.
 - Segunda remarcação (mesmo que avisada com antecedência): a taxa de reserva NÃO é estornada \
 e NÃO é descontada da consulta subsequente (considerado custo de oportunidade).
+
+REEMBOLSO DA TAXA DE RESERVA:
+- Se o paciente cancelar com >= 24h de antecedência E a taxa de reserva foi paga: o reembolso \
+dos R$ 100,00 É POSSÍVEL. Chame register_refund_request com o appointment_id, amount="100,00" e \
+o motivo informado pelo paciente, depois chame transfer_to_human para a atendente processar o estorno.
+- Qualquer pedido de reembolso do valor total da consulta: use APENAS transfer_to_human — \
+a decisão é da atendente humana, NÃO informe que não é possível reembolsar.
+- NUNCA diga ao paciente que reembolso não é possível sem antes verificar o prazo de antecedência. \
+Se faltar >= 24h para a consulta, o reembolso da taxa pode ser feito.
 """
 
 _PRICING_BODY_PRE = """\

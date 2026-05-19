@@ -137,6 +137,34 @@ async def get_controlled_medications() -> list[str]:
     return list(set(_CONTROLLED_FALLBACK + sheet_meds))
 
 
+async def append_refund_request(
+    patient_name: str,
+    phone: str,
+    doctor_name: str,
+    appointment_dt: str,
+    amount: str,
+    reason: str = "",
+) -> None:
+    """Append a refund request row to the Pagamentos sheet.
+    Columns: Data do Pagamento | Paciente | Médico | Data da Consulta | Valor | Telefone | Tipo | Comprovante | Conferência Humana
+    """
+    spreadsheet_id = os.environ.get("GOOGLE_SHEETS_PAYMENTS_ID")
+    if not spreadsheet_id:
+        logger.error("GOOGLE_SHEETS_PAYMENTS_ID not set — refund request NOT recorded in spreadsheet")
+        return
+
+    now = datetime.now(TZ).strftime("%d/%m/%Y %H:%M")
+    phone_clean = phone.replace("@s.whatsapp.net", "")
+    obs = f"Motivo: {reason}" if reason else ""
+
+    row = [now, patient_name, doctor_name, appointment_dt, f"-{amount}".lstrip("-").replace("--", "-"), phone_clean, "Reembolso - Taxa de Reserva", obs, ""]
+
+    creds = _credentials()
+    service = build("sheets", "v4", credentials=creds)
+    loop = asyncio.get_running_loop()
+    await loop.run_in_executor(None, _append_row_payments, service, spreadsheet_id, row)
+
+
 async def append_document_request(
     patient_name: str,
     patient_age: int | None,

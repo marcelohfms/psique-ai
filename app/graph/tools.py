@@ -1050,6 +1050,63 @@ def _is_attendant_available() -> bool:
 
 
 @tool
+async def register_refund_request(
+    appointment_id: str,
+    amount: str,
+    reason: str,
+    state: Annotated[dict, InjectedState],
+    config: RunnableConfig,
+) -> str:
+    """Registra uma solicitação de reembolso na planilha de pagamentos e na tabela de agendamentos.
+    Deve ser chamada quando o paciente solicita reembolso da taxa de reserva (cancelamento com >= 24h de antecedência).
+    Após registrar, a conversa é transferida automaticamente para a atendente humana finalizar o processo.
+    amount: valor a ser reembolsado (ex: '100,00' ou 'R$ 100,00').
+    """
+    from app.google_sheets import append_refund_request as _append_refund
+
+    phone = config["configurable"]["phone"]
+    client = await get_supabase()
+
+    patient_name = state.get("patient_name") or state.get("user_name", "Paciente")
+    doctor_key = state.get("preferred_doctor", "")
+    doctor_label = {"julio": "Dr. Júlio", "bruna": "Dra. Bruna"}.get(doctor_key, "médico(a)")
+
+    # Fetch appointment date
+    appt_result = await client.from_("appointments").select("start_time").eq("appointment_id", appointment_id).maybe_single().execute()
+    appointment_dt = "—"
+    if appt_result.data and appt_result.data.get("start_time"):
+        start_dt = datetime.fromisoformat(appt_result.data["start_time"]).astimezone(TZ)
+        appointment_dt = start_dt.strftime("%d/%m/%Y às %H:%M")
+
+    # Mark refund_requested_at in DB
+    now_iso = datetime.now(TZ).isoformat()
+    await client.from_("appointments").update({
+        "refund_requested_at": now_iso,
+        "updated_at": now_iso,
+    }).eq("appointment_id", appointment_id).execute()
+
+    # Append to payments spreadsheet
+    try:
+        await _append_refund(
+            patient_name=patient_name,
+            phone=phone,
+            doctor_name=doctor_label,
+            appointment_dt=appointment_dt,
+            amount=amount,
+            reason=reason,
+        )
+    except Exception:
+        logger.exception("Failed to append refund request to spreadsheet")
+
+    await log_event("refund_requested", phone, {"appointment_id": appointment_id, "amount": amount, "reason": reason})
+
+    return (
+        f"Solicitação de reembolso de R$ {amount} registrada para {patient_name} "
+        f"(consulta {appointment_dt}). A atendente irá processar o estorno."
+    )
+
+
+@tool
 async def transfer_to_human(
     reason: str,
     state: Annotated[dict, InjectedState],
