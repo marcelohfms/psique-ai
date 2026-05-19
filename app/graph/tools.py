@@ -1081,6 +1081,22 @@ async def register_refund_request(
         "updated_at": now_iso,
     }).eq("appointment_id", appointment_id).execute()
 
+    # Register in Solicitações spreadsheet
+    from app.google_sheets import append_document_request as _append_doc
+    try:
+        patient_age = state.get("patient_age")
+        patient_email = state.get("patient_email") or ""
+        await _append_doc(
+            patient_name=patient_name,
+            patient_age=patient_age,
+            phone=phone,
+            patient_email=patient_email,
+            document_type="Solicitação de Reembolso",
+            medication_note=f"Valor: R$ {amount} | Consulta: {appointment_dt} | Motivo: {reason}",
+        )
+    except Exception:
+        logger.exception("Failed to append refund request to Solicitações spreadsheet")
+
     await log_event("refund_requested", phone, {"appointment_id": appointment_id, "amount": amount, "reason": reason})
 
     return (
