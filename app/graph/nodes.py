@@ -92,11 +92,7 @@ async def collect_info_node(state: ConversationState, config: RunnableConfig) ->
                 if len(_with_appt) == 1:
                     # Only one patient has a scheduled appointment — auto-select
                     all_users = _with_appt
-                else:
-                    # Filter to active users only for disambiguation
-                    _active = [u for u in all_users if u.get("active")]
-                    if _active:
-                        all_users = _active
+                # else: multiple or none with appointments — show all for disambiguation
 
             if len(all_users) == 1:
                 u = all_users[0]
