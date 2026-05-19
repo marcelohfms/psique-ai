@@ -71,7 +71,26 @@ async def collect_info_node(state: ConversationState, config: RunnableConfig) ->
 
         if pending is None:
             all_users = await get_users_by_phone(state["phone"])
-            if len(all_users) > 1:
+            if len(all_users) == 1:
+                u = all_users[0]
+                doc_key = DOCTOR_NAMES.get(u.get("doctor_id", ""), None)
+                return {
+                    "user_db_id": u["id"],
+                    "user_name": u.get("name"),
+                    "patient_name": u.get("patient_name") or u.get("name"),
+                    "patient_age": u.get("age"),
+                    "birth_date": u.get("birth_date"),
+                    "is_patient": u.get("is_patient"),
+                    "preferred_doctor": doc_key,
+                    "patient_email": u.get("email"),
+                    "guardian_name": u.get("guardian_name"),
+                    "guardian_cpf": u.get("guardian_cpf"),
+                    "guardian_relationship": u.get("guardian_relationship"),
+                    "patient_cpf": u.get("patient_cpf"),
+                    "stage": "patient_agent",
+                    "messages": [],
+                }
+            elif len(all_users) > 1:
                 names = [u.get("patient_name") or u.get("name") or "Paciente" for u in all_users]
                 options = "\n".join(f"{i + 1}. {n}" for i, n in enumerate(names))
                 reply = f"Olá! Para qual paciente você está entrando em contato?\n\n{options}"
