@@ -46,6 +46,7 @@ async def main():
         client.from_("appointments")
         .select("id, appointment_id, end_time, user_id, users(number, patient_name, name)")
         .eq("status", "scheduled")
+        .is_("pos_consulta_sent_at", "null")
         .lt("end_time", cutoff)
         .execute()
     )
@@ -70,6 +71,9 @@ async def main():
         if phone:
             try:
                 await send_pos_consulta(phone, first_name)
+                await client.from_("appointments").update({
+                    "pos_consulta_sent_at": now_iso,
+                }).eq("id", appt["id"]).execute()
                 print(f"Message sent to {phone} for appointment {appt['appointment_id']}")
             except Exception as e:
                 print(f"Failed to send message to {phone}: {e}")
