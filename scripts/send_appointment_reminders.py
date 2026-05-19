@@ -44,9 +44,18 @@ def _template_components(first_name: str, doctor_label: str, time_str: str) -> l
 
 
 async def send_reminder_template(phone: str, template_name: str, first_name: str, doctor_label: str, time_str: str) -> None:
-    from app.whatsapp import send_template
-    components = _template_components(first_name, doctor_label, time_str)
-    await send_template(phone, template_name, "pt_BR", components)
+    from app.chatwoot import find_or_create_conversation, send_template_message
+    phone_wpp = phone if "@s.whatsapp.net" in phone else f"{phone}@s.whatsapp.net"
+    conv_id = await find_or_create_conversation(phone_wpp)
+    plain = _plain_message(template_name, first_name, doctor_label, time_str)
+    await send_template_message(
+        conv_id,
+        template_name=template_name,
+        language="pt_BR",
+        category="UTILITY",
+        body_params={"1": first_name, "2": doctor_label, "3": time_str},
+        content=plain,
+    )
 
 
 def _plain_message(template_name: str, first_name: str, doctor_label: str, time_str: str) -> str:
@@ -186,14 +195,6 @@ async def main():
                 message = _plain_message(template_name, first_name, doctor_label, time_str)
                 if graph:
                     await save_to_checkpoint(graph, phone, message, appt)
-                # Mirror message to Chatwoot so agents can see it
-                try:
-                    from app.chatwoot import find_or_create_conversation, send_message
-                    phone_wpp = phone if "@s.whatsapp.net" in phone else f"{phone}@s.whatsapp.net"
-                    conv_id = await find_or_create_conversation(phone_wpp)
-                    await send_message(conv_id, message)
-                except Exception as cw_err:
-                    print(f"  Chatwoot mirror failed for {phone}: {cw_err}")
                 print(f"  [{template_name}] Sent to {phone} — {patient_name} @ {time_str}")
             except Exception as e:
                 print(f"  Failed to send to {phone}: {e}")

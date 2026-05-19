@@ -15,14 +15,22 @@ load_dotenv()
 
 
 async def send_pos_consulta(phone: str, first_name: str) -> None:
-    from app.whatsapp import send_template
-    components = [{
-        "type": "body",
-        "parameters": [
-            {"type": "text", "text": first_name},
-        ],
-    }]
-    await send_template(phone, "pos_consulta", "pt_BR", components)
+    from app.chatwoot import find_or_create_conversation, send_template_message
+    phone_wpp = phone if "@s.whatsapp.net" in phone else f"{phone}@s.whatsapp.net"
+    conv_id = await find_or_create_conversation(phone_wpp)
+    content = (
+        f"Olá! Esperamos que a consulta de {first_name} tenha sido boa! "
+        f"Aproveite para agendar a próxima — a continuidade do tratamento faz toda a diferença. "
+        f"Fique à vontade para responder pelo WhatsApp quando quiser."
+    )
+    await send_template_message(
+        conv_id,
+        template_name="pos_consulta",
+        language="pt_BR",
+        category="MARKETING",
+        body_params={"1": first_name},
+        content=content,
+    )
 
 
 async def main():
@@ -63,19 +71,6 @@ async def main():
             try:
                 await send_pos_consulta(phone, first_name)
                 print(f"Message sent to {phone} for appointment {appt['appointment_id']}")
-                # Mirror to Chatwoot so agents have visibility
-                try:
-                    from app.chatwoot import find_or_create_conversation, send_message
-                    phone_wpp = phone if "@s.whatsapp.net" in phone else f"{phone}@s.whatsapp.net"
-                    conv_id = await find_or_create_conversation(phone_wpp)
-                    message = (
-                        f"Olá! Esperamos que a consulta de {first_name} tenha sido boa! "
-                        f"Aproveite para agendar a próxima — a continuidade do tratamento faz toda a diferença. "
-                        f"Fique à vontade para responder pelo WhatsApp quando quiser."
-                    )
-                    await send_message(conv_id, message)
-                except Exception as cw_err:
-                    print(f"Chatwoot mirror failed for {phone}: {cw_err}")
             except Exception as e:
                 print(f"Failed to send message to {phone}: {e}")
 

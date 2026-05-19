@@ -61,6 +61,32 @@ def _strip_phone(phone: str) -> str:
     return phone.split("@", 1)[0].lstrip("+")
 
 
+async def send_template_message(
+    conversation_id: int,
+    template_name: str,
+    language: str,
+    category: str,
+    body_params: dict[str, str],
+    content: str = "",
+) -> None:
+    """Send a WhatsApp template message via Chatwoot (handles both send + Chatwoot record)."""
+    url = f"{_base_url()}/api/v1/accounts/{_account_id()}/conversations/{conversation_id}/messages"
+    payload = {
+        "content": content,
+        "message_type": "outgoing",
+        "private": False,
+        "template_params": {
+            "name": template_name,
+            "category": category,
+            "language": language,
+            "processed_params": {"body": body_params},
+        },
+    }
+    async with httpx.AsyncClient(timeout=10) as client:
+        response = await client.post(url, json=payload, headers=_bot_headers())
+        response.raise_for_status()
+
+
 async def send_message(conversation_id: int, text: str) -> None:
     url = f"{_base_url()}/api/v1/accounts/{_account_id()}/conversations/{conversation_id}/messages"
     payload = {"content": text, "message_type": "outgoing", "private": False}
