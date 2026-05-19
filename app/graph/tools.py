@@ -664,7 +664,7 @@ async def request_document(
         notify_msg += f"\nMedicação: {medication_note}"
     if is_controlled:
         notify_msg += "\n\n⚠️ RECEITA FÍSICA — o paciente deverá retirar presencialmente na clínica."
-    asyncio.create_task(_notify_clinic(notify_msg))
+    asyncio.create_task(_notify_clinic(notify_msg, subject=f"Solicitação de {doc_label} — {patient_name}"))
 
     if is_controlled:
         return (
@@ -979,7 +979,8 @@ async def register_payment(
         _logger.exception("SHEETS_APPEND FAILED patient=%s", patient_name)
 
     asyncio.create_task(_notify_clinic(
-        f"💰 Comprovante recebido!\nPaciente: {patient_name}\nValor: R$ {amount}\nTipo: {payment_type}\nConsulta: {appointment_dt}\nLink: {drive_link}"
+        f"💰 Comprovante recebido!\nPaciente: {patient_name}\nValor: R$ {amount}\nTipo: {payment_type}\nConsulta: {appointment_dt}\nLink: {drive_link}",
+        subject=f"Comprovante recebido — {patient_name}",
     ))
 
     await log_event("payment_receipt_registered", phone, {
