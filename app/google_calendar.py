@@ -153,7 +153,20 @@ def _parse_day(preferred_day: str) -> date | None:
     try:
         return date.fromisoformat(s)
     except ValueError:
-        return None
+        pass
+    # Handle dd/mm format (e.g. "25/05", "25-05")
+    try:
+        parts = s.replace("-", "/").split("/")
+        if len(parts) == 2:
+            day, month = int(parts[0]), int(parts[1])
+            year = today.year
+            d = date(year, month, day)
+            if d < today:
+                d = date(year + 1, month, day)
+            return d
+    except (ValueError, IndexError):
+        pass
+    return None
 
 
 def _normalize_shift(shift: str) -> str:
