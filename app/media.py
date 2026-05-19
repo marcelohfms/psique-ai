@@ -92,14 +92,18 @@ async def describe_image_bytes(image_bytes: bytes, phone: str = "") -> str | Non
                 {
                     "type": "text",
                     "text": (
-                        "Descreva o conteúdo desta imagem em português de forma objetiva. "
-                        "Se for um comprovante de pagamento (PIX, TED, DOC, transferência bancária ou recibo de pagamento), "
-                        "comece com 'COMPROVANTE DE PAGAMENTO:' e inclua obrigatoriamente: "
-                        "valor transferido, chave PIX ou CPF/CNPJ do destinatário (campo 'Chave', 'Para', 'Favorecido' ou similar), "
-                        "nome do destinatário se visível, data/hora da transação, "
-                        "e qualquer texto adicional visível no comprovante (como 'agendamento', 'taxa', descrição etc.). "
-                        "Para qualquer outro tipo de imagem ou documento médico (exame, laudo, receita, resultado, atestado etc.), "
-                        "comece com 'DOCUMENTO:' seguido de uma descrição resumida do tipo de documento."
+                        "Classifique esta imagem em UMA de duas categorias e responda EXATAMENTE com o prefixo correspondente:\n\n"
+                        "CATEGORIA 1 — comprovante de pagamento (PIX, TED, DOC, transferência bancária, recibo de pagamento, "
+                        "extrato de transação bancária):\n"
+                        "  Responda começando com exatamente: 'COMPROVANTE DE PAGAMENTO:'\n"
+                        "  Em seguida inclua: valor transferido, chave PIX ou CPF/CNPJ do destinatário, "
+                        "nome do destinatário se visível, data/hora da transação, e qualquer texto adicional "
+                        "visível (como 'agendamento', 'taxa', descrição etc.).\n\n"
+                        "CATEGORIA 2 — qualquer outro tipo de imagem ou documento (exame médico, laudo, resultado, "
+                        "atestado, foto, screenshot, documento pessoal, etc.):\n"
+                        "  Responda começando com exatamente: 'DOCUMENTO:'\n"
+                        "  Em seguida inclua uma descrição resumida do conteúdo.\n\n"
+                        "IMPORTANTE: use APENAS esses dois prefixos. Não invente outros."
                     ),
                 },
             ],
@@ -116,14 +120,16 @@ async def describe_image_bytes(image_bytes: bytes, phone: str = "") -> str | Non
     if is_payment:
         # ── Payment receipt: upload and hand off to Eva's register_payment tool ──
         folder_id = os.getenv("GOOGLE_DRIVE_PAYMENTS_FOLDER_ID")
-        if folder_id:
+        if not folder_id:
+            logger.warning("GOOGLE_DRIVE_PAYMENTS_FOLDER_ID not set — skipping Drive upload for comprovante")
+        else:
             try:
                 from app.google_drive import upload_image
                 drive_link = await upload_image(image_bytes, f"comprovante_{patient}_{now_str}.jpg")
                 logger.info("DRIVE_UPLOAD OK link=%s", drive_link)
                 return f"[imagem]: {description} [drive_link:{drive_link}]"
             except Exception:
-                logger.exception("DRIVE_UPLOAD FAILED folder_id=%s", folder_id)
+                logger.exception("DRIVE_UPLOAD FAILED folder_id=%s — comprovante enviado para Eva sem link", folder_id)
         return f"[imagem]: {description}"
 
     # ── Medical document: save to Drive, thank patient directly, notify clinic ──

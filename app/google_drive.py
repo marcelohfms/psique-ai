@@ -29,7 +29,14 @@ def _credentials() -> Credentials:
 
 
 def _upload_and_share(service, folder_id: str, filename: str, image_bytes: bytes) -> str:
-    """Upload image bytes to Drive, make public, return web view link."""
+    """Upload image bytes to Drive, attempt to make public, return web view link.
+
+    The permission step is best-effort: if it fails (e.g. Workspace admin disabled
+    public sharing), the file is still uploaded and a link is still returned.
+    """
+    import logging as _log
+    _logger = _log.getLogger(__name__)
+
     media = MediaIoBaseUpload(io.BytesIO(image_bytes), mimetype="image/jpeg", resumable=False)
     file = service.files().create(
         body={"name": filename, "parents": [folder_id]},
@@ -37,10 +44,16 @@ def _upload_and_share(service, folder_id: str, filename: str, image_bytes: bytes
         fields="id,webViewLink",
     ).execute()
     file_id = file["id"]
-    service.permissions().create(
-        fileId=file_id,
-        body={"role": "reader", "type": "anyone"},
-    ).execute()
+    _logger.info("DRIVE_CREATE OK file_id=%s", file_id)
+
+    try:
+        service.permissions().create(
+            fileId=file_id,
+            body={"role": "reader", "type": "anyone"},
+        ).execute()
+    except Exception:
+        _logger.warning("DRIVE_SHARE FAILED (file created but not public) file_id=%s", file_id)
+
     return file.get("webViewLink", f"https://drive.google.com/file/d/{file_id}/view")
 
 
