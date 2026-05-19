@@ -208,8 +208,8 @@ async def test_existing_snapshot_adds_only_human_message():
             from app.main import process_message
             await process_message(PHONE, "nova mensagem")
             state_update = chatbot.ainvoke.call_args[0][0]
-            # messages + silent_mode reset — no stage re-initialization
-            assert set(state_update.keys()) == {"messages", "silent_mode"}
+            # messages + silent_mode reset + phone — no stage re-initialization
+            assert set(state_update.keys()) == {"messages", "silent_mode", "phone"}
             assert state_update["silent_mode"] is False
             assert state_update["messages"][0].content == "nova mensagem"
     finally:
