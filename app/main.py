@@ -144,10 +144,13 @@ async def extract_message(payload: dict) -> tuple[str, str] | None:
                     from app.media import describe_pdf_bytes
                     pdf_bytes = await download_media(media_id)
                     text = await describe_pdf_bytes(pdf_bytes, phone)
+                    if not text:
+                        # Medical document — already handled (thank-you sent, clinic notified)
+                        return None
                     return phone, text
                 except Exception:
                     logger.exception("Failed to process PDF media_id=%s", media_id)
-            return phone, "[pdf-recebido]"
+            return None
         return None  # other document types: ignore
 
     # reaction, sticker, location, etc. — ignore

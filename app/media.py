@@ -70,9 +70,15 @@ async def transcribe_audio(media_id: str) -> str:
     return await transcribe_audio_bytes(audio_bytes)
 
 
-async def describe_image_bytes(image_bytes: bytes, phone: str = "") -> str:
-    """Classify, upload to Drive, and describe raw image bytes with GPT-4o vision."""
+async def describe_image_bytes(image_bytes: bytes, phone: str = "") -> str | None:
+    """Classify image/PDF and route accordingly.
 
+    - Payment receipts (COMPROVANTE DE PAGAMENTO): upload to payments Drive folder and
+      return a description string so Eva can call register_payment.
+    - Medical documents (exams, laudos, etc.): upload to documents Drive folder with
+      filename "{patient}_{date}.jpg", send a thank-you message directly to the patient,
+      notify the clinic, and return None (so Eva is never invoked).
+    """
     b64 = base64.b64encode(image_bytes).decode()
     resp = await _get_openai().chat.completions.create(
         model="gpt-4o",
@@ -92,40 +98,82 @@ async def describe_image_bytes(image_bytes: bytes, phone: str = "") -> str:
                         "valor transferido, chave PIX ou CPF/CNPJ do destinatário (campo 'Chave', 'Para', 'Favorecido' ou similar), "
                         "nome do destinatário se visível, data/hora da transação, "
                         "e qualquer texto adicional visível no comprovante (como 'agendamento', 'taxa', descrição etc.). "
-                        "Para qualquer outro tipo de imagem ou documento, comece com 'DOCUMENTO:'."
+                        "Para qualquer outro tipo de imagem ou documento médico (exame, laudo, receita, resultado, atestado etc.), "
+                        "comece com 'DOCUMENTO:' seguido de uma descrição resumida do tipo de documento."
                     ),
                 },
             ],
         }],
         max_tokens=300,
     )
-    description = resp.choices[0].message.content
+    description = resp.choices[0].message.content or ""
     is_payment = description.upper().startswith("COMPROVANTE DE PAGAMENTO")
-    now = datetime.now(TZ).strftime("%Y%m%d_%H%M%S")
+    now = datetime.now(TZ)
+    now_str = now.strftime("%Y%m%d_%H%M%S")
+    date_str = now.strftime("%d-%m-%Y")
     patient = await _get_patient_name(phone) if phone else "paciente"
 
     if is_payment:
+        # ── Payment receipt: upload and hand off to Eva's register_payment tool ──
         folder_id = os.getenv("GOOGLE_DRIVE_PAYMENTS_FOLDER_ID")
         if folder_id:
             try:
                 from app.google_drive import upload_image
-                drive_link = await upload_image(image_bytes, f"comprovante_{patient}_{now}.jpg")
+                drive_link = await upload_image(image_bytes, f"comprovante_{patient}_{now_str}.jpg")
                 logger.info("DRIVE_UPLOAD OK link=%s", drive_link)
                 return f"[imagem]: {description} [drive_link:{drive_link}]"
             except Exception:
                 logger.exception("DRIVE_UPLOAD FAILED folder_id=%s", folder_id)
         return f"[imagem]: {description}"
-    else:
-        folder_id = os.getenv("GOOGLE_DRIVE_DOCUMENTS_FOLDER_ID")
-        if folder_id:
-            try:
-                from app.google_drive import upload_document
-                drive_link = await upload_document(image_bytes, f"documento_{patient}_{now}.jpg")
-                logger.info("DRIVE_UPLOAD DOCUMENT OK link=%s", drive_link)
-                return f"[imagem]: {description} [documento_link:{drive_link}]"
-            except Exception:
-                logger.exception("DRIVE_UPLOAD DOCUMENT FAILED folder_id=%s", folder_id)
-        return f"[imagem]: {description}"
+
+    # ── Medical document: save to Drive, thank patient directly, notify clinic ──
+    drive_link = ""
+    folder_id = os.getenv("GOOGLE_DRIVE_DOCUMENTS_FOLDER_ID")
+    if folder_id:
+        try:
+            from app.google_drive import upload_document
+            filename = f"{patient}_{date_str}.jpg"
+            drive_link = await upload_document(image_bytes, filename)
+            logger.info("DRIVE_UPLOAD DOCUMENT OK link=%s drive_link=%s", drive_link, drive_link)
+        except Exception:
+            logger.exception("DRIVE_UPLOAD DOCUMENT FAILED folder_id=%s", folder_id)
+
+    # Send thank-you directly — bypass Eva entirely
+    if phone:
+        try:
+            from app.whatsapp import send_text as _send
+            from app.database import save_message as _save_msg
+            thank_you = (
+                "Recebemos seu documento! 📄\n"
+                "Ele será encaminhado ao seu médico em breve. Obrigado! 😊"
+            )
+            await _send(phone, thank_you)
+            await _save_msg(phone, "assistant", thank_you)
+        except Exception:
+            logger.exception("DOCUMENT_THANKYOU SEND FAILED phone=%s", phone)
+
+        # Notify clinic
+        try:
+            from app.email_sender import send_clinic_notification_email
+            patient_display = patient.replace("_", " ").title()
+            phone_clean = phone.replace("@s.whatsapp.net", "")
+            notify_msg = (
+                f"📄 Documento recebido via WhatsApp\n"
+                f"Paciente: {patient_display}\n"
+                f"Número: {phone_clean}\n"
+                f"Data: {date_str}\n"
+                f"Descrição: {description}"
+            )
+            if drive_link:
+                notify_msg += f"\nLink Drive: {drive_link}"
+            await send_clinic_notification_email(
+                f"Documento recebido — {patient_display}", notify_msg
+            )
+        except Exception:
+            logger.exception("DOCUMENT_CLINIC_NOTIFY FAILED phone=%s", phone)
+
+    # Return None → caller skips Eva processing (document already handled)
+    return None
 
 
 async def describe_pdf_bytes(pdf_bytes: bytes, phone: str = "") -> str:

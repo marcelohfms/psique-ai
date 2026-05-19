@@ -92,10 +92,67 @@ async def test_extracts_audio_message():
     assert "áudio transcrito" in text
 
 
-async def test_extracts_image_message():
+async def test_extracts_image_payment_receipt():
+    """Payment receipt images reach Eva (non-None text returned)."""
     from app.main import extract_message
     with patch("app.media.process_media", new_callable=AsyncMock, return_value="[imagem]: COMPROVANTE DE PAGAMENTO: R$100"):
         result = await extract_message(_meta_payload(msg_type="image"))
+    assert result is not None
+    _, text = result
+    assert "COMPROVANTE" in text
+
+
+async def test_medical_document_image_handled_directly():
+    """Medical document images (exams, laudos) return None — Eva is skipped."""
+    from app.main import extract_message
+    # process_media returns None when document is already handled
+    with patch("app.media.process_media", new_callable=AsyncMock, return_value=None):
+        result = await extract_message(_meta_payload(msg_type="image"))
+    assert result is None
+
+
+async def test_medical_document_pdf_handled_directly():
+    """Medical document PDFs return None — Eva is skipped."""
+    from app.main import extract_message
+
+    def _pdf_payload(from_number=_NUMBER):
+        msg = {
+            "from": from_number,
+            "id": "wamid.pdf",
+            "type": "document",
+            "document": {"id": "pdf-789", "mime_type": "application/pdf"},
+        }
+        return {
+            "object": "whatsapp_business_account",
+            "entry": [{"id": "waba-id", "changes": [{"value": {"messages": [msg]}, "field": "messages"}]}],
+        }
+
+    with patch("app.whatsapp.download_media", new_callable=AsyncMock, return_value=b"fake-pdf"):
+        with patch("app.media.describe_pdf_bytes", new_callable=AsyncMock, return_value=None):
+            result = await extract_message(_pdf_payload())
+    assert result is None
+
+
+async def test_payment_receipt_pdf_reaches_eva():
+    """Payment receipt PDFs (comprovante) still reach Eva."""
+    from app.main import extract_message
+
+    def _pdf_payload(from_number=_NUMBER):
+        msg = {
+            "from": from_number,
+            "id": "wamid.pdf2",
+            "type": "document",
+            "document": {"id": "pdf-abc", "mime_type": "application/pdf"},
+        }
+        return {
+            "object": "whatsapp_business_account",
+            "entry": [{"id": "waba-id", "changes": [{"value": {"messages": [msg]}, "field": "messages"}]}],
+        }
+
+    comprovante_text = "[imagem]: COMPROVANTE DE PAGAMENTO: R$100 [drive_link:https://drive.google.com/test]"
+    with patch("app.whatsapp.download_media", new_callable=AsyncMock, return_value=b"fake-pdf"):
+        with patch("app.media.describe_pdf_bytes", new_callable=AsyncMock, return_value=comprovante_text):
+            result = await extract_message(_pdf_payload())
     assert result is not None
     _, text = result
     assert "COMPROVANTE" in text
