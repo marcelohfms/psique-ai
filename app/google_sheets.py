@@ -93,12 +93,14 @@ async def append_payment_receipt(
     phone_clean = phone.replace("@s.whatsapp.net", "")
 
     # Show a clickable hyperlink with the filename instead of the raw URL
+    # Note: PT-BR locale in Google Sheets uses ";" as function argument separator
     if drive_link:
+        drive_link = drive_link.strip()
         safe_name = patient_name.replace(" ", "_")
         amount_clean = amount.replace("R$", "").replace(" ", "").strip()
         date_clean = appointment_dt.split(" ")[0].replace("/", "-") if appointment_dt != "—" else datetime.now(TZ).strftime("%d-%m-%Y")
         filename = f"{safe_name}_{date_clean}_R${amount_clean}.jpg"
-        comprovante_cell = f'=HYPERLINK("{drive_link}","{filename}")'
+        comprovante_cell = f'=HYPERLINK("{drive_link}";"{filename}")'
     else:
         comprovante_cell = ""
 
