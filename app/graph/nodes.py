@@ -70,7 +70,34 @@ async def collect_info_node(state: ConversationState, config: RunnableConfig) ->
         pending = state.get("pending_patients")
 
         if pending is None:
-            all_users = [u for u in await get_users_by_phone(state["phone"]) if u.get("active")]
+            all_users = await get_users_by_phone(state["phone"])
+
+            if len(all_users) > 1:
+                # Auto-select the patient with a scheduled appointment — no disambiguation needed.
+                from app.database import get_supabase as _get_supabase
+                import datetime as _dt
+                _client = await _get_supabase()
+                _now = _dt.datetime.now(_dt.timezone.utc).isoformat()
+                _user_ids = [u["id"] for u in all_users]
+                _appt_result = await (
+                    _client.from_("appointments")
+                    .select("user_id")
+                    .in_("user_id", _user_ids)
+                    .eq("status", "scheduled")
+                    .gte("start_time", _now)
+                    .execute()
+                )
+                _scheduled_user_ids = {r["user_id"] for r in (_appt_result.data or [])}
+                _with_appt = [u for u in all_users if u["id"] in _scheduled_user_ids]
+                if len(_with_appt) == 1:
+                    # Only one patient has a scheduled appointment — auto-select
+                    all_users = _with_appt
+                else:
+                    # Filter to active users only for disambiguation
+                    _active = [u for u in all_users if u.get("active")]
+                    if _active:
+                        all_users = _active
+
             if len(all_users) == 1:
                 u = all_users[0]
                 doc_key = DOCTOR_NAMES.get(u.get("doctor_id", ""), None)
