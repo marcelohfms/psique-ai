@@ -13,7 +13,7 @@ from app.graph.tools import (
     register_payment, update_preferred_doctor,
     register_refund_request, confirm_refund_completed,
 )
-from app.graph.prompts import COLLECT_SYSTEM, MINOR_RULE, ADULT_RULE, EXISTING_PATIENT_SYSTEM, NEW_PATIENT_SYSTEM, CANCELLATION_RULES, CLINIC_ADDRESS, DOCTORS_INFO, BOOKING_FEE_RULE, MEDICAL_LIMITS_RULE, DOCTOR_CORRECTION_RULE, get_pricing_rules
+from app.graph.prompts import COLLECT_SYSTEM, MINOR_RULE, ADULT_RULE, EXISTING_PATIENT_SYSTEM, NEW_PATIENT_SYSTEM, CANCELLATION_RULES, CLINIC_ADDRESS, DOCTORS_INFO, get_booking_fee_rule, MEDICAL_LIMITS_RULE, DOCTOR_CORRECTION_RULE, get_pricing_rules
 from app.whatsapp import send_text
 from app.database import upsert_user, log_event, get_upcoming_appointments, get_user_by_phone, get_users_by_phone, DOCTOR_IDS, DOCTOR_NAMES, save_message
 
@@ -490,7 +490,7 @@ async def patient_agent_node(state: ConversationState, config: RunnableConfig) -
         doctor_schedules=format_doctor_schedules(),
         patient_email=state.get("patient_email") or "não informado",
         doctor_correction_rule=DOCTOR_CORRECTION_RULE,
-        booking_fee_rule=BOOKING_FEE_RULE,
+        booking_fee_rule=get_booking_fee_rule(),
         cancellation_rules=CANCELLATION_RULES,
         pricing_rules=get_pricing_rules(datetime.now()),
         clinic_address=CLINIC_ADDRESS,
@@ -553,15 +553,51 @@ async def patient_agent_node(state: ConversationState, config: RunnableConfig) -
 
     # Only send to WhatsApp when the LLM produces a final text (no tool calls)
     if not response.tool_calls and response.content:
+        phone = state["phone"]
         if state.get("silent_mode"):
-            # Send to patient normally and reactivate bot so conversation can continue
-            await send_text(state["phone"], response.content)
-            await save_message(state["phone"], "assistant", response.content)
-            await upsert_user(state["phone"], {"active": True, "deactivated_at": None})
+            # Tools called this turn that produce patient-facing outcomes
+            _PATIENT_FACING_TOOLS = {
+                "register_payment", "confirm_appointment", "confirm_attendance",
+                "confirm_refund_completed", "cancel_appointment", "reschedule_appointment",
+                "request_document",
+            }
+            called_tools = {
+                tc["name"]
+                for msg in clean_messages
+                if getattr(msg, "tool_calls", None)
+                for tc in msg.tool_calls
+            }
+            is_patient_facing = bool(called_tools & _PATIENT_FACING_TOOLS)
+
+            if is_patient_facing:
+                # Action affects the patient — send message, reactivate bot so conversation continues
+                await send_text(phone, response.content)
+                await save_message(phone, "assistant", response.content)
+                await upsert_user(phone, {"active": True, "deactivated_at": None})
+                try:
+                    from app.chatwoot import get_conversation_id, add_private_note, find_or_create_conversation
+                    conv_id = get_conversation_id(phone)
+                    if conv_id is None:
+                        conv_id = await find_or_create_conversation(phone)
+                    if conv_id:
+                        await add_private_note(conv_id, f"[Eva → paciente]: {response.content}")
+                except Exception:
+                    _logger.exception("Failed to post private note after patient-facing action phone=%s", phone)
+            else:
+                # Internal response — post only as private note, do not send to patient
+                try:
+                    from app.chatwoot import get_conversation_id, add_private_note, find_or_create_conversation
+                    conv_id = get_conversation_id(phone)
+                    if conv_id is None:
+                        conv_id = await find_or_create_conversation(phone)
+                    if conv_id:
+                        await add_private_note(conv_id, response.content)
+                except Exception:
+                    _logger.exception("Failed to post private note for internal response phone=%s", phone)
         else:
-            await send_text(state["phone"], response.content)
-            await save_message(state["phone"], "assistant", response.content)
+            await send_text(phone, response.content)
+            await save_message(phone, "assistant", response.content)
             if needs_price_notice:
-                await upsert_user(state["phone"], {"price_adjustment_notified_at": now_dt.isoformat()}, user_id=state.get("user_db_id"))
+                await upsert_user(phone, {"price_adjustment_notified_at": now_dt.isoformat()}, user_id=state.get("user_db_id"))
 
     return {"messages": [response]}
