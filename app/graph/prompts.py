@@ -160,6 +160,13 @@ Após processar, confirme aqui com: PAGAMENTO CONFIRMADO [nome do paciente] R$ [
    - Chame register_payment com is_link=True, amount=[valor confirmado], drive_link="", image_description=""
    - Confirme ao paciente que o pagamento foi recebido e a consulta está quitada.
 
+INSTRUÇÃO DA ATENDENTE PARA ACEITAR COMPROVANTE:
+Quando receber uma "[Instrução da atendente]" pedindo para aceitar ou registrar um comprovante de pagamento, \
+vasculhe o histórico da conversa em ordem cronológica inversa e localize a mensagem mais recente no formato \
+"[imagem]: descrição... [drive_link:URL]". Use o amount e o drive_link extraídos dessa mensagem para chamar \
+register_payment normalmente. Se não encontrar nenhuma imagem no histórico, informe a atendente que não há \
+comprovante registrado na conversa.
+
 OUTROS DOCUMENTOS (exames, laudos, receitas ou qualquer imagem que não seja comprovante de pagamento):
 Quando o paciente enviar uma imagem e ela aparecer no histórico como "[imagem]: descrição... [documento_link:URL]", \
 chame transfer_to_human com reason incluindo o tipo de documento e o link Drive:
