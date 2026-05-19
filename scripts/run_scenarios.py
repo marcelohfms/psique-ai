@@ -22,6 +22,9 @@ from zoneinfo import ZoneInfo
 from dotenv import load_dotenv
 load_dotenv()
 
+import logging
+logging.getLogger("opentelemetry").setLevel(logging.CRITICAL)
+
 from openai import AsyncOpenAI
 
 TZ = ZoneInfo("America/Recife")
@@ -108,7 +111,8 @@ async def run_scenario(scenario: dict, openai_client: AsyncOpenAI, supabase_clie
         try:
             with patch("app.graph.nodes.send_text", side_effect=_capture_send), \
                  patch("app.graph.tools.send_text", new_callable=AsyncMock), \
-                 patch("app.database.save_message", new_callable=AsyncMock):
+                 patch("app.database.save_message", new_callable=AsyncMock), \
+                 patch("app.graph.tools._notify_clinic", new_callable=AsyncMock):
                 await process_message(phone, patient_msg)
         except Exception as e:
             print(f"  [ERRO]: {e}")
@@ -177,11 +181,21 @@ async def main():
 
     # Init LangGraph with Supabase checkpointer if available, else in-memory
     conn_string = os.environ.get("SUPABASE_CONNECTION_STRING")
-    checkpointer_ctx = None
+    pg_conn = None
     if conn_string:
+        from psycopg import AsyncConnection
+        from psycopg.rows import dict_row
         from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
-        checkpointer_ctx = AsyncPostgresSaver.from_conn_string(conn_string)
-        graph_module.chatbot = build_graph(await checkpointer_ctx.__aenter__())
+        # prepare_threshold=None required for pgbouncer transaction mode (Supabase pooler)
+        pg_conn = await AsyncConnection.connect(
+            conn_string,
+            autocommit=True,
+            prepare_threshold=None,
+            row_factory=dict_row,
+        )
+        checkpointer = AsyncPostgresSaver(pg_conn)
+        await checkpointer.setup()
+        graph_module.chatbot = build_graph(checkpointer=checkpointer)
         print("Using Supabase checkpointer.\n")
     else:
         graph_module.chatbot = build_graph()
@@ -207,8 +221,8 @@ async def main():
             print(f"\n→ {status_label}")
 
     finally:
-        if checkpointer_ctx:
-            await checkpointer_ctx.__aexit__(None, None, None)
+        if pg_conn:
+            await pg_conn.close()
 
     # Write results
     report_path = os.path.join(os.path.dirname(__file__), "scenario_results.md")

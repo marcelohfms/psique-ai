@@ -258,6 +258,7 @@ async def test_request_document_inserts_record_and_returns_success():
     client, _, _ = _make_supabase_client()
     with patch("app.graph.tools.get_supabase", new_callable=AsyncMock, return_value=client), \
          patch("app.graph.tools.log_event", new_callable=AsyncMock), \
+         patch("app.graph.tools._notify_clinic", new_callable=AsyncMock), \
          patch("app.google_sheets.append_document_request", new_callable=AsyncMock), \
          patch("app.email_sender.send_document_request_email", new_callable=AsyncMock):
         result = await request_document.coroutine(
@@ -276,6 +277,7 @@ async def test_request_document_succeeds_even_if_sheets_and_email_fail():
     client, _, _ = _make_supabase_client()
     with patch("app.graph.tools.get_supabase", new_callable=AsyncMock, return_value=client), \
          patch("app.graph.tools.log_event", new_callable=AsyncMock), \
+         patch("app.graph.tools._notify_clinic", new_callable=AsyncMock), \
          patch("app.google_sheets.append_document_request", side_effect=Exception("sheets down")), \
          patch("app.email_sender.send_document_request_email", side_effect=Exception("smtp down")):
         result = await request_document.coroutine(
@@ -414,6 +416,7 @@ async def test_register_payment_rename_failure_still_succeeds():
     with patch("app.graph.tools.get_supabase", new_callable=AsyncMock, return_value=client), \
          patch("app.graph.tools.get_users_by_phone", new_callable=AsyncMock, return_value=[{"id": "user-123", "patient_name": "Maria"}]), \
          patch("app.graph.tools.log_event", new_callable=AsyncMock), \
+         patch("app.graph.tools._notify_clinic", new_callable=AsyncMock), \
          patch("app.google_drive.rename_file", new_callable=AsyncMock, side_effect=Exception("Drive unavailable")), \
          patch("app.google_sheets.append_payment_receipt", new_callable=AsyncMock), \
          patch("app.graph.tools.send_text", new_callable=AsyncMock):
@@ -460,6 +463,7 @@ async def test_register_payment_sets_booking_fee_paid_at():
     with patch("app.graph.tools.get_supabase", new_callable=AsyncMock, return_value=client), \
          patch("app.graph.tools.get_users_by_phone", new_callable=AsyncMock, return_value=[{"id": "user-123", "patient_name": "Maria"}]), \
          patch("app.graph.tools.log_event", new_callable=AsyncMock), \
+         patch("app.graph.tools._notify_clinic", new_callable=AsyncMock), \
          patch("app.google_drive.rename_file", new_callable=AsyncMock), \
          patch("app.google_sheets.append_payment_receipt", new_callable=AsyncMock), \
          patch("app.graph.tools.send_text", new_callable=AsyncMock):
@@ -484,6 +488,7 @@ async def test_register_payment_full_amount_sets_paid_at():
     with patch("app.graph.tools.get_supabase", new_callable=AsyncMock, return_value=client), \
          patch("app.graph.tools.get_users_by_phone", new_callable=AsyncMock, return_value=[{"id": "user-123", "patient_name": "Maria"}]), \
          patch("app.graph.tools.log_event", new_callable=AsyncMock), \
+         patch("app.graph.tools._notify_clinic", new_callable=AsyncMock), \
          patch("app.google_drive.rename_file", new_callable=AsyncMock), \
          patch("app.google_sheets.append_payment_receipt", new_callable=AsyncMock), \
          patch("app.graph.tools.send_text", new_callable=AsyncMock):
