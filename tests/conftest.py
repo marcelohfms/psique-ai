@@ -1,17 +1,18 @@
 import os
 
-# Must be set before any app module is imported so that modules that read
-# env vars at import time (e.g. google_calendar._credentials) don't crash.
-os.environ.setdefault("SUPABASE_URL", "https://test.supabase.co")
-os.environ.setdefault("SUPABASE_KEY", "test-key")
-os.environ.setdefault("SUPABASE_CONNECTION_STRING", "")
-os.environ.setdefault("OPENAI_API_KEY", "sk-test")
-os.environ.setdefault("GOOGLE_CLIENT_ID", "test-client-id")
-os.environ.setdefault("GOOGLE_CLIENT_SECRET", "test-secret")
-os.environ.setdefault("GOOGLE_REFRESH_TOKEN", "test-refresh-token")
-os.environ.setdefault("WHATSAPP_TOKEN", "test-token")
-os.environ.setdefault("WHATSAPP_PHONE_NUMBER_ID", "123456789")
-os.environ.setdefault("WHATSAPP_VERIFY_TOKEN", "test-verify-token")
+# Override any .env values with test stubs BEFORE any app module is imported.
+# This prevents local .env (with real credentials) from leaking into tests
+# and causing real API calls / emails / DB writes during test runs.
+os.environ["SUPABASE_URL"] = "https://test.supabase.co"
+os.environ["SUPABASE_KEY"] = "test-key"
+os.environ["SUPABASE_CONNECTION_STRING"] = ""
+os.environ["OPENAI_API_KEY"] = "sk-test"
+os.environ["GOOGLE_CLIENT_ID"] = "test-client-id"
+os.environ["GOOGLE_CLIENT_SECRET"] = "test-secret"
+os.environ["GOOGLE_REFRESH_TOKEN"] = "test-refresh-token"
+os.environ["WHATSAPP_TOKEN"] = "test-token"
+os.environ["WHATSAPP_PHONE_NUMBER_ID"] = "123456789"
+os.environ["WHATSAPP_VERIFY_TOKEN"] = "test-verify-token"
 
 import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
