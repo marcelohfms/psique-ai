@@ -555,22 +555,31 @@ async def patient_agent_node(state: ConversationState, config: RunnableConfig) -
     if not response.tool_calls and response.content:
         phone = state["phone"]
         if state.get("silent_mode"):
-            # Tools called this turn that produce patient-facing outcomes
-            _PATIENT_FACING_TOOLS = {
-                "register_payment", "confirm_appointment", "confirm_attendance",
-                "confirm_refund_completed", "cancel_appointment", "reschedule_appointment",
-                "request_document",
-            }
+            # Tools that are purely internal (result never goes to the patient directly)
+            _INTERNAL_ONLY_TOOLS = {"get_available_slots", "update_preferred_doctor"}
             called_tools = {
                 tc["name"]
                 for msg in clean_messages
                 if getattr(msg, "tool_calls", None)
                 for tc in msg.tool_calls
             }
-            is_patient_facing = bool(called_tools & _PATIENT_FACING_TOOLS)
+            # Internal-only: exclusively internal tools were called (and at least one was)
+            # Everything else (no tools called, or any patient-facing tool) goes to the patient
+            is_internal_only = bool(called_tools) and called_tools.issubset(_INTERNAL_ONLY_TOOLS)
 
-            if is_patient_facing:
-                # Action affects the patient — send message, reactivate bot so conversation continues
+            if is_internal_only:
+                # Pure internal query — post only as private note, do not send to patient
+                try:
+                    from app.chatwoot import get_conversation_id, add_private_note, find_or_create_conversation
+                    conv_id = get_conversation_id(phone)
+                    if conv_id is None:
+                        conv_id = await find_or_create_conversation(phone)
+                    if conv_id:
+                        await add_private_note(conv_id, response.content)
+                except Exception:
+                    _logger.exception("Failed to post private note for internal response phone=%s", phone)
+            else:
+                # Patient-facing outcome or plain text continuation — send to patient and reactivate bot
                 await send_text(phone, response.content)
                 await save_message(phone, "assistant", response.content)
                 await upsert_user(phone, {"active": True, "deactivated_at": None})
@@ -583,17 +592,6 @@ async def patient_agent_node(state: ConversationState, config: RunnableConfig) -
                         await add_private_note(conv_id, f"[Eva → paciente]: {response.content}")
                 except Exception:
                     _logger.exception("Failed to post private note after patient-facing action phone=%s", phone)
-            else:
-                # Internal response — post only as private note, do not send to patient
-                try:
-                    from app.chatwoot import get_conversation_id, add_private_note, find_or_create_conversation
-                    conv_id = get_conversation_id(phone)
-                    if conv_id is None:
-                        conv_id = await find_or_create_conversation(phone)
-                    if conv_id:
-                        await add_private_note(conv_id, response.content)
-                except Exception:
-                    _logger.exception("Failed to post private note for internal response phone=%s", phone)
         else:
             await send_text(phone, response.content)
             await save_message(phone, "assistant", response.content)
