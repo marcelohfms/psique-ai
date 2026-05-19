@@ -332,7 +332,7 @@ async def confirm_appointment(
         effective_modality = modality if modality in ("online", "presencial") else ""
 
     doctor_label = {"julio": "Dr. Júlio", "bruna": "Dra. Bruna"}.get(
-        state.get("preferred_doctor", ""), "médico(a)"
+        doctor, "médico(a)"
     )
     patient_name = state.get("patient_name") or state.get("user_name", "Paciente")
     patient_age = state.get("patient_age") or 99
