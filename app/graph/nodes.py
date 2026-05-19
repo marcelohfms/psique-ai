@@ -48,6 +48,10 @@ def _get_agent_llm():
 # ── Nodes ─────────────────────────────────────────────────────────────────────
 
 async def collect_info_node(state: ConversationState, config: RunnableConfig) -> dict:
+    # Fast-path: patient already identified — skip straight to agent
+    if state.get("user_db_id"):
+        return {"stage": "patient_agent"}
+
     collected = {
         "user_name": state.get("user_name"),
         "is_for_self": state.get("is_for_self"),
