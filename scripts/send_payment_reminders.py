@@ -130,6 +130,7 @@ async def main():
         .is_("booking_fee_paid_at", "null")
         .is_("payment_reminder_sent_at", "null")
         .lte("created_at", two_hours_ago)
+        .gte("start_time", now.isoformat())
         .execute()
     )
     reminder_appts = reminder_result.data or []
@@ -143,6 +144,7 @@ async def main():
         .is_("booking_fee_paid_at", "null")
         .not_.is_("payment_reminder_sent_at", "null")
         .lte("payment_reminder_sent_at", two_hours_ago)
+        .gte("start_time", now.isoformat())
         .execute()
     )
     cancel_appts = cancel_result.data or []
