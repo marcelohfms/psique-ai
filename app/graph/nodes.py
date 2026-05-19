@@ -10,10 +10,10 @@ from app.graph.tools import (
     get_available_slots, confirm_appointment,
     cancel_appointment, reschedule_appointment,
     request_document, transfer_to_human, confirm_attendance,
-    register_payment, update_preferred_doctor,
+    register_payment, update_preferred_doctor, save_patient_email,
     register_refund_request, confirm_refund_completed,
 )
-from app.graph.prompts import COLLECT_SYSTEM, MINOR_RULE, ADULT_RULE, EXISTING_PATIENT_SYSTEM, NEW_PATIENT_SYSTEM, CANCELLATION_RULES, CLINIC_ADDRESS, DOCTORS_INFO, get_booking_fee_rule, MEDICAL_LIMITS_RULE, DOCTOR_CORRECTION_RULE, get_pricing_rules
+from app.graph.prompts import COLLECT_SYSTEM, MINOR_RULE, ADULT_RULE, EXISTING_PATIENT_SYSTEM, NEW_PATIENT_SYSTEM, CANCELLATION_RULES, CLINIC_ADDRESS, DOCTORS_INFO, get_booking_fee_rule, MEDICAL_LIMITS_RULE, DOCTOR_CORRECTION_RULE, EMAIL_RULE, get_pricing_rules
 from app.whatsapp import send_text
 from app.database import upsert_user, log_event, get_upcoming_appointments, get_user_by_phone, get_users_by_phone, DOCTOR_IDS, DOCTOR_NAMES, save_message
 
@@ -23,7 +23,7 @@ TOOLS = [
     get_available_slots, confirm_appointment,
     cancel_appointment, reschedule_appointment,
     request_document, transfer_to_human, confirm_attendance,
-    register_payment, update_preferred_doctor,
+    register_payment, update_preferred_doctor, save_patient_email,
     register_refund_request, confirm_refund_completed,
 ]
 
@@ -533,6 +533,7 @@ async def patient_agent_node(state: ConversationState, config: RunnableConfig) -
         today=today,
         doctor_schedules=format_doctor_schedules(),
         patient_email=state.get("patient_email") or "não informado",
+        email_rule=EMAIL_RULE,
         doctor_correction_rule=DOCTOR_CORRECTION_RULE,
         booking_fee_rule=get_booking_fee_rule(),
         cancellation_rules=CANCELLATION_RULES,

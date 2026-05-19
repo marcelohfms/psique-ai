@@ -397,7 +397,11 @@ async def confirm_appointment(
 
     session_label = f" ({session_note})" if session_note else ""
     modality_line = f"\nModalidade: {'Online' if effective_modality == 'online' else 'Presencial'}" if effective_modality else ""
-    patient_email = state.get("patient_email") or "não informado"
+    # Read email from DB in case save_patient_email was just called (state may not reflect it yet)
+    patient_email = state.get("patient_email")
+    if not patient_email:
+        _user_for_email = await get_user_by_phone(phone)
+        patient_email = (_user_for_email or {}).get("email") or "não informado"
     registration_block = _build_registration_block(state)
     asyncio.create_task(_notify_clinic(
         f"Agendamento realizado! ✅\n"
@@ -1008,6 +1012,22 @@ async def register_payment(
         f"[INSTRUÇÃO PARA EVA: agradeça o pagamento conforme o tipo registrado e pergunte se o paciente já quer deixar "
         f"a próxima consulta agendada com {doctor_label}.]"
     )
+
+
+@tool
+async def save_patient_email(
+    email: str,
+    state: Annotated[dict, InjectedState],
+    config: RunnableConfig,
+) -> str:
+    """Salva o e-mail do paciente no cadastro e no estado da conversa.
+    Use quando o paciente informar o e-mail e ele ainda não estiver registrado.
+    Deve ser chamado ANTES de confirm_appointment quando patient_email não estiver registrado.
+    """
+    phone = config["configurable"]["phone"]
+    await upsert_user(phone, {"email": email})
+    await log_event("patient_email_saved", phone, {"email": email})
+    return f"E-mail {email} registrado com sucesso. Agora pode prosseguir com o agendamento."
 
 
 @tool
