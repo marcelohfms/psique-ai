@@ -100,15 +100,14 @@ async def main():
         by_doctor.setdefault(doc_id, []).append(appt)
 
     # Fetch doctor emails from doctors table
-    doctors_result = await client.from_("doctors").select("doctor_id, agenda_id, email").execute()
+    doctors_result = await client.from_("doctors").select("doctor_id, agenda_id").execute()
     doctor_rows = {d["doctor_id"]: d for d in (doctors_result.data or [])}
 
     for doctor_id, appts in by_doctor.items():
         doctor_label = DOCTOR_LABELS.get(doctor_id, "Médico(a)")
         doctor_row = doctor_rows.get(doctor_id, {})
 
-        # Use dedicated email field if available, fall back to agenda_id
-        doctor_email = doctor_row.get("email") or doctor_row.get("agenda_id", "")
+        doctor_email = doctor_row.get("agenda_id", "")
         if not doctor_email:
             print(f"  No email for {doctor_label} — skipping.")
             continue
