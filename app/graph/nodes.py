@@ -70,7 +70,7 @@ async def collect_info_node(state: ConversationState, config: RunnableConfig) ->
         pending = state.get("pending_patients")
 
         if pending is None:
-            all_users = await get_users_by_phone(state["phone"])
+            all_users = [u for u in await get_users_by_phone(state["phone"]) if u.get("active")]
             if len(all_users) == 1:
                 u = all_users[0]
                 doc_key = DOCTOR_NAMES.get(u.get("doctor_id", ""), None)
