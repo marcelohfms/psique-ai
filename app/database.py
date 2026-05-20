@@ -110,13 +110,18 @@ async def upsert_user(phone: str, data: dict, user_id: str | None = None) -> str
 
     rows = await get_users_by_phone(phone)
 
-    # Try to match an existing row by patient_name to avoid duplicates
+    # Try to match an existing row by patient_name or name to avoid duplicates.
+    # Covers both cases: when patient_name is already known, and when only the
+    # contact name (name) is available (e.g. early in the collect_info flow).
     target: dict | None = None
-    if rows and "patient_name" in data and data["patient_name"]:
-        name_lower = data["patient_name"].lower().strip()
+    name_to_match = (
+        (data.get("patient_name") or "").strip()
+        or (data.get("name") or "").strip()
+    ).lower()
+    if rows and name_to_match:
         target = next(
             (r for r in rows
-             if (r.get("patient_name") or r.get("name") or "").lower().strip() == name_lower),
+             if (r.get("patient_name") or r.get("name") or "").lower().strip() == name_to_match),
             None,
         )
 
