@@ -58,15 +58,28 @@ async def send_reminder_template(phone: str, template_name: str, first_name: str
     )
 
 
-def _plain_message(template_name: str, first_name: str, doctor_label: str, time_str: str) -> str:
-    if template_name == "lembrete_dia_anteior":
+def _plain_message(template_name: str, first_name: str, doctor_label: str, time_str: str, modality: str = "") -> str:
+    is_online = modality == "online"
+    if template_name in ("lembrete_dia_anteior", "lembrete_dia_anterior_online"):
+        if is_online:
+            return (
+                f"Olá! Lembrete da Psiquê: {first_name} tem consulta online amanhã "
+                f"com {doctor_label} às {time_str}. Consegue confirmar a presença?"
+            )
         return (
             f"Olá! Lembrete da Psiquê: {first_name} tem consulta amanhã "
             f"com {doctor_label} às {time_str}. Consegue confirmar a presença?"
         )
+    # Day-of reminder
+    if is_online:
+        return (
+            f"Bom dia! Hoje é o dia da consulta online de {first_name} "
+            f"com {doctor_label} às {time_str}. "
+            f"A consulta é online — {doctor_label} entrará em contato com você no horário agendado! 💻"
+        )
     return (
         f"Bom dia! Hoje é o dia da consulta de {first_name} "
-        f"com {doctor_label} às {time_str}. Estamos esperando na Psiquê!"
+        f"com {doctor_label} às {time_str}. Estamos esperando na Psiquê! 😊"
     )
 
 
@@ -116,7 +129,7 @@ async def main():
         booked_before = (now - timedelta(hours=12)).isoformat()
         result = await (
             client.from_("appointments")
-            .select("appointment_id, start_time, doctor_id, users(number, patient_name, name)")
+            .select("appointment_id, start_time, doctor_id, modality, users(number, patient_name, name)")
             .eq("status", "scheduled")
             .is_("reminder_day_before_sent_at", "null")
             .gte("start_time", f"{tomorrow_start}T00:00:00")
@@ -130,7 +143,7 @@ async def main():
     # Fetch all today's future scheduled appointments not yet reminded
     day_of_result = await (
         client.from_("appointments")
-        .select("appointment_id, start_time, doctor_id, users(number, patient_name, name)")
+        .select("appointment_id, start_time, doctor_id, modality, users(number, patient_name, name)")
         .eq("status", "scheduled")
         .is_("reminder_day_of_sent_at", "null")
         .gt("start_time", now.isoformat())
@@ -177,6 +190,7 @@ async def main():
             appointment_id = appt["appointment_id"]
             start_dt = datetime.fromisoformat(appt["start_time"]).astimezone(TZ)
             time_str = start_dt.strftime("%H:%M")
+            modality = appt.get("modality") or ""
 
             user = appt.get("users") or {}
             phone = user.get("number", "")
@@ -187,15 +201,20 @@ async def main():
             if not phone:
                 continue
 
+            # Use online-specific template name for online appointments
+            effective_template = template_name
+            if modality == "online":
+                effective_template = template_name.replace("lembrete_dia_consulta", "lembrete_dia_consulta_online")
+
             try:
-                await send_reminder_template(phone, template_name, first_name, doctor_label, time_str)
+                await send_reminder_template(phone, effective_template, first_name, doctor_label, time_str)
                 await client.from_("appointments").update({
                     sent_col: now.isoformat(),
                 }).eq("appointment_id", appointment_id).execute()
-                message = _plain_message(template_name, first_name, doctor_label, time_str)
+                message = _plain_message(effective_template, first_name, doctor_label, time_str, modality)
                 if graph:
                     await save_to_checkpoint(graph, phone, message, appt)
-                print(f"  [{template_name}] Sent to {phone} — {patient_name} @ {time_str}")
+                print(f"  [{effective_template}] Sent to {phone} — {patient_name} @ {time_str} [{modality or 'sem modalidade'}]")
             except Exception as e:
                 print(f"  Failed to send to {phone}: {e}")
     finally:
