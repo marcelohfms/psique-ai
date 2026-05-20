@@ -391,7 +391,7 @@ async def confirm_appointment(
     try:
         await client.from_("appointments").insert({
             "user_id": user["id"] if user else None,
-            "doctor_id": DOCTOR_IDS.get(state.get("preferred_doctor", "")),
+            "doctor_id": DOCTOR_IDS.get(doctor),
             "appointment_id": event_id,
             "start_time": start.isoformat(),
             "end_time": end.isoformat(),
@@ -446,7 +446,8 @@ async def cancel_appointment(
     """Cancela uma consulta agendada. appointment_id é o Google Calendar event ID."""
     from app.google_calendar import cancel_event
 
-    calendar_id = await _get_doctor_calendar_id(state.get("preferred_doctor", ""))
+    doctor = await _resolve_doctor(state, config)
+    calendar_id = await _get_doctor_calendar_id(doctor)
     if not calendar_id:
         return "Não foi possível identificar o calendário do médico."
 
@@ -467,9 +468,7 @@ async def cancel_appointment(
     phone = config["configurable"]["phone"]
     await log_event("appointment_canceled", phone, {"appointment_id": appointment_id})
 
-    doctor_label = {"julio": "Dr. Júlio", "bruna": "Dra. Bruna"}.get(
-        state.get("preferred_doctor", ""), "médico(a)"
-    )
+    doctor_label = {"julio": "Dr. Júlio", "bruna": "Dra. Bruna"}.get(doctor, "médico(a)")
     patient_name = state.get("patient_name") or state.get("user_name", "Paciente")
     if old_start_time:
         old_dt = datetime.fromisoformat(old_start_time).astimezone(TZ)
@@ -485,6 +484,19 @@ async def cancel_appointment(
         phone=phone,
         subject=f"Agendamento cancelado — {patient_name}",
     ))
+
+    # Send cancellation email to patient if email is on file
+    patient_email = state.get("patient_email")
+    if not patient_email:
+        _user = await get_user_by_phone(phone)
+        patient_email = (_user or {}).get("email") or ""
+    if patient_email:
+        try:
+            from app.email_sender import send_cancellation_email
+            contact_name = state.get("user_name") or patient_name
+            await send_cancellation_email(contact_name, patient_name, doctor_label, formatted_old, patient_email)
+        except Exception:
+            logger.exception("CANCELLATION_EMAIL FAILED patient=%s", patient_name)
 
     return "Consulta cancelada com sucesso. ✅"
 
@@ -506,7 +518,8 @@ async def reschedule_appointment(
     """
     from app.google_calendar import update_event
 
-    calendar_id = await _get_doctor_calendar_id(state.get("preferred_doctor", ""))
+    doctor = await _resolve_doctor(state, config)
+    calendar_id = await _get_doctor_calendar_id(doctor)
     if not calendar_id:
         return "Não foi possível identificar o calendário do médico."
 
@@ -515,9 +528,7 @@ async def reschedule_appointment(
     except ValueError:
         return f"Formato de data inválido: {new_slot_datetime}. Use ISO 8601 (ex: 2026-03-19T09:00:00)."
 
-    doctor_label = {"julio": "Dr. Júlio", "bruna": "Dra. Bruna"}.get(
-        state.get("preferred_doctor", ""), "médico(a)"
-    )
+    doctor_label = {"julio": "Dr. Júlio", "bruna": "Dra. Bruna"}.get(doctor, "médico(a)")
     patient_name = state.get("patient_name") or state.get("user_name", "Paciente")
     patient_age = state.get("patient_age") or 99
     is_minor_first = patient_age < 18 and not state.get("is_patient", False)
@@ -529,7 +540,7 @@ async def reschedule_appointment(
 
     # Enforce modality constraints
     from app.google_calendar import get_modality_for_slot
-    slot_constraint = get_modality_for_slot(state.get("preferred_doctor", ""), new_start)
+    slot_constraint = get_modality_for_slot(doctor, new_start)
     effective_modality = "online" if slot_constraint == "online" else (modality if modality in ("online", "presencial") else "")
 
     # Update Google Calendar event (same event_id, new time)
