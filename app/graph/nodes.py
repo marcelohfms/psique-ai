@@ -241,6 +241,7 @@ async def collect_info_node(state: ConversationState, config: RunnableConfig) ->
     _GUARDIAN_NAME_Q = "Qual é o nome completo do responsável pelo paciente?"
     _GUARDIAN_CPF_Q = "Qual é o CPF do responsável?"
     _PATIENT_Q = "O paciente já é paciente da clínica?"
+    _ADULT_PATIENT_NAME_Q = "Qual o nome completo do paciente?"
     _DOCTOR_Q = "Você tem preferência pelo Dr. Júlio ou pela Dra. Bruna?"
     _EMAIL_Q = "Qual o e-mail para envio?"
     _EMAIL_Q_CADASTRO = "Qual o seu e-mail? Precisamos para incluir no seu cadastro. 📋"
@@ -261,6 +262,12 @@ async def collect_info_node(state: ConversationState, config: RunnableConfig) ->
             first_q = _GUARDIAN_CPF_Q
         elif state.get("is_patient") is None:
             first_q = _PATIENT_Q
+        elif (
+            state.get("is_patient") is False
+            and (_pat_age_for_greeting or 99) >= 18
+            and state.get("patient_name") == state.get("user_name")
+        ):
+            first_q = _ADULT_PATIENT_NAME_Q
         elif not state.get("preferred_doctor"):
             first_q = _DOCTOR_Q
         elif not state.get("patient_email"):
@@ -340,6 +347,20 @@ async def collect_info_node(state: ConversationState, config: RunnableConfig) ->
                 if is_patient is not None:
                     return await _extract_and_ask({"is_patient": is_patient}, _DOCTOR_Q)
             return await _ask(_PATIENT_Q)
+
+        # Step 5b: actual patient name when contact is not the patient (adults only)
+        # When is_patient=False for adults, patient_name was set to user_name in step 2 —
+        # need to ask for the real patient's name separately.
+        if (
+            state.get("is_patient") is False
+            and (state.get("patient_age") or 99) >= 18
+            and state.get("patient_name") == state.get("user_name")
+        ):
+            if last_ai == _ADULT_PATIENT_NAME_Q and last_human:
+                return await _extract_and_ask(
+                    {"patient_name": last_human, "is_for_self": False}, _DOCTOR_Q
+                )
+            return await _ask(_ADULT_PATIENT_NAME_Q)
 
         # Step 6: preferred doctor
         if not state.get("preferred_doctor"):
