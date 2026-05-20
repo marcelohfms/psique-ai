@@ -144,27 +144,41 @@ async def get_available_slots(
 
     # ── "qualquer" shift: check all shifts and return summary ─────────────────
     if preferred_shift == "qualquer":
-        target_date = _parse_day(preferred_day)
-        if target_date is None:
+        # Detect whether preferred_day is a weekday name so we can do multi-week
+        # search — the same logic used below for specific shifts.
+        preferred_day_norm_q = preferred_day.lower().strip()
+        weekday_key_q = next(
+            (wd for name, wd in _WEEKDAYS_PT.items() if name in preferred_day_norm_q),
+            None,
+        )
+        base_date_q = _parse_day(preferred_day)
+        if base_date_q is None:
             return "Não entendi a data. Por favor informe um dia específico (ex: segunda, 19/05, amanhã)."
-        day_of_week = _WEEKDAY_LABELS_PT.get(target_date.weekday(), "")
-        date_label = target_date.strftime("%d/%m")
-        header = f"{day_of_week}, dia {date_label}" if day_of_week else date_label
-        sections = []
-        for shift_key, shift_label in [("manha", "manhã"), ("tarde", "tarde"), ("noite", "noite")]:
-            slots = await _get_slots(
-                calendar_id=calendar_id,
-                preferred_day=preferred_day,
-                preferred_shift=shift_key,
-                slot_minutes=slot_duration_minutes,
-                doctor_key=doctor,
-            )
-            if slots:
-                times = ", ".join(s[0].strftime("%H:%M") for s in slots)
-                sections.append(f"- {shift_label.capitalize()}: {times}")
-        if not sections:
-            return f"Não há horários disponíveis para {header}. Deseja tentar outro dia?"
-        return f"Horários disponíveis para {header}:\n" + "\n".join(sections)
+
+        # For weekday names: try up to 4 weeks until we find a date with slots.
+        # For specific dates: single attempt only.
+        max_weeks = 4 if weekday_key_q is not None else 1
+        for week_offset in range(max_weeks):
+            try_date = base_date_q + timedelta(weeks=week_offset)
+            day_of_week = _WEEKDAY_LABELS_PT.get(try_date.weekday(), "")
+            date_label = try_date.strftime("%d/%m")
+            header = f"{day_of_week}, dia {date_label}" if day_of_week else date_label
+            sections = []
+            for shift_key, shift_label in [("manha", "manhã"), ("tarde", "tarde"), ("noite", "noite")]:
+                slots = await _get_slots(
+                    calendar_id=calendar_id,
+                    preferred_day=try_date.isoformat(),
+                    preferred_shift=shift_key,
+                    slot_minutes=slot_duration_minutes,
+                    doctor_key=doctor,
+                )
+                if slots:
+                    times = ", ".join(s[0].strftime("%H:%M") for s in slots)
+                    sections.append(f"- {shift_label.capitalize()}: {times}")
+            if sections:
+                return f"Horários disponíveis para {header}:\n" + "\n".join(sections)
+            # No slots this week — try the next occurrence (only for weekday names)
+        return f"Não há horários disponíveis para {header}. Deseja tentar outro dia?"
 
     now = datetime.now(TZ)
     shift_norm = preferred_shift.lower().replace("ã", "a").replace("manhã", "manha").strip()
