@@ -73,9 +73,9 @@ def _plain_message(template_name: str, first_name: str, doctor_label: str, time_
     # Day-of reminder
     if is_online:
         return (
-            f"Bom dia! Hoje é o dia da consulta online de {first_name} "
-            f"com {doctor_label} às {time_str}. "
-            f"A consulta é online — {doctor_label} entrará em contato com você no horário agendado! 💻"
+            f"Olá! 🙂\n"
+            f"Hoje é o dia da consulta online de {first_name} com {doctor_label} às {time_str}.\n\n"
+            f"A consulta é online - você receberá o link da consulta no horário agendado."
         )
     return (
         f"Bom dia! Hoje é o dia da consulta de {first_name} "
