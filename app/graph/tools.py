@@ -119,6 +119,10 @@ async def get_available_slots(
 
     doctor = await _resolve_doctor(state, config)
     calendar_id = await _get_doctor_calendar_id(doctor)
+    logger.info(
+        "GET_SLOTS_CALL preferred_day=%r preferred_shift=%r duration=%s doctor=%s calendar_id=%s",
+        preferred_day, preferred_shift, slot_duration_minutes, doctor, calendar_id,
+    )
     if not calendar_id:
         return "Não foi possível identificar o calendário do médico."
 
@@ -172,6 +176,7 @@ async def get_available_slots(
                     slot_minutes=slot_duration_minutes,
                     doctor_key=doctor,
                 )
+                logger.info("GET_SLOTS_RESULT date=%s shift=%s slots=%s", try_date, shift_key, [s[0].strftime("%H:%M") for s in slots])
                 if slots:
                     times = ", ".join(s[0].strftime("%H:%M") for s in slots)
                     sections.append(f"- {shift_label.capitalize()}: {times}")
