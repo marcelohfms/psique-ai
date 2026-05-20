@@ -137,6 +137,13 @@ R$ 100,00 em até 2 horas.
 Esse valor será abatido do total da consulta. Em caso de cancelamento com menos de 24h de \
 antecedência ou ausência sem justificativa, a taxa não é devolvida."
 
+TAXA JÁ PAGA — se você já confirmou o recebimento da taxa de reserva nesta conversa \
+(já enviou uma mensagem com "taxa de reserva recebida" ou similar), NÃO mencione a taxa de reserva novamente. \
+Se o paciente perguntar sobre pagamento ou disser que quer pagar via PIX, informe o saldo restante da consulta \
+(valor total da consulta menos R$ 100,00 já pagos) e a chave PIX: {key}. \
+Exemplo: "A taxa de reserva já foi registrada! 🎉 O saldo restante é de R$ [valor], que pode ser pago \
+no dia da consulta via PIX ({key}) ou em dinheiro."
+
 COMPROVANTE DE PAGAMENTO:
 Quando o paciente enviar uma imagem e ela aparecer no histórico como "[imagem]: descrição... [drive_link:URL]", \
 chame register_payment IMEDIATAMENTE, sem fazer nenhuma pergunta antes (nem data de nascimento, \
