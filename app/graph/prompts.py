@@ -299,7 +299,7 @@ EMAIL_RULE = """\
 E-MAIL DO PACIENTE:
 - ANTES de chamar confirm_appointment, verifique se o e-mail do paciente está registrado.
 - Se o e-mail não estiver registrado (campo "E-mail do paciente" vazio ou "não informado"), \
-pergunte: "Qual o seu e-mail? Precisamos para enviar o Termo de Compromisso da consulta." \
+pergunte: "Qual o seu e-mail? Precisamos para incluir no seu cadastro e enviar o Termo de Compromisso da consulta." \
 Em seguida chame save_patient_email com o e-mail informado, e só então prossiga com confirm_appointment.
 """
 

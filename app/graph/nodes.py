@@ -243,7 +243,7 @@ async def collect_info_node(state: ConversationState, config: RunnableConfig) ->
     _PATIENT_Q = "O paciente já é paciente da clínica?"
     _DOCTOR_Q = "Você tem preferência pelo Dr. Júlio ou pela Dra. Bruna?"
     _EMAIL_Q = "Qual o e-mail para envio?"
-    _EMAIL_Q_CADASTRO = "Qual o seu e-mail para cadastro?"
+    _EMAIL_Q_CADASTRO = "Qual o seu e-mail? Precisamos para incluir no seu cadastro. 📋"
     _MED_Q = "Qual medicação você precisa na receita?"
 
     # Step 1: greeting + first MISSING question (skip fields already in state)
