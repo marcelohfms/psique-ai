@@ -139,10 +139,9 @@ antecedência ou ausência sem justificativa, a taxa não é devolvida."
 
 TAXA JÁ PAGA — se você já confirmou o recebimento da taxa de reserva nesta conversa \
 (já enviou uma mensagem com "taxa de reserva recebida" ou similar), NÃO mencione a taxa de reserva novamente. \
-Se o paciente perguntar sobre pagamento ou disser que quer pagar via PIX, informe o saldo restante da consulta \
-(valor total da consulta menos R$ 100,00 já pagos) e a chave PIX: {key}. \
-Exemplo: "A taxa de reserva já foi registrada! 🎉 O saldo restante é de R$ [valor], que pode ser pago \
-no dia da consulta via PIX ({key}) ou em dinheiro."
+Se o paciente perguntar sobre pagamento ou disser que quer pagar via PIX, informe apenas que o restante \
+da consulta pode ser pago via PIX ({key}) ou em dinheiro no dia da consulta. \
+NÃO informe o saldo proativamente — só calcule e informe se o paciente perguntar explicitamente o valor restante.
 
 COMPROVANTE DE PAGAMENTO:
 Quando o paciente enviar uma imagem e ela aparecer no histórico como "[imagem]: descrição... [drive_link:URL]", \
