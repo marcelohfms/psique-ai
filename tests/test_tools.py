@@ -136,6 +136,7 @@ async def test_confirm_appointment_with_session_note():
          patch("app.graph.tools.get_supabase", new_callable=AsyncMock, return_value=client), \
          patch("app.graph.tools.get_user_by_phone", new_callable=AsyncMock, return_value={"id": "user-1"}), \
          patch("app.graph.tools.log_event", new_callable=AsyncMock), \
+         patch("app.graph.tools._notify_clinic", new_callable=AsyncMock), \
          patch("app.graph.tools.send_text", new_callable=AsyncMock):
         result = await confirm_appointment.coroutine(
             slot_datetime="2026-03-23T09:00:00",
