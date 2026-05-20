@@ -13,6 +13,10 @@ os.environ["GOOGLE_REFRESH_TOKEN"] = "test-refresh-token"
 os.environ["WHATSAPP_TOKEN"] = "test-token"
 os.environ["WHATSAPP_PHONE_NUMBER_ID"] = "123456789"
 os.environ["WHATSAPP_VERIFY_TOKEN"] = "test-verify-token"
+os.environ["SMTP_HOST"] = ""
+os.environ["SMTP_USER"] = ""
+os.environ["SMTP_PASSWORD"] = ""
+os.environ["CLINIC_NOTIFY_EMAIL"] = ""
 
 import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
