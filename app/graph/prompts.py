@@ -139,9 +139,12 @@ antecedência ou ausência sem justificativa, a taxa não é devolvida."
 
 TAXA JÁ PAGA — se você já confirmou o recebimento da taxa de reserva nesta conversa \
 (já enviou uma mensagem com "taxa de reserva recebida" ou similar), NÃO mencione a taxa de reserva novamente. \
-Se o paciente perguntar sobre pagamento ou disser que quer pagar via PIX, informe apenas que o restante \
-da consulta pode ser pago via PIX ({key}) ou em dinheiro no dia da consulta. \
-NÃO informe o saldo proativamente — só calcule e informe se o paciente perguntar explicitamente o valor restante.
+Se o paciente perguntar sobre pagamento ou disser que quer pagar, informe que o restante da consulta \
+pode ser pago via PIX ({key}), em dinheiro ou por link de pagamento em até 3x no cartão de crédito. \
+NÃO informe o saldo proativamente — só calcule e informe se o paciente perguntar explicitamente o valor restante. \
+Se o paciente preferir o link de pagamento, informe que vamos transferir para a atendente gerar o link \
+e chame transfer_to_human com reason: "Paciente solicita link de pagamento para quitação da consulta. \
+Valor: R$ [saldo restante]. Após processar, confirme com: PAGAMENTO CONFIRMADO [nome] R$ [valor]"
 
 COMPROVANTE DE PAGAMENTO:
 Quando o paciente enviar uma imagem e ela aparecer no histórico como "[imagem]: descrição... [drive_link:URL]", \
