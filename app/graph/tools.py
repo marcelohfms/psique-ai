@@ -815,14 +815,14 @@ async def register_payment(
     # but far-past test/stale appointments are excluded.
     lookback_iso = (datetime.now(TZ) - timedelta(hours=12)).isoformat()
     appt_result = await client.from_("appointments").select(
-        "appointment_id, start_time, end_time, doctor_id, paid_at"
+        "appointment_id, start_time, end_time, doctor_id, paid_at, booking_fee_paid_at"
     ).eq("user_id", user_id).eq("status", "scheduled").gte("start_time", lookback_iso).order("start_time").limit(1).execute()
 
     if appt_result.data:
         apt_start = datetime.fromisoformat(appt_result.data[0]["start_time"]).astimezone(TZ)
         appointment_dt = apt_start.strftime("%d/%m/%Y %H:%M")
-        # Guard against duplicate calls: if already paid, return immediately
-        if appt_result.data[0].get("paid_at"):
+        # Guard against duplicate calls: if booking fee or full payment already registered
+        if appt_result.data[0].get("booking_fee_paid_at") or appt_result.data[0].get("paid_at"):
             _logger.warning("REGISTER_PAYMENT duplicate call — already paid patient=%s", patient_name)
             return f"Pagamento de {patient_name} para {appointment_dt} já estava registrado anteriormente. ✅"
         appt_id_to_pay = appt_result.data[0]["appointment_id"]
@@ -862,7 +862,7 @@ async def register_payment(
                     )
                     await client.from_("appointments").update({
                         "status": "scheduled",
-                        "paid_at": datetime.now(TZ).isoformat(),
+                        "booking_fee_paid_at": datetime.now(TZ).isoformat(),
                         "appointment_id": new_event_id,
                         "updated_at": datetime.now(TZ).isoformat(),
                     }).eq("appointment_id", canceled_appt["appointment_id"]).execute()
