@@ -28,8 +28,8 @@ def _credentials() -> Credentials:
     )
 
 
-def _upload_and_share(service, folder_id: str, filename: str, image_bytes: bytes) -> str:
-    """Upload image bytes to Drive, attempt to make public, return web view link.
+def _upload_and_share(service, folder_id: str, filename: str, image_bytes: bytes, mimetype: str = "image/jpeg") -> str:
+    """Upload file bytes to Drive, attempt to make public, return web view link.
 
     The permission step is best-effort: if it fails (e.g. Workspace admin disabled
     public sharing), the file is still uploaded and a link is still returned.
@@ -37,7 +37,7 @@ def _upload_and_share(service, folder_id: str, filename: str, image_bytes: bytes
     import logging as _log
     _logger = _log.getLogger(__name__)
 
-    media = MediaIoBaseUpload(io.BytesIO(image_bytes), mimetype="image/jpeg", resumable=False)
+    media = MediaIoBaseUpload(io.BytesIO(image_bytes), mimetype=mimetype, resumable=False)
     file = service.files().create(
         body={"name": filename, "parents": [folder_id]},
         media_body=media,
@@ -80,7 +80,7 @@ async def upload_image(image_bytes: bytes, filename: str) -> str:
     return await loop.run_in_executor(None, _upload_and_share, service, folder_id, filename, image_bytes)
 
 
-async def upload_document(image_bytes: bytes, filename: str) -> str:
+async def upload_document(file_bytes: bytes, filename: str, mimetype: str = "image/jpeg") -> str:
     """Upload document bytes to the documents Drive folder. Returns public web view URL."""
     folder_id = os.getenv("GOOGLE_DRIVE_DOCUMENTS_FOLDER_ID", "")
     if not folder_id:
@@ -88,4 +88,4 @@ async def upload_document(image_bytes: bytes, filename: str) -> str:
     creds = _credentials()
     service = build("drive", "v3", credentials=creds)
     loop = asyncio.get_event_loop()
-    return await loop.run_in_executor(None, _upload_and_share, service, folder_id, filename, image_bytes)
+    return await loop.run_in_executor(None, _upload_and_share, service, folder_id, filename, file_bytes, mimetype)

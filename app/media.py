@@ -70,14 +70,44 @@ async def transcribe_audio(media_id: str) -> str:
     return await transcribe_audio_bytes(audio_bytes)
 
 
-async def describe_image_bytes(image_bytes: bytes, phone: str = "") -> str | None:
+_DOC_TYPE_PREFIXES: list[tuple[str, str]] = [
+    ("COMPROVANTE DE PAGAMENTO", "comprovante"),
+    ("EXAME", "exame"),
+    ("LAUDO", "laudo"),
+    ("ATESTADO", "atestado"),
+    ("RECEITA", "receita"),
+    ("DECLARACAO", "declaracao"),
+    ("DECLARAÇÃO", "declaracao"),
+    ("RELATORIO", "relatorio"),
+    ("RELATÓRIO", "relatorio"),
+    ("DOCUMENTO", "documento"),
+]
+
+
+def _extract_doc_type(description: str) -> str:
+    upper = description.upper()
+    for prefix, slug in _DOC_TYPE_PREFIXES:
+        if upper.startswith(prefix + ":") or upper.startswith(prefix + " "):
+            return slug
+    return "documento"
+
+
+async def describe_image_bytes(
+    image_bytes: bytes,
+    phone: str = "",
+    source_bytes: bytes | None = None,
+    source_ext: str = "jpg",
+) -> str | None:
     """Classify image/PDF and route accordingly.
 
     - Payment receipts (COMPROVANTE DE PAGAMENTO): upload to payments Drive folder and
       return a description string so Eva can call register_payment.
     - Medical documents (exams, laudos, etc.): upload to documents Drive folder with
-      filename "{patient}_{date}.jpg", send a thank-you message directly to the patient,
-      notify the clinic, and return None (so Eva is never invoked).
+      filename "{doc_type}_{patient}_{date}.{ext}", send a thank-you message directly
+      to the patient, notify the clinic, and return None (so Eva is never invoked).
+
+    source_bytes: original file bytes to upload (e.g. raw PDF). If None, image_bytes is used.
+    source_ext: file extension for the uploaded file ('jpg' or 'pdf').
     """
     b64 = base64.b64encode(image_bytes).decode()
     resp = await _get_openai().chat.completions.create(
@@ -92,18 +122,23 @@ async def describe_image_bytes(image_bytes: bytes, phone: str = "") -> str | Non
                 {
                     "type": "text",
                     "text": (
-                        "Classifique esta imagem em UMA de duas categorias e responda EXATAMENTE com o prefixo correspondente:\n\n"
+                        "Classifique esta imagem em UMA categoria e responda EXATAMENTE com o prefixo correspondente:\n\n"
                         "CATEGORIA 1 — comprovante de pagamento (PIX, TED, DOC, transferência bancária, recibo de pagamento, "
                         "extrato de transação bancária):\n"
                         "  Responda começando com exatamente: 'COMPROVANTE DE PAGAMENTO:'\n"
                         "  Em seguida inclua: valor transferido, chave PIX ou CPF/CNPJ do destinatário, "
                         "nome do destinatário se visível, data/hora da transação, e qualquer texto adicional "
                         "visível (como 'agendamento', 'taxa', descrição etc.).\n\n"
-                        "CATEGORIA 2 — qualquer outro tipo de imagem ou documento (exame médico, laudo, resultado, "
-                        "atestado, foto, screenshot, documento pessoal, etc.):\n"
-                        "  Responda começando com exatamente: 'DOCUMENTO:'\n"
+                        "CATEGORIA 2 — documento médico ou pessoal. Identifique o tipo e use o prefixo exato:\n"
+                        "  'EXAME:' — exame laboratorial, de imagem, eletrocardiograma, etc.\n"
+                        "  'LAUDO:' — laudo médico, psicológico ou psiquiátrico\n"
+                        "  'ATESTADO:' — atestado médico\n"
+                        "  'RECEITA:' — receita ou prescrição médica\n"
+                        "  'DECLARACAO:' — declaração de comparecimento, internação, etc.\n"
+                        "  'RELATORIO:' — relatório médico\n"
+                        "  'DOCUMENTO:' — qualquer outro tipo de documento\n"
                         "  Em seguida inclua uma descrição resumida do conteúdo.\n\n"
-                        "IMPORTANTE: use APENAS esses dois prefixos. Não invente outros."
+                        "IMPORTANTE: use APENAS esses prefixos. Não invente outros."
                     ),
                 },
             ],
@@ -112,6 +147,7 @@ async def describe_image_bytes(image_bytes: bytes, phone: str = "") -> str | Non
     )
     description = resp.choices[0].message.content or ""
     is_payment = description.upper().startswith("COMPROVANTE DE PAGAMENTO")
+    doc_type = _extract_doc_type(description)
     now = datetime.now(TZ)
     now_str = now.strftime("%Y%m%d_%H%M%S")
     date_str = now.strftime("%d-%m-%Y")
@@ -133,14 +169,16 @@ async def describe_image_bytes(image_bytes: bytes, phone: str = "") -> str | Non
         return f"[imagem]: {description}"
 
     # ── Medical document: save to Drive, thank patient directly, notify clinic ──
+    upload_bytes = source_bytes if source_bytes is not None else image_bytes
+    mimetype = "application/pdf" if source_ext == "pdf" else "image/jpeg"
     drive_link = ""
     folder_id = os.getenv("GOOGLE_DRIVE_DOCUMENTS_FOLDER_ID")
     if folder_id:
         try:
             from app.google_drive import upload_document
-            filename = f"{patient}_{date_str}.jpg"
-            drive_link = await upload_document(image_bytes, filename)
-            logger.info("DRIVE_UPLOAD DOCUMENT OK link=%s drive_link=%s", drive_link, drive_link)
+            filename = f"{doc_type}_{patient}_{date_str}.{source_ext}"
+            drive_link = await upload_document(upload_bytes, filename, mimetype)
+            logger.info("DRIVE_UPLOAD DOCUMENT OK filename=%s link=%s", filename, drive_link)
         except Exception:
             logger.exception("DRIVE_UPLOAD DOCUMENT FAILED folder_id=%s", folder_id)
 
@@ -183,14 +221,19 @@ async def describe_image_bytes(image_bytes: bytes, phone: str = "") -> str | Non
 
 
 async def describe_pdf_bytes(pdf_bytes: bytes, phone: str = "") -> str:
-    """Convert first page of PDF to image and describe with GPT-4o vision."""
+    """Convert first page of PDF to image for classification, but upload the original PDF."""
     import fitz  # pymupdf
     doc = fitz.open(stream=pdf_bytes, filetype="pdf")
     page = doc[0]
     pix = page.get_pixmap(dpi=150)
     image_bytes = pix.tobytes("jpeg")
     doc.close()
-    return await describe_image_bytes(image_bytes, phone)
+    return await describe_image_bytes(
+        image_bytes,
+        phone,
+        source_bytes=pdf_bytes,
+        source_ext="pdf",
+    )
 
 
 async def describe_image(media_id: str, phone: str = "") -> str:
