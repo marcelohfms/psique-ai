@@ -1027,9 +1027,7 @@ async def register_payment(
 
     return (
         f"{confirmation_msg}\n\n"
-        f"{payment_note}\n\n"
-        f"[INSTRUÇÃO PARA EVA: agradeça o pagamento conforme o tipo registrado e pergunte se o paciente já quer deixar "
-        f"a próxima consulta agendada com {doctor_label}.]"
+        f"{payment_note}"
     )
 
 
