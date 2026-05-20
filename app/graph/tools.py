@@ -476,14 +476,14 @@ async def cancel_appointment(
     else:
         formatted_old = "horário não disponível"
 
-    asyncio.create_task(_notify_clinic(
+    await _notify_clinic(
         f"Agendamento cancelado! ❌\n"
         f"Paciente: {patient_name}\n"
         f"Data e horário: {formatted_old}\n"
         f"Médico(a): {doctor_label}",
         phone=phone,
         subject=f"Agendamento cancelado — {patient_name}",
-    ))
+    )
 
     # Send cancellation email to patient if email is on file
     patient_email = state.get("patient_email")
@@ -586,7 +586,7 @@ async def reschedule_appointment(
     else:
         formatted_old = "horário não disponível"
 
-    asyncio.create_task(_notify_clinic(
+    await _notify_clinic(
         f"Agendamento alterado! 🔄\n"
         f"Paciente: {patient_name}\n"
         f"Horário anterior: {formatted_old}\n"
@@ -594,7 +594,7 @@ async def reschedule_appointment(
         f"Médico(a): {doctor_label}",
         phone=phone,
         subject=f"Agendamento alterado — {patient_name}",
-    ))
+    )
 
     return f"Consulta remarcada com sucesso! ✅\n{doctor_label} — {formatted_new}"
 

@@ -159,7 +159,8 @@ async def append_refund_request(
     phone_clean = phone.replace("@s.whatsapp.net", "")
     obs = f"Motivo: {reason}" if reason else ""
 
-    row = [now, patient_name, doctor_name, appointment_dt, f"-{amount}".lstrip("-").replace("--", "-"), phone_clean, "Reembolso - Taxa de Reserva", obs, ""]
+    amount_clean = amount.strip().lstrip("-")
+    row = [now, patient_name, doctor_name, appointment_dt, f"-{amount_clean}", phone_clean, "Reembolso - Taxa de Reserva", obs, ""]
 
     creds = _credentials()
     service = build("sheets", "v4", credentials=creds)

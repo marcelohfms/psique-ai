@@ -138,6 +138,11 @@ async def describe_image_bytes(
                         "  'RELATORIO:' — relatório médico\n"
                         "  'DOCUMENTO:' — qualquer outro tipo de documento\n"
                         "  Em seguida inclua uma descrição resumida do conteúdo.\n\n"
+                        "CATEGORIA 3 — imagem irrelevante para uma clínica médica:\n"
+                        "  Inclui: mensagens de bom dia/boa tarde/boa noite, imagens motivacionais, "
+                        "religiosas, de gratidão, memes, fotos pessoais, figurinhas, paisagens, "
+                        "correntes, frases inspiracionais ou qualquer imagem sem conteúdo médico ou financeiro.\n"
+                        "  Responda APENAS com: 'IGNORAR'\n\n"
                         "IMPORTANTE: use APENAS esses prefixos. Não invente outros."
                     ),
                 },
@@ -146,6 +151,12 @@ async def describe_image_bytes(
         max_tokens=300,
     )
     description = resp.choices[0].message.content or ""
+
+    # Imagens irrelevantes (bom dia, motivacionais, etc.) — descartar silenciosamente
+    if description.strip().upper().startswith("IGNORAR"):
+        logger.info("IMAGE_IGNORED phone=%s (bom dia / imagem irrelevante)", phone)
+        return None
+
     is_payment = description.upper().startswith("COMPROVANTE DE PAGAMENTO")
     doc_type = _extract_doc_type(description)
     now = datetime.now(TZ)
@@ -202,7 +213,7 @@ async def describe_image_bytes(
             patient_display = patient.replace("_", " ").title()
             phone_clean = phone.replace("@s.whatsapp.net", "")
             notify_msg = (
-                f"📄 Documento recebido via WhatsApp\n"
+                f"📄 Documento recebido via WhatsApp — ANEXAR AO SISTEMA\n\n"
                 f"Paciente: {patient_display}\n"
                 f"Número: {phone_clean}\n"
                 f"Data: {date_str}\n"
@@ -210,6 +221,7 @@ async def describe_image_bytes(
             )
             if drive_link:
                 notify_msg += f"\nLink Drive: {drive_link}"
+            notify_msg += "\n\n⚠️ Por favor, anexe este documento ao prontuário do paciente no sistema."
             await send_clinic_notification_email(
                 f"Documento recebido — {patient_display}", notify_msg
             )
