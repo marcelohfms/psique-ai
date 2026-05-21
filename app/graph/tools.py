@@ -1075,10 +1075,10 @@ async def register_payment(
     except Exception:
         _logger.exception("SHEETS_APPEND FAILED patient=%s", patient_name)
 
-    asyncio.create_task(_notify_clinic(
+    await _notify_clinic(
         f"💰 Comprovante recebido!\nPaciente: {patient_name}\nValor: R$ {amount}\nTipo: {payment_type}\nConsulta: {appointment_dt}\nLink: {drive_link}",
         subject=f"Comprovante recebido — {patient_name}",
-    ))
+    )
 
     await log_event("payment_receipt_registered", phone, {
         "patient_name": patient_name,
