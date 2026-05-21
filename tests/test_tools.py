@@ -30,7 +30,7 @@ def _make_state(**kwargs) -> dict:
 def _make_supabase_client():
     execute = AsyncMock(return_value=MagicMock(data=[]))
     table = MagicMock()
-    for m in ("select", "eq", "limit", "single", "maybe_single",
+    for m in ("select", "eq", "in_", "limit", "single", "maybe_single",
               "gte", "order", "insert", "update", "upsert"):
         getattr(table, m).return_value = table
     table.execute = execute
@@ -375,7 +375,7 @@ def _make_supabase_client_with_appointment():
     apt_data = MagicMock(data=[{"appointment_id": "apt-1", "start_time": "2026-03-23T09:00:00+00:00"}])
     execute = AsyncMock(return_value=apt_data)
     table = MagicMock()
-    for m in ("select", "eq", "limit", "single", "maybe_single",
+    for m in ("select", "eq", "in_", "limit", "single", "maybe_single",
               "gte", "order", "insert", "update", "upsert"):
         getattr(table, m).return_value = table
     table.execute = execute
