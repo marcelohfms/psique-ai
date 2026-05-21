@@ -97,7 +97,7 @@ async def collect_info_node(state: ConversationState, config: RunnableConfig) ->
             if len(all_users) == 1:
                 u = all_users[0]
                 doc_key = DOCTOR_NAMES.get(u.get("doctor_id", ""), None)
-                return {
+                loaded = {
                     "user_db_id": u["id"],
                     "user_name": u.get("name"),
                     "patient_name": u.get("patient_name") or u.get("name"),
@@ -110,9 +110,12 @@ async def collect_info_node(state: ConversationState, config: RunnableConfig) ->
                     "guardian_cpf": u.get("guardian_cpf"),
                     "guardian_relationship": u.get("guardian_relationship"),
                     "patient_cpf": u.get("patient_cpf"),
-                    "stage": "patient_agent",
-                    "messages": [],
                 }
+                # Only skip collect_info if the patient already has an email.
+                # If email is missing, stay in collect_info so Eva can ask for it.
+                if loaded.get("patient_email"):
+                    return {**loaded, "stage": "patient_agent", "messages": []}
+                return loaded
             elif len(all_users) > 1:
                 names = [u.get("patient_name") or u.get("name") or "Paciente" for u in all_users]
                 options = "\n".join(f"{i + 1}. {n}" for i, n in enumerate(names))
@@ -299,7 +302,11 @@ async def collect_info_node(state: ConversationState, config: RunnableConfig) ->
         # Step 3: CPF
         if not state.get("patient_cpf"):
             if last_ai == _CPF_Q and last_human:
-                return await _extract_and_ask({"patient_cpf": last_human}, _BIRTH_Q)
+                import re as _re
+                if _re.search(r'\d', last_human):
+                    return await _extract_and_ask({"patient_cpf": last_human}, _BIRTH_Q)
+                else:
+                    return await _ask("CPF inválido. Por favor, informe o CPF do paciente com os números (ex: 123.456.789-10).")
             return await _ask(_CPF_Q)
 
         # Step 4: birth date
