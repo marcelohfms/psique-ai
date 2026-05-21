@@ -872,31 +872,19 @@ async def register_payment(
                 users_with_appt.append(u)
 
         if len(users_with_appt) == 0:
-            # No appointments under this number — check if it's a non-patient contact
-            # (is_patient=False) with a known patient_name, and auto-resolve the patient.
-            contact_user = next((u for u in all_users if not u.get("is_patient") and u.get("patient_name")), None)
-            if contact_user:
-                linked_name = contact_user["patient_name"]
-                linked_result = await client.from_("users").select(
-                    "id, number, patient_name, name, doctor_id"
-                ).ilike("patient_name", f"%{linked_name}%").eq("is_patient", True).limit(5).execute()
-                # Among matches, find one with a scheduled appointment
-                for candidate in (linked_result.data or []):
-                    appt_check2 = await client.from_("appointments").select("appointment_id").eq(
-                        "user_id", candidate["id"]
-                    ).eq("status", "scheduled").limit(1).execute()
-                    if appt_check2.data:
-                        patient_name = candidate.get("patient_name") or candidate.get("name", "Paciente")
-                        patient_phone = candidate["number"] + "@s.whatsapp.net"
-                        user_id = candidate["id"]
-                        doctor_key = DOCTOR_NAMES.get(candidate.get("doctor_id", ""), "")
-                        is_third_party = True
-                        _logger.info("REGISTER_PAYMENT auto-resolved contact %s → patient %s", phone, patient_name)
-                        break
-                else:
-                    return "Para qual paciente é este comprovante? Por favor, informe o nome completo."
-            else:
-                return "Para qual paciente é este comprovante? Por favor, informe o nome completo."
+            # No scheduled appointments found for any patient on this number.
+            # If multiple patients are registered, list them and ask which one the payment is for.
+            patient_names = [
+                u.get("patient_name") or u.get("name", "Paciente")
+                for u in all_users
+            ]
+            if len(patient_names) > 1:
+                options = "\n".join(f"{i + 1}. {n}" for i, n in enumerate(patient_names))
+                return (
+                    f"Não encontrei nenhum agendamento ativo para os pacientes deste número. "
+                    f"Para qual paciente é o comprovante?\n\n{options}"
+                )
+            return "Para qual paciente é este comprovante? Por favor, informe o nome completo."
         elif len(users_with_appt) > 1:
             names = ", ".join(
                 u.get("patient_name") or u.get("name", "Paciente")
