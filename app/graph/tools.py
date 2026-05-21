@@ -315,6 +315,27 @@ async def confirm_appointment(
     except ValueError:
         return f"Formato de data inválido: {slot_datetime}. Use ISO 8601 (ex: 2026-03-19T09:00:00)."
 
+    # Reject slots on exception days (e.g. doctor on leave)
+    from app.google_calendar import SCHEDULE_EXCEPTIONS, DOCTOR_SCHEDULES
+    _exc_map = SCHEDULE_EXCEPTIONS.get(doctor, {})
+    _date_key = start.date().isoformat()
+    if _date_key in _exc_map:
+        _day_wins = _exc_map[_date_key]
+        if not _day_wins:
+            formatted_blocked = start.strftime("%d/%m/%Y")
+            return (
+                f"A médica não tem atendimento no dia {formatted_blocked}. "
+                "Chame get_available_slots para buscar outro horário disponível."
+            )
+        # Exception overrides schedule but has windows — validate slot falls in one
+        _slot_min = start.hour * 60 + start.minute
+        if not any((sh * 60 + sm) <= _slot_min < (eh * 60 + em) for sh, sm, eh, em, _ in _day_wins):
+            formatted_blocked = start.strftime("%d/%m/%Y")
+            return (
+                f"Este horário não está dentro da disponibilidade da médica no dia {formatted_blocked}. "
+                "Chame get_available_slots para buscar outro horário disponível."
+            )
+
     # Double-check slot is still free before booking
     from app.google_calendar import _get_busy, _credentials
     from googleapiclient.discovery import build as _build
@@ -342,10 +363,16 @@ async def confirm_appointment(
             # Running under an attendant instruction — attendant has already confirmed availability
             effective_modality = "presencial"
         else:
+            patient_name_hint = state.get("patient_name") or state.get("user_name", "paciente")
+            doctor_hint = {"julio": "Dr. Júlio", "bruna": "Dra. Bruna"}.get(doctor, "médico(a)")
+            slot_hint = start.strftime("%d/%m às %H:%M")
             return (
                 "AÇÃO NECESSÁRIA: Este horário (quinta à tarde com o Dr. Júlio) pode ser presencial, "
-                "mas a disponibilidade precisa ser confirmada pela atendente. "
-                "Use transfer_to_human para que ela confirme antes de prosseguir."
+                "mas a disponibilidade precisa ser confirmada pela atendente antes de agendar. "
+                "Use transfer_to_human com o seguinte motivo exato: "
+                f"'Confirmar disponibilidade presencial para {patient_name_hint} em {slot_hint} com {doctor_hint}. "
+                f"Após confirmar, escreva nota privada: "
+                f"Eva, pode agendar {patient_name_hint} para {slot_hint} com {doctor_hint}, modalidade presencial.'"
             )
     else:
         effective_modality = modality if modality in ("online", "presencial") else ""
@@ -533,6 +560,24 @@ async def reschedule_appointment(
         new_start = datetime.fromisoformat(new_slot_datetime).replace(tzinfo=TZ)
     except ValueError:
         return f"Formato de data inválido: {new_slot_datetime}. Use ISO 8601 (ex: 2026-03-19T09:00:00)."
+
+    # Reject slots on exception days (e.g. doctor on leave)
+    from app.google_calendar import SCHEDULE_EXCEPTIONS
+    _exc_map_r = SCHEDULE_EXCEPTIONS.get(doctor, {})
+    _date_key_r = new_start.date().isoformat()
+    if _date_key_r in _exc_map_r:
+        _day_wins_r = _exc_map_r[_date_key_r]
+        if not _day_wins_r:
+            return (
+                f"O médico não tem atendimento no dia {new_start.strftime('%d/%m/%Y')}. "
+                "Chame get_available_slots para buscar outro horário disponível."
+            )
+        _slot_min_r = new_start.hour * 60 + new_start.minute
+        if not any((sh * 60 + sm) <= _slot_min_r < (eh * 60 + em) for sh, sm, eh, em, _ in _day_wins_r):
+            return (
+                f"Este horário não está dentro da disponibilidade do médico no dia {new_start.strftime('%d/%m/%Y')}. "
+                "Chame get_available_slots para buscar outro horário disponível."
+            )
 
     doctor_label = {"julio": "Dr. Júlio", "bruna": "Dra. Bruna"}.get(doctor, "médico(a)")
     patient_name = state.get("patient_name") or state.get("user_name", "Paciente")
@@ -1230,6 +1275,11 @@ async def transfer_to_human(
     """Transfere a conversa para um atendente humano quando o bot não consegue ajudar."""
     from app.chatwoot import add_private_note, find_or_create_conversation, set_labels
 
+    # In silent_mode (attendant instruction), never transfer — that would re-disable the bot
+    # and create an infinite loop. Return the error so the attendant sees it as a private note.
+    if state.get("silent_mode"):
+        return f"ERRO EM MODO SILENCIOSO: não foi possível executar a instrução. Motivo: {reason}"
+
     phone = config["configurable"]["phone"]
 
     # Disable bot for this user
@@ -1257,6 +1307,13 @@ async def transfer_to_human(
         ]
         if reason:
             note_lines.append(f"💬 Motivo: {reason}")
+        note_lines += [
+            "",
+            "———",
+            "💡 *Para devolver o controle à Eva após resolver:*",
+            f"Escreva uma nota privada com a instrução completa. Exemplo:",
+            f'_"Eva, pode agendar {patient_name} para DD/MM às HH:MM com {doctor_label}, modalidade online/presencial."_',
+        ]
         try:
             await add_private_note(conv_id, "\n".join(note_lines))
         except Exception:
