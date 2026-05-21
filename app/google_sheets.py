@@ -36,8 +36,8 @@ _CONTROLLED_FALLBACK: list[str] = [
     "dexanfetamina", "dextroamphetamine",
 ]
 
-# Column order: Data do Pagamento | Paciente | Médico | Data da Consulta | Valor | Telefone | Tipo | Comprovante | Conferência Humana
-_PAYMENTS_SHEET_RANGE = "Pagamentos!A:I"
+# Column order: Data do Pagamento | Paciente | Médico | Data da Consulta | Valor | Telefone | Tipo | Forma de Pagamento | Comprovante | Conferência Humana
+_PAYMENTS_SHEET_RANGE = "Pagamentos!A:J"
 
 
 def _credentials() -> Credentials:
@@ -82,7 +82,7 @@ async def append_payment_receipt(
 ) -> None:
     """Append a payment receipt row to the Pagamentos sheet.
     Does nothing if GOOGLE_SHEETS_PAYMENTS_ID is not configured.
-    Columns: Data do Pagamento | Paciente | Médico | Data da Consulta | Valor | Telefone | Tipo | Comprovante | Conferência Humana
+    Columns: Data do Pagamento | Paciente | Médico | Data da Consulta | Valor | Telefone | Tipo | Forma de Pagamento | Comprovante | Conferência Humana
     """
     spreadsheet_id = os.environ.get("GOOGLE_SHEETS_PAYMENTS_ID")
     if not spreadsheet_id:
@@ -91,6 +91,9 @@ async def append_payment_receipt(
 
     now = datetime.now(TZ).strftime("%d/%m/%Y %H:%M")
     phone_clean = phone.replace("@s.whatsapp.net", "")
+
+    # Infer payment method from payment_type
+    payment_method = "Link" if "link" in payment_type.lower() else "PIX"
 
     # Show a clickable hyperlink with the filename instead of the raw URL
     # Note: PT-BR locale in Google Sheets uses ";" as function argument separator
@@ -104,7 +107,7 @@ async def append_payment_receipt(
     else:
         comprovante_cell = ""
 
-    row = [now, patient_name, doctor_name, appointment_dt, amount, phone_clean, payment_type, comprovante_cell, ""]
+    row = [now, patient_name, doctor_name, appointment_dt, amount, phone_clean, payment_type, payment_method, comprovante_cell, ""]
 
     creds = _credentials()
     service = build("sheets", "v4", credentials=creds)
@@ -148,7 +151,7 @@ async def append_refund_request(
     reason: str = "",
 ) -> None:
     """Append a refund request row to the Pagamentos sheet.
-    Columns: Data do Pagamento | Paciente | Médico | Data da Consulta | Valor | Telefone | Tipo | Comprovante | Conferência Humana
+    Columns: Data do Pagamento | Paciente | Médico | Data da Consulta | Valor | Telefone | Tipo | Forma de Pagamento | Comprovante | Conferência Humana
     """
     spreadsheet_id = os.environ.get("GOOGLE_SHEETS_PAYMENTS_ID")
     if not spreadsheet_id:
@@ -160,7 +163,7 @@ async def append_refund_request(
     obs = f"Motivo: {reason}" if reason else ""
 
     amount_clean = amount.strip().lstrip("-")
-    row = [now, patient_name, doctor_name, appointment_dt, f"-{amount_clean}", phone_clean, "Reembolso - Taxa de Reserva", obs, ""]
+    row = [now, patient_name, doctor_name, appointment_dt, f"-{amount_clean}", phone_clean, "Reembolso - Taxa de Reserva", "—", obs, ""]
 
     creds = _credentials()
     service = build("sheets", "v4", credentials=creds)
