@@ -862,12 +862,13 @@ async def register_payment(
         if not all_users:
             return "Para qual paciente é este comprovante? Por favor, informe o nome completo."
 
-        # Find which patients have a scheduled appointment
+        # Find which patients have a scheduled or recently completed appointment (last 15 days)
+        _appt_lookback = (datetime.now(TZ) - timedelta(days=15)).isoformat()
         users_with_appt = []
         for u in all_users:
             appt_check = await client.from_("appointments").select("appointment_id").eq(
                 "user_id", u["id"]
-            ).eq("status", "scheduled").limit(1).execute()
+            ).in_("status", ["scheduled", "completed"]).gte("start_time", _appt_lookback).limit(1).execute()
             if appt_check.data:
                 users_with_appt.append(u)
 
@@ -905,9 +906,9 @@ async def register_payment(
     appt_id_to_pay: str | None = None
     appt_already_occurred = False  # True when the consultation has already happened
 
-    # Look back up to 7 days to capture completed or recently passed appointments
-    # (link payments and late PIX transfers may arrive days after the consultation).
-    lookback_iso = (datetime.now(TZ) - timedelta(days=7)).isoformat()
+    # Look back up to 15 days to capture completed or recently passed appointments
+    # (patients commonly delay payment by several days after the consultation).
+    lookback_iso = (datetime.now(TZ) - timedelta(days=15)).isoformat()
     appt_result = await client.from_("appointments").select(
         "appointment_id, start_time, end_time, doctor_id, paid_at, booking_fee_paid_at, status"
     ).eq("user_id", user_id).in_("status", ["scheduled", "completed"]).gte("start_time", lookback_iso).order("start_time", desc=True).limit(1).execute()
