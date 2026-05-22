@@ -901,14 +901,15 @@ async def register_payment(
 
     # ── Fetch scheduled appointment or try to reactivate canceled one ─────────
     appointment_dt = "—"
-    confirmation_msg = "Comprovante recebido e registrado com sucesso! ✅ Sua vaga está garantida."
+    confirmation_msg = "Comprovante recebido e registrado com sucesso! ✅"
     appt_id_to_pay: str | None = None
+    appt_already_occurred = False  # True when the consultation has already happened
 
     # Look back up to 7 days to capture completed or recently passed appointments
     # (link payments and late PIX transfers may arrive days after the consultation).
     lookback_iso = (datetime.now(TZ) - timedelta(days=7)).isoformat()
     appt_result = await client.from_("appointments").select(
-        "appointment_id, start_time, end_time, doctor_id, paid_at, booking_fee_paid_at"
+        "appointment_id, start_time, end_time, doctor_id, paid_at, booking_fee_paid_at, status"
     ).eq("user_id", user_id).in_("status", ["scheduled", "completed"]).gte("start_time", lookback_iso).order("start_time", desc=True).limit(1).execute()
 
     if appt_result.data:
@@ -919,6 +920,11 @@ async def register_payment(
             _logger.warning("REGISTER_PAYMENT duplicate call — already paid patient=%s", patient_name)
             return f"Pagamento de {patient_name} para {appointment_dt} já estava registrado anteriormente. ✅"
         appt_id_to_pay = appt_result.data[0]["appointment_id"]
+        # Determine if the consultation has already taken place
+        appt_already_occurred = (
+            appt_result.data[0].get("status") == "completed"
+            or apt_start < datetime.now(TZ)
+        )
     else:
         # No scheduled appointment — try to reactivate the most recent canceled one
         canceled_result = await client.from_("appointments").select(
@@ -1090,14 +1096,25 @@ async def register_payment(
     # ── Notify original patient number if third-party sender ──────────────────
     if is_third_party:
         try:
-            await send_text(
-                patient_phone,
-                f"Olá, {patient_name}! 👋 Recebemos o comprovante de pagamento da sua consulta"
-                + (f" com {doctor_label}" if doctor_label != "médico(a)" else "")
-                + ". Sua vaga está garantida! ✅",
-            )
+            if appt_already_occurred:
+                patient_msg = (
+                    f"Olá, {patient_name}! 👋 Recebemos o comprovante de pagamento da sua consulta"
+                    + (f" com {doctor_label}" if doctor_label != "médico(a)" else "")
+                    + ". Obrigado! ✅"
+                )
+            else:
+                patient_msg = (
+                    f"Olá, {patient_name}! 👋 Recebemos o comprovante de pagamento da sua consulta"
+                    + (f" com {doctor_label}" if doctor_label != "médico(a)" else "")
+                    + ". Sua vaga está garantida! ✅"
+                )
+            await send_text(patient_phone, patient_msg)
         except Exception:
             _logger.exception("PATIENT_CONFIRM FAILED phone=%s", patient_phone)
+
+    # Adjust main confirmation message based on whether the consultation already occurred
+    if appt_already_occurred and "garantida" in confirmation_msg:
+        confirmation_msg = confirmation_msg.replace(" Sua vaga está garantida.", "").replace("Sua vaga está garantida.", "")
 
     return (
         f"{confirmation_msg}\n\n"
