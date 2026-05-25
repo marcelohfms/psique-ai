@@ -787,18 +787,22 @@ async def confirm_attendance(
     return "Presença confirmada! ✅"
 
 
-def _expected_consultation_amount(doctor_key: str, patient_age: int, is_patient: bool, now_dt) -> int:
-    """Return the expected full payment amount (with R$50 PIX discount)."""
+def _expected_consultation_amount(doctor_key: str, patient_age: int, is_first_consultation: bool, now_dt) -> int:
+    """Return the expected full payment amount (with R$50 PIX discount).
+
+    is_first_consultation: True when the appointment slot is ≥90 min (2h first visit for minors).
+                           False for follow-up (acompanhamento) 1h slots.
+    """
     post_june = (now_dt.year, now_dt.month) >= (2026, 6)
     if doctor_key == "bruna":
         base = 700 if post_june else 600
     elif doctor_key == "julio":
         if patient_age >= 18:
             base = 700 if post_june else 600
-        elif is_patient:  # minor return visit
-            base = 750 if post_june else 650
-        else:  # minor first visit
+        elif is_first_consultation:  # minor first visit (2h slot)
             base = 850 if post_june else 750
+        else:  # minor follow-up / acompanhamento (1h slot)
+            base = 750 if post_june else 650
     else:
         base = 700 if post_june else 600
     return base - 50  # R$50 PIX/cash discount
@@ -1015,8 +1019,21 @@ async def register_payment(
 
     now_dt = datetime.now(TZ)
     _age = state.get("patient_age") or 99
-    _is_pat = bool(state.get("is_patient"))
-    expected = _expected_consultation_amount(doctor_key, _age, _is_pat, now_dt)
+
+    # Determine if this is a first consultation based on appointment duration.
+    # Minor first visits with Dr. Júlio = 2h (≥90 min); follow-ups = 1h.
+    # This avoids relying on is_patient (which means "contact IS the patient",
+    # not "returning patient") and works correctly when a guardian is the contact.
+    _is_first = False
+    if appt_result and appt_result.data:
+        try:
+            _start = datetime.fromisoformat(appt_result.data[0]["start_time"])
+            _end   = datetime.fromisoformat(appt_result.data[0]["end_time"])
+            _slot_minutes = int((_end - _start).total_seconds() / 60)
+            _is_first = _slot_minutes >= 90
+        except Exception:
+            pass
+    expected = _expected_consultation_amount(doctor_key, _age, _is_first, now_dt)
 
     # If the booking fee was already paid, the remaining balance to settle is expected - 100.
     # This prevents Eva from treating the saldo payment as "partial" and charging R$ 100 again.
