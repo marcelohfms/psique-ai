@@ -417,21 +417,28 @@ async def confirm_appointment(
     client = await get_supabase()
 
     # Determine consultation_type for minor patients with Dr. Júlio.
-    # Check if the patient already has any completed appointment → acompanhamento.
-    # Otherwise → primeira_consulta (covers both 2h single-block and split 1h+1h cases,
-    # since neither half is completed when the second half is booked).
+    # Two signals are combined:
+    # 1. state["is_patient"]=True → guardian said the patient is already a clinic patient
+    # 2. Patient has prior completed appointments in the DB
+    # Either signal being True → "acompanhamento"; neither → "primeira_consulta".
+    # This handles the common case where the chatbot is new and has no DB history yet,
+    # but the guardian says the child is already a returning patient.
     consultation_type: str | None = None
-    if patient_age < 18 and doctor == "julio" and user:
-        try:
-            prior = await client.from_("appointments") \
-                .select("id") \
-                .eq("user_id", user["id"]) \
-                .eq("status", "completed") \
-                .limit(1) \
-                .execute()
-            consultation_type = "acompanhamento" if prior.data else "primeira_consulta"
-        except Exception:
-            _logger.exception("CONSULTATION_TYPE_CHECK FAILED patient=%s", patient_name)
+    if patient_age < 18 and doctor == "julio":
+        state_says_returning = bool(state.get("is_patient"))
+        prior_completed = False
+        if user:
+            try:
+                prior = await client.from_("appointments") \
+                    .select("id") \
+                    .eq("user_id", user["id"]) \
+                    .eq("status", "completed") \
+                    .limit(1) \
+                    .execute()
+                prior_completed = bool(prior.data)
+            except Exception:
+                _logger.exception("CONSULTATION_TYPE_CHECK FAILED patient=%s", patient_name)
+        consultation_type = "acompanhamento" if (state_says_returning or prior_completed) else "primeira_consulta"
 
     try:
         await client.from_("appointments").insert({
