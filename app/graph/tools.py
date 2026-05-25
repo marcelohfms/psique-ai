@@ -403,6 +403,8 @@ async def confirm_appointment(
             is_minor_first=is_minor_first,
             session_note=session_note,
             modality=effective_modality,
+            patient_email=state.get("patient_email") or "",
+            patient_number=config["configurable"]["phone"],
         )
     except Exception as e:
         _logger.error("CONFIRM_DEBUG create_event FAILED: %s", e, exc_info=True)
@@ -631,6 +633,8 @@ async def reschedule_appointment(
             doctor_name=doctor_label,
             is_minor_first=is_minor_first,
             modality=effective_modality,
+            patient_email=state.get("patient_email") or "",
+            patient_number=config["configurable"]["phone"],
         )
     except Exception as e:
         _logger.error("RESCHEDULE_DEBUG update_event FAILED appt=%s error=%s", appointment_id, e, exc_info=True)
@@ -1014,6 +1018,8 @@ async def register_payment(
                     new_event_id = await create_event(
                         calendar_id, slot_start, slot_minutes, patient_name,
                         canceled_doctor_label.replace("Dr. ", "").replace("Dra. ", ""),
+                        patient_email=state.get("patient_email") or "",
+                        patient_number=patient_phone,
                     )
                     await client.from_("appointments").update({
                         "status": "scheduled",

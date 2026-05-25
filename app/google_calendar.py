@@ -310,9 +310,9 @@ async def get_available_slots(
     for b in busy_raw:
         bs = datetime.fromisoformat(b["start"]).astimezone(TZ)
         be = datetime.fromisoformat(b["end"]).astimezone(TZ)
-        # Zero-duration events (from external apps) would be missed by the
-        # overlap check — treat them as 1h so the containing slot is blocked.
-        if be <= bs:
+        # Events shorter than 1 minute (including zero-duration) are treated as 1h
+        # so the containing slot is properly blocked.
+        if (be - bs).total_seconds() < 60:
             be = bs + timedelta(hours=1)
         busy_ranges.append((bs, be))
 
@@ -359,6 +359,8 @@ async def create_event(
     is_minor_first: bool = False,
     session_note: str = "",
     modality: str = "",
+    patient_email: str = "",
+    patient_number: str = "",
 ) -> str:
     """Create a Google Calendar event and return the event ID."""
     end = start + timedelta(minutes=slot_minutes)
@@ -366,6 +368,11 @@ async def create_event(
     if modality:
         modality_label = "Online" if modality == "online" else "Presencial"
         description += f"\nModalidade: {modality_label}"
+    if patient_number:
+        number_clean = patient_number.replace("@s.whatsapp.net", "")
+        description += f"\nNúmero: {number_clean}"
+    if patient_email:
+        description += f"\nE-mail: {patient_email}"
     if session_note:
         description += f"\n\n{session_note}"
     elif is_minor_first:
@@ -411,6 +418,8 @@ async def update_event(
     doctor_name: str,
     is_minor_first: bool = False,
     modality: str = "",
+    patient_email: str = "",
+    patient_number: str = "",
 ) -> None:
     """Patch an existing Google Calendar event with a new start/end time."""
     new_end = new_start + timedelta(minutes=slot_minutes)
@@ -418,6 +427,11 @@ async def update_event(
     if modality:
         modality_label = "Online" if modality == "online" else "Presencial"
         description += f"\nModalidade: {modality_label}"
+    if patient_number:
+        number_clean = patient_number.replace("@s.whatsapp.net", "")
+        description += f"\nNúmero: {number_clean}"
+    if patient_email:
+        description += f"\nE-mail: {patient_email}"
     if is_minor_first:
         description += "\n\n1ª hora: conversa com os pais/responsáveis\n2ª hora: consulta com o paciente"
 
