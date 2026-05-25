@@ -964,13 +964,21 @@ async def register_payment(
         )
         # For split primeira_consulta, collect all linked appointment IDs so every
         # slot is updated together when payment is registered.
+        # Also fetch start_time to use the earliest slot's date for pricing
+        # (price reajuste applies from June — a bundle that started in May keeps May pricing).
         if appt_result.data[0].get("consultation_type") == "primeira_consulta":
             linked_res = await client.from_("appointments").select(
-                "appointment_id"
+                "appointment_id, start_time"
             ).eq("user_id", user_id).eq("consultation_type", "primeira_consulta").in_(
                 "status", ["scheduled", "completed"]
             ).execute()
             linked_appt_ids = [a["appointment_id"] for a in (linked_res.data or [])]
+            # Use the earliest slot's date as the pricing reference date
+            if linked_res.data:
+                earliest_start = min(
+                    datetime.fromisoformat(a["start_time"]) for a in linked_res.data
+                )
+                apt_start = earliest_start.astimezone(TZ)
         if not linked_appt_ids:
             linked_appt_ids = [appt_id_to_pay]
     else:
@@ -1070,7 +1078,12 @@ async def register_payment(
         if appt_result and appt_result.data
         else None
     )
-    expected = _expected_consultation_amount(doctor_key, _age, _consultation_type, now_dt)
+    # For pricing, use the date of the first appointment in the bundle.
+    # A split primeira_consulta that started in May keeps May pricing even if payment
+    # arrives in June (after the price reajuste). apt_start was already set to the
+    # earliest slot when linked appointments were fetched.
+    pricing_dt = apt_start if apt_start else now_dt
+    expected = _expected_consultation_amount(doctor_key, _age, _consultation_type, pricing_dt)
 
     # If the booking fee was already paid, the remaining balance to settle is expected - 100.
     # This prevents Eva from treating the saldo payment as "partial" and charging R$ 100 again.
