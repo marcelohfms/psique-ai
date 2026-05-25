@@ -63,16 +63,28 @@ async def main():
             .execute()
         )
 
-        # When a primeira_consulta is completed, mark the patient as returning
-        # so the next appointment is correctly priced as acompanhamento.
+        # When a primeira_consulta is completed, mark the patient as returning only
+        # if there are no more scheduled primeira_consulta slots remaining.
+        # This handles split first consultations (two 1h slots): the flag should only
+        # flip after the last slot is done, so a not-yet-booked second slot isn't
+        # incorrectly priced as acompanhamento.
         if appt.get("consultation_type") == "primeira_consulta":
-            await (
-                client.from_("users")
-                .update({"is_returning_patient": True})
-                .eq("id", appt["user_id"])
+            remaining = await (
+                client.from_("appointments")
+                .select("id")
+                .eq("user_id", appt["user_id"])
+                .eq("consultation_type", "primeira_consulta")
+                .eq("status", "scheduled")
                 .execute()
             )
-            print(f"Marked user {appt['user_id']} as returning patient.")
+            if not remaining.data:
+                await (
+                    client.from_("users")
+                    .update({"is_returning_patient": True})
+                    .eq("id", appt["user_id"])
+                    .execute()
+                )
+                print(f"Marked user {appt['user_id']} as returning patient.")
 
         user = appt.get("users") or {}
         phone = user.get("number", "")
