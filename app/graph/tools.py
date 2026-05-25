@@ -916,8 +916,9 @@ async def register_payment(
     if appt_result.data:
         apt_start = datetime.fromisoformat(appt_result.data[0]["start_time"]).astimezone(TZ)
         appointment_dt = apt_start.strftime("%d/%m/%Y %H:%M")
-        # Guard against duplicate calls: if booking fee or full payment already registered
-        if appt_result.data[0].get("booking_fee_paid_at") or appt_result.data[0].get("paid_at"):
+        # Guard against duplicate calls: only block if full payment already registered.
+        # booking_fee_paid_at alone should NOT block — patient may still owe the remaining saldo.
+        if appt_result.data[0].get("paid_at"):
             _logger.warning("REGISTER_PAYMENT duplicate call — already paid patient=%s", patient_name)
             return f"Pagamento de {patient_name} para {appointment_dt} já estava registrado anteriormente. ✅"
         appt_id_to_pay = appt_result.data[0]["appointment_id"]
