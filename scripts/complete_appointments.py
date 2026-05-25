@@ -44,7 +44,7 @@ async def main():
 
     result = await (
         client.from_("appointments")
-        .select("id, appointment_id, end_time, user_id, users(number, patient_name, name)")
+        .select("id, appointment_id, end_time, user_id, consultation_type, users(number, patient_name, name)")
         .eq("status", "scheduled")
         .is_("pos_consulta_sent_at", "null")
         .lt("end_time", cutoff)
@@ -63,12 +63,40 @@ async def main():
             .execute()
         )
 
+        # When a primeira_consulta is completed, mark the patient as returning
+        # so the next appointment is correctly priced as acompanhamento.
+        if appt.get("consultation_type") == "primeira_consulta":
+            await (
+                client.from_("users")
+                .update({"is_returning_patient": True})
+                .eq("id", appt["user_id"])
+                .execute()
+            )
+            print(f"Marked user {appt['user_id']} as returning patient.")
+
         user = appt.get("users") or {}
         phone = user.get("number", "")
         patient_name = user.get("patient_name") or user.get("name") or "paciente"
         first_name = patient_name.split()[0] if patient_name else "paciente"
 
         if phone:
+            # Skip if patient already has a future appointment scheduled
+            future = await (
+                client.from_("appointments")
+                .select("id")
+                .eq("user_id", appt["user_id"])
+                .eq("status", "scheduled")
+                .gt("start_time", now_iso)
+                .limit(1)
+                .execute()
+            )
+            if future.data:
+                print(f"Skipping pos_consulta for {phone} — already has a future appointment.")
+                await client.from_("appointments").update({
+                    "pos_consulta_sent_at": now_iso,
+                }).eq("id", appt["id"]).execute()
+                continue
+
             try:
                 await send_pos_consulta(phone, first_name)
                 await client.from_("appointments").update({
