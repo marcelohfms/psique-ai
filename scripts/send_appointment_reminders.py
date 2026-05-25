@@ -85,27 +85,33 @@ def _plain_message(template_name: str, first_name: str, doctor_label: str, time_
 
 async def save_to_checkpoint(graph, phone: str, message: str, appt: dict) -> None:
     from langchain_core.messages import AIMessage
+    from app.database import save_message
 
     thread_phone = f"{phone}@s.whatsapp.net"
     config = {"configurable": {"thread_id": thread_phone, "phone": thread_phone}}
 
-    snapshot = await graph.aget_state(config)
-    update: dict = {"messages": [AIMessage(content=message)]}
+    user = appt.get("users") or {}
+    patient_name = user.get("patient_name") or user.get("name") or "paciente"
+    doctor_key = DOCTOR_KEYS.get(appt.get("doctor_id", ""), "")
 
-    if not snapshot.values:
-        user = appt.get("users") or {}
-        patient_name = user.get("patient_name") or user.get("name") or "paciente"
-        doctor_key = DOCTOR_KEYS.get(appt.get("doctor_id", ""), "")
-        update.update({
-            "phone": thread_phone,
-            "stage": "patient_agent",
-            "user_name": patient_name,
-            "patient_name": patient_name,
-            "is_patient": True,
-            "preferred_doctor": doctor_key,
-        })
+    # Sempre garante que stage e campos do usuário estão corretos no checkpoint,
+    # independentemente de ser novo ou existente. Isso evita que o roteamento
+    # vá para collect_info quando o paciente responder ao lembrete.
+    update: dict = {
+        "messages": [AIMessage(content=message)],
+        "phone": thread_phone,
+        "stage": "patient_agent",
+        "user_name": patient_name,
+        "patient_name": patient_name,
+        "is_patient": True,
+        "preferred_doctor": doctor_key,
+    }
 
     await graph.aupdate_state(config, update, as_node="patient_agent")
+
+    # Salva também na tabela messages do Supabase para garantir contexto
+    # mesmo que o checkpoint PostgreSQL falhe.
+    await save_message(thread_phone, "assistant", message)
 
 
 async def main():

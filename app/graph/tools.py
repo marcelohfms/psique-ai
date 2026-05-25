@@ -1017,6 +1017,13 @@ async def register_payment(
     _is_pat = bool(state.get("is_patient"))
     expected = _expected_consultation_amount(doctor_key, _age, _is_pat, now_dt)
 
+    # If the booking fee was already paid, the remaining balance to settle is expected - 100.
+    # This prevents Eva from treating the saldo payment as "partial" and charging R$ 100 again.
+    booking_fee_already_paid = bool(
+        appt_result.data and appt_result.data[0].get("booking_fee_paid_at")
+    ) if appt_result and appt_result.data else False
+    expected_remaining = (expected - 100) if booking_fee_already_paid else expected
+
     if is_link:
         # Link payment confirmed by attendant — no PIX discount applies
         expected_link = expected + 50  # full price without discount
@@ -1033,8 +1040,8 @@ async def register_payment(
     elif amount_float <= 0:
         payment_type = "?"
         payment_note = "Valor não identificado no comprovante."
-    elif abs(amount_float - 100) < 1:
-        # Taxa de reserva
+    elif abs(amount_float - 100) < 1 and not booking_fee_already_paid:
+        # Taxa de reserva (only when not yet paid)
         payment_type = "Taxa de Reserva"
         if appt_id_to_pay:
             try:
@@ -1048,8 +1055,8 @@ async def register_payment(
             f"Valor pago: R$ {amount} — taxa de reserva registrada. "
             f"Saldo restante para quitação: R$ {saldo:.0f},00 (com desconto PIX)."
         )
-    elif amount_float >= expected:
-        # Full payment (with PIX discount)
+    elif amount_float >= expected_remaining:
+        # Full payment or saldo that settles the consultation
         payment_type = "Consulta"
         if appt_id_to_pay:
             try:
@@ -1061,7 +1068,7 @@ async def register_payment(
                 _logger.exception("PAID_AT UPDATE FAILED patient=%s", patient_name)
         payment_note = f"Valor pago: R$ {amount} — consulta QUITADA. Nenhum valor adicional será cobrado."
     else:
-        # Partial payment > 100 but < expected
+        # Partial payment — still owes a balance
         payment_type = "Pagamento Parcial"
         if appt_id_to_pay:
             try:
@@ -1070,7 +1077,7 @@ async def register_payment(
                 }).eq("appointment_id", appt_id_to_pay).execute()
             except Exception:
                 _logger.exception("BOOKING_FEE UPDATE FAILED patient=%s", patient_name)
-        saldo = expected - amount_float
+        saldo = expected_remaining - amount_float
         payment_note = (
             f"Valor pago: R$ {amount}. Consulta ainda NÃO quitada. "
             f"Saldo restante: R$ {saldo:.2f} (valor total com desconto PIX: R$ {expected:.0f},00)."
@@ -1168,9 +1175,8 @@ _ATTENDANT_HOURS: dict[int, list[tuple[int, int]]] = {
 }
 
 _ATTENDANT_HOURS_MSG = (
-    "Nossa equipe de atendimento funciona de *segunda a quinta*, das 8h às 12h e das 13h às 18h, "
-    "e na *sexta*, das 8h às 12h e das 13h às 17h. "
-    "Assim que possível, nossa atendente entrará em contato! 🙏"
+    "de *segunda a quinta*, das 8h às 12h e das 13h às 18h, "
+    "e na *sexta*, das 8h às 12h e das 13h às 17h."
 )
 
 
@@ -1365,6 +1371,7 @@ async def transfer_to_human(
         return "👤 Vou transferir você para um de nossos atendentes. Um momento, por favor!"
     else:
         return (
-            "👤 Vou encaminhar você para um de nossos atendentes!\n\n"
-            + _ATTENDANT_HOURS_MSG
+            "👤 Vou encaminhar você para um de nossos atendentes, mas no momento estamos *fora do horário de atendimento*.\n\n"
+            "Nossa equipe funciona " + _ATTENDANT_HOURS_MSG + "\n\n"
+            "Assim que retornarmos, sua mensagem será respondida. Pedimos desculpas pelo transtorno! 🙏"
         )
