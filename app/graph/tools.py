@@ -415,6 +415,24 @@ async def confirm_appointment(
     end = start + timedelta(minutes=slot_duration_minutes)
     user = await get_user_by_phone(phone)
     client = await get_supabase()
+
+    # Determine consultation_type for minor patients with Dr. Júlio.
+    # Check if the patient already has any completed appointment → acompanhamento.
+    # Otherwise → primeira_consulta (covers both 2h single-block and split 1h+1h cases,
+    # since neither half is completed when the second half is booked).
+    consultation_type: str | None = None
+    if patient_age < 18 and doctor == "julio" and user:
+        try:
+            prior = await client.from_("appointments") \
+                .select("id") \
+                .eq("user_id", user["id"]) \
+                .eq("status", "completed") \
+                .limit(1) \
+                .execute()
+            consultation_type = "acompanhamento" if prior.data else "primeira_consulta"
+        except Exception:
+            _logger.exception("CONSULTATION_TYPE_CHECK FAILED patient=%s", patient_name)
+
     try:
         await client.from_("appointments").insert({
             "user_id": user["id"] if user else None,
@@ -424,6 +442,7 @@ async def confirm_appointment(
             "end_time": end.isoformat(),
             "status": "scheduled",
             "modality": effective_modality or None,
+            "consultation_type": consultation_type,
         }).execute()
     except Exception:
         from app.google_calendar import cancel_event
@@ -787,11 +806,12 @@ async def confirm_attendance(
     return "Presença confirmada! ✅"
 
 
-def _expected_consultation_amount(doctor_key: str, patient_age: int, is_first_consultation: bool, now_dt) -> int:
+def _expected_consultation_amount(doctor_key: str, patient_age: int, consultation_type: str | None, now_dt) -> int:
     """Return the expected full payment amount (with R$50 PIX discount).
 
-    is_first_consultation: True when the appointment slot is ≥90 min (2h first visit for minors).
-                           False for follow-up (acompanhamento) 1h slots.
+    consultation_type: value stored in appointments.consultation_type at booking time.
+        'primeira_consulta' → first visit pricing (higher)
+        'acompanhamento' or None → follow-up pricing (default for unknown)
     """
     post_june = (now_dt.year, now_dt.month) >= (2026, 6)
     if doctor_key == "bruna":
@@ -799,9 +819,9 @@ def _expected_consultation_amount(doctor_key: str, patient_age: int, is_first_co
     elif doctor_key == "julio":
         if patient_age >= 18:
             base = 700 if post_june else 600
-        elif is_first_consultation:  # minor first visit (2h slot)
+        elif consultation_type == "primeira_consulta":  # minor first visit
             base = 850 if post_june else 750
-        else:  # minor follow-up / acompanhamento (1h slot)
+        else:  # minor follow-up / acompanhamento (default when field is null)
             base = 750 if post_june else 650
     else:
         base = 700 if post_june else 600
@@ -914,7 +934,7 @@ async def register_payment(
     # (patients commonly delay payment by several days after the consultation).
     lookback_iso = (datetime.now(TZ) - timedelta(days=15)).isoformat()
     appt_result = await client.from_("appointments").select(
-        "appointment_id, start_time, end_time, doctor_id, paid_at, booking_fee_paid_at, status"
+        "appointment_id, start_time, end_time, doctor_id, paid_at, booking_fee_paid_at, status, consultation_type"
     ).eq("user_id", user_id).in_("status", ["scheduled", "completed"]).gte("start_time", lookback_iso).order("start_time", desc=True).limit(1).execute()
 
     if appt_result.data:
@@ -1020,20 +1040,15 @@ async def register_payment(
     now_dt = datetime.now(TZ)
     _age = state.get("patient_age") or 99
 
-    # Determine if this is a first consultation based on appointment duration.
-    # Minor first visits with Dr. Júlio = 2h (≥90 min); follow-ups = 1h.
-    # This avoids relying on is_patient (which means "contact IS the patient",
-    # not "returning patient") and works correctly when a guardian is the contact.
-    _is_first = False
-    if appt_result and appt_result.data:
-        try:
-            _start = datetime.fromisoformat(appt_result.data[0]["start_time"])
-            _end   = datetime.fromisoformat(appt_result.data[0]["end_time"])
-            _slot_minutes = int((_end - _start).total_seconds() / 60)
-            _is_first = _slot_minutes >= 90
-        except Exception:
-            pass
-    expected = _expected_consultation_amount(doctor_key, _age, _is_first, now_dt)
+    # consultation_type is stored at booking time ('primeira_consulta' or 'acompanhamento').
+    # For appointments created before this field existed, it will be None → defaults to
+    # acompanhamento pricing (safer/cheaper for the patient).
+    _consultation_type = (
+        appt_result.data[0].get("consultation_type")
+        if appt_result and appt_result.data
+        else None
+    )
+    expected = _expected_consultation_amount(doctor_key, _age, _consultation_type, now_dt)
 
     # If the booking fee was already paid, the remaining balance to settle is expected - 100.
     # This prevents Eva from treating the saldo payment as "partial" and charging R$ 100 again.
