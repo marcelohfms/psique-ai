@@ -944,6 +944,10 @@ async def register_payment(
         "appointment_id, start_time, end_time, doctor_id, paid_at, booking_fee_paid_at, status, consultation_type"
     ).eq("user_id", user_id).in_("status", ["scheduled", "completed"]).gte("start_time", lookback_iso).order("start_time", desc=True).limit(1).execute()
 
+    # IDs of all appointments that should be updated together on payment.
+    # For split primeira_consulta (two 1h slots), both get paid_at/booking_fee_paid_at at once.
+    linked_appt_ids: list[str] = []
+
     if appt_result.data:
         apt_start = datetime.fromisoformat(appt_result.data[0]["start_time"]).astimezone(TZ)
         appointment_dt = apt_start.strftime("%d/%m/%Y %H:%M")
@@ -958,6 +962,17 @@ async def register_payment(
             appt_result.data[0].get("status") == "completed"
             or apt_start < datetime.now(TZ)
         )
+        # For split primeira_consulta, collect all linked appointment IDs so every
+        # slot is updated together when payment is registered.
+        if appt_result.data[0].get("consultation_type") == "primeira_consulta":
+            linked_res = await client.from_("appointments").select(
+                "appointment_id"
+            ).eq("user_id", user_id).eq("consultation_type", "primeira_consulta").in_(
+                "status", ["scheduled", "completed"]
+            ).execute()
+            linked_appt_ids = [a["appointment_id"] for a in (linked_res.data or [])]
+        if not linked_appt_ids:
+            linked_appt_ids = [appt_id_to_pay]
     else:
         # No scheduled appointment — try to reactivate the most recent canceled one
         canceled_result = await client.from_("appointments").select(
@@ -1064,18 +1079,21 @@ async def register_payment(
     ) if appt_result and appt_result.data else False
     expected_remaining = (expected - 100) if booking_fee_already_paid else expected
 
+    async def _update_appts(fields: dict) -> None:
+        """Apply a payment field update to all linked appointment IDs."""
+        ids = linked_appt_ids if linked_appt_ids else ([appt_id_to_pay] if appt_id_to_pay else [])
+        for aid in ids:
+            try:
+                await client.from_("appointments").update(fields).eq("appointment_id", aid).execute()
+            except Exception:
+                _logger.exception("APPT UPDATE FAILED appt=%s patient=%s", aid, patient_name)
+
     if is_link:
         # Link payment confirmed by attendant — no PIX discount applies
         expected_link = expected + 50  # full price without discount
         payment_type = "Consulta — link"
         if appt_id_to_pay:
-            try:
-                await client.from_("appointments").update({
-                    "paid_at": now_dt.isoformat(),
-                    "booking_fee_paid_at": now_dt.isoformat(),
-                }).eq("appointment_id", appt_id_to_pay).execute()
-            except Exception:
-                _logger.exception("PAID_AT UPDATE FAILED patient=%s", patient_name)
+            await _update_appts({"paid_at": now_dt.isoformat(), "booking_fee_paid_at": now_dt.isoformat()})
         payment_note = f"Valor pago: R$ {amount} — pagamento via link. Consulta QUITADA."
     elif amount_float <= 0:
         payment_type = "?"
@@ -1084,12 +1102,7 @@ async def register_payment(
         # Taxa de reserva (only when not yet paid)
         payment_type = "Taxa de Reserva"
         if appt_id_to_pay:
-            try:
-                await client.from_("appointments").update({
-                    "booking_fee_paid_at": now_dt.isoformat(),
-                }).eq("appointment_id", appt_id_to_pay).execute()
-            except Exception:
-                _logger.exception("BOOKING_FEE UPDATE FAILED patient=%s", patient_name)
+            await _update_appts({"booking_fee_paid_at": now_dt.isoformat()})
         saldo = expected - 100
         payment_note = (
             f"Valor pago: R$ {amount} — taxa de reserva registrada. "
@@ -1099,24 +1112,13 @@ async def register_payment(
         # Full payment or saldo that settles the consultation
         payment_type = "Consulta"
         if appt_id_to_pay:
-            try:
-                await client.from_("appointments").update({
-                    "paid_at": now_dt.isoformat(),
-                    "booking_fee_paid_at": now_dt.isoformat(),
-                }).eq("appointment_id", appt_id_to_pay).execute()
-            except Exception:
-                _logger.exception("PAID_AT UPDATE FAILED patient=%s", patient_name)
+            await _update_appts({"paid_at": now_dt.isoformat(), "booking_fee_paid_at": now_dt.isoformat()})
         payment_note = f"Valor pago: R$ {amount} — consulta QUITADA. Nenhum valor adicional será cobrado."
     else:
         # Partial payment — still owes a balance
         payment_type = "Pagamento Parcial"
         if appt_id_to_pay:
-            try:
-                await client.from_("appointments").update({
-                    "booking_fee_paid_at": now_dt.isoformat(),
-                }).eq("appointment_id", appt_id_to_pay).execute()
-            except Exception:
-                _logger.exception("BOOKING_FEE UPDATE FAILED patient=%s", patient_name)
+            await _update_appts({"booking_fee_paid_at": now_dt.isoformat()})
         saldo = expected_remaining - amount_float
         payment_note = (
             f"Valor pago: R$ {amount}. Consulta ainda NÃO quitada. "
