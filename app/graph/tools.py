@@ -425,7 +425,7 @@ async def confirm_appointment(
     # but the guardian says the child is already a returning patient.
     consultation_type: str | None = None
     if patient_age < 18 and doctor == "julio":
-        state_says_returning = bool(state.get("is_patient"))
+        state_says_returning = bool(state.get("is_returning_patient"))
         prior_completed = False
         if user:
             try:

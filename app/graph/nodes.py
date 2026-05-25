@@ -104,6 +104,7 @@ async def collect_info_node(state: ConversationState, config: RunnableConfig) ->
                     "patient_age": u.get("age"),
                     "birth_date": u.get("birth_date"),
                     "is_patient": u.get("is_patient"),
+                    "is_returning_patient": u.get("is_returning_patient"),
                     "preferred_doctor": doc_key,
                     "patient_email": u.get("email"),
                     "guardian_name": u.get("guardian_name"),
@@ -149,6 +150,7 @@ async def collect_info_node(state: ConversationState, config: RunnableConfig) ->
                     "patient_age": selected.get("age"),
                     "birth_date": selected.get("birth_date"),
                     "is_patient": selected.get("is_patient"),
+                    "is_returning_patient": selected.get("is_returning_patient"),
                     "preferred_doctor": doc_key,
                     "patient_email": selected.get("email"),
                     "guardian_name": selected.get("guardian_name"),
@@ -206,6 +208,7 @@ async def collect_info_node(state: ConversationState, config: RunnableConfig) ->
             "guardian_cpf": "guardian_cpf",
             "guardian_relationship": "guardian_relationship",
             "is_patient": "is_patient",
+            "is_returning_patient": "is_returning_patient",
             "patient_email": "email",
         }
         db_payload = {_STATE_TO_DB[k]: v for k, v in extracted.items() if k in _STATE_TO_DB}
@@ -341,7 +344,9 @@ async def collect_info_node(state: ConversationState, config: RunnableConfig) ->
                 return await _extract_and_ask({"guardian_cpf": last_human}, _PATIENT_Q)
             return await _ask(_GUARDIAN_CPF_Q)
 
-        # Step 5: is_patient
+        # Step 5: is_patient / is_returning_patient
+        # is_patient: contact IS the patient (vs scheduling for someone else)
+        # is_returning_patient: patient already attends the clinic (used for pricing)
         if state.get("is_patient") is None:
             if last_ai == _PATIENT_Q and last_human:
                 h = last_human.lower()
@@ -352,7 +357,11 @@ async def collect_info_node(state: ConversationState, config: RunnableConfig) ->
                 else:
                     is_patient = None
                 if is_patient is not None:
-                    return await _extract_and_ask({"is_patient": is_patient}, _DOCTOR_Q)
+                    # is_returning_patient mirrors is_patient: returning patients ARE patients;
+                    # new patients are NOT yet in the clinic.
+                    return await _extract_and_ask(
+                        {"is_patient": is_patient, "is_returning_patient": is_patient}, _DOCTOR_Q
+                    )
             return await _ask(_PATIENT_Q)
 
         # Step 5b: actual patient name when contact is not the patient (adults only)

@@ -27,7 +27,8 @@ class ConversationState(TypedDict):
     patient_age: int | None        # determines 1h vs 2h slot
 
     # Clinic status
-    is_patient: bool | None
+    is_patient: bool | None           # True = contact IS the patient; False = contact schedules for someone else
+    is_returning_patient: bool | None # True = patient already attends the clinic (returning); False = new patient
     preferred_doctor: Literal["julio", "bruna"] | None
 
     # Relationship of contact to patient (only relevant when is_for_self=False and patient is minor)
