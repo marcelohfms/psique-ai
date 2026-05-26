@@ -157,13 +157,18 @@ async def main():
         .lt("start_time", f"{tomorrow_start}T00:00:00")
         .execute()
     )
-    # Send 2h before the appointment, always.
-    # - Appointments at 9h+: 2h before is 7h+, so reminders go out from 7h naturally.
-    # - Appointments before 9h (e.g. 8h → 6h): can fire before 7h.
-    # No hard floor or ceiling — the 2h window is the only constraint.
+    # Reminder send time depends on appointment hour:
+    # - 10h or later  → send at 7h
+    # - before 10h (7h, 7h30, 8h, 9h) → send at 5h
+    _7am_today = now.replace(hour=7, minute=0, second=0, microsecond=0)
+    _5am_today = now.replace(hour=5, minute=0, second=0, microsecond=0)
     day_of_appts = [
         a for a in (day_of_result.data or [])
-        if now >= datetime.fromisoformat(a["start_time"]).astimezone(TZ) - timedelta(hours=2)
+        if now >= (
+            _7am_today
+            if datetime.fromisoformat(a["start_time"]).astimezone(TZ).hour >= 10
+            else _5am_today
+        )
     ]
 
     print(f"Day-before reminders to send: {len(day_before_appts)}")
