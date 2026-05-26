@@ -613,14 +613,20 @@ async def reschedule_appointment(
             )
 
     doctor_label = {"julio": "Dr. Júlio", "bruna": "Dra. Bruna"}.get(doctor, "médico(a)")
-    patient_name = state.get("patient_name") or state.get("user_name", "Paciente")
     patient_age = state.get("patient_age") or 99
     is_minor_first = patient_age < 18 and not state.get("is_patient", False)
 
-    # Fetch old start_time before updating
+    # Fetch old start_time and the actual patient name from the appointment's user record.
+    # This avoids using the conversation state's patient_name (which may be the guardian/contact,
+    # not the actual patient — e.g. when the phone has multiple patients like parent + child).
     client = await get_supabase()
-    appt_result = await client.from_("appointments").select("start_time").eq("appointment_id", appointment_id).maybe_single().execute()
+    appt_result = await client.from_("appointments").select("start_time, users(patient_name, name)").eq("appointment_id", appointment_id).maybe_single().execute()
     old_start_time = appt_result.data.get("start_time") if appt_result.data else None
+    if appt_result.data:
+        _appt_user = appt_result.data.get("users") or {}
+        patient_name = _appt_user.get("patient_name") or _appt_user.get("name") or state.get("patient_name") or state.get("user_name", "Paciente")
+    else:
+        patient_name = state.get("patient_name") or state.get("user_name", "Paciente")
 
     # Enforce modality constraints
     from app.google_calendar import get_modality_for_slot
