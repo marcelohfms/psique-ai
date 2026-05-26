@@ -380,3 +380,102 @@ async def test_log_event_called_for_new_conversation():
         gg.chatbot = original
 
 
+# ── Greeting injection for known patients ────────────────────────────────────
+
+def _make_patient_agent_state(**overrides) -> dict:
+    base = {
+        "phone": PHONE,
+        "stage": "patient_agent",
+        "user_name": "Carlos",
+        "patient_name": "Carlos Silva",
+        "patient_age": 35,
+        "birth_date": "10/05/1989",
+        "is_patient": True,
+        "is_returning_patient": True,
+        "preferred_doctor": "julio",
+        "patient_email": "carlos@email.com",
+        "is_for_self": True,
+        "guardian_relationship": None,
+        "guardian_name": None,
+        "guardian_cpf": None,
+        "silent_mode": None,
+        "user_db_id": None,
+        "messages": [HumanMessage(content="quero agendar uma consulta")],
+    }
+    base.update(overrides)
+    return base
+
+
+async def _run_patient_agent(state: dict, last_assistant_time=None) -> "SystemMessage":
+    """Helper: run patient_agent_node and return the SystemMessage passed to the LLM."""
+    from app.graph.nodes import patient_agent_node
+    from langchain_core.messages import SystemMessage
+
+    ai_response = MagicMock()
+    ai_response.tool_calls = []
+    ai_response.content = "resposta"
+
+    captured = []
+
+    async def fake_ainvoke(messages):
+        captured.extend(messages)
+        return ai_response
+
+    with patch("app.graph.nodes._get_agent_llm") as mock_llm_fn, \
+         patch("app.graph.nodes.send_text", new_callable=AsyncMock), \
+         patch("app.graph.nodes.save_message", new_callable=AsyncMock), \
+         patch("app.graph.nodes.get_upcoming_appointments", new_callable=AsyncMock, return_value=[]), \
+         patch("app.graph.nodes.get_user_by_phone", new_callable=AsyncMock, return_value={"price_adjustment_notified_at": "2026-01-01"}), \
+         patch("app.graph.nodes.get_last_assistant_message_time", new_callable=AsyncMock, return_value=last_assistant_time), \
+         patch("app.google_calendar.format_doctor_schedules", return_value="seg-sex"):
+        mock_llm = MagicMock()
+        mock_llm.ainvoke = fake_ainvoke
+        mock_llm_fn.return_value = mock_llm
+        await patient_agent_node(state, {})
+
+    return next((m for m in captured if isinstance(m, SystemMessage)), None)
+
+
+async def test_patient_agent_injects_greeting_on_first_turn():
+    """No prior AI messages → greeting instruction injected."""
+    state = _make_patient_agent_state(messages=[HumanMessage(content="quero agendar")])
+    system_msg = await _run_patient_agent(state, last_assistant_time=None)
+    assert system_msg is not None
+    assert "INÍCIO DE CONVERSA" in system_msg.content
+    assert "Carlos" in system_msg.content
+
+
+async def test_patient_agent_injects_greeting_on_new_day():
+    """Prior AI messages exist but last assistant message was on a previous day → greeting injected."""
+    from datetime import datetime, timezone, timedelta
+    from zoneinfo import ZoneInfo
+
+    yesterday = datetime.now(ZoneInfo("America/Recife")) - timedelta(days=1)
+    yesterday_utc = yesterday.astimezone(timezone.utc)
+
+    state = _make_patient_agent_state(messages=[
+        AIMessage(content="Boa tarde, Carlos!"),
+        HumanMessage(content="oi de novo"),
+    ])
+    system_msg = await _run_patient_agent(state, last_assistant_time=yesterday_utc)
+    assert system_msg is not None
+    assert "INÍCIO DE CONVERSA" in system_msg.content
+    assert "Carlos" in system_msg.content
+
+
+async def test_patient_agent_no_greeting_injection_on_same_day():
+    """Prior AI messages exist and last assistant message was today → no greeting injected."""
+    from datetime import datetime, timezone
+    from zoneinfo import ZoneInfo
+
+    today_utc = datetime.now(timezone.utc)
+
+    state = _make_patient_agent_state(messages=[
+        AIMessage(content="Boa tarde, Carlos!"),
+        HumanMessage(content="qual o horário disponível?"),
+    ])
+    system_msg = await _run_patient_agent(state, last_assistant_time=today_utc)
+    assert system_msg is not None
+    assert "INÍCIO DE CONVERSA" not in system_msg.content
+
+

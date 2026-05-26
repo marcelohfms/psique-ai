@@ -15,7 +15,7 @@ from app.graph.tools import (
 )
 from app.graph.prompts import COLLECT_SYSTEM, MINOR_RULE, ADULT_RULE, EXISTING_PATIENT_SYSTEM, NEW_PATIENT_SYSTEM, CANCELLATION_RULES, CLINIC_ADDRESS, DOCTORS_INFO, get_booking_fee_rule, MEDICAL_LIMITS_RULE, DOCTOR_CORRECTION_RULE, EMAIL_RULE, get_pricing_rules
 from app.whatsapp import send_text
-from app.database import upsert_user, log_event, get_upcoming_appointments, get_user_by_phone, get_users_by_phone, DOCTOR_IDS, DOCTOR_NAMES, save_message
+from app.database import upsert_user, log_event, get_upcoming_appointments, get_user_by_phone, get_users_by_phone, DOCTOR_IDS, DOCTOR_NAMES, save_message, get_last_assistant_message_time
 
 # ── LLM setup (lazy — instantiated on first use after .env is loaded) ─────────
 
@@ -625,6 +625,26 @@ async def patient_agent_node(state: ConversationState, config: RunnableConfig) -
             if next_msg is None or next_msg.type != "tool":
                 continue  # skip orphan tool call
         clean_messages.append(msg)
+
+    # Detect whether this is the start of a new session:
+    # (a) no prior AI messages at all — patient_agent_node seeing this patient for the first time, or
+    # (b) there are prior AI messages but the last assistant reply was on a different calendar day.
+    _has_prior_ai = any(getattr(m, "type", None) == "ai" for m in clean_messages)
+    _is_new_session = not _has_prior_ai
+    if _has_prior_ai:
+        _last_ai_time = await get_last_assistant_message_time(state["phone"])
+        if _last_ai_time is not None:
+            _tz_recife = ZoneInfo("America/Recife")
+            _is_new_session = _last_ai_time.astimezone(_tz_recife).date() < _now_recife.date()
+
+    if _is_new_session:
+        _hour = _now_recife.hour
+        _greeting_word = "Bom dia" if _hour < 12 else ("Boa tarde" if _hour < 18 else "Boa noite")
+        system_prompt += (
+            f"\n\nINÍCIO DE CONVERSA: Esta é a primeira mensagem desta sessão com o paciente. "
+            f"Você DEVE começar sua resposta com '{_greeting_word}, {first_name}! 😊' e se apresentar "
+            f"como Eva da Clínica Psique antes de responder à solicitação."
+        )
 
     messages = [SystemMessage(content=system_prompt), *clean_messages]
     response = await _get_agent_llm().ainvoke(messages)

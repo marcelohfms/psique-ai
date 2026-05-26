@@ -224,18 +224,22 @@ async def main():
             message = payment_cancel_message(contact_first, doctor_label, date_str, patient_first)
 
             try:
+                # Send WhatsApp notification FIRST — if this fails, the appointment
+                # stays "scheduled" and will be retried on the next run.
+                # This prevents the silent-cancellation bug where the slot is freed
+                # but the patient never receives a notification.
+                await send_whatsapp(phone, message)
+                if graph:
+                    await save_to_checkpoint(graph, phone, message, appt)
+
                 # Cancel Google Calendar event
                 await cancel_calendar_event(appointment_id, doctor_id, client)
 
-                # Update DB
+                # Update DB only after notification was successfully sent
                 await client.from_("appointments").update({
                     "status": "canceled",
                     "updated_at": now.isoformat(),
                 }).eq("appointment_id", appointment_id).execute()
-
-                await send_whatsapp(phone, message)
-                if graph:
-                    await save_to_checkpoint(graph, phone, message, appt)
 
                 try:
                     from app.email_sender import send_clinic_notification_email

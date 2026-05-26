@@ -203,6 +203,30 @@ async def save_message(phone: str, role: str, content: str) -> None:
         pass  # never let persistence break the main flow
 
 
+async def get_last_assistant_message_time(phone: str):
+    """Return the created_at datetime of the most recent assistant message, or None."""
+    try:
+        client = await get_supabase()
+        result = (
+            await client.from_("messages")
+            .select("created_at")
+            .eq("phone", _strip_phone(phone))
+            .eq("role", "assistant")
+            .order("created_at", desc=True)
+            .limit(1)
+            .execute()
+        )
+        if result.data:
+            from datetime import datetime, timezone
+            ts = result.data[0]["created_at"]
+            if isinstance(ts, str):
+                return datetime.fromisoformat(ts.replace("Z", "+00:00"))
+            return ts
+    except Exception:
+        pass
+    return None
+
+
 # ── LangGraph checkpointer ────────────────────────────────────────────────────
 # AsyncPostgresSaver.from_conn_string is an async context manager in v3.x
 # Use it directly in the FastAPI lifespan (see main.py)

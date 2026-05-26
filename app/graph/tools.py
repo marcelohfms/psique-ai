@@ -285,6 +285,7 @@ async def confirm_appointment(
     config: RunnableConfig,
     session_note: str = "",
     modality: str = "",
+    force_encaixe: bool = False,
 ) -> str:
     """
     Confirma e cria o agendamento no Google Calendar.
@@ -297,6 +298,8 @@ async def confirm_appointment(
       Para slots com escolha livre, passe o que o paciente escolheu.
       Para slots "presencial requer confirmação": se o paciente escolheu presencial,
       use transfer_to_human antes de chamar confirm_appointment.
+    force_encaixe: quando True, ignora verificações de bloqueio de agenda e conflitos
+      de horário — use SOMENTE quando a atendente solicitar um encaixe explicitamente.
     """
     import logging as _log
     _logger = _log.getLogger(__name__)
@@ -315,43 +318,45 @@ async def confirm_appointment(
     except ValueError:
         return f"Formato de data inválido: {slot_datetime}. Use ISO 8601 (ex: 2026-03-19T09:00:00)."
 
-    # Reject slots on exception days (e.g. doctor on leave)
-    from app.google_calendar import SCHEDULE_EXCEPTIONS, DOCTOR_SCHEDULES
-    _exc_map = SCHEDULE_EXCEPTIONS.get(doctor, {})
-    _date_key = start.date().isoformat()
-    if _date_key in _exc_map:
-        _day_wins = _exc_map[_date_key]
-        if not _day_wins:
-            formatted_blocked = start.strftime("%d/%m/%Y")
-            return (
-                f"A médica não tem atendimento no dia {formatted_blocked}. "
-                "Chame get_available_slots para buscar outro horário disponível."
-            )
-        # Exception overrides schedule but has windows — validate slot falls in one
-        _slot_min = start.hour * 60 + start.minute
-        if not any((sh * 60 + sm) <= _slot_min < (eh * 60 + em) for sh, sm, eh, em, _ in _day_wins):
-            formatted_blocked = start.strftime("%d/%m/%Y")
-            return (
-                f"Este horário não está dentro da disponibilidade da médica no dia {formatted_blocked}. "
-                "Chame get_available_slots para buscar outro horário disponível."
-            )
+    # Reject slots on exception days (e.g. doctor on leave) — skipped for encaixe
+    if not force_encaixe:
+        from app.google_calendar import SCHEDULE_EXCEPTIONS, DOCTOR_SCHEDULES
+        _exc_map = SCHEDULE_EXCEPTIONS.get(doctor, {})
+        _date_key = start.date().isoformat()
+        if _date_key in _exc_map:
+            _day_wins = _exc_map[_date_key]
+            if not _day_wins:
+                formatted_blocked = start.strftime("%d/%m/%Y")
+                return (
+                    f"A médica não tem atendimento no dia {formatted_blocked}. "
+                    "Chame get_available_slots para buscar outro horário disponível."
+                )
+            # Exception overrides schedule but has windows — validate slot falls in one
+            _slot_min = start.hour * 60 + start.minute
+            if not any((sh * 60 + sm) <= _slot_min < (eh * 60 + em) for sh, sm, eh, em, _ in _day_wins):
+                formatted_blocked = start.strftime("%d/%m/%Y")
+                return (
+                    f"Este horário não está dentro da disponibilidade da médica no dia {formatted_blocked}. "
+                    "Chame get_available_slots para buscar outro horário disponível."
+                )
 
-    # Double-check slot is still free before booking
-    from app.google_calendar import _get_busy, _credentials
-    from googleapiclient.discovery import build as _build
-    slot_end_check = start + timedelta(minutes=slot_duration_minutes)
-    try:
-        _creds = _credentials()
-        _service = _build("calendar", "v3", credentials=_creds)
-        loop = asyncio.get_event_loop()
-        busy = await loop.run_in_executor(None, _get_busy, _service, calendar_id, start, slot_end_check)
-        if busy:
-            return (
-                f"Este horário ({start.strftime('%d/%m/%Y às %H:%M')}) acabou de ser ocupado. "
-                "Chame get_available_slots novamente para buscar outro horário disponível."
-            )
-    except Exception:
-        pass  # If check fails, proceed anyway — better to double-book than block
+    # Double-check slot is still free before booking — skipped for encaixe
+    if not force_encaixe:
+        from app.google_calendar import _get_busy, _credentials
+        from googleapiclient.discovery import build as _build
+        slot_end_check = start + timedelta(minutes=slot_duration_minutes)
+        try:
+            _creds = _credentials()
+            _service = _build("calendar", "v3", credentials=_creds)
+            loop = asyncio.get_event_loop()
+            busy = await loop.run_in_executor(None, _get_busy, _service, calendar_id, start, slot_end_check)
+            if busy:
+                return (
+                    f"Este horário ({start.strftime('%d/%m/%Y às %H:%M')}) acabou de ser ocupado. "
+                    "Chame get_available_slots novamente para buscar outro horário disponível."
+                )
+        except Exception:
+            pass  # If check fails, proceed anyway — better to double-book than block
 
     # Enforce modality constraints from schedule
     from app.google_calendar import get_modality_for_slot
