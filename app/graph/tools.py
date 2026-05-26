@@ -1402,8 +1402,19 @@ async def transfer_to_human(
             logger.warning("Could not resolve Chatwoot conversation for %s", phone)
 
     if conv_id is not None:
-        # Add private note with context for the human agent
+        # Add private note with context for the human agent.
+        # Prefer the DB record (patient_name from users table) over the state, which may be
+        # stale or belong to the guardian/contact rather than the actual patient.
         patient_name = state.get("patient_name") or state.get("user_name") or "Não informado"
+        user_db_id = state.get("user_db_id")
+        if user_db_id:
+            try:
+                _db_client = await get_supabase()
+                _user_res = await _db_client.from_("users").select("patient_name, name").eq("id", user_db_id).maybe_single().execute()
+                if _user_res.data:
+                    patient_name = _user_res.data.get("patient_name") or _user_res.data.get("name") or patient_name
+            except Exception:
+                pass
         doctor = state.get("preferred_doctor", "")
         doctor_label = {"julio": "Dr. Júlio", "bruna": "Dra. Bruna"}.get(doctor, "Não informado")
         number = phone.replace("@s.whatsapp.net", "")
