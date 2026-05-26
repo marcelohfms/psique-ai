@@ -157,10 +157,14 @@ async def main():
         .lt("start_time", f"{tomorrow_start}T00:00:00")
         .execute()
     )
+    # Send at whichever comes FIRST: 7h or 2h before the appointment.
+    # - Appointments at 9h+: reminder fires at 7h (min = 7h)
+    # - Appointments before 9h (e.g. 8h): reminder fires at 6h (2h before, earlier than 7h)
+    # 7h is a ceiling, not a floor — all afternoon appointments are reminded at 7h.
     _7am_today = now.replace(hour=7, minute=0, second=0, microsecond=0)
     day_of_appts = [
         a for a in (day_of_result.data or [])
-        if now >= max(
+        if now >= min(
             _7am_today,
             datetime.fromisoformat(a["start_time"]).astimezone(TZ) - timedelta(hours=2),
         )
