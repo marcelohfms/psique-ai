@@ -77,9 +77,15 @@ def _plain_message(template_name: str, first_name: str, doctor_label: str, time_
             f"Hoje é o dia da consulta online de {first_name} com {doctor_label} às {time_str}.\n\n"
             f"A consulta é online - você receberá o link da consulta no horário agendado."
         )
+    if modality == "presencial":
+        return (
+            f"Bom dia! Hoje é o dia da consulta de {first_name} "
+            f"com {doctor_label} às {time_str}. Estamos esperando na Psiquê! 😊"
+        )
+    # modality unknown ("escolha" or null) — neutral, no location assumption
     return (
         f"Bom dia! Hoje é o dia da consulta de {first_name} "
-        f"com {doctor_label} às {time_str}. Estamos esperando na Psiquê! 😊"
+        f"com {doctor_label} às {time_str}. Qualquer dúvida, é só chamar! 😊"
     )
 
 
