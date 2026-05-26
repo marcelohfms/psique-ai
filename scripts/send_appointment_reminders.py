@@ -160,7 +160,7 @@ async def main():
     _7am_today = now.replace(hour=7, minute=0, second=0, microsecond=0)
     day_of_appts = [
         a for a in (day_of_result.data or [])
-        if now >= min(
+        if now >= max(
             _7am_today,
             datetime.fromisoformat(a["start_time"]).astimezone(TZ) - timedelta(hours=2),
         )
