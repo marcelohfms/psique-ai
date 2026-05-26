@@ -127,12 +127,12 @@ async def main():
     tomorrow_end = (now.date() + timedelta(days=2)).isoformat()
     today_start = now.date().isoformat()
 
-    # ── Day-before reminders: target 7h Recife, retry window until 10h ──────────
-    # Fires at 7h. If that run fails, retries every 30 min until 9:30h.
-    # After 10h the window closes to avoid late "day-before" messages.
+    # ── Day-before reminders: target 7h Recife, retry window until 12h ──────────
+    # Fires at 7h. If GitHub Actions delays or fails, retries every 10 min until 11:50h.
+    # Window extends to 12h to absorb GitHub Actions queue delays (can be hours).
     # reminder_day_before_sent_at is only set on success, so retries are safe.
     day_before_appts = []
-    if 7 <= now.hour < 10:
+    if 7 <= now.hour < 12:
         booked_before = (now - timedelta(hours=12)).isoformat()
         result = await (
             client.from_("appointments")
