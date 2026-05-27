@@ -703,15 +703,27 @@ async def patient_agent_node(state: ConversationState, config: RunnableConfig) -
         )
 
         if is_internal:
-            # Post as Chatwoot private note — never send to patient
-            try:
-                conv_id = get_conversation_id(phone)
-                await add_private_note(conv_id, response.content)
-            except Exception:
-                import logging as _log
-                _log.getLogger(__name__).exception(
-                    "PRIVATE_NOTE FAILED phone=%s — falling back to save_message only", phone
+            # Post as Chatwoot private note.
+            # Fallback to WhatsApp if conv_id is missing or the API call fails —
+            # better the message arrive in the wrong place than disappear silently.
+            import logging as _log
+            _node_logger = _log.getLogger(__name__)
+            conv_id = get_conversation_id(phone)
+            _node_logger.info("PRIVATE_NOTE attempt phone=%s conv_id=%s", phone, conv_id)
+            posted = False
+            if conv_id:
+                try:
+                    await add_private_note(conv_id, response.content)
+                    posted = True
+                except Exception:
+                    _node_logger.exception(
+                        "PRIVATE_NOTE FAILED phone=%s conv_id=%s — falling back to WhatsApp", phone, conv_id
+                    )
+            if not posted:
+                _node_logger.warning(
+                    "PRIVATE_NOTE no conv_id or post failed — sending to WhatsApp phone=%s", phone
                 )
+                await send_text(phone, response.content)
             await save_message(phone, "assistant", response.content)
         else:
             await send_text(phone, response.content)
