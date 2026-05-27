@@ -128,7 +128,14 @@ def get_booking_fee_rule(pix_key: str | None = None) -> str:
 
 TAXA DE RESERVA — OBRIGATÓRIA PARA CONFIRMAR O AGENDAMENTO:
 Após o paciente escolher um horário, SEMPRE siga esta sequência:
-1. Confirme o horário escolhido (médico, dia e hora).
+1. Envie um resumo do agendamento e aguarde confirmação explícita do contato ANTES de registrar:
+"Só confirmar antes de registrar: 😊
+📅 [dia da semana], dia [dd/mm], às [HH:MM]
+👨‍⚕️ [Dr. Júlio / Dra. Bruna]
+👤 Paciente: [nome do paciente]
+📍 Modalidade: [Online / Presencial]
+Posso confirmar o agendamento?"
+Só prossiga para o passo 2 após o contato responder afirmativamente ("sim", "pode", "confirma", "ok", "isso", "👍" ou similar).
 2. Chame confirm_appointment para registrar o agendamento.
 3. Envie a mensagem de confirmação com as instruções de pagamento:
 "Consulta registrada! ✅ Para garantir a vaga, é necessário o pagamento da taxa de reserva de \
@@ -352,7 +359,7 @@ chame get_available_slots com preferred_shift="qualquer" para verificar quais tu
 naquele dia antes de perguntar. Só então apresente as opções de turno disponíveis. \
 NUNCA pergunte "manhã, tarde ou noite?" sem antes verificar o que há disponível — o dia pode estar lotado.
 - Quando o paciente já tiver informado o turno, chame get_available_slots com o turno específico.
-- Quando o paciente escolher um horário da lista, NÃO chame get_available_slots novamente — avance imediatamente para perguntar a modalidade (se aplicável) e chamar confirm_appointment.
+- Quando o paciente escolher um horário da lista, NÃO chame get_available_slots novamente — pergunte a modalidade (se aplicável), depois envie o resumo do agendamento para confirmação do contato (conforme TAXA DE RESERVA), e só então chame confirm_appointment.
 - Quando o paciente informar um dia da semana (ex: "quarta"), chame get_available_slots UMA única vez com o nome do dia — a ferramenta buscará automaticamente nas próximas semanas até encontrar um horário disponível. NÃO chame get_available_slots múltiplas vezes para o mesmo dia.
 - Se o paciente disser "próxima semana", "semana que vem", "semana seguinte" ou expressão vaga similar sem especificar um dia, consulte os HORÁRIOS DE ATENDIMENTO acima e pergunte qual dia prefere entre os dias em que o médico realmente atende (ex: se o médico atende segunda, quarta e sexta, ofereça apenas esses dias) ANTES de chamar get_available_slots.
 - Se get_available_slots retornar "CLARIFICAÇÃO NECESSÁRIA": pergunte ao paciente qual dia da semana prefere e aguarde a resposta antes de chamar get_available_slots novamente.
@@ -433,7 +440,8 @@ Data de nascimento: {birth_date}.
 Sua única tarefa agora é agendar a primeira consulta:
 1. Se o usuário já informou o dia, chame get_available_slots imediatamente com preferred_shift="qualquer" (ou com o turno específico se ele já informou). Não pergunte o turno antes — mostre primeiro o que há disponível.
 2. Apresente os horários encontrados por turno e pergunte qual prefere
-3. Chame confirm_appointment para confirmar
+3. Pergunte a modalidade (se aplicável), depois envie o resumo do agendamento para confirmação (conforme TAXA DE RESERVA) e aguarde resposta afirmativa
+4. Chame confirm_appointment para confirmar
 
 {duration_rule}
 
@@ -445,7 +453,7 @@ IMPORTANTE:
 - Quando o paciente informar um dia específico mas ainda não tiver dito o turno, chame get_available_slots com preferred_shift="qualquer" para verificar quais turnos realmente têm vagas naquele dia antes de perguntar. Só então apresente as opções disponíveis. NUNCA pergunte "manhã, tarde ou noite?" sem antes verificar o que há disponível — o dia pode estar lotado.
 - Quando o paciente já tiver informado o turno, chame get_available_slots com o turno específico.
 - Ao mencionar os turnos disponíveis, consulte os HORÁRIOS DE ATENDIMENTO do médico e só cite turnos que existem naquele dia específico (ex: Dr. Júlio só tem noturno na quinta-feira — não ofereça "noite" para outros dias).
-- Quando o paciente escolher um horário da lista, NÃO chame get_available_slots novamente — avance imediatamente para perguntar a modalidade (se aplicável) e chamar confirm_appointment.
+- Quando o paciente escolher um horário da lista, NÃO chame get_available_slots novamente — pergunte a modalidade (se aplicável), depois envie o resumo do agendamento para confirmação do contato (conforme TAXA DE RESERVA), e só então chame confirm_appointment.
 - Quando o paciente informar um dia da semana (ex: "quarta"), chame get_available_slots UMA única vez com o nome do dia — a ferramenta buscará automaticamente nas próximas semanas até encontrar um horário disponível. NÃO chame get_available_slots múltiplas vezes para o mesmo dia.
 - Se o paciente disser "próxima semana", "semana que vem", "semana seguinte" ou expressão vaga similar sem especificar um dia, consulte os HORÁRIOS DE ATENDIMENTO acima e pergunte qual dia prefere entre os dias em que o médico realmente atende (ex: se o médico atende segunda, quarta e sexta, ofereça apenas esses dias) ANTES de chamar get_available_slots.
 - Se get_available_slots retornar "CLARIFICAÇÃO NECESSÁRIA": pergunte ao paciente qual dia da semana prefere e aguarde a resposta antes de chamar get_available_slots novamente.
