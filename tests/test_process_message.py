@@ -122,6 +122,7 @@ def _patch_deps(get_user_return=None, snapshot_values=None):
 
 async def test_new_user_initializes_collect_info():
     with patch("app.main.get_user_by_phone", new_callable=AsyncMock, return_value=None), \
+         patch("app.main.get_users_by_phone", new_callable=AsyncMock, return_value=[]), \
          patch("app.main.log_event", new_callable=AsyncMock), \
          patch("app.graph.graph.chatbot") as mock_chatbot_attr:
         chatbot = _make_chatbot()
@@ -147,6 +148,7 @@ async def test_known_user_goes_to_patient_agent():
     gg.chatbot = chatbot
     try:
         with patch("app.main.get_user_by_phone", new_callable=AsyncMock, return_value=_KNOWN_USER), \
+             patch("app.main.get_users_by_phone", new_callable=AsyncMock, return_value=[_KNOWN_USER]), \
              patch("app.main.log_event", new_callable=AsyncMock):
             from app.main import process_message
             await process_message(PHONE, "quero remarcar")
@@ -171,6 +173,7 @@ async def test_known_user_missing_optional_fields_goes_to_patient_agent():
     }
     try:
         with patch("app.main.get_user_by_phone", new_callable=AsyncMock, return_value=incomplete_user), \
+             patch("app.main.get_users_by_phone", new_callable=AsyncMock, return_value=[incomplete_user]), \
              patch("app.main.log_event", new_callable=AsyncMock):
             from app.main import process_message
             await process_message(PHONE, "oi")
@@ -187,7 +190,8 @@ async def test_inactive_user_returns_silently():
     original = gg.chatbot
     gg.chatbot = chatbot
     try:
-        with patch("app.main.get_user_by_phone", new_callable=AsyncMock, return_value=inactive_user):
+        with patch("app.main.get_user_by_phone", new_callable=AsyncMock, return_value=inactive_user), \
+             patch("app.main.get_users_by_phone", new_callable=AsyncMock, return_value=[inactive_user]):
             from app.main import process_message
             await process_message(PHONE, "oi")
             chatbot.ainvoke.assert_not_called()
@@ -204,6 +208,7 @@ async def test_existing_snapshot_adds_only_human_message():
     gg.chatbot = chatbot
     try:
         with patch("app.main.get_user_by_phone", new_callable=AsyncMock, return_value=_KNOWN_USER), \
+             patch("app.main.get_users_by_phone", new_callable=AsyncMock, return_value=[_KNOWN_USER]), \
              patch("app.main.log_event", new_callable=AsyncMock):
             from app.main import process_message
             await process_message(PHONE, "nova mensagem")
@@ -372,6 +377,7 @@ async def test_log_event_called_for_new_conversation():
     gg.chatbot = chatbot
     try:
         with patch("app.main.get_user_by_phone", new_callable=AsyncMock, return_value=None), \
+             patch("app.main.get_users_by_phone", new_callable=AsyncMock, return_value=[]), \
              patch("app.main.log_event", new_callable=AsyncMock) as mock_log:
             from app.main import process_message
             await process_message(PHONE, "oi")

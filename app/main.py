@@ -13,7 +13,7 @@ from fastapi import FastAPI, Request, Response, Header, HTTPException
 from langchain_core.messages import HumanMessage
 
 from app.graph import graph as graph_module
-from app.database import get_user_by_phone, log_event, DOCTOR_NAMES, save_message
+from app.database import get_user_by_phone, get_users_by_phone, log_event, DOCTOR_NAMES, save_message
 from app.buffer import push as buffer_push
 from app.auth import router as auth_router
 from app.whatsapp import send_text
@@ -307,22 +307,41 @@ async def process_message(phone: str, text: str) -> None:
     config = {"configurable": {"thread_id": phone, "phone": phone}, "recursion_limit": 15}
 
     existing = await get_user_by_phone(phone)
-    if existing and existing.get("manual_hold"):
+
+    # Check hold/deactivation across ALL users for this phone.
+    # get_user_by_phone preferentially returns active users, so a phone with one
+    # inactive user (e.g. guardian) and one active user (e.g. child added later)
+    # would bypass the check. We use get_users_by_phone to catch all cases.
+    all_users = await get_users_by_phone(phone)
+
+    if any(r.get("manual_hold") for r in all_users):
         return  # permanent hold — never reactivates
-    if existing and existing.get("active") is False:
-        deactivated_at = existing.get("deactivated_at")
-        if deactivated_at:
-            dt = datetime.fromisoformat(deactivated_at)
-            if not dt.tzinfo:
-                dt = dt.replace(tzinfo=timezone.utc)
-            if datetime.now(timezone.utc) - dt < timedelta(hours=_HOLD_HOURS):
-                return  # still within 24-h hold
-            # 24 h elapsed — reactivate automatically
-            from app.database import upsert_user
-            await upsert_user(phone, {"active": True, "deactivated_at": None})
-            logger.info("Bot auto-reativado para %s após 24 h", phone)
-        else:
+
+    inactive = [r for r in all_users if r.get("active") is False]
+    if inactive:
+        # Use the most recently deactivated record to determine hold window
+        def _deactivated_dt(r: dict):
+            ts = r.get("deactivated_at")
+            if not ts:
+                return None
+            try:
+                dt = datetime.fromisoformat(ts)
+                if not dt.tzinfo:
+                    dt = dt.replace(tzinfo=timezone.utc)
+                return dt
+            except ValueError:
+                return None
+
+        deactivated_dts = [d for r in inactive if (d := _deactivated_dt(r)) is not None]
+        if not deactivated_dts:
             return  # no timestamp = permanent hold
+        most_recent = max(deactivated_dts)
+        if datetime.now(timezone.utc) - most_recent < timedelta(hours=_HOLD_HOURS):
+            return  # still within 24-h hold
+        # 24 h elapsed — reactivate all records for this phone
+        from app.database import upsert_user
+        await upsert_user(phone, {"active": True, "deactivated_at": None})
+        logger.info("Bot auto-reativado para %s após 24 h", phone)
 
     snapshot = await graph_module.chatbot.aget_state(config)
     if snapshot.values:

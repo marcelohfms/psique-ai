@@ -725,7 +725,10 @@ async def request_document(
             is_controlled = True
 
     phone = config["configurable"]["phone"]
-    patient_name = state.get("patient_name") or state.get("user_name", "Paciente")
+    patient_name = state.get("patient_name") or state.get("user_name") or ""
+    if not patient_name:
+        _u = await get_user_by_phone(phone)
+        patient_name = (_u or {}).get("patient_name") or (_u or {}).get("name") or "Paciente"
     patient_age = state.get("patient_age")
     doctor_key = state.get("preferred_doctor", "")
     doctor_id = DOCTOR_IDS.get(doctor_key)
@@ -790,7 +793,7 @@ async def request_document(
         notify_msg += f"\nMedicação: {medication_note}"
     if is_controlled:
         notify_msg += "\n\n⚠️ RECEITA FÍSICA — o paciente deverá retirar presencialmente na clínica."
-    asyncio.create_task(_notify_clinic(notify_msg, subject=f"Solicitação de {doc_label} — {patient_name}"))
+    await _notify_clinic(notify_msg, subject=f"Solicitação de {doc_label} — {patient_name}")
 
     if is_controlled:
         return (

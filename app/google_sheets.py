@@ -167,13 +167,23 @@ async def append_payment_receipt(
     service = build("sheets", "v4", credentials=creds)
     loop = asyncio.get_running_loop()
     updated_range = await loop.run_in_executor(None, _append_row_payments, service, spreadsheet_id, row)
+    logger.info("append_payment_receipt: row written at range=%r patient=%s", updated_range, patient_name)
 
-    # Now set the HYPERLINK formula in column I of the newly appended row
+    # Now set the HYPERLINK formula in column I of the newly appended row.
+    # Isolated in its own try/except: a hyperlink failure must NOT roll back the row write.
     if comprovante_formula_args and updated_range:
-        await loop.run_in_executor(
-            None, _set_hyperlink_cell, service, spreadsheet_id,
-            updated_range, comprovante_formula_args[0], comprovante_formula_args[1],
-        )
+        try:
+            await loop.run_in_executor(
+                None, _set_hyperlink_cell, service, spreadsheet_id,
+                updated_range, comprovante_formula_args[0], comprovante_formula_args[1],
+            )
+            logger.info("append_payment_receipt: hyperlink set at range=%r", updated_range)
+        except Exception:
+            logger.exception(
+                "append_payment_receipt: hyperlink FAILED (row was written) "
+                "range=%r drive_link=%r filename=%r",
+                updated_range, comprovante_formula_args[0], comprovante_formula_args[1],
+            )
 
 
 async def get_controlled_medications() -> list[str]:

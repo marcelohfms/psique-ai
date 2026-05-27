@@ -197,11 +197,16 @@ async def main():
                 await client.from_("appointments").update({
                     "payment_reminder_sent_at": now.isoformat(),
                 }).eq("appointment_id", appointment_id).execute()
-                if graph:
-                    await save_to_checkpoint(graph, phone, message, appt)
                 print(f"  [payment_reminder] Sent to {phone} — {patient_name}")
             except Exception as e:
                 print(f"  Failed to send reminder to {phone}: {e}")
+                continue
+            # Checkpoint is non-fatal — a failure here must not affect the reminder status
+            if graph:
+                try:
+                    await save_to_checkpoint(graph, phone, message, appt)
+                except Exception as e:
+                    print(f"  [payment_reminder] save_to_checkpoint failed (non-fatal): {e}")
 
         # Process 4h cancellations
         for appt in cancel_appts:
@@ -223,44 +228,60 @@ async def main():
 
             message = payment_cancel_message(contact_first, doctor_label, date_str, patient_first)
 
+            # Step 1: Notify patient — if WhatsApp fails, skip this appointment
+            # so the slot is NOT freed and the run is retried next cycle.
             try:
-                # Send WhatsApp notification FIRST — if this fails, the appointment
-                # stays "scheduled" and will be retried on the next run.
-                # This prevents the silent-cancellation bug where the slot is freed
-                # but the patient never receives a notification.
                 await send_whatsapp(phone, message)
-                if graph:
+            except Exception as e:
+                print(f"  [payment_cancel] WhatsApp failed for {phone} — skipping cancellation: {e}")
+                continue
+
+            # Step 2: Checkpoint — non-fatal, must not block cancellation
+            if graph:
+                try:
                     await save_to_checkpoint(graph, phone, message, appt)
+                except Exception as e:
+                    print(f"  [payment_cancel] save_to_checkpoint failed (non-fatal): {e}")
 
-                # Cancel Google Calendar event
-                await cancel_calendar_event(appointment_id, doctor_id, client)
+            # Step 3: Cancel Google Calendar event (already non-fatal internally)
+            await cancel_calendar_event(appointment_id, doctor_id, client)
 
-                # Update DB only after notification was successfully sent
+            # Step 4: Update DB status
+            try:
                 await client.from_("appointments").update({
                     "status": "canceled",
                     "updated_at": now.isoformat(),
                 }).eq("appointment_id", appointment_id).execute()
-
-                try:
-                    from app.email_sender import send_clinic_notification_email
-                    subject = f"Consulta cancelada por falta de pagamento — {patient_name_full or contact_name}"
-                    body = (
-                        f"A consulta abaixo foi cancelada automaticamente por falta de pagamento da taxa de reserva.\n\n"
-                        f"Paciente: {patient_name_full or contact_name}\n"
-                        f"Responsável: {contact_name}\n"
-                        f"Médico(a): {doctor_label}\n"
-                        f"Data/hora: {date_str}\n"
-                        f"WhatsApp: {phone}\n\n"
-                        f"A vaga foi liberada no Google Calendar."
-                    )
-                    await send_clinic_notification_email(subject, body)
-                    print(f"  [payment_cancel] Clinic notification email sent.")
-                except Exception as e:
-                    print(f"  Failed to send clinic notification email: {e}")
-
-                print(f"  [payment_cancel] Canceled and notified {phone} — {patient_name_full}")
             except Exception as e:
-                print(f"  Failed to cancel for {phone}: {e}")
+                print(f"  [payment_cancel] DB update failed for {appointment_id}: {e}")
+
+            # Step 5: Notify clinic by email — two attempts before giving up
+            try:
+                from app.email_sender import send_clinic_notification_email
+                import asyncio as _asyncio
+                subject = f"Consulta cancelada por falta de pagamento — {patient_name_full or contact_name}"
+                body = (
+                    f"A consulta abaixo foi cancelada automaticamente por falta de pagamento da taxa de reserva.\n\n"
+                    f"Paciente: {patient_name_full or contact_name}\n"
+                    f"Responsável: {contact_name}\n"
+                    f"Médico(a): {doctor_label}\n"
+                    f"Data/hora: {date_str}\n"
+                    f"WhatsApp: {phone}\n\n"
+                    f"A vaga foi liberada no Google Calendar."
+                )
+                for attempt in range(1, 3):
+                    try:
+                        await send_clinic_notification_email(subject, body)
+                        print(f"  [payment_cancel] Clinic notification email sent (attempt {attempt}).")
+                        break
+                    except Exception as e:
+                        print(f"  [payment_cancel] Clinic email attempt {attempt} failed: {e}")
+                        if attempt < 2:
+                            await _asyncio.sleep(5)
+            except Exception as e:
+                print(f"  [payment_cancel] Clinic email setup failed: {e}")
+
+            print(f"  [payment_cancel] Canceled and notified {phone} — {patient_name_full}")
 
     finally:
         if pg_conn:
