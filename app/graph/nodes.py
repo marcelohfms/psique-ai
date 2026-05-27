@@ -13,7 +13,7 @@ from app.graph.tools import (
     register_payment, update_preferred_doctor, save_patient_email,
     register_refund_request, confirm_refund_completed,
 )
-from app.graph.prompts import COLLECT_SYSTEM, MINOR_RULE, ADULT_RULE, EXISTING_PATIENT_SYSTEM, NEW_PATIENT_SYSTEM, CANCELLATION_RULES, CLINIC_ADDRESS, DOCTORS_INFO, get_booking_fee_rule, MEDICAL_LIMITS_RULE, DOCTOR_CORRECTION_RULE, EMAIL_RULE, get_pricing_rules
+from app.graph.prompts import COLLECT_SYSTEM, MINOR_RULE, ADULT_RULE, EXISTING_PATIENT_SYSTEM, NEW_PATIENT_SYSTEM, CANCELLATION_RULES, CLINIC_ADDRESS, DOCTORS_INFO, get_booking_fee_rule, MEDICAL_LIMITS_RULE, DOCTOR_CORRECTION_RULE, EMAIL_RULE, get_pricing_rules, ATTENDANT_INSTRUCTION_RULE
 from app.whatsapp import send_text
 from app.database import upsert_user, log_event, get_upcoming_appointments, get_user_by_phone, get_users_by_phone, DOCTOR_IDS, DOCTOR_NAMES, save_message, get_last_assistant_message_time
 from app.chatwoot import get_conversation_id, add_private_note
@@ -608,7 +608,16 @@ async def patient_agent_node(state: ConversationState, config: RunnableConfig) -
         clinic_address=CLINIC_ADDRESS,
         doctors_info=DOCTORS_INFO,
         medical_limits_rule=MEDICAL_LIMITS_RULE,
+        attendant_instruction_rule=ATTENDANT_INSTRUCTION_RULE,
     )
+
+    # Attendant-mode: add patient_name_override reminder (routing rules are in the base prompt)
+    if state.get("silent_mode"):
+        system_prompt += (
+            "\n\nLEMBRETE (modo atendente): Se a instrução mencionar um nome de paciente diferente "
+            "do que está no contexto da conversa, passe-o em patient_name_override ao chamar "
+            "confirm_appointment para garantir que o agendamento fique no nome correto."
+        )
 
     # One-time price adjustment notice injected into the system prompt (before June 2026)
     needs_price_notice = False
@@ -687,9 +696,10 @@ async def patient_agent_node(state: ConversationState, config: RunnableConfig) -
     if not response.tool_calls and response.content:
         phone = state["phone"]
 
-        # Detect internal-note responses by state flag OR by content prefix.
-        # The LLM sometimes prefixes internal notes with "Nota para a equipe:" even
-        # when silent_mode was not propagated correctly — catch both cases.
+        # Detect internal-note responses by content prefix ONLY.
+        # Do NOT use silent_mode here: when an attendant sends a command, Eva must
+        # still deliver patient-facing messages to the patient via WhatsApp.
+        # silent_mode only controls the system-prompt instruction (see below).
         _INTERNAL_PREFIXES = (
             "nota para a equipe",
             "nota interna",
@@ -698,9 +708,7 @@ async def patient_agent_node(state: ConversationState, config: RunnableConfig) -
             "[nota para a equipe]",
         )
         _content_lower = response.content.lstrip().lower()
-        is_internal = bool(state.get("silent_mode")) or any(
-            _content_lower.startswith(p) for p in _INTERNAL_PREFIXES
-        )
+        is_internal = any(_content_lower.startswith(p) for p in _INTERNAL_PREFIXES)
 
         if is_internal:
             # Post as Chatwoot private note.

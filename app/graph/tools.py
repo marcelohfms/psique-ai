@@ -346,6 +346,7 @@ async def confirm_appointment(
     session_note: str = "",
     modality: str = "",
     force_encaixe: bool = False,
+    patient_name_override: str = "",
 ) -> str:
     """
     Confirma e cria o agendamento no Google Calendar.
@@ -360,6 +361,9 @@ async def confirm_appointment(
       use transfer_to_human antes de chamar confirm_appointment.
     force_encaixe: quando True, ignora verificações de bloqueio de agenda e conflitos
       de horário — use SOMENTE quando a atendente solicitar um encaixe explicitamente.
+    patient_name_override: quando a atendente mencionar um nome de paciente diferente
+      do que está no estado da conversa (ex: contato tem múltiplos pacientes),
+      passe o nome aqui para garantir que o agendamento seja feito para a pessoa correta.
     """
     import logging as _log
     _logger = _log.getLogger(__name__)
@@ -455,7 +459,7 @@ async def confirm_appointment(
             # Running under an attendant instruction — attendant has already confirmed availability
             effective_modality = "presencial"
         else:
-            patient_name_hint = state.get("patient_name") or state.get("user_name", "paciente")
+            patient_name_hint = patient_name_override.strip() or state.get("patient_name") or state.get("user_name", "paciente")
             doctor_hint = {"julio": "Dr. Júlio", "bruna": "Dra. Bruna"}.get(doctor, "médico(a)")
             slot_hint = start.strftime("%d/%m às %H:%M")
             return (
@@ -472,7 +476,7 @@ async def confirm_appointment(
     doctor_label = {"julio": "Dr. Júlio", "bruna": "Dra. Bruna"}.get(
         doctor, "médico(a)"
     )
-    patient_name = state.get("patient_name") or state.get("user_name", "Paciente")
+    patient_name = patient_name_override.strip() or state.get("patient_name") or state.get("user_name", "Paciente")
     patient_age = state.get("patient_age") or 99
     # is_minor_first only applies to a single 2h block (no session_note)
     is_minor_first = (

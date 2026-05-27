@@ -325,7 +325,7 @@ async def get_available_slots(
 
     creds = _credentials()
     service = build("calendar", "v3", credentials=creds)
-    loop = asyncio.get_event_loop()
+    loop = asyncio.get_running_loop()
     try:
         busy_raw = await loop.run_in_executor(
             None, _get_busy, service, calendar_id, overall_start, overall_end
@@ -426,7 +426,7 @@ async def create_event(
 
     creds = _credentials()
     service = build("calendar", "v3", credentials=creds)
-    loop = asyncio.get_event_loop()
+    loop = asyncio.get_running_loop()
     event_id = await loop.run_in_executor(
         None, _create_event, service, calendar_id, event
     )
@@ -437,7 +437,7 @@ async def cancel_event(calendar_id: str, event_id: str) -> None:
     """Delete a Google Calendar event."""
     creds = _credentials()
     service = build("calendar", "v3", credentials=creds)
-    loop = asyncio.get_event_loop()
+    loop = asyncio.get_running_loop()
     await loop.run_in_executor(None, _cancel_event, service, calendar_id, event_id)
 
 
@@ -480,5 +480,5 @@ async def update_event(
     }
     creds = _credentials()
     service = build("calendar", "v3", credentials=creds)
-    loop = asyncio.get_event_loop()
+    loop = asyncio.get_running_loop()
     await loop.run_in_executor(None, _update_event, service, calendar_id, event_id, patch)

@@ -764,7 +764,22 @@ async def _handle_chatwoot_payload(payload: dict) -> None:
         _mt = payload.get("message_type")
         is_outgoing = _mt in (1, "outgoing") or str(_mt) == "1"
         if is_outgoing:
-            if payload.get("private"):
+            _is_private = payload.get("private", False)
+            _sender_type = payload.get("sender", {}).get("type", "")
+            _is_human_agent = _sender_type in ("user", "agent")
+            _conv_labels_out = set(payload.get("conversation", {}).get("labels") or [])
+            # Route to Eva when:
+            #   1. Private note from a human agent (always), OR
+            #   2. Non-private message from a human agent while eva-ativa is present
+            #      (attendants sometimes send instructions as regular messages, not private notes)
+            _should_route = _is_human_agent and (
+                _is_private or _EVA_ACTIVE_LABEL in _conv_labels_out
+            )
+            logger.info(
+                "OUTGOING_CHECK sender_type=%s private=%s labels=%s should_route=%s",
+                _sender_type, _is_private, _conv_labels_out, _should_route,
+            )
+            if _should_route:
                 await _handle_attendant_note(payload)
             return
 
