@@ -1,0 +1,28 @@
+name: Send pending payments reminder
+
+on:
+  schedule:
+    - cron: "0 12 * * 1-6"  # 09h Recife (UTC-3), segunda a sábado
+  workflow_dispatch:          # allow manual runs for testing
+
+jobs:
+  reminder:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v5
+
+      - name: Install dependencies
+        run: uv sync --frozen --no-dev
+
+      - name: Send pending payments reminder email
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+          SMTP_HOST: ${{ secrets.SMTP_HOST }}
+          SMTP_PORT: ${{ secrets.SMTP_PORT }}
+          SMTP_USER: ${{ secrets.SMTP_USER }}
+          SMTP_PASSWORD: ${{ secrets.SMTP_PASSWORD }}
+          CLINIC_NOTIFY_EMAIL: ${{ secrets.CLINIC_NOTIFY_EMAIL }}
+        run: uv run python scripts/send_pending_payments_reminder.py

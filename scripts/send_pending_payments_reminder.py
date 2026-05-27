@@ -1,0 +1,140 @@
+"""
+Daily email reminder to the attendant listing patients with pending payments.
+Runs every morning via GitHub Actions.
+
+Two sections:
+  1. Taxa de reserva pendente  — scheduled appointments where booking_fee_paid_at IS NULL
+  2. Pagamento de consulta pendente — completed appointments where paid_at IS NULL
+
+The attendant can then open each patient's conversation in Chatwoot and register
+the payment via private note: "PAGAMENTO PRESENCIAL [nome] R$ [valor]"
+"""
+import asyncio
+import os
+from datetime import datetime
+from zoneinfo import ZoneInfo
+
+from dotenv import load_dotenv
+load_dotenv()
+
+TZ = ZoneInfo("America/Recife")
+
+DOCTOR_LABELS = {
+    "d5baa58b-a788-4f40-b8c0-512c189150be": "Dr. Júlio",
+    "18b01f87-eacd-4905-bd4a-a8293991e6fd": "Dra. Bruna",
+}
+
+
+def _fmt_dt(iso: str) -> str:
+    return datetime.fromisoformat(iso).astimezone(TZ).strftime("%d/%m/%Y às %H:%M")
+
+
+def _fmt_date(iso: str) -> str:
+    return datetime.fromisoformat(iso).astimezone(TZ).strftime("%d/%m/%Y")
+
+
+async def main() -> None:
+    from supabase import acreate_client
+
+    client = await acreate_client(
+        os.environ["SUPABASE_URL"],
+        os.environ["SUPABASE_KEY"],
+    )
+
+    now = datetime.now(TZ)
+
+    # ── 1. Taxa de reserva pendente (agendadas, futuras, sem booking_fee_paid_at) ──
+    r1 = await (
+        client.from_("appointments")
+        .select("appointment_id, start_time, doctor_id, consultation_type, users(number, patient_name, name)")
+        .eq("status", "scheduled")
+        .is_("booking_fee_paid_at", "null")
+        .gt("start_time", now.isoformat())
+        .order("start_time")
+        .execute()
+    )
+    taxa_pendente = r1.data or []
+
+    # ── 2. Pagamento de consulta pendente (realizadas, sem paid_at) ──────────────
+    r2 = await (
+        client.from_("appointments")
+        .select("appointment_id, start_time, doctor_id, consultation_type, users(number, patient_name, name)")
+        .eq("status", "completed")
+        .is_("paid_at", "null")
+        .order("start_time", desc=True)
+        .execute()
+    )
+    consulta_pendente = r2.data or []
+
+    # ── Build email ───────────────────────────────────────────────────────────────
+    total = len(taxa_pendente) + len(consulta_pendente)
+    if total == 0:
+        print("Nenhum pagamento pendente encontrado — e-mail não enviado.")
+        return
+
+    today_str = now.strftime("%d/%m/%Y")
+    lines = [
+        f"Resumo de pagamentos pendentes — {today_str}",
+        "=" * 50,
+        "",
+    ]
+
+    if taxa_pendente:
+        lines.append(f"TAXA DE RESERVA PENDENTE ({len(taxa_pendente)} consulta(s) agendada(s)):")
+        lines.append("-" * 40)
+        for appt in taxa_pendente:
+            user = appt.get("users") or {}
+            patient = user.get("patient_name") or user.get("name") or "—"
+            contact = user.get("name") or "—"
+            phone = user.get("number") or "—"
+            doctor = DOCTOR_LABELS.get(appt.get("doctor_id", ""), "—")
+            dt = _fmt_dt(appt["start_time"])
+            ctype = appt.get("consultation_type") or ""
+            line = f"• {patient}"
+            if contact and contact != patient:
+                line += f" (resp.: {contact})"
+            line += f" — {doctor} — {dt}"
+            if ctype:
+                line += f" [{ctype}]"
+            line += f"\n  WhatsApp: {phone}"
+            lines.append(line)
+        lines.append("")
+
+    if consulta_pendente:
+        lines.append(f"PAGAMENTO DE CONSULTA PENDENTE ({len(consulta_pendente)} consulta(s) realizada(s)):")
+        lines.append("-" * 40)
+        for appt in consulta_pendente:
+            user = appt.get("users") or {}
+            patient = user.get("patient_name") or user.get("name") or "—"
+            contact = user.get("name") or "—"
+            phone = user.get("number") or "—"
+            doctor = DOCTOR_LABELS.get(appt.get("doctor_id", ""), "—")
+            dt = _fmt_date(appt["start_time"])
+            line = f"• {patient}"
+            if contact and contact != patient:
+                line += f" (resp.: {contact})"
+            line += f" — {doctor} — realizada em {dt}"
+            line += f"\n  WhatsApp: {phone}"
+            lines.append(line)
+        lines.append("")
+
+    lines += [
+        "─" * 50,
+        "Para registrar um pagamento presencial, abra a conversa do paciente no",
+        "Chatwoot e envie uma nota privada com o formato:",
+        "  PAGAMENTO PRESENCIAL [nome do paciente] R$ [valor]",
+    ]
+
+    body = "\n".join(lines)
+    subject = f"Psique — Pagamentos pendentes ({total}) — {today_str}"
+
+    print(body)
+    print()
+
+    from app.email_sender import send_clinic_notification_email
+    await send_clinic_notification_email(subject, body)
+    print(f"E-mail enviado: {total} pagamento(s) pendente(s).")
+
+
+if __name__ == "__main__":
+    asyncio.run(main())
