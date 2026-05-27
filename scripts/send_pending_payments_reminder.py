@@ -24,6 +24,8 @@ DOCTOR_LABELS = {
     "18b01f87-eacd-4905-bd4a-a8293991e6fd": "Dra. Bruna",
 }
 
+BOOKING_FEE = 100
+
 
 def _fmt_dt(iso: str) -> str:
     return datetime.fromisoformat(iso).astimezone(TZ).strftime("%d/%m/%Y às %H:%M")
@@ -46,7 +48,7 @@ async def main() -> None:
     # ── 1. Taxa de reserva pendente (agendadas, futuras, sem booking_fee_paid_at) ──
     r1 = await (
         client.from_("appointments")
-        .select("appointment_id, start_time, doctor_id, consultation_type, users(number, patient_name, name)")
+        .select("appointment_id, start_time, doctor_id, consultation_type, booking_fee_paid_at, paid_at, users(number, patient_name, name)")
         .eq("status", "scheduled")
         .is_("booking_fee_paid_at", "null")
         .gt("start_time", now.isoformat())
@@ -58,7 +60,7 @@ async def main() -> None:
     # ── 2. Pagamento de consulta pendente (realizadas, sem paid_at) ──────────────
     r2 = await (
         client.from_("appointments")
-        .select("appointment_id, start_time, doctor_id, consultation_type, users(number, patient_name, name)")
+        .select("appointment_id, start_time, doctor_id, consultation_type, booking_fee_paid_at, paid_at, users(number, patient_name, name)")
         .eq("status", "completed")
         .is_("paid_at", "null")
         .order("start_time", desc=True)
@@ -73,9 +75,13 @@ async def main() -> None:
         return
 
     today_str = now.strftime("%d/%m/%Y")
+    taxa_em_aberto = len(taxa_pendente) * BOOKING_FEE
+
     lines = [
         f"Resumo de pagamentos pendentes — {today_str}",
         "=" * 50,
+        f"Taxa de reserva em aberto: {len(taxa_pendente)}x R${BOOKING_FEE} = R${taxa_em_aberto}",
+        f"Consultas pendentes de pagamento: {len(consulta_pendente)}",
         "",
     ]
 
@@ -90,15 +96,17 @@ async def main() -> None:
             doctor = DOCTOR_LABELS.get(appt.get("doctor_id", ""), "—")
             dt = _fmt_dt(appt["start_time"])
             ctype = appt.get("consultation_type") or ""
+
             line = f"• {patient}"
             if contact and contact != patient:
-                line += f" (resp.: {contact})"
-            line += f" — {doctor} — {dt}"
+                line += f"\n  Responsável: {contact}"
+            line += f"\n  {doctor} — {dt}"
             if ctype:
                 line += f" [{ctype}]"
             line += f"\n  WhatsApp: {phone}"
+            line += f"\n  Taxa de reserva: Pendente — R${BOOKING_FEE},00 em aberto"
             lines.append(line)
-        lines.append("")
+            lines.append("")
 
     if consulta_pendente:
         lines.append(f"PAGAMENTO DE CONSULTA PENDENTE ({len(consulta_pendente)} consulta(s) realizada(s)):")
@@ -110,13 +118,19 @@ async def main() -> None:
             phone = user.get("number") or "—"
             doctor = DOCTOR_LABELS.get(appt.get("doctor_id", ""), "—")
             dt = _fmt_date(appt["start_time"])
+            taxa_paga = bool(appt.get("booking_fee_paid_at"))
+
             line = f"• {patient}"
             if contact and contact != patient:
-                line += f" (resp.: {contact})"
-            line += f" — {doctor} — realizada em {dt}"
+                line += f"\n  Responsável: {contact}"
+            line += f"\n  {doctor} — realizada em {dt}"
             line += f"\n  WhatsApp: {phone}"
+            if taxa_paga:
+                line += f"\n  Taxa de reserva: Paga (R${BOOKING_FEE},00) — consulta pendente"
+            else:
+                line += f"\n  Taxa de reserva: Não paga — R${BOOKING_FEE},00 + consulta em aberto"
             lines.append(line)
-        lines.append("")
+            lines.append("")
 
     lines += [
         "─" * 50,
