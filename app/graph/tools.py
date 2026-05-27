@@ -182,7 +182,29 @@ async def get_available_slots(
                     sections.append(f"- {shift_label.capitalize()}: {times}")
             if sections:
                 return f"Horários disponíveis para {header}:\n" + "\n".join(sections)
-            # No slots this week — try the next occurrence (only for weekday names)
+            # No 2h blocks found — check if there are 1h slots (non-consecutive case)
+            if slot_duration_minutes == 120:
+                single_sections = []
+                for shift_key, shift_label in [("manha", "manhã"), ("tarde", "tarde"), ("noite", "noite")]:
+                    slots_1h = await _get_slots(
+                        calendar_id=calendar_id,
+                        preferred_day=try_date.isoformat(),
+                        preferred_shift=shift_key,
+                        slot_minutes=60,
+                        doctor_key=doctor,
+                    )
+                    if slots_1h:
+                        times = ", ".join(s[0].strftime("%H:%M") for s in slots_1h)
+                        single_sections.append(f"- {shift_label.capitalize()}: {times}")
+                if single_sections:
+                    return (
+                        f"Há horários disponíveis em {header}, mas não em bloco de 2 horas seguidas:\n"
+                        + "\n".join(single_sections)
+                        + "\nInforme o paciente: há horários neste dia, mas as 2 horas não podem ser seguidas. "
+                        "Pergunte se prefere: (1) verificar outro dia com 2 horas consecutivas disponíveis, "
+                        "ou (2) agendar os dois momentos (responsáveis + paciente) em horários separados."
+                    )
+            # No slots at all this week — try the next occurrence (only for weekday names)
         return f"Não há horários disponíveis para {header}. Deseja tentar outro dia?"
 
     now = datetime.now(TZ)
@@ -232,7 +254,26 @@ async def get_available_slots(
                 for i, (slot, modality) in enumerate(slots, 1):
                     lines.append(f"{i}. {slot.strftime('%H:%M')} [{_MOD_LABELS.get(modality, modality)}]")
                 return "\n".join(lines)
-            # No slots this week — silently try the next one
+            # No 2h blocks found — check if there are 1h slots (non-consecutive case)
+            if slot_duration_minutes == 120:
+                slots_1h = await _get_slots(
+                    calendar_id=calendar_id,
+                    preferred_day=try_date.isoformat(),
+                    preferred_shift=preferred_shift,
+                    slot_minutes=60,
+                    doctor_key=doctor,
+                )
+                if slots_1h:
+                    date_str = try_date.strftime("%d/%m")
+                    times = ", ".join(s[0].strftime("%H:%M") for s in slots_1h)
+                    return (
+                        f"Há horários de 1 hora disponíveis para {day_label}, dia {date_str} "
+                        f"({preferred_shift}): {times}, mas não há 2 horas seguidas neste dia. "
+                        "Informe o paciente e pergunte se prefere: (1) verificar outro dia com "
+                        "2 horas consecutivas disponíveis, ou (2) agendar os dois momentos "
+                        "(responsáveis + paciente) em horários separados."
+                    )
+            # No slots at all this week — silently try the next one
 
         return (
             f"Não encontrei horários disponíveis para {day_label} no turno da {preferred_shift} "
@@ -264,6 +305,25 @@ async def get_available_slots(
                     "Não tenho permissão para agendar com tão pouca antecedência — apenas a atendente "
                     "pode verificar disponibilidade para encaixes urgentes. "
                     "Use transfer_to_human para encaminhar ao atendente humano."
+                )
+        # No 2h blocks — check if there are 1h slots (non-consecutive case)
+        if slot_duration_minutes == 120:
+            slots_1h = await _get_slots(
+                calendar_id=calendar_id,
+                preferred_day=preferred_day,
+                preferred_shift=preferred_shift,
+                slot_minutes=60,
+                doctor_key=doctor,
+            )
+            if slots_1h:
+                date_label = target_date.strftime("%d/%m") if target_date else preferred_day
+                times = ", ".join(s[0].strftime("%H:%M") for s in slots_1h)
+                return (
+                    f"Há horários de 1 hora disponíveis em {date_label} ({preferred_shift}): {times}, "
+                    "mas não há 2 horas seguidas neste dia. "
+                    "Informe o paciente e pergunte se prefere: (1) verificar outro dia com "
+                    "2 horas consecutivas disponíveis, ou (2) agendar os dois momentos "
+                    "(responsáveis + paciente) em horários separados."
                 )
         return f"Não há horários disponíveis para {preferred_day} no turno da {preferred_shift}. Deseja tentar outro dia ou turno?"
 
