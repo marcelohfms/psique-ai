@@ -901,12 +901,44 @@ async def register_payment(
       o nome do paciente — busca pelo nome no cadastro e envia confirmação ao número original do paciente.
     """
     import logging as _log
+    import re as _re
     _logger = _log.getLogger(__name__)
 
     from app.google_sheets import append_payment_receipt
 
     phone = config["configurable"]["phone"]
     client = await get_supabase()
+
+    # ── Sanitize / recover drive_link ─────────────────────────────────────────
+    # The LLM sometimes passes the full tag "[drive_link:URL]" instead of the
+    # bare URL, or passes "" when the tag WAS present but wasn't extracted.
+    # Strategy:
+    #  1. Strip the [drive_link:...] wrapper if the LLM passed the full tag.
+    #  2. If drive_link is still empty, extract from image_description.
+    #  3. If still empty, scan the last few conversation messages.
+    def _extract_url(text: str) -> str:
+        """Return first https:// URL found in text, stripped of any trailing ]."""
+        m = _re.search(r'https?://[^\s\]]+', text)
+        return m.group(0).rstrip(']') if m else ""
+
+    if drive_link:
+        # Case: LLM passed "[drive_link:https://...]" or "drive_link:https://..."
+        clean = _extract_url(drive_link)
+        if clean:
+            drive_link = clean
+    if not drive_link and image_description:
+        drive_link = _extract_url(image_description)
+    if not drive_link:
+        for _msg in reversed(state.get("messages", [])):
+            _content = getattr(_msg, "content", "") or ""
+            if "[drive_link:" in _content:
+                drive_link = _extract_url(_content)
+                if drive_link:
+                    break
+    _logger.info(
+        "REGISTER_PAYMENT start: drive_link=%r amount=%r image_description=%r",
+        drive_link, amount, image_description[:120] if image_description else "",
+    )
 
     # ── Resolve patient ────────────────────────────────────────────────────────
     is_third_party = False
@@ -1105,9 +1137,14 @@ async def register_payment(
     if drive_link:
         try:
             from app.google_drive import rename_file
-            file_id     = drive_link.split("/d/")[1].split("/")[0]
+            # Support both /d/{id}/... and ?id={id} URL formats
+            _fid_match = _re.search(r'/d/([^/?&#\s]+)', drive_link) or \
+                         _re.search(r'[?&]id=([^?&#\s]+)', drive_link)
+            if not _fid_match:
+                raise ValueError(f"Cannot extract file_id from drive_link: {drive_link!r}")
+            file_id      = _fid_match.group(1)
             amount_clean = amount.replace("R$", "").replace(" ", "").strip()
-            date_clean  = (
+            date_clean   = (
                 appointment_dt.split(" ")[0].replace("/", "-")
                 if appointment_dt != "—"
                 else datetime.now(TZ).strftime("%d-%m-%Y")
@@ -1115,8 +1152,9 @@ async def register_payment(
             safe_name    = patient_name.replace(" ", "_")
             new_filename = f"{safe_name}_{date_clean}_R${amount_clean}.jpg"
             await rename_file(file_id, new_filename)
+            _logger.info("DRIVE_RENAME OK file_id=%s new_name=%s", file_id, new_filename)
         except Exception:
-            _logger.exception("DRIVE_RENAME FAILED")
+            _logger.exception("DRIVE_RENAME FAILED drive_link=%r", drive_link)
 
     # ── Classify payment and update DB fields ─────────────────────────────────
     try:

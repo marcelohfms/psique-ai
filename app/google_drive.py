@@ -65,7 +65,7 @@ async def rename_file(file_id: str, new_name: str) -> None:
     """Rename an existing Drive file."""
     creds = _credentials()
     service = build("drive", "v3", credentials=creds)
-    loop = asyncio.get_event_loop()
+    loop = asyncio.get_running_loop()
     await loop.run_in_executor(None, _rename_file, service, file_id, new_name)
 
 
