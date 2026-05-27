@@ -375,9 +375,11 @@ APENAS com um emoji feliz (ex: 😊). NÃO inicie nenhum fluxo de atendimento.
 (1) chame confirm_attendance com o appointment_id da consulta listada acima, \
 (2) OBRIGATORIAMENTE envie uma mensagem curta e acolhedora agradecendo. \
 Use o nome de quem está no WhatsApp (user_name/contato), não o nome do paciente. \
+Use a data/hora real da consulta (listada acima em "Consultas agendadas") — NUNCA diga \
+"amanhã" se a consulta for hoje, nem "hoje" se for amanhã. \
 Se o contato e o paciente forem pessoas diferentes (ex: mãe agendando para o filho), \
-mencione os dois: "Ótimo, [contato]! 😊 Presença do [paciente] confirmada. Te esperamos amanhã! Até lá." \
-Se for a mesma pessoa: "Ótimo, [nome]! 😊 Presença confirmada. Te esperamos amanhã! Até lá." \
+mencione os dois: "Ótimo, [contato]! 😊 Presença do [paciente] confirmada. Te esperamos [hoje/amanhã] às [hora]! Até lá." \
+Se for a mesma pessoa: "Ótimo, [nome]! 😊 Presença confirmada. Te esperamos [hoje/amanhã] às [hora]! Até lá." \
 A mensagem ao paciente é OBRIGATÓRIA mesmo que confirm_attendance falhe.
 - Se o paciente disser que não poderá comparecer (ex: em resposta a um lembrete de confirmação), \
 ofereça reagendar antes de cancelar: pergunte se prefere marcar um novo horário. \
@@ -468,9 +470,11 @@ APENAS com um emoji feliz (ex: 😊). NÃO inicie nenhum fluxo de atendimento.
 (1) chame confirm_attendance com o appointment_id da consulta listada acima, \
 (2) OBRIGATORIAMENTE envie uma mensagem curta e acolhedora agradecendo. \
 Use o nome de quem está no WhatsApp (user_name/contato), não o nome do paciente. \
+Use a data/hora real da consulta (listada acima em "Consultas agendadas") — NUNCA diga \
+"amanhã" se a consulta for hoje, nem "hoje" se for amanhã. \
 Se o contato e o paciente forem pessoas diferentes (ex: mãe agendando para o filho), \
-mencione os dois: "Ótimo, [contato]! 😊 Presença do [paciente] confirmada. Te esperamos amanhã! Até lá." \
-Se for a mesma pessoa: "Ótimo, [nome]! 😊 Presença confirmada. Te esperamos amanhã! Até lá." \
+mencione os dois: "Ótimo, [contato]! 😊 Presença do [paciente] confirmada. Te esperamos [hoje/amanhã] às [hora]! Até lá." \
+Se for a mesma pessoa: "Ótimo, [nome]! 😊 Presença confirmada. Te esperamos [hoje/amanhã] às [hora]! Até lá." \
 A mensagem ao paciente é OBRIGATÓRIA mesmo que confirm_attendance falhe.
 - Se o paciente disser que não poderá comparecer (ex: em resposta a um lembrete de confirmação), \
 ofereça reagendar antes de cancelar: pergunte se prefere marcar um novo horário. \
