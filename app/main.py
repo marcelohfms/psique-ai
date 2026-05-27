@@ -717,7 +717,30 @@ async def _handle_attendant_note(payload: dict) -> None:
 
     async def _run_silent(p: str, text: str) -> None:
         config = {"configurable": {"thread_id": p, "phone": p}}
-        state_update = {"messages": [HumanMessage(content=text)], "silent_mode": True, "phone": p}
+        state_update: dict = {
+            "messages": [HumanMessage(content=text)],
+            "silent_mode": True,
+            "phone": p,
+            # Attendant instructions always need tools — force patient_agent stage
+            # regardless of whether the conversation was in collect_info or not.
+            "stage": "patient_agent",
+        }
+        # If the thread has no state yet (first contact for this phone), seed from DB
+        snapshot = await graph_module.chatbot.aget_state(config)
+        if not snapshot.values:
+            existing = await get_user_by_phone(p)
+            if existing:
+                doctor_key = DOCTOR_NAMES.get(existing.get("doctor_id", ""), None)
+                state_update.update({
+                    "user_name":    existing.get("name"),
+                    "patient_name": existing.get("patient_name"),
+                    "patient_age":  existing.get("age"),
+                    "birth_date":   existing.get("birth_date"),
+                    "patient_email": existing.get("email"),
+                    "is_patient":   existing.get("is_patient"),
+                    "is_returning_patient": existing.get("is_returning_patient"),
+                    "preferred_doctor": doctor_key,
+                })
         await graph_module.chatbot.ainvoke(state_update, config=config)
 
     instruction = f"[Instrução da atendente]: {content}"
