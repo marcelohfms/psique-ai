@@ -346,6 +346,7 @@ async def test_collect_info_no_to_is_patient_sets_returning_patient_false():
         patient_age=30,
         birth_date="15/03/1994",
         patient_cpf="123.456.789-00",
+        is_for_self=True,  # already answered — prevents Step 4d from intercepting
         messages=[
             HumanMessage(content="quero agendar uma consulta"),
             AIMessage(content=_Q),
@@ -372,6 +373,7 @@ async def test_collect_info_yes_to_is_patient_sets_returning_patient_true():
         patient_age=30,
         birth_date="15/03/1994",
         patient_cpf="123.456.789-00",
+        is_for_self=True,  # already answered — prevents Step 4d from intercepting
         messages=[
             HumanMessage(content="quero agendar uma consulta"),
             AIMessage(content=_Q),
@@ -388,6 +390,147 @@ async def test_collect_info_yes_to_is_patient_sets_returning_patient_true():
     assert result.get("is_patient") is None, "is_patient must NOT be set by the 'já é paciente?' question"
 
 
+async def test_collect_info_adult_birth_date_asks_is_for_self():
+    """After birth date for an adult, the next question must ask if the contact is the patient."""
+    from app.graph.nodes import collect_info_node
+    from langchain_core.messages import HumanMessage, AIMessage
+
+    state = _base_minor_state(
+        user_name="João Silva",
+        patient_name="João Silva",
+        patient_cpf="123.456.789-00",
+        messages=[
+            HumanMessage(content="quero agendar uma consulta"),
+            AIMessage(content="Qual a data de nascimento do paciente? (formato dd/mm/aaaa)"),
+            HumanMessage(content="15/03/1990"),  # adult
+        ],
+    )
+    with patch("app.graph.nodes.send_text", new_callable=AsyncMock) as mock_send, \
+         patch("app.graph.nodes.save_message", new_callable=AsyncMock), \
+         patch("app.graph.nodes.get_users_by_phone", new_callable=AsyncMock, return_value=[]), \
+         patch("app.graph.nodes.upsert_user", new_callable=AsyncMock, return_value="new-id"):
+        result = await collect_info_node(state, {})
+
+    sent = mock_send.call_args[0][1]
+    assert "agendando em nome" in sent.lower() or "você é" in sent.lower()
+    assert result.get("is_for_self") is None  # not yet answered
+
+
+async def test_collect_info_is_for_self_yes_proceeds_to_clinic_question():
+    """'sou eu' to the is_for_self question must set is_for_self=True and proceed."""
+    from app.graph.nodes import collect_info_node
+    from langchain_core.messages import HumanMessage, AIMessage
+
+    state = _base_minor_state(
+        user_name="João Silva",
+        patient_name="João Silva",
+        patient_cpf="123.456.789-00",
+        patient_age=34,
+        birth_date="15/03/1990",
+        messages=[
+            HumanMessage(content="quero agendar uma consulta"),
+            AIMessage(content="Você é o(a) paciente João ou está agendando em nome dele(a)?"),
+            HumanMessage(content="sou eu mesmo"),
+        ],
+    )
+    with patch("app.graph.nodes.send_text", new_callable=AsyncMock) as mock_send, \
+         patch("app.graph.nodes.save_message", new_callable=AsyncMock), \
+         patch("app.graph.nodes.get_users_by_phone", new_callable=AsyncMock, return_value=[]), \
+         patch("app.graph.nodes.upsert_user", new_callable=AsyncMock, return_value="new-id"):
+        result = await collect_info_node(state, {})
+
+    assert result.get("is_for_self") is True
+    sent = mock_send.call_args[0][1]
+    assert "paciente da clínica" in sent.lower() or "paciente" in sent.lower()
+
+
+async def test_collect_info_is_for_self_no_asks_contact_name():
+    """'sou a mãe' to the is_for_self question must set is_for_self=False and ask contact name."""
+    from app.graph.nodes import collect_info_node
+    from langchain_core.messages import HumanMessage, AIMessage
+
+    state = _base_minor_state(
+        user_name="João Silva",
+        patient_name="João Silva",
+        patient_cpf="123.456.789-00",
+        patient_age=34,
+        birth_date="15/03/1990",
+        messages=[
+            HumanMessage(content="quero agendar uma consulta"),
+            AIMessage(content="Você é o(a) paciente João ou está agendando em nome dele(a)?"),
+            HumanMessage(content="não, sou a mãe"),
+        ],
+    )
+    with patch("app.graph.nodes.send_text", new_callable=AsyncMock) as mock_send, \
+         patch("app.graph.nodes.save_message", new_callable=AsyncMock), \
+         patch("app.graph.nodes.get_users_by_phone", new_callable=AsyncMock, return_value=[]), \
+         patch("app.graph.nodes.upsert_user", new_callable=AsyncMock, return_value="new-id"):
+        result = await collect_info_node(state, {})
+
+    assert result.get("is_for_self") is False
+    sent = mock_send.call_args[0][1]
+    assert "nome completo" in sent.lower() and "contato" in sent.lower()
+
+
+async def test_collect_info_contact_name_updates_user_name():
+    """Contact name answer must update user_name (not patient_name) and proceed to clinic question."""
+    from app.graph.nodes import collect_info_node
+    from langchain_core.messages import HumanMessage, AIMessage
+
+    _CONTACT_Q = "Qual o seu nome completo para contato?"
+    state = _base_minor_state(
+        user_name="João Silva",
+        patient_name="João Silva",
+        patient_cpf="123.456.789-00",
+        patient_age=34,
+        birth_date="15/03/1990",
+        is_for_self=False,
+        messages=[
+            HumanMessage(content="quero agendar uma consulta"),
+            AIMessage(content=_CONTACT_Q),
+            HumanMessage(content="Maria Silva"),
+        ],
+    )
+    with patch("app.graph.nodes.send_text", new_callable=AsyncMock) as mock_send, \
+         patch("app.graph.nodes.save_message", new_callable=AsyncMock), \
+         patch("app.graph.nodes.get_users_by_phone", new_callable=AsyncMock, return_value=[]), \
+         patch("app.graph.nodes.upsert_user", new_callable=AsyncMock, return_value="new-id"):
+        result = await collect_info_node(state, {})
+
+    assert result.get("user_name") == "Maria Silva"
+    assert result.get("patient_name") is None  # patient_name must NOT be changed
+    sent = mock_send.call_args[0][1]
+    assert "paciente da clínica" in sent.lower()
+
+
+async def test_collect_info_guardian_name_also_sets_user_name():
+    """Guardian name for a minor must update both guardian_name AND user_name."""
+    from app.graph.nodes import collect_info_node
+    from langchain_core.messages import HumanMessage, AIMessage
+
+    state = _base_minor_state(
+        user_name="Pedro Lima",
+        patient_name="Pedro Lima",
+        patient_cpf="111.222.333-44",
+        patient_age=10,
+        birth_date="15/03/2015",
+        is_for_self=False,
+        messages=[
+            HumanMessage(content="quero agendar uma consulta"),
+            AIMessage(content="Qual é o nome completo do responsável pelo paciente?"),
+            HumanMessage(content="Ana Lima"),
+        ],
+    )
+    with patch("app.graph.nodes.send_text", new_callable=AsyncMock), \
+         patch("app.graph.nodes.save_message", new_callable=AsyncMock), \
+         patch("app.graph.nodes.get_users_by_phone", new_callable=AsyncMock, return_value=[]), \
+         patch("app.graph.nodes.upsert_user", new_callable=AsyncMock, return_value="new-id"):
+        result = await collect_info_node(state, {})
+
+    assert result.get("guardian_name") == "Ana Lima"
+    assert result.get("user_name") == "Ana Lima", "user_name must mirror guardian_name for minors"
+
+
 async def test_collect_info_adult_skips_guardian_steps():
     """For an adult patient (age >= 18), guardian steps must be skipped entirely."""
     from app.graph.nodes import collect_info_node
@@ -397,6 +540,7 @@ async def test_collect_info_adult_skips_guardian_steps():
     state = _base_minor_state(
         patient_age=30,
         birth_date="15/03/1994",
+        is_for_self=True,  # contact is the patient — is_for_self question already answered
         messages=[
             AIMessage(content="O paciente já é paciente da clínica?"),
             HumanMessage(content="sim"),
