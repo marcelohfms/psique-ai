@@ -751,14 +751,19 @@ async def _handle_chatwoot_payload(payload: dict) -> None:
     try:
         # ── Private note from human agent → Eva instruction ───────────────────
         logger.info(
-            "CHATWOOT_PAYLOAD event=%s private=%s message_type=%s sender_type=%s labels=%s",
+            "CHATWOOT_PAYLOAD event=%s private=%s message_type=%r sender_type=%s labels=%s full_payload_keys=%s",
             payload.get("event"),
             payload.get("private"),
             payload.get("message_type"),
             payload.get("sender", {}).get("type"),
             payload.get("conversation", {}).get("labels"),
+            list(payload.keys()),
         )
-        if payload.get("message_type") in (1, "outgoing"):
+        # Accept both integer (1) and string ("1" / "outgoing") variants — Chatwoot
+        # versions differ on whether message_type is serialised as int or string.
+        _mt = payload.get("message_type")
+        is_outgoing = _mt in (1, "outgoing") or str(_mt) == "1"
+        if is_outgoing:
             if payload.get("private"):
                 await _handle_attendant_note(payload)
             return
@@ -820,6 +825,36 @@ async def chatwoot_webhook(request: Request):
 @app.get("/health")
 async def health():
     return {"status": "ok"}
+
+
+# ── Admin: manually send an attendant instruction to Eva ─────────────────────
+
+@app.post("/admin/attendant-note")
+async def admin_attendant_note(request: Request, x_admin_secret: str | None = Header(default=None)):
+    """
+    Manually inject an attendant instruction into Eva's pipeline for a given phone.
+    Useful when the Chatwoot webhook is not delivering private notes correctly.
+    Body: {"phone": "5583...", "content": "Eva, agende o paciente para..."}
+    """
+    _check_admin_secret(x_admin_secret)
+    body = await request.json()
+    phone_raw = body.get("phone", "").strip().lstrip("+")
+    content = body.get("content", "").strip()
+    if not phone_raw or not content:
+        raise HTTPException(status_code=400, detail="phone and content are required")
+
+    phone = phone_raw if phone_raw.endswith("@s.whatsapp.net") else phone_raw + "@s.whatsapp.net"
+
+    fake_payload = {
+        "message_type": 1,
+        "private": True,
+        "content": content,
+        "sender": {"type": "agent", "name": "admin"},
+        "conversation": {"id": None, "meta": {"sender": {"phone_number": phone_raw}}},
+    }
+    await _handle_attendant_note(fake_payload)
+    logger.info("ADMIN_ATTENDANT_NOTE phone=%s content=%.120s", phone, content)
+    return {"status": "queued", "phone": phone, "content": content}
 
 
 # ── Admin: trigger appointment reminders ──────────────────────────────────────
