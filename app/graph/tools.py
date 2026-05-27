@@ -996,6 +996,12 @@ async def register_payment(
     if appt_result.data:
         apt_start = datetime.fromisoformat(appt_result.data[0]["start_time"]).astimezone(TZ)
         appointment_dt = apt_start.strftime("%d/%m/%Y %H:%M")
+        # Override doctor from the appointment itself — more reliable than user record or state.
+        appt_doctor_id = appt_result.data[0].get("doctor_id", "")
+        if appt_doctor_id:
+            _appt_doctor_key = DOCTOR_NAMES.get(appt_doctor_id, "")
+            if _appt_doctor_key:
+                doctor_label = {"julio": "Dr. Júlio", "bruna": "Dra. Bruna"}.get(_appt_doctor_key, doctor_label)
         # Guard against duplicate calls: only block if full payment already registered.
         # booking_fee_paid_at alone should NOT block — patient may still owe the remaining saldo.
         if appt_result.data[0].get("paid_at"):
