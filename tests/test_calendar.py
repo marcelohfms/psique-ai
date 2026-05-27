@@ -101,7 +101,7 @@ async def test_slots_60min_julio_monday_morning(freeze_calendar_now):
 
 
 async def test_slots_120min_julio_monday(freeze_calendar_now):
-    """120-min slots on Mon 9-12 → only one slot fits (9:00-11:00)."""
+    """120-min slots on Mon 9-12 → two slots fit: 9:00-11:00 and 10:00-12:00."""
     from app.google_calendar import get_available_slots
 
     service = _make_service([])
@@ -114,11 +114,11 @@ async def test_slots_120min_julio_monday(freeze_calendar_now):
             slot_minutes=120,
             doctor_key="julio",
         )
-    # 9-12 window with 120-min slots: loop advances by 120min each step.
-    # 9:00→11:00 fits; next current=11:00, 11:00+120=13:00 > 12:00 → stop.
-    # So only [9:00].
-    assert len(slots) == 1
+    # 9-12 window with 120-min slots: loop advances by 1h to find all starting
+    # points. 9:00+2h=11:00≤12:00 ✓, 10:00+2h=12:00≤12:00 ✓, 11:00+2h=13:00>12:00 stop.
+    assert len(slots) == 2
     assert slots[0][0].hour == 9
+    assert slots[1][0].hour == 10
 
 
 async def test_slots_empty_on_off_day():

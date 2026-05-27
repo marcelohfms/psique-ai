@@ -292,14 +292,18 @@ async def get_available_slots(
         ]
         if not filtered:
             return []  # doctor doesn't work this shift on this day
-        windows = [
-            (
-                datetime(target_date.year, target_date.month, target_date.day, entry[0], entry[1], tzinfo=TZ),
-                datetime(target_date.year, target_date.month, target_date.day, entry[2], entry[3], tzinfo=TZ),
-                entry[4],
-            )
-            for entry in filtered
-        ]
+        shift_start_dt = datetime(target_date.year, target_date.month, target_date.day, shift_start_h, 0, tzinfo=TZ)
+        shift_end_dt   = datetime(target_date.year, target_date.month, target_date.day, shift_end_h,   0, tzinfo=TZ)
+        windows = []
+        for entry in filtered:
+            ws = datetime(target_date.year, target_date.month, target_date.day, entry[0], entry[1], tzinfo=TZ)
+            we = datetime(target_date.year, target_date.month, target_date.day, entry[2], entry[3], tzinfo=TZ)
+            # Clip window to the requested shift so a 14h–19h window doesn't bleed
+            # into a "manhã" or "noite" query (avoids duplicate slots across shifts).
+            ws = max(ws, shift_start_dt)
+            we = min(we, shift_end_dt)
+            if ws < we:
+                windows.append((ws, we, entry[4]))
     else:
         start_hour, end_hour = shift_start_h, shift_end_h
         windows = [(
@@ -342,6 +346,10 @@ async def get_available_slots(
 
     min_start = datetime.now(TZ) + timedelta(hours=4)
 
+    # Always advance by 1h so we find every possible starting hour, even for
+    # 2h slots (e.g. a 17h start for a 17h–19h block would be missed if we
+    # advanced by slot_delta=2h and only checked 14h, 16h, 18h).
+    advance = timedelta(hours=1)
     slots: list[tuple[datetime, str]] = []
     for window_start, window_end, modality in windows:
         current = window_start
@@ -349,7 +357,7 @@ async def get_available_slots(
             slot_end = current + slot_delta
             if current >= min_start and not any(current < be and slot_end > bs for bs, be in busy_ranges):
                 slots.append((current, modality))
-            current += slot_delta
+            current += advance
 
     # Safety net: discard any slot that falls outside the doctor's defined schedule
     # windows (catches edge-cases where doctor_key was missing or mismatched).
