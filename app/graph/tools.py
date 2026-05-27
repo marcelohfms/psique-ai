@@ -318,25 +318,52 @@ async def confirm_appointment(
     except ValueError:
         return f"Formato de data inválido: {slot_datetime}. Use ISO 8601 (ex: 2026-03-19T09:00:00)."
 
-    # Reject slots on exception days (e.g. doctor on leave) — skipped for encaixe
+    # force_encaixe is only allowed when the request comes from a human attendant
+    # (silent_mode=True). Reject any attempt by the patient flow to use it.
+    if force_encaixe and not state.get("silent_mode"):
+        force_encaixe = False
+        _logger.warning("confirm_appointment: force_encaixe=True rejected — not in silent_mode (attendant instruction)")
+
+    # Reject slots outside the doctor's schedule — skipped for encaixe
     if not force_encaixe:
         from app.google_calendar import SCHEDULE_EXCEPTIONS, DOCTOR_SCHEDULES
         _exc_map = SCHEDULE_EXCEPTIONS.get(doctor, {})
         _date_key = start.date().isoformat()
+        _slot_min = start.hour * 60 + start.minute
+        _doctor_label = {"julio": "Dr. Júlio", "bruna": "Dra. Bruna"}.get(doctor, "médico(a)")
+
         if _date_key in _exc_map:
+            # Exception day: empty list = blocked; non-empty = use those windows
             _day_wins = _exc_map[_date_key]
             if not _day_wins:
                 formatted_blocked = start.strftime("%d/%m/%Y")
                 return (
-                    f"A médica não tem atendimento no dia {formatted_blocked}. "
+                    f"{_doctor_label} não tem atendimento no dia {formatted_blocked}. "
                     "Chame get_available_slots para buscar outro horário disponível."
                 )
             # Exception overrides schedule but has windows — validate slot falls in one
-            _slot_min = start.hour * 60 + start.minute
             if not any((sh * 60 + sm) <= _slot_min < (eh * 60 + em) for sh, sm, eh, em, _ in _day_wins):
                 formatted_blocked = start.strftime("%d/%m/%Y")
                 return (
-                    f"Este horário não está dentro da disponibilidade da médica no dia {formatted_blocked}. "
+                    f"Este horário não está dentro da disponibilidade de {_doctor_label} no dia {formatted_blocked}. "
+                    "Chame get_available_slots para buscar outro horário disponível."
+                )
+        else:
+            # Regular day: check weekday is in DOCTOR_SCHEDULES and slot falls in a window
+            _weekday = start.weekday()
+            _day_wins = DOCTOR_SCHEDULES.get(doctor, {}).get(_weekday)
+            if _day_wins is None:
+                # Doctor does not work on this weekday at all
+                _day_name = {0: "segunda-feira", 1: "terça-feira", 2: "quarta-feira",
+                             3: "quinta-feira", 4: "sexta-feira", 5: "sábado", 6: "domingo"}.get(_weekday, "neste dia")
+                return (
+                    f"{_doctor_label} não atende {_day_name}. "
+                    "Chame get_available_slots para buscar outro horário disponível."
+                )
+            # Weekday exists — validate slot falls within one of the day's windows
+            if not any((sh * 60 + sm) <= _slot_min < (eh * 60 + em) for sh, sm, eh, em, _ in _day_wins):
+                return (
+                    f"Este horário ({start.strftime('%H:%M')}) está fora da grade de atendimento de {_doctor_label}. "
                     "Chame get_available_slots para buscar outro horário disponível."
                 )
 
