@@ -378,9 +378,44 @@ async def test_confirm_attendance_sets_confirmed_at():
 # ── register_payment ──────────────────────────────────────────────────────────
 
 def _make_supabase_client_with_appointment():
-    """Supabase client whose execute returns a scheduled appointment by default."""
-    apt_data = MagicMock(data=[{"appointment_id": "apt-1", "start_time": "2026-03-23T09:00:00+00:00"}])
-    execute = AsyncMock(return_value=apt_data)
+    """Supabase client that serves register_payment's two sequential appointment queries.
+
+    Call order:
+      1. appts_result — appointments joined with users (patient resolution)
+      2. appt_result  — full appointment details (payment logic)
+      3+. update/upsert/linked-appts → generic empty response
+    """
+    # Call 1: new appointment-centric query with users join
+    appts_with_users = MagicMock(data=[{
+        "appointment_id": "apt-1",
+        "start_time": "2026-03-23T09:00:00+00:00",
+        "doctor_id": "d5baa58b-a788-4f40-b8c0-512c189150be",
+        "status": "scheduled",
+        "users": {"id": "user-123", "patient_name": "Maria", "name": "Maria"},
+    }])
+    # Call 2: full appointment fetch for payment logic
+    apt_data = MagicMock(data=[{
+        "appointment_id": "apt-1",
+        "start_time": "2026-03-23T09:00:00+00:00",
+        "doctor_id": "d5baa58b-a788-4f40-b8c0-512c189150be",
+        "end_time": "2026-03-23T10:00:00+00:00",
+        "paid_at": None,
+        "booking_fee_paid_at": None,
+        "status": "scheduled",
+        "consultation_type": "retorno",
+    }])
+    empty = MagicMock(data=[])
+
+    def _side_effect(*_a, **_kw):
+        _side_effect.call_count += 1
+        if _side_effect.call_count == 1:
+            return appts_with_users
+        if _side_effect.call_count == 2:
+            return apt_data
+        return empty
+    _side_effect.call_count = 0
+
+    execute = AsyncMock(side_effect=_side_effect)
     table = MagicMock()
     for m in ("select", "eq", "in_", "limit", "single", "maybe_single",
               "gte", "order", "insert", "update", "upsert"):

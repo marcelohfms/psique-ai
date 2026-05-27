@@ -934,45 +934,49 @@ async def register_payment(
         doctor_key = DOCTOR_NAMES.get(matched.get("doctor_id", ""), "")
         is_third_party = True
     else:
+        # Query appointments directly (source of truth), joining users to get patient data.
+        # A phone number may have multiple patients — the appointment tells us which one
+        # actually has an open slot, and provides patient_name via the linked user row.
         all_users = await get_users_by_phone(phone)
         if not all_users:
             return "Para qual paciente é este comprovante? Por favor, informe o nome completo."
 
-        # Find which patients have a scheduled or recently completed appointment (last 15 days)
+        user_ids = [u["id"] for u in all_users]
         _appt_lookback = (datetime.now(TZ) - timedelta(days=15)).isoformat()
-        users_with_appt = []
-        for u in all_users:
-            appt_check = await client.from_("appointments").select("appointment_id").eq(
-                "user_id", u["id"]
-            ).in_("status", ["scheduled", "completed"]).gte("start_time", _appt_lookback).limit(1).execute()
-            if appt_check.data:
-                users_with_appt.append(u)
 
-        if len(users_with_appt) == 0:
-            # No scheduled appointments found for any patient on this number.
-            # If multiple patients are registered, list them and ask which one the payment is for.
-            patient_names = [
-                u.get("patient_name") or u.get("name", "Paciente")
-                for u in all_users
-            ]
-            if len(patient_names) > 1:
-                options = "\n".join(f"{i + 1}. {n}" for i, n in enumerate(patient_names))
-                return (
-                    f"Não encontrei nenhum agendamento ativo para os pacientes deste número. "
-                    f"Para qual paciente é o comprovante?\n\n{options}"
-                )
+        appts_result = await client.from_("appointments").select(
+            "appointment_id, start_time, doctor_id, status, users(id, patient_name, name)"
+        ).in_("user_id", user_ids).in_(
+            "status", ["scheduled", "completed"]
+        ).gte("start_time", _appt_lookback).order("start_time", desc=True).execute()
+
+        active_appts = appts_result.data or []
+
+        # Deduplicate by user (keep only most-recent appointment per patient)
+        seen_users: dict[str, dict] = {}
+        for a in active_appts:
+            u = a.get("users") or {}
+            uid = u.get("id")
+            if uid and uid not in seen_users:
+                seen_users[uid] = a
+
+        if not seen_users:
             return "Para qual paciente é este comprovante? Por favor, informe o nome completo."
-        elif len(users_with_appt) > 1:
+
+        if len(seen_users) > 1:
             names = ", ".join(
-                u.get("patient_name") or u.get("name", "Paciente")
-                for u in users_with_appt
+                (a.get("users") or {}).get("patient_name")
+                or (a.get("users") or {}).get("name", "Paciente")
+                for a in seen_users.values()
             )
             return f"Encontrei mais de um paciente com consulta agendada neste número: {names}. Para qual deles é o comprovante?"
-        else:
-            user = users_with_appt[0]
-            patient_name = user.get("patient_name") or user.get("name", "Paciente")
-            user_id = user["id"]
-            doctor_key = DOCTOR_NAMES.get(user.get("doctor_id", ""), "")
+
+        appt_ref = next(iter(seen_users.values()))
+        appt_user = appt_ref.get("users") or {}
+        patient_name = appt_user.get("patient_name") or appt_user.get("name", "Paciente")
+        user_id = appt_user.get("id")
+        # doctor_key from appointment row (will be overridden again below once full appt is fetched)
+        doctor_key = DOCTOR_NAMES.get(appt_ref.get("doctor_id", ""), "")
 
     doctor_label = {"julio": "Dr. Júlio", "bruna": "Dra. Bruna"}.get(doctor_key, "médico(a)")
 
