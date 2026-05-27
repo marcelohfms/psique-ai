@@ -19,7 +19,6 @@ def _make_state(**kwargs) -> dict:
         "patient_age": 30,
         "is_patient": True,
         "preferred_doctor": "julio",
-        "is_for_self": True,
         "guardian_relationship": None,
         "messages": [],
     }

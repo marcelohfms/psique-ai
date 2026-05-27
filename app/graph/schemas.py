@@ -84,9 +84,9 @@ def _parse_birth_date(value: str) -> str | None:
 class CollectInfoOutput(BaseModel):
     reply: str = Field(description="Mensagem a enviar ao usuário em português brasileiro")
     user_name: str | None = None
-    is_for_self: bool | None = None
+    is_patient: bool | None = None           # contact IS the patient (true) or schedules for someone else (false)
     patient_name: str | None = None
-    is_patient: bool | None = None
+    is_returning_patient: bool | None = None # patient already attends the clinic (true) or new patient (false)
     preferred_doctor: Literal["julio", "bruna"] | None = None
     birth_date: str | None = None
     birth_date_parse_failed: bool = False

@@ -37,9 +37,9 @@ def _build_registration_block(state: dict) -> str:
 
     contact = state.get("user_name") or ""
     patient = state.get("patient_name") or ""
-    is_for_self = state.get("is_for_self")
+    is_patient = state.get("is_patient")
 
-    if is_for_self is False and contact and contact != patient:
+    if is_patient is False and contact and contact != patient:
         lines.append(f"  Responsável: {contact}")
 
     lines.append(f"  Nome: {patient or '—'}")

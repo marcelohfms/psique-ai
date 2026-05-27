@@ -236,7 +236,6 @@ def _base_minor_state(**kwargs) -> dict:
         "guardian_name": None,
         "guardian_cpf": None,
         "guardian_relationship": None,
-        "is_for_self": None,
         "is_patient": None,
         "preferred_doctor": None,
         "patient_email": None,
@@ -390,7 +389,7 @@ async def test_collect_info_yes_to_is_patient_sets_returning_patient_true():
     assert result.get("is_patient") is None, "is_patient must NOT be set by the 'já é paciente?' question"
 
 
-async def test_collect_info_adult_birth_date_asks_is_for_self():
+async def test_collect_info_adult_birth_date_asks_is_patient():
     """After birth date for an adult, the next question must ask if the contact is the patient."""
     from app.graph.nodes import collect_info_node
     from langchain_core.messages import HumanMessage, AIMessage
@@ -413,7 +412,7 @@ async def test_collect_info_adult_birth_date_asks_is_for_self():
 
     sent = mock_send.call_args[0][1]
     assert "agendando em nome" in sent.lower() or "você é" in sent.lower()
-    assert result.get("is_for_self") is None  # not yet answered
+    assert result.get("is_patient") is None  # not yet answered
 
 
 async def test_collect_info_is_patient_yes_proceeds_to_clinic_question():
@@ -596,7 +595,6 @@ def _make_patient_agent_state(**overrides) -> dict:
         "is_returning_patient": True,
         "preferred_doctor": "julio",
         "patient_email": "carlos@email.com",
-        "is_for_self": True,
         "guardian_relationship": None,
         "guardian_name": None,
         "guardian_cpf": None,

@@ -19,10 +19,7 @@ class ConversationState(TypedDict):
     # Who is contacting
     user_name: str | None
 
-    # Is the consultation for the contact themselves or someone else
-    is_for_self: bool | None
-
-    # Patient data (may differ from contact when is_for_self=False)
+    # Patient data (may differ from contact when is_patient=False)
     patient_name: str | None
     patient_age: int | None        # determines 1h vs 2h slot
 
@@ -31,7 +28,7 @@ class ConversationState(TypedDict):
     is_returning_patient: bool | None # True = patient already attends the clinic (returning); False = new patient
     preferred_doctor: Literal["julio", "bruna"] | None
 
-    # Relationship of contact to patient (only relevant when is_for_self=False and patient is minor)
+    # Relationship of contact to patient (only relevant when is_patient=False and patient is minor)
     guardian_relationship: str | None
 
     # Extended patient registration fields

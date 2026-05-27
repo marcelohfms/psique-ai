@@ -50,7 +50,7 @@ def _get_agent_llm():
 async def collect_info_node(state: ConversationState, config: RunnableConfig) -> dict:
     collected = {
         "user_name": state.get("user_name"),
-        "is_for_self": state.get("is_for_self"),
+        "is_patient": state.get("is_patient"),
         "patient_name": state.get("patient_name"),
         "birth_date": state.get("birth_date"),
         "guardian_relationship": state.get("guardian_relationship"),
@@ -471,9 +471,9 @@ async def collect_info_node(state: ConversationState, config: RunnableConfig) ->
     update: dict = {"messages": [AIMessage(content=reply)]}
 
     for field in [
-        "user_name", "is_for_self", "patient_name",
+        "user_name", "is_patient", "patient_name",
         "birth_date", "patient_cpf", "guardian_relationship", "guardian_name", "guardian_cpf",
-        "is_patient", "preferred_doctor", "patient_email",
+        "is_returning_patient", "preferred_doctor", "patient_email",
         "consultation_reason", "referral_professional", "medication_note",
     ]:
         val = getattr(result, field, None)

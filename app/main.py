@@ -398,7 +398,6 @@ async def process_message(phone: str, text: str) -> None:
             "phone": phone,
             "stage": stage,
             "user_name": existing.get("name") if existing else None,
-            "is_for_self": None,
             "patient_name": existing.get("patient_name") if existing else None,
             "patient_age": existing.get("age") if existing else None,
             "birth_date": existing.get("birth_date") if existing else None,
