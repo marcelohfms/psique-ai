@@ -16,6 +16,7 @@ from app.graph.tools import (
 from app.graph.prompts import COLLECT_SYSTEM, MINOR_RULE, ADULT_RULE, EXISTING_PATIENT_SYSTEM, NEW_PATIENT_SYSTEM, CANCELLATION_RULES, CLINIC_ADDRESS, DOCTORS_INFO, get_booking_fee_rule, MEDICAL_LIMITS_RULE, DOCTOR_CORRECTION_RULE, EMAIL_RULE, get_pricing_rules
 from app.whatsapp import send_text
 from app.database import upsert_user, log_event, get_upcoming_appointments, get_user_by_phone, get_users_by_phone, DOCTOR_IDS, DOCTOR_NAMES, save_message, get_last_assistant_message_time
+from app.chatwoot import get_conversation_id, add_private_note
 
 # ── LLM setup (lazy — instantiated on first use after .env is loaded) ─────────
 
@@ -686,9 +687,16 @@ async def patient_agent_node(state: ConversationState, config: RunnableConfig) -
     if not response.tool_calls and response.content:
         phone = state["phone"]
         if state.get("silent_mode"):
-            await send_text(phone, response.content)
+            # Attendant instruction — post result as Chatwoot private note, never to patient
+            try:
+                conv_id = get_conversation_id(phone)
+                await add_private_note(conv_id, response.content)
+            except Exception:
+                import logging as _log
+                _log.getLogger(__name__).exception(
+                    "SILENT_MODE private note FAILED phone=%s — falling back to save_message only", phone
+                )
             await save_message(phone, "assistant", response.content)
-            await upsert_user(phone, {"active": True, "deactivated_at": None})
         else:
             await send_text(phone, response.content)
             await save_message(phone, "assistant", response.content)
