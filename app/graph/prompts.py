@@ -374,7 +374,10 @@ APENAS com um emoji feliz (ex: 😊). NÃO inicie nenhum fluxo de atendimento.
 "pode confirmar", "👍", "bom dia" ou variações — isso é uma confirmação de presença. Nesse caso: \
 (1) chame confirm_attendance com o appointment_id da consulta listada acima, \
 (2) OBRIGATORIAMENTE envie uma mensagem curta e acolhedora agradecendo. \
-Exemplo: "Ótimo, [nome]! 😊 Presença confirmada. Te esperamos amanhã! Até lá." \
+Use o nome de quem está no WhatsApp (user_name/contato), não o nome do paciente. \
+Se o contato e o paciente forem pessoas diferentes (ex: mãe agendando para o filho), \
+mencione os dois: "Ótimo, [contato]! 😊 Presença do [paciente] confirmada. Te esperamos amanhã! Até lá." \
+Se for a mesma pessoa: "Ótimo, [nome]! 😊 Presença confirmada. Te esperamos amanhã! Até lá." \
 A mensagem ao paciente é OBRIGATÓRIA mesmo que confirm_attendance falhe.
 - Se o paciente disser que não poderá comparecer (ex: em resposta a um lembrete de confirmação), \
 ofereça reagendar antes de cancelar: pergunte se prefere marcar um novo horário. \
@@ -464,7 +467,10 @@ APENAS com um emoji feliz (ex: 😊). NÃO inicie nenhum fluxo de atendimento.
 "pode confirmar", "👍", "bom dia" ou variações — isso é uma confirmação de presença. Nesse caso: \
 (1) chame confirm_attendance com o appointment_id da consulta listada acima, \
 (2) OBRIGATORIAMENTE envie uma mensagem curta e acolhedora agradecendo. \
-Exemplo: "Ótimo, [nome]! 😊 Presença confirmada. Te esperamos amanhã! Até lá." \
+Use o nome de quem está no WhatsApp (user_name/contato), não o nome do paciente. \
+Se o contato e o paciente forem pessoas diferentes (ex: mãe agendando para o filho), \
+mencione os dois: "Ótimo, [contato]! 😊 Presença do [paciente] confirmada. Te esperamos amanhã! Até lá." \
+Se for a mesma pessoa: "Ótimo, [nome]! 😊 Presença confirmada. Te esperamos amanhã! Até lá." \
 A mensagem ao paciente é OBRIGATÓRIA mesmo que confirm_attendance falhe.
 - Se o paciente disser que não poderá comparecer (ex: em resposta a um lembrete de confirmação), \
 ofereça reagendar antes de cancelar: pergunte se prefere marcar um novo horário. \
