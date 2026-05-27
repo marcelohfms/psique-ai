@@ -546,7 +546,7 @@ async def patient_agent_node(state: ConversationState, config: RunnableConfig) -
     first_name = _full_name.split()[0]
     is_minor_first = (
         patient_age < 18
-        and not state.get("is_patient", False)
+        and not state.get("is_returning_patient", False)
         and state.get("preferred_doctor") == "julio"
     )
     duration_rule = (
