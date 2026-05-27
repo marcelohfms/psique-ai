@@ -362,6 +362,7 @@ async def process_message(phone: str, text: str) -> None:
                 "email":      "patient_email",
                 "doctor_id":  None,   # handled separately below
                 "is_patient": "is_patient",
+                "is_returning_patient": "is_returning_patient",
                 "guardian_name": "guardian_name",
                 "guardian_cpf":  "guardian_cpf",
                 "guardian_relationship": "guardian_relationship",
@@ -378,6 +379,16 @@ async def process_message(phone: str, text: str) -> None:
                 db_sync["preferred_doctor"] = DOCTOR_NAMES.get(existing["doctor_id"])
             if db_sync:
                 state_update.update(db_sync)
+        elif snapshot.values.get("stage") == "patient_agent" and existing:
+            # For ongoing patient_agent conversations, sync critical fields that may be
+            # missing from older checkpoints (e.g. is_returning_patient, preferred_doctor).
+            pa_sync: dict = {}
+            if snapshot.values.get("is_returning_patient") is None and existing.get("is_returning_patient") is not None:
+                pa_sync["is_returning_patient"] = existing["is_returning_patient"]
+            if snapshot.values.get("preferred_doctor") is None and existing.get("doctor_id"):
+                pa_sync["preferred_doctor"] = DOCTOR_NAMES.get(existing["doctor_id"])
+            if pa_sync:
+                state_update.update(pa_sync)
     else:
         await log_event("conversation_started", phone)
         # Only name + is_patient are required to route to patient_agent.
@@ -404,6 +415,7 @@ async def process_message(phone: str, text: str) -> None:
             "guardian_name": existing.get("guardian_name") if existing else None,
             "guardian_cpf": existing.get("guardian_cpf") if existing else None,
             "is_patient": existing.get("is_patient") if existing else None,
+            "is_returning_patient": existing.get("is_returning_patient") if existing else None,
             "preferred_doctor": doctor_key,
             "patient_email": existing.get("email") if existing else None,
             "consultation_reason": existing.get("consultation_reason") if existing else None,

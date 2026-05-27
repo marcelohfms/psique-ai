@@ -200,9 +200,15 @@ async def test_inactive_user_returns_silently():
 
 
 async def test_existing_snapshot_adds_only_human_message():
-    """When the graph already has state, only inject the new HumanMessage."""
+    """When the graph already has state with all critical fields, only inject the new HumanMessage."""
     import app.graph.graph as gg
-    existing_state = {"stage": "patient_agent", "messages": [HumanMessage(content="anterior")]}
+    # Snapshot already has preferred_doctor and is_returning_patient set — no extra sync needed
+    existing_state = {
+        "stage": "patient_agent",
+        "messages": [HumanMessage(content="anterior")],
+        "preferred_doctor": "julio",
+        "is_returning_patient": True,
+    }
     chatbot = _make_chatbot(snapshot_values=existing_state)
     original = gg.chatbot
     gg.chatbot = chatbot
@@ -217,6 +223,30 @@ async def test_existing_snapshot_adds_only_human_message():
             assert set(state_update.keys()) == {"messages", "silent_mode", "phone"}
             assert state_update["silent_mode"] is False
             assert state_update["messages"][0].content == "nova mensagem"
+    finally:
+        gg.chatbot = original
+
+
+@pytest.mark.asyncio
+async def test_existing_patient_agent_syncs_missing_doctor_and_returning():
+    """When stage=patient_agent but preferred_doctor/is_returning_patient are missing, sync from DB."""
+    import app.graph.graph as gg
+    known_user_with_returning = {**_KNOWN_USER, "is_returning_patient": True}
+    # Snapshot missing preferred_doctor and is_returning_patient
+    existing_state = {"stage": "patient_agent", "messages": [HumanMessage(content="anterior")]}
+    chatbot = _make_chatbot(snapshot_values=existing_state)
+    original = gg.chatbot
+    gg.chatbot = chatbot
+    try:
+        with patch("app.main.get_user_by_phone", new_callable=AsyncMock, return_value=known_user_with_returning), \
+             patch("app.main.get_users_by_phone", new_callable=AsyncMock, return_value=[known_user_with_returning]), \
+             patch("app.main.log_event", new_callable=AsyncMock):
+            from app.main import process_message
+            await process_message(PHONE, "nova mensagem")
+            state_update = chatbot.ainvoke.call_args[0][0]
+            # Missing critical fields should be synced from DB
+            assert state_update.get("preferred_doctor") == "julio"
+            assert state_update.get("is_returning_patient") is True
     finally:
         gg.chatbot = original
 
