@@ -71,16 +71,39 @@ _MODALITY_LABELS = {
 
 def format_doctor_schedules() -> str:
     """Return a natural-language Portuguese summary of all doctor schedules.
-    Reads directly from DOCTOR_SCHEDULES so any edit there is reflected here.
+    Reads from DOCTOR_SCHEDULES and overlays SCHEDULE_EXCEPTIONS for the next
+    14 days so Eva has accurate availability when guiding day selection.
     Describes shifts generically (manhã/tarde/noite) rather than exact hours,
     and includes modality info per window.
     """
+    today = date.today()
+    upcoming_exceptions: dict[str, dict[int, list | None]] = {}
+    # Map each doctor's upcoming exceptions: weekday → windows (None = blocked)
+    for doctor_key, exc_map in SCHEDULE_EXCEPTIONS.items():
+        for date_str, windows in exc_map.items():
+            exc_date = date.fromisoformat(date_str)
+            if 0 <= (exc_date - today).days <= 14:
+                if doctor_key not in upcoming_exceptions:
+                    upcoming_exceptions[doctor_key] = {}
+                upcoming_exceptions[doctor_key][exc_date.weekday()] = windows or None
+
     lines = []
     for doctor_key, days in DOCTOR_SCHEDULES.items():
         label = _DOCTOR_LABELS.get(doctor_key, doctor_key)
         lines.append(f"{label}:")
-        for weekday in sorted(days):
-            windows = days[weekday]
+        doc_exc = upcoming_exceptions.get(doctor_key, {})
+
+        # Collect all weekdays: regular + exception-only days
+        all_weekdays = sorted(set(days.keys()) | {wd for wd, w in doc_exc.items() if w})
+
+        for weekday in all_weekdays:
+            exc = doc_exc.get(weekday, "NO_EXC")  # sentinel to distinguish "no exc" vs "[]"
+            if exc is None:
+                # Explicitly blocked this week
+                lines.append(f"  - {_WEEKDAY_NAMES[weekday]}: SEM ATENDIMENTO ESTA SEMANA (exceção de agenda)")
+                continue
+
+            windows = exc if exc != "NO_EXC" else days.get(weekday, [])
             parts = []
             seen: set = set()
             for entry in windows:
@@ -91,7 +114,8 @@ def format_doctor_schedules() -> str:
                 if key not in seen:
                     parts.append(f"{shift} ({mod})")
                     seen.add(key)
-            lines.append(f"  - {_WEEKDAY_NAMES[weekday]}: {', '.join(parts)}")
+            suffix = " [exceção — horário estendido]" if exc != "NO_EXC" else ""
+            lines.append(f"  - {_WEEKDAY_NAMES[weekday]}: {', '.join(parts)}{suffix}")
     return "\n".join(lines)
 
 
