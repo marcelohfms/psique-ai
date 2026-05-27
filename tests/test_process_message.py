@@ -346,7 +346,7 @@ async def test_collect_info_no_to_is_patient_sets_returning_patient_false():
         patient_age=30,
         birth_date="15/03/1994",
         patient_cpf="123.456.789-00",
-        is_for_self=True,  # already answered — prevents Step 4d from intercepting
+        is_patient=True,  # already answered — prevents Step 4d from intercepting
         messages=[
             HumanMessage(content="quero agendar uma consulta"),
             AIMessage(content=_Q),
@@ -373,7 +373,7 @@ async def test_collect_info_yes_to_is_patient_sets_returning_patient_true():
         patient_age=30,
         birth_date="15/03/1994",
         patient_cpf="123.456.789-00",
-        is_for_self=True,  # already answered — prevents Step 4d from intercepting
+        is_patient=True,  # already answered — prevents Step 4d from intercepting
         messages=[
             HumanMessage(content="quero agendar uma consulta"),
             AIMessage(content=_Q),
@@ -416,8 +416,8 @@ async def test_collect_info_adult_birth_date_asks_is_for_self():
     assert result.get("is_for_self") is None  # not yet answered
 
 
-async def test_collect_info_is_for_self_yes_proceeds_to_clinic_question():
-    """'sou eu' to the is_for_self question must set is_for_self=True and proceed."""
+async def test_collect_info_is_patient_yes_proceeds_to_clinic_question():
+    """'sou eu' to the is_patient question must set is_patient=True and proceed."""
     from app.graph.nodes import collect_info_node
     from langchain_core.messages import HumanMessage, AIMessage
 
@@ -439,13 +439,13 @@ async def test_collect_info_is_for_self_yes_proceeds_to_clinic_question():
          patch("app.graph.nodes.upsert_user", new_callable=AsyncMock, return_value="new-id"):
         result = await collect_info_node(state, {})
 
-    assert result.get("is_for_self") is True
+    assert result.get("is_patient") is True
     sent = mock_send.call_args[0][1]
     assert "paciente da clínica" in sent.lower() or "paciente" in sent.lower()
 
 
-async def test_collect_info_is_for_self_no_asks_contact_name():
-    """'sou a mãe' to the is_for_self question must set is_for_self=False and ask contact name."""
+async def test_collect_info_is_patient_no_asks_contact_name():
+    """'sou a mãe' to the is_patient question must set is_patient=False and ask contact name."""
     from app.graph.nodes import collect_info_node
     from langchain_core.messages import HumanMessage, AIMessage
 
@@ -467,7 +467,7 @@ async def test_collect_info_is_for_self_no_asks_contact_name():
          patch("app.graph.nodes.upsert_user", new_callable=AsyncMock, return_value="new-id"):
         result = await collect_info_node(state, {})
 
-    assert result.get("is_for_self") is False
+    assert result.get("is_patient") is False
     sent = mock_send.call_args[0][1]
     assert "nome completo" in sent.lower() and "contato" in sent.lower()
 
@@ -484,7 +484,7 @@ async def test_collect_info_contact_name_updates_user_name():
         patient_cpf="123.456.789-00",
         patient_age=34,
         birth_date="15/03/1990",
-        is_for_self=False,
+        is_patient=False,
         messages=[
             HumanMessage(content="quero agendar uma consulta"),
             AIMessage(content=_CONTACT_Q),
@@ -514,7 +514,7 @@ async def test_collect_info_guardian_name_also_sets_user_name():
         patient_cpf="111.222.333-44",
         patient_age=10,
         birth_date="15/03/2015",
-        is_for_self=False,
+        is_patient=False,
         messages=[
             HumanMessage(content="quero agendar uma consulta"),
             AIMessage(content="Qual é o nome completo do responsável pelo paciente?"),
@@ -540,7 +540,7 @@ async def test_collect_info_adult_skips_guardian_steps():
     state = _base_minor_state(
         patient_age=30,
         birth_date="15/03/1994",
-        is_for_self=True,  # contact is the patient — is_for_self question already answered
+        is_patient=True,  # contact is the patient — is_patient question already answered
         messages=[
             AIMessage(content="O paciente já é paciente da clínica?"),
             HumanMessage(content="sim"),
