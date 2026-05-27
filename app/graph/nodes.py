@@ -686,15 +686,31 @@ async def patient_agent_node(state: ConversationState, config: RunnableConfig) -
     # Only send to WhatsApp when the LLM produces a final text (no tool calls)
     if not response.tool_calls and response.content:
         phone = state["phone"]
-        if state.get("silent_mode"):
-            # Attendant instruction — post result as Chatwoot private note, never to patient
+
+        # Detect internal-note responses by state flag OR by content prefix.
+        # The LLM sometimes prefixes internal notes with "Nota para a equipe:" even
+        # when silent_mode was not propagated correctly — catch both cases.
+        _INTERNAL_PREFIXES = (
+            "nota para a equipe",
+            "nota interna",
+            "nota para equipe",
+            "[nota interna]",
+            "[nota para a equipe]",
+        )
+        _content_lower = response.content.lstrip().lower()
+        is_internal = bool(state.get("silent_mode")) or any(
+            _content_lower.startswith(p) for p in _INTERNAL_PREFIXES
+        )
+
+        if is_internal:
+            # Post as Chatwoot private note — never send to patient
             try:
                 conv_id = get_conversation_id(phone)
                 await add_private_note(conv_id, response.content)
             except Exception:
                 import logging as _log
                 _log.getLogger(__name__).exception(
-                    "SILENT_MODE private note FAILED phone=%s — falling back to save_message only", phone
+                    "PRIVATE_NOTE FAILED phone=%s — falling back to save_message only", phone
                 )
             await save_message(phone, "assistant", response.content)
         else:
