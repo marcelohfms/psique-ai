@@ -266,7 +266,7 @@ async def collect_info_node(state: ConversationState, config: RunnableConfig) ->
             first_q = _GUARDIAN_NAME_Q
         elif _pat_age_for_greeting < 18 and not state.get("guardian_cpf"):
             first_q = _GUARDIAN_CPF_Q
-        elif state.get("is_patient") is None:
+        elif state.get("is_returning_patient") is None:
             first_q = _PATIENT_Q
         elif (
             state.get("is_patient") is False
@@ -344,23 +344,22 @@ async def collect_info_node(state: ConversationState, config: RunnableConfig) ->
                 return await _extract_and_ask({"guardian_cpf": last_human}, _PATIENT_Q)
             return await _ask(_GUARDIAN_CPF_Q)
 
-        # Step 5: is_patient / is_returning_patient
-        # is_patient: contact IS the patient (vs scheduling for someone else)
-        # is_returning_patient: patient already attends the clinic (used for pricing)
-        if state.get("is_patient") is None:
+        # Step 5: is_returning_patient
+        # "O paciente já é paciente da clínica?" → True = returning patient, False = new patient
+        # is_patient (contact IS the patient vs scheduling for someone else) is a separate concept
+        # and must NOT be set here.
+        if state.get("is_returning_patient") is None:
             if last_ai == _PATIENT_Q and last_human:
                 h = last_human.lower()
                 if any(kw in h for kw in ["sim", "já", "ja", "sou", "é", "e paciente", "paciente"]):
-                    is_patient = True
+                    is_returning_patient = True
                 elif any(kw in h for kw in ["não", "nao", "nunca", "primeira", "novo", "nova"]):
-                    is_patient = False
+                    is_returning_patient = False
                 else:
-                    is_patient = None
-                if is_patient is not None:
-                    # is_returning_patient mirrors is_patient: returning patients ARE patients;
-                    # new patients are NOT yet in the clinic.
+                    is_returning_patient = None
+                if is_returning_patient is not None:
                     return await _extract_and_ask(
-                        {"is_patient": is_patient, "is_returning_patient": is_patient}, _DOCTOR_Q
+                        {"is_returning_patient": is_returning_patient}, _DOCTOR_Q
                     )
             return await _ask(_PATIENT_Q)
 
@@ -557,7 +556,7 @@ async def patient_agent_node(state: ConversationState, config: RunnableConfig) -
             break
 
     from app.google_calendar import format_doctor_schedules
-    template = EXISTING_PATIENT_SYSTEM if state.get("is_patient") else NEW_PATIENT_SYSTEM
+    template = EXISTING_PATIENT_SYSTEM if state.get("is_returning_patient") else NEW_PATIENT_SYSTEM
     _now_recife = datetime.now(ZoneInfo("America/Recife"))
     _weekday_pt = ["segunda-feira", "terça-feira", "quarta-feira", "quinta-feira", "sexta-feira", "sábado", "domingo"][_now_recife.weekday()]
     today = f"{_now_recife.strftime('%d/%m/%Y %H:%M')} ({_weekday_pt})"

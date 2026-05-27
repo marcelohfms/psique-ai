@@ -336,6 +336,58 @@ async def test_collect_info_proceeds_to_is_patient_after_guardian_cpf():
     assert "paciente" in sent.lower() or "clínica" in sent.lower()
 
 
+async def test_collect_info_no_to_is_patient_sets_returning_patient_false():
+    """'não' to 'já é paciente da clínica?' must set is_returning_patient=False, NOT is_patient=False."""
+    from app.graph.nodes import collect_info_node
+    from langchain_core.messages import HumanMessage, AIMessage
+
+    _Q = "O paciente já é paciente da clínica?"
+    state = _base_minor_state(
+        patient_age=30,
+        birth_date="15/03/1994",
+        patient_cpf="123.456.789-00",
+        messages=[
+            HumanMessage(content="quero agendar uma consulta"),
+            AIMessage(content=_Q),
+            HumanMessage(content="não"),
+        ],
+    )
+    with patch("app.graph.nodes.send_text", new_callable=AsyncMock), \
+         patch("app.graph.nodes.save_message", new_callable=AsyncMock), \
+         patch("app.graph.nodes.get_users_by_phone", new_callable=AsyncMock, return_value=[]), \
+         patch("app.graph.nodes.upsert_user", new_callable=AsyncMock, return_value="new-id"):
+        result = await collect_info_node(state, {})
+
+    assert result.get("is_returning_patient") is False, "is_returning_patient must be False for new patient"
+    assert result.get("is_patient") is None, "is_patient must NOT be set by the 'já é paciente?' question"
+
+
+async def test_collect_info_yes_to_is_patient_sets_returning_patient_true():
+    """'sim' to 'já é paciente da clínica?' must set is_returning_patient=True, NOT touch is_patient."""
+    from app.graph.nodes import collect_info_node
+    from langchain_core.messages import HumanMessage, AIMessage
+
+    _Q = "O paciente já é paciente da clínica?"
+    state = _base_minor_state(
+        patient_age=30,
+        birth_date="15/03/1994",
+        patient_cpf="123.456.789-00",
+        messages=[
+            HumanMessage(content="quero agendar uma consulta"),
+            AIMessage(content=_Q),
+            HumanMessage(content="sim"),
+        ],
+    )
+    with patch("app.graph.nodes.send_text", new_callable=AsyncMock), \
+         patch("app.graph.nodes.save_message", new_callable=AsyncMock), \
+         patch("app.graph.nodes.get_users_by_phone", new_callable=AsyncMock, return_value=[]), \
+         patch("app.graph.nodes.upsert_user", new_callable=AsyncMock, return_value="new-id"):
+        result = await collect_info_node(state, {})
+
+    assert result.get("is_returning_patient") is True, "is_returning_patient must be True for returning patient"
+    assert result.get("is_patient") is None, "is_patient must NOT be set by the 'já é paciente?' question"
+
+
 async def test_collect_info_adult_skips_guardian_steps():
     """For an adult patient (age >= 18), guardian steps must be skipped entirely."""
     from app.graph.nodes import collect_info_node
