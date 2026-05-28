@@ -544,6 +544,10 @@ async def patient_agent_node(state: ConversationState, config: RunnableConfig) -
     patient_age_display = f"{patient_age} anos" if _raw_age else "não informada"
     _full_name = state.get("patient_name") or state.get("user_name") or "paciente"
     first_name = _full_name.split()[0]
+    # contact_name: who is on WhatsApp. May differ from patient_name (e.g. guardian).
+    _contact_full = state.get("user_name") or state.get("patient_name") or "paciente"
+    contact_first_name = _contact_full.split()[0]
+    contact_name = _contact_full
     is_minor_first = (
         patient_age < 18
         and not state.get("is_returning_patient", False)
@@ -593,6 +597,7 @@ async def patient_agent_node(state: ConversationState, config: RunnableConfig) -
     today = f"{_now_recife.strftime('%d/%m/%Y %H:%M')} ({_weekday_pt})"
     system_prompt = template.format(
         patient_name=first_name,
+        contact_name=contact_name,
         patient_age=patient_age_display,
         birth_date=birth_date or "não informada",
         doctor=doctor_label,
@@ -681,7 +686,7 @@ async def patient_agent_node(state: ConversationState, config: RunnableConfig) -
         _greeting_word = "Bom dia" if _hour < 12 else ("Boa tarde" if _hour < 18 else "Boa noite")
         system_prompt += (
             f"\n\nINÍCIO DE CONVERSA: Esta é a primeira mensagem desta sessão com o paciente. "
-            f"Você DEVE começar sua resposta com '{_greeting_word}, {first_name}! 😊' e se apresentar "
+            f"Você DEVE começar sua resposta com '{_greeting_word}, {contact_first_name}! 😊' e se apresentar "
             f"como Eva da Clínica Psique antes de responder à solicitação."
         )
 
