@@ -200,9 +200,8 @@ async def get_available_slots(
                     return (
                         f"Há horários disponíveis em {header}, mas não em bloco de 2 horas seguidas:\n"
                         + "\n".join(single_sections)
-                        + "\nInforme o paciente: há horários neste dia, mas as 2 horas não podem ser seguidas. "
-                        "Pergunte se prefere: (1) verificar outro dia com 2 horas consecutivas disponíveis, "
-                        "ou (2) agendar os dois momentos (responsáveis + paciente) em horários separados."
+                        + "\nInforme o paciente que não há 2 horas consecutivas disponíveis neste dia. "
+                        "Pergunte se prefere verificar outro dia com 2 horas consecutivas disponíveis."
                     )
             # No slots at all this week — try the next occurrence (only for weekday names)
         return f"Não há horários disponíveis para {header}. Deseja tentar outro dia?"
@@ -265,13 +264,11 @@ async def get_available_slots(
                 )
                 if slots_1h:
                     date_str = try_date.strftime("%d/%m")
-                    times = ", ".join(s[0].strftime("%H:%M") for s in slots_1h)
                     return (
-                        f"Há horários de 1 hora disponíveis para {day_label}, dia {date_str} "
-                        f"({preferred_shift}): {times}, mas não há 2 horas seguidas neste dia. "
-                        "Informe o paciente e pergunte se prefere: (1) verificar outro dia com "
-                        "2 horas consecutivas disponíveis, ou (2) agendar os dois momentos "
-                        "(responsáveis + paciente) em horários separados."
+                        f"Não há bloco de 2 horas seguidas disponível para {day_label}, dia {date_str} "
+                        f"({preferred_shift}). "
+                        "Informe o paciente e pergunte se prefere verificar outro dia com "
+                        "2 horas consecutivas disponíveis."
                     )
             # No slots at all this week — silently try the next one
 
@@ -317,13 +314,10 @@ async def get_available_slots(
             )
             if slots_1h:
                 date_label = target_date.strftime("%d/%m") if target_date else preferred_day
-                times = ", ".join(s[0].strftime("%H:%M") for s in slots_1h)
                 return (
-                    f"Há horários de 1 hora disponíveis em {date_label} ({preferred_shift}): {times}, "
-                    "mas não há 2 horas seguidas neste dia. "
-                    "Informe o paciente e pergunte se prefere: (1) verificar outro dia com "
-                    "2 horas consecutivas disponíveis, ou (2) agendar os dois momentos "
-                    "(responsáveis + paciente) em horários separados."
+                    f"Não há bloco de 2 horas seguidas disponível em {date_label} ({preferred_shift}). "
+                    "Informe o paciente e pergunte se prefere verificar outro dia com "
+                    "2 horas consecutivas disponíveis."
                 )
         return f"Não há horários disponíveis para {preferred_day} no turno da {preferred_shift}. Deseja tentar outro dia ou turno?"
 
@@ -439,7 +433,7 @@ async def confirm_appointment(
         try:
             _creds = _credentials()
             _service = _build("calendar", "v3", credentials=_creds)
-            loop = asyncio.get_event_loop()
+            loop = asyncio.get_running_loop()
             busy = await loop.run_in_executor(None, _get_busy, _service, calendar_id, start, slot_end_check)
             if busy:
                 return (
