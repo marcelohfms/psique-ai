@@ -975,9 +975,9 @@ async def register_payment(
     #  2. If drive_link is still empty, extract from image_description.
     #  3. If still empty, scan the last few conversation messages.
     def _extract_url(text: str) -> str:
-        """Return first https:// URL found in text, stripped of any trailing ]."""
+        """Return first https:// URL found in text, stripped of any trailing delimiters."""
         m = _re.search(r'https?://[^\s\]]+', text)
-        return m.group(0).rstrip(']') if m else ""
+        return m.group(0).rstrip(']"\'') if m else ""
 
     if drive_link:
         # Case: LLM passed "[drive_link:https://...]" or "drive_link:https://..."

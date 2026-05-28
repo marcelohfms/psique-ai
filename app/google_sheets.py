@@ -103,7 +103,11 @@ def _set_hyperlink_cell(service, spreadsheet_id: str, updated_range: str, drive_
 
     # Column I = index 8 (0-based)
     col_index = 8
-    formula = f'=HYPERLINK("{drive_link}","{filename}")'  # comma separator: locale-independent
+    # Sanitize arguments: strip trailing delimiters from URL and escape any embedded
+    # double-quotes in the filename (Google Sheets escaping: " → "") to prevent #ERROR!
+    safe_link = drive_link.rstrip('"\' ')
+    safe_filename = filename.replace('"', '""')
+    formula = f'=HYPERLINK("{safe_link}","{safe_filename}")'  # comma separator: locale-independent
 
     service.spreadsheets().batchUpdate(
         spreadsheetId=spreadsheet_id,
