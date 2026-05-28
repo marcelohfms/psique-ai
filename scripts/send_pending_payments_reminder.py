@@ -145,6 +145,11 @@ async def main() -> None:
     print(body)
     print()
 
+    # Guard: fail loudly if credentials are missing so CI reflects the real state
+    missing = [v for v in ("SMTP_HOST", "SMTP_USER", "SMTP_PASSWORD", "CLINIC_NOTIFY_EMAIL") if not os.environ.get(v)]
+    if missing:
+        raise EnvironmentError(f"Variáveis de ambiente ausentes: {', '.join(missing)} — e-mail NÃO enviado.")
+
     from app.email_sender import send_clinic_notification_email
     await send_clinic_notification_email(subject, body)
     print(f"E-mail enviado: {total} pagamento(s) pendente(s).")
