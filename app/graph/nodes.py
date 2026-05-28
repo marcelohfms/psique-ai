@@ -545,7 +545,12 @@ async def patient_agent_node(state: ConversationState, config: RunnableConfig) -
     _full_name = state.get("patient_name") or state.get("user_name") or "paciente"
     first_name = _full_name.split()[0]
     # contact_name: who is on WhatsApp. May differ from patient_name (e.g. guardian).
-    _contact_full = state.get("user_name") or state.get("patient_name") or "paciente"
+    # When is_patient is explicitly False the contact is NOT the patient; avoid using
+    # patient_name as fallback so the LLM doesn't confuse the two people.
+    _is_third_party = state.get("is_patient") is False
+    _contact_full = state.get("user_name") or (
+        "responsável" if _is_third_party else (state.get("patient_name") or "paciente")
+    )
     contact_first_name = _contact_full.split()[0]
     contact_name = _contact_full
     is_minor_first = (
@@ -684,10 +689,22 @@ async def patient_agent_node(state: ConversationState, config: RunnableConfig) -
     if _is_new_session:
         _hour = _now_recife.hour
         _greeting_word = "Bom dia" if _hour < 12 else ("Boa tarde" if _hour < 18 else "Boa noite")
+        _session_label = "com o responsável/contato" if _is_third_party else "com o paciente"
         system_prompt += (
-            f"\n\nINÍCIO DE CONVERSA: Esta é a primeira mensagem desta sessão com o paciente. "
+            f"\n\nINÍCIO DE CONVERSA: Esta é a primeira mensagem desta sessão {_session_label}. "
             f"Você DEVE começar sua resposta com '{_greeting_word}, {contact_first_name}! 😊' e se apresentar "
             f"como Eva da Clínica Psique antes de responder à solicitação."
+        )
+
+    # When the WhatsApp contact is NOT the patient, explicitly remind the LLM so it
+    # doesn't address the contact as "paciente" or use "seu" for the patient's data.
+    if _is_third_party:
+        system_prompt += (
+            f"\n\nAVISO IMPORTANTE: O contato no WhatsApp ({contact_name}) NÃO é o paciente. "
+            f"Está agendando em nome do(a) paciente {first_name}. "
+            f"Dirija-se ao contato pelo nome ({contact_first_name}), NUNCA como 'paciente'. "
+            f"Ao pedir data de nascimento ou e-mail, deixe claro que são dados do(a) paciente {first_name} "
+            f"(ex: 'Qual a data de nascimento de {first_name}?', 'Qual o e-mail de {first_name}?')."
         )
 
     messages = [SystemMessage(content=system_prompt), *clean_messages]
