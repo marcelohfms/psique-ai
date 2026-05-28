@@ -77,15 +77,15 @@ def format_doctor_schedules() -> str:
     and includes modality info per window.
     """
     today = date.today()
-    upcoming_exceptions: dict[str, dict[int, list | None]] = {}
-    # Map each doctor's upcoming exceptions: weekday → windows (None = blocked)
+    # Map each doctor's upcoming exceptions: weekday → (date_str, windows | None)
+    upcoming_exceptions: dict[str, dict[int, tuple[str, list | None]]] = {}
     for doctor_key, exc_map in SCHEDULE_EXCEPTIONS.items():
         for date_str, windows in exc_map.items():
             exc_date = date.fromisoformat(date_str)
             if 0 <= (exc_date - today).days <= 14:
                 if doctor_key not in upcoming_exceptions:
                     upcoming_exceptions[doctor_key] = {}
-                upcoming_exceptions[doctor_key][exc_date.weekday()] = windows or None
+                upcoming_exceptions[doctor_key][exc_date.weekday()] = (date_str, windows or None)
 
     lines = []
     for doctor_key, days in DOCTOR_SCHEDULES.items():
@@ -94,28 +94,49 @@ def format_doctor_schedules() -> str:
         doc_exc = upcoming_exceptions.get(doctor_key, {})
 
         # Collect all weekdays: regular + exception-only days
-        all_weekdays = sorted(set(days.keys()) | {wd for wd, w in doc_exc.items() if w})
+        all_weekdays = sorted(set(days.keys()) | {wd for wd, (_, w) in doc_exc.items() if w})
 
         for weekday in all_weekdays:
-            exc = doc_exc.get(weekday, "NO_EXC")  # sentinel to distinguish "no exc" vs "[]"
-            if exc is None:
-                # Explicitly blocked this week
-                lines.append(f"  - {_WEEKDAY_NAMES[weekday]}: SEM ATENDIMENTO ESTA SEMANA (exceção de agenda)")
-                continue
-
-            windows = exc if exc != "NO_EXC" else days.get(weekday, [])
-            parts = []
-            seen: set = set()
-            for entry in windows:
-                sh, sm, eh, em, modality = entry
-                shift = _shift_label(sh, eh)
-                mod = _MODALITY_LABELS.get(modality, modality)
-                key = (shift, modality)
-                if key not in seen:
-                    parts.append(f"{shift} ({mod})")
-                    seen.add(key)
-            suffix = " [exceção — horário estendido]" if exc != "NO_EXC" else ""
-            lines.append(f"  - {_WEEKDAY_NAMES[weekday]}: {', '.join(parts)}{suffix}")
+            exc_entry = doc_exc.get(weekday)  # None means no exception this week
+            if exc_entry is not None:
+                exc_date_str, exc_windows = exc_entry
+                exc_date_label = date.fromisoformat(exc_date_str).strftime("%d/%m")
+                if exc_windows is None:
+                    # Explicitly blocked on this date
+                    lines.append(
+                        f"  - {_WEEKDAY_NAMES[weekday]}: SEM ATENDIMENTO em {exc_date_label} (exceção de agenda)"
+                    )
+                    continue
+                # Extended/different schedule — show with the specific date
+                windows_to_use = exc_windows
+                parts = []
+                seen: set = set()
+                for entry in windows_to_use:
+                    sh, sm, eh, em, modality = entry
+                    shift = _shift_label(sh, eh)
+                    mod = _MODALITY_LABELS.get(modality, modality)
+                    key = (shift, modality)
+                    if key not in seen:
+                        parts.append(f"{shift} ({mod})")
+                        seen.add(key)
+                lines.append(
+                    f"  - {_WEEKDAY_NAMES[weekday]}: {', '.join(parts)} "
+                    f"[exceção — disponível SOMENTE em {exc_date_label}]"
+                )
+            else:
+                # Regular schedule
+                windows_to_use = days.get(weekday, [])
+                parts = []
+                seen = set()
+                for entry in windows_to_use:
+                    sh, sm, eh, em, modality = entry
+                    shift = _shift_label(sh, eh)
+                    mod = _MODALITY_LABELS.get(modality, modality)
+                    key = (shift, modality)
+                    if key not in seen:
+                        parts.append(f"{shift} ({mod})")
+                        seen.add(key)
+                lines.append(f"  - {_WEEKDAY_NAMES[weekday]}: {', '.join(parts)}")
     return "\n".join(lines)
 
 
