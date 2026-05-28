@@ -228,16 +228,20 @@ async def main():
 
             message = payment_cancel_message(contact_first, doctor_label, date_str, patient_first)
 
-            # Step 1: Notify patient — if WhatsApp fails, skip this appointment
-            # so the slot is NOT freed and the run is retried next cycle.
+            # Step 1: Notify patient via WhatsApp — best-effort.
+            # A failure (e.g. no Chatwoot conversation exists) must NOT block the
+            # cancellation; the slot would never be freed if we kept retrying forever.
+            # The clinic email in Step 5 will include a warning so the team can
+            # follow up with the patient manually.
+            whatsapp_ok = False
             try:
                 await send_whatsapp(phone, message)
+                whatsapp_ok = True
             except Exception as e:
-                print(f"  [payment_cancel] WhatsApp failed for {phone} — skipping cancellation: {e}")
-                continue
+                print(f"  [payment_cancel] WhatsApp failed for {phone} (non-fatal, cancelling anyway): {e}")
 
             # Step 2: Checkpoint — non-fatal, must not block cancellation
-            if graph:
+            if graph and whatsapp_ok:
                 try:
                     await save_to_checkpoint(graph, phone, message, appt)
                 except Exception as e:
@@ -260,8 +264,14 @@ async def main():
                 from app.email_sender import send_clinic_notification_email
                 import asyncio as _asyncio
                 subject = f"Consulta cancelada por falta de pagamento — {patient_name_full or contact_name}"
+                whatsapp_note = (
+                    "⚠️ ATENÇÃO: o paciente NÃO foi notificado via WhatsApp (falha ao enviar). "
+                    "Por favor, entre em contato diretamente.\n\n"
+                    if not whatsapp_ok else ""
+                )
                 body = (
                     f"A consulta abaixo foi cancelada automaticamente por falta de pagamento da taxa de reserva.\n\n"
+                    f"{whatsapp_note}"
                     f"Paciente: {patient_name_full or contact_name}\n"
                     f"Responsável: {contact_name}\n"
                     f"Médico(a): {doctor_label}\n"
@@ -281,7 +291,7 @@ async def main():
             except Exception as e:
                 print(f"  [payment_cancel] Clinic email setup failed: {e}")
 
-            print(f"  [payment_cancel] Canceled and notified {phone} — {patient_name_full}")
+            print(f"  [payment_cancel] Canceled {'and notified' if whatsapp_ok else '(WhatsApp FAILED)'} {phone} — {patient_name_full}")
 
     finally:
         if pg_conn:
