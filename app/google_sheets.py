@@ -74,11 +74,12 @@ def _append_row_payments(service, spreadsheet_id: str, row: list) -> str:
 
 
 def _set_hyperlink_cell(service, spreadsheet_id: str, updated_range: str, drive_link: str, filename: str) -> None:
-    """Update the comprovante cell (column I) with a HYPERLINK formula using batchUpdate.
+    """Update the comprovante cell (column I) with a clickable hyperlink.
 
-    Using batchUpdate with formulaValue is locale-independent (always uses English
-    function names and comma as separator), avoiding the USER_ENTERED formula parsing
-    issue that caused the comprovante to land in the wrong column.
+    Uses textFormatRuns + userEnteredValue (stringValue) instead of a HYPERLINK formula.
+    This approach is fully locale-independent: no formula syntax, no separator issues
+    between pt_BR (semicolons) and en_US (commas) locales.
+    The cell displays `filename` as clickable text that opens `drive_link`.
     """
     import re
     # Extract sheet name and row number from the updated_range, e.g. "Pagamentos!A5:J5"
@@ -103,19 +104,23 @@ def _set_hyperlink_cell(service, spreadsheet_id: str, updated_range: str, drive_
 
     # Column I = index 8 (0-based)
     col_index = 8
-    # Sanitize arguments: strip trailing delimiters from URL and escape any embedded
-    # double-quotes in the filename (Google Sheets escaping: " → "") to prevent #ERROR!
-    safe_link = drive_link.rstrip('"\' ')
-    safe_filename = filename.replace('"', '""')
-    formula = f'=HYPERLINK("{safe_link}","{safe_filename}")'  # comma separator: locale-independent
+    safe_link = drive_link.strip()
 
     service.spreadsheets().batchUpdate(
         spreadsheetId=spreadsheet_id,
         body={
             "requests": [{
                 "updateCells": {
-                    "rows": [{"values": [{"userEnteredValue": {"formulaValue": formula}}]}],
-                    "fields": "userEnteredValue",
+                    "rows": [{
+                        "values": [{
+                            "userEnteredValue": {"stringValue": filename},
+                            "textFormatRuns": [{
+                                "startIndex": 0,
+                                "format": {"link": {"uri": safe_link}},
+                            }],
+                        }]
+                    }],
+                    "fields": "userEnteredValue,textFormatRuns",
                     "start": {
                         "sheetId": sheet_id,
                         "rowIndex": row_number - 1,  # 0-based
