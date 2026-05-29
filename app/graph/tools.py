@@ -510,16 +510,20 @@ async def confirm_appointment(
 
     # Determine consultation_type for minor patients with Dr. Júlio.
     # Two signals are combined:
-    # 1. state["is_patient"]=True → guardian said the patient is already a clinic patient
-    # 2. Patient has prior completed appointments in the DB
+    # 1. state["is_returning_patient"]=True → guardian said the child is already a patient
+    # 2. Patient has prior completed appointments in the DB (excluding split-session slots)
     # Either signal being True → "acompanhamento"; neither → "primeira_consulta".
-    # This handles the common case where the chatbot is new and has no DB history yet,
-    # but the guardian says the child is already a returning patient.
+    #
+    # EXCEPTION — split primeira_consulta (session_note set, e.g. "1ª hora — responsáveis"):
+    # Skip the prior_completed check entirely. When the 2nd split slot is booked after the
+    # 1st slot has already been completed, the prior_completed check would wrongly tag it as
+    # "acompanhamento", breaking the linked-payment logic in register_payment.
     consultation_type: str | None = None
     if patient_age < 18 and doctor == "julio":
         state_says_returning = bool(state.get("is_returning_patient"))
+        _is_split_slot = bool(session_note)  # any session_note means it's a split primeira_consulta slot
         prior_completed = False
-        if user:
+        if user and not _is_split_slot:
             try:
                 prior = await client.from_("appointments") \
                     .select("id") \
@@ -1370,6 +1374,43 @@ async def update_preferred_doctor(
     doctor_label = {"julio": "Dr. Júlio", "bruna": "Dra. Bruna"}.get(doctor, doctor)
     await log_event("doctor_updated", phone, {"doctor": doctor})
     return f"Médico atualizado para {doctor_label}! Pode continuar."
+
+
+@tool
+async def request_registration_update(
+    field: str,
+    new_value: str,
+    state: Annotated[dict, InjectedState],
+    config: RunnableConfig,
+) -> str:
+    """Registra uma solicitação de alteração de dados cadastrais do paciente.
+    Use SOMENTE quando o paciente solicitar explicitamente a correção ou atualização
+    de um dado já existente (e-mail, CPF, nome, data de nascimento, etc.).
+    NÃO use durante o fluxo normal de coleta de dados para agendamento.
+    Para e-mail: atualiza o banco imediatamente. Para qualquer campo: notifica a equipe por e-mail.
+    """
+    phone = config["configurable"]["phone"]
+    patient_name = state.get("patient_name") or state.get("user_name") or "Paciente"
+    now_str = datetime.now(TZ).strftime("%d/%m/%Y %H:%M")
+    phone_clean = phone.replace("@s.whatsapp.net", "")
+
+    # If the field is email, update the DB directly
+    if field.lower().strip() in ("email", "e-mail"):
+        await upsert_user(phone, {"email": new_value})
+
+    # Notify the attendant regardless of field type
+    subject = f"Solicitação de alteração cadastral — {patient_name}"
+    body = (
+        f"Paciente solicitou alteração cadastral.\n\n"
+        f"Nome: {patient_name}\n"
+        f"Telefone: {phone_clean}\n"
+        f"Campo: {field}\n"
+        f"Novo valor: {new_value}\n"
+        f"Data/hora: {now_str}\n"
+    )
+    await _notify_clinic(body, phone=phone, subject=subject)
+
+    return f"Pedido de alteração de {field} registrado. A equipe irá processar em breve."
 
 
 # Attendant working hours (weekday → list of (start_h, end_h) ranges)
