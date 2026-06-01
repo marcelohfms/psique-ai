@@ -544,6 +544,33 @@ async def test_confirm_attendance_sets_confirmed_at():
     assert "confirmed_at" in update_call
 
 
+async def test_confirm_appointment_copies_booking_fee_waived_to_appointment():
+    """When user has booking_fee_waived=True, the appointment row gets booking_fee_waived=True
+    and booking_fee_paid_at is set immediately. Return string must NOT instruct PIX payment."""
+    from app.graph.tools import confirm_appointment
+    client, table, execute = _make_supabase_client()
+    mock_user = {"id": "user-wv", "booking_fee_waived": True, "custom_price": None}
+    with patch("app.graph.tools._get_doctor_calendar_id", new_callable=AsyncMock, return_value="cal123"), \
+         patch("app.google_calendar.create_event", new_callable=AsyncMock, return_value="evt-waived"), \
+         patch("app.graph.tools.get_supabase", new_callable=AsyncMock, return_value=client), \
+         patch("app.graph.tools.get_user_by_phone", new_callable=AsyncMock, return_value=mock_user), \
+         patch("app.graph.tools.log_event", new_callable=AsyncMock), \
+         patch("app.graph.tools._notify_clinic", new_callable=AsyncMock):
+        result = await confirm_appointment.coroutine(
+            slot_datetime="2026-07-09T09:00:00",
+            slot_duration_minutes=60,
+            state=_make_state(),
+            config=CONFIG,
+        )
+    # Return string must NOT contain PIX instructions
+    assert "PIX" not in result
+    assert "taxa de reserva" not in result.lower()
+    # DB insert must include booking_fee_waived=True and non-null booking_fee_paid_at
+    insert_call_data = table.insert.call_args[0][0]
+    assert insert_call_data["booking_fee_waived"] is True
+    assert insert_call_data["booking_fee_paid_at"] is not None
+
+
 # ── _expected_consultation_amount ────────────────────────────────────────────
 
 def test_expected_consultation_amount_price_override():

@@ -544,6 +544,8 @@ async def confirm_appointment(
                 _logger.exception("CONSULTATION_TYPE_CHECK FAILED patient=%s", patient_name)
         consultation_type = "acompanhamento" if (state_says_returning or prior_completed) else "primeira_consulta"
 
+    _bfw = bool((user or {}).get("booking_fee_waived", False))
+    _bfp_at = datetime.now(TZ).isoformat() if _bfw else None
     try:
         await client.from_("appointments").insert({
             "user_id": user["id"] if user else None,
@@ -554,6 +556,8 @@ async def confirm_appointment(
             "status": "scheduled",
             "modality": effective_modality or None,
             "consultation_type": consultation_type,
+            "booking_fee_waived": _bfw,
+            "booking_fee_paid_at": _bfp_at,
         }).execute()
     except Exception:
         from app.google_calendar import cancel_event
@@ -592,12 +596,26 @@ async def confirm_appointment(
     ))
 
     pix_key = os.environ.get("PIX_KEY", "42006848000178")
-    return (
-        f"Consulta agendada com sucesso! ✅\n{doctor_label} — {formatted}{session_label}\nID: {event_id}\n\n"
-        f"INSTRUÇÃO OBRIGATÓRIA: informe agora ao paciente que a vaga só estará garantida após o pagamento "
-        f"da taxa de reserva de R$ 100,00 via PIX ({pix_key}) em até 2 horas. "
-        f"Peça que envie o comprovante aqui no chat."
-    )
+    _custom_price_ret = (user or {}).get("custom_price")
+    if _custom_price_ret == 0:
+        return (
+            f"Consulta agendada com sucesso! ✅\n{doctor_label} — {formatted}{session_label}\nID: {event_id}\n\n"
+            f"INSTRUÇÃO: Esta consulta é cortesia. Envie a mensagem de cortesia conforme o bloco de exceção "
+            f"de preço no seu system prompt. NÃO solicite nenhum pagamento."
+        )
+    elif _bfw:
+        return (
+            f"Consulta agendada com sucesso! ✅\n{doctor_label} — {formatted}{session_label}\nID: {event_id}\n\n"
+            f"INSTRUÇÃO: A cobrança de reserva está DISPENSADA para este paciente. Envie a mensagem de confirmação "
+            f"conforme o bloco de exceção de preço no seu system prompt. NÃO solicite nenhum pagamento."
+        )
+    else:
+        return (
+            f"Consulta agendada com sucesso! ✅\n{doctor_label} — {formatted}{session_label}\nID: {event_id}\n\n"
+            f"INSTRUÇÃO OBRIGATÓRIA: informe agora ao paciente que a vaga só estará garantida após o pagamento "
+            f"da taxa de reserva de R$ 100,00 via PIX ({pix_key}) em até 2 horas. "
+            f"Peça que envie o comprovante aqui no chat."
+        )
 
 
 @tool
