@@ -214,6 +214,75 @@ async def test_confirm_appointment_presencial_sob_consulta_allowed_in_silent_mod
     assert "evt-silent" in result or "confirmad" in result.lower()
 
 
+async def test_confirm_appointment_respects_online_modality_restriction():
+    """Se modality_restriction="online" no state, confirm_appointment ignora o modality arg."""
+    from app.graph.tools import confirm_appointment
+    client, _, _ = _make_supabase_client()
+    with patch("app.graph.tools._get_doctor_calendar_id", new_callable=AsyncMock, return_value="cal123"), \
+         patch("app.google_calendar.create_event", new_callable=AsyncMock, return_value="evt-rest-online") as mock_create, \
+         patch("app.graph.tools.get_supabase", new_callable=AsyncMock, return_value=client), \
+         patch("app.graph.tools.get_user_by_phone", new_callable=AsyncMock, return_value={"id": "user-1"}), \
+         patch("app.graph.tools.log_event", new_callable=AsyncMock), \
+         patch("app.graph.tools._notify_clinic", new_callable=AsyncMock), \
+         patch("app.google_calendar.get_modality_for_slot", return_value="escolha"):
+        result = await confirm_appointment.coroutine(
+            slot_datetime="2026-03-23T09:00:00",
+            slot_duration_minutes=60,
+            state=_make_state(modality_restriction="online"),
+            config=CONFIG,
+            modality="presencial",  # LLM passed presencial — should be overridden
+        )
+    assert "evt-rest-online" in result
+    _, kwargs = mock_create.call_args
+    assert kwargs.get("modality") == "online"
+
+
+async def test_confirm_appointment_respects_presencial_modality_restriction():
+    """Se modality_restriction="presencial" no state, confirm_appointment usa presencial."""
+    from app.graph.tools import confirm_appointment
+    client, _, _ = _make_supabase_client()
+    with patch("app.graph.tools._get_doctor_calendar_id", new_callable=AsyncMock, return_value="cal123"), \
+         patch("app.google_calendar.create_event", new_callable=AsyncMock, return_value="evt-rest-pres") as mock_create, \
+         patch("app.graph.tools.get_supabase", new_callable=AsyncMock, return_value=client), \
+         patch("app.graph.tools.get_user_by_phone", new_callable=AsyncMock, return_value={"id": "user-1"}), \
+         patch("app.graph.tools.log_event", new_callable=AsyncMock), \
+         patch("app.graph.tools._notify_clinic", new_callable=AsyncMock), \
+         patch("app.google_calendar.get_modality_for_slot", return_value="escolha"):
+        result = await confirm_appointment.coroutine(
+            slot_datetime="2026-03-23T09:00:00",
+            slot_duration_minutes=60,
+            state=_make_state(modality_restriction="presencial"),
+            config=CONFIG,
+            modality="online",  # LLM passed online — should be overridden
+        )
+    assert "evt-rest-pres" in result
+    _, kwargs = mock_create.call_args
+    assert kwargs.get("modality") == "presencial"
+
+
+async def test_confirm_appointment_no_restriction_uses_slot_logic():
+    """Sem restrição cadastral, a lógica de slot é aplicada normalmente."""
+    from app.graph.tools import confirm_appointment
+    client, _, _ = _make_supabase_client()
+    with patch("app.graph.tools._get_doctor_calendar_id", new_callable=AsyncMock, return_value="cal123"), \
+         patch("app.google_calendar.create_event", new_callable=AsyncMock, return_value="evt-no-rest") as mock_create, \
+         patch("app.graph.tools.get_supabase", new_callable=AsyncMock, return_value=client), \
+         patch("app.graph.tools.get_user_by_phone", new_callable=AsyncMock, return_value={"id": "user-1"}), \
+         patch("app.graph.tools.log_event", new_callable=AsyncMock), \
+         patch("app.graph.tools._notify_clinic", new_callable=AsyncMock), \
+         patch("app.google_calendar.get_modality_for_slot", return_value="escolha"):
+        result = await confirm_appointment.coroutine(
+            slot_datetime="2026-03-23T09:00:00",
+            slot_duration_minutes=60,
+            state=_make_state(modality_restriction=None),
+            config=CONFIG,
+            modality="presencial",
+        )
+    assert "evt-no-rest" in result
+    _, kwargs = mock_create.call_args
+    assert kwargs.get("modality") == "presencial"
+
+
 # ── cancel_appointment ────────────────────────────────────────────────────────
 
 async def test_cancel_appointment_cancels_and_notifies():
@@ -640,3 +709,83 @@ async def test_update_patient_ages_only_updates_changed():
     ages_written = [call.args[0]["age"] for call in table.update.call_args_list]
     assert 36 in ages_written   # u2 corrected
     assert 10 in ages_written   # u3 filled in
+
+
+# ── request_registration_update ───────────────────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_request_registration_update_email():
+    """For field=email: updates DB AND sends notification email."""
+    from app.graph.tools import request_registration_update
+
+    state = _make_state(patient_name="Ana Souza")
+
+    with patch("app.graph.tools.upsert_user", new_callable=AsyncMock) as mock_upsert, \
+         patch("app.graph.tools._notify_clinic", new_callable=AsyncMock) as mock_notify, \
+         patch("app.graph.tools.log_event", new_callable=AsyncMock):
+        result = await request_registration_update.coroutine(
+            field="email",
+            new_value="ana.novo@email.com",
+            state=state,
+            config=CONFIG,
+        )
+
+    # DB must be updated for email
+    mock_upsert.assert_awaited_once()
+    assert "ana.novo@email.com" in str(mock_upsert.call_args)
+
+    # Notification must be sent
+    mock_notify.assert_awaited_once()
+    notify_call_str = str(mock_notify.call_args)
+    assert "alteração cadastral" in notify_call_str.lower() or "Ana Souza" in notify_call_str
+
+    assert "email" in result.lower()
+
+
+@pytest.mark.asyncio
+async def test_request_registration_update_other_field():
+    """For non-email field: sends notification but does NOT update DB."""
+    from app.graph.tools import request_registration_update
+
+    state = _make_state(patient_name="Carlos Lima")
+
+    with patch("app.graph.tools.upsert_user", new_callable=AsyncMock) as mock_upsert, \
+         patch("app.graph.tools._notify_clinic", new_callable=AsyncMock) as mock_notify, \
+         patch("app.graph.tools.log_event", new_callable=AsyncMock):
+        result = await request_registration_update.coroutine(
+            field="CPF",
+            new_value="123.456.789-00",
+            state=state,
+            config=CONFIG,
+        )
+
+    # DB must NOT be updated for non-email fields
+    mock_upsert.assert_not_awaited()
+
+    # Notification must still be sent
+    mock_notify.assert_awaited_once()
+
+    assert "CPF" in result or "cpf" in result.lower()
+
+
+@pytest.mark.asyncio
+async def test_request_registration_update_returns_confirmation():
+    """Return value must mention the requested field."""
+    from app.graph.tools import request_registration_update
+
+    state = _make_state(patient_name="Beatriz")
+
+    with patch("app.graph.tools.upsert_user", new_callable=AsyncMock), \
+         patch("app.graph.tools._notify_clinic", new_callable=AsyncMock), \
+         patch("app.graph.tools.log_event", new_callable=AsyncMock):
+        result = await request_registration_update.coroutine(
+            field="data de nascimento",
+            new_value="15/03/1990",
+            state=state,
+            config=CONFIG,
+        )
+
+    assert "data de nascimento" in result.lower() or "data" in result.lower()
+    # Bot stays active — no transfer indicator in return value
+    assert "transfer" not in result.lower()
+    assert "atendente" not in result.lower() or "equipe" in result.lower()

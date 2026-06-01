@@ -446,7 +446,13 @@ async def confirm_appointment(
     # Enforce modality constraints from schedule
     from app.google_calendar import get_modality_for_slot
     slot_constraint = get_modality_for_slot(doctor, start)
-    if slot_constraint == "online":
+
+    # Patient-level restriction overrides everything (except it cannot enable presencial on online-only slots)
+    restriction = state.get("modality_restriction")
+    if restriction in ("online", "presencial"):
+        # If slot is online-only, restriction "presencial" cannot override it
+        effective_modality = "online" if slot_constraint == "online" else restriction
+    elif slot_constraint == "online":
         effective_modality = "online"
     elif slot_constraint == "presencial_sob_consulta" and modality == "presencial":
         if state.get("silent_mode"):
@@ -470,7 +476,7 @@ async def confirm_appointment(
     doctor_label = {"julio": "Dr. Júlio", "bruna": "Dra. Bruna"}.get(
         doctor, "médico(a)"
     )
-    patient_name = patient_name_override.strip() or state.get("patient_name") or state.get("user_name", "Paciente")
+    patient_name = patient_name_override.strip() or state.get("patient_name") or state.get("user_name") or "Paciente"
     patient_age = state.get("patient_age") or 99
     # is_minor_first only applies to a single 2h block (no session_note)
     is_minor_first = (
@@ -624,7 +630,7 @@ async def cancel_appointment(
     await log_event("appointment_canceled", phone, {"appointment_id": appointment_id})
 
     doctor_label = {"julio": "Dr. Júlio", "bruna": "Dra. Bruna"}.get(doctor, "médico(a)")
-    patient_name = state.get("patient_name") or state.get("user_name", "Paciente")
+    patient_name = state.get("patient_name") or state.get("user_name") or "Paciente"
     if old_start_time:
         old_dt = datetime.fromisoformat(old_start_time).astimezone(TZ)
         formatted_old = old_dt.strftime("%d/%m/%Y às %H:%M")
@@ -713,14 +719,18 @@ async def reschedule_appointment(
     old_start_time = appt_result.data.get("start_time") if appt_result.data else None
     if appt_result.data:
         _appt_user = appt_result.data.get("users") or {}
-        patient_name = _appt_user.get("patient_name") or _appt_user.get("name") or state.get("patient_name") or state.get("user_name", "Paciente")
+        patient_name = _appt_user.get("patient_name") or _appt_user.get("name") or state.get("patient_name") or state.get("user_name") or "Paciente"
     else:
-        patient_name = state.get("patient_name") or state.get("user_name", "Paciente")
+        patient_name = state.get("patient_name") or state.get("user_name") or "Paciente"
 
     # Enforce modality constraints
     from app.google_calendar import get_modality_for_slot
     slot_constraint = get_modality_for_slot(doctor, new_start)
-    effective_modality = "online" if slot_constraint == "online" else (modality if modality in ("online", "presencial") else "")
+    restriction = state.get("modality_restriction")
+    if restriction in ("online", "presencial"):
+        effective_modality = "online" if slot_constraint == "online" else restriction
+    else:
+        effective_modality = "online" if slot_constraint == "online" else (modality if modality in ("online", "presencial") else "")
 
     # Update Google Calendar event (same event_id, new time)
     try:
@@ -951,6 +961,7 @@ async def register_payment(
     patient_name_override: str = "",
     image_description: str = "",
     is_link: bool = False,
+    payment_method: str = "",
 ) -> str:
     """
     Registra um comprovante de pagamento PIX na planilha.
@@ -958,6 +969,8 @@ async def register_payment(
     "[imagem]: descrição... [drive_link:URL]".
     amount: valor pago extraído da descrição (ex: "100,00"). Use "?" se não identificado.
     drive_link: URL extraída da tag [drive_link:URL] na descrição. Passe "" se não houver.
+    payment_method: método de pagamento presencial registrado pela atendente — "cartao_credito",
+      "cartao_debito" ou "dinheiro". Usar apenas em pagamentos presenciais sem comprovante de imagem.
     image_description: texto completo da descrição da imagem.
     patient_name_override: use quando este número não tem agendamento e o remetente informou
       o nome do paciente — busca pelo nome no cadastro e envia confirmação ao número original do paciente.
@@ -1258,13 +1271,23 @@ async def register_payment(
             except Exception:
                 _logger.exception("APPT UPDATE FAILED appt=%s patient=%s", aid, patient_name)
 
-    if is_link:
-        # Link payment confirmed by attendant — no PIX discount applies
-        expected_link = expected + 50  # full price without discount
-        payment_type = "Consulta — link"
+    _sheets_payment_method: str = ""  # populated below, passed to append_payment_receipt
+    if is_link or payment_method:
+        # Attendant-confirmed payment (link, presencial cartão/dinheiro) — no PIX discount applies
+        _method_labels = {
+            "cartao_credito": "Cartão de Crédito",
+            "cartao_debito": "Cartão de Débito",
+            "dinheiro": "Dinheiro",
+        }
+        if payment_method:
+            _sheets_payment_method = _method_labels.get(payment_method, payment_method)
+            payment_note = f"Valor pago: R$ {amount} — {_sheets_payment_method} (presencial). Consulta QUITADA."
+        else:
+            _sheets_payment_method = "Link"
+            payment_note = f"Valor pago: R$ {amount} — pagamento via link. Consulta QUITADA."
+        payment_type = "Consulta"
         if appt_id_to_pay:
             await _update_appts({"paid_at": now_dt.isoformat(), "booking_fee_paid_at": now_dt.isoformat()})
-        payment_note = f"Valor pago: R$ {amount} — pagamento via link. Consulta QUITADA."
     elif amount_float <= 0:
         payment_type = "?"
         payment_note = "Valor não identificado no comprovante."
@@ -1297,7 +1320,7 @@ async def register_payment(
 
     # ── Record in Google Sheets ────────────────────────────────────────────────
     try:
-        await append_payment_receipt(patient_name, patient_phone, doctor_label, appointment_dt, amount, drive_link, payment_type=payment_type)
+        await append_payment_receipt(patient_name, patient_phone, doctor_label, appointment_dt, amount, drive_link, payment_type=payment_type, payment_method_override=_sheets_payment_method)
     except Exception:
         _logger.exception("SHEETS_APPEND FAILED patient=%s", patient_name)
 
@@ -1453,7 +1476,7 @@ async def register_refund_request(
     phone = config["configurable"]["phone"]
     client = await get_supabase()
 
-    patient_name = state.get("patient_name") or state.get("user_name", "Paciente")
+    patient_name = state.get("patient_name") or state.get("user_name") or "Paciente"
     doctor_key = state.get("preferred_doctor", "")
     doctor_label = {"julio": "Dr. Júlio", "bruna": "Dra. Bruna"}.get(doctor_key, "médico(a)")
 
@@ -1515,7 +1538,7 @@ async def confirm_refund_completed(
     phone = config["configurable"]["phone"]
     client = await get_supabase()
 
-    patient_name = state.get("patient_name") or state.get("user_name", "Paciente")
+    patient_name = state.get("patient_name") or state.get("user_name") or "Paciente"
     doctor_key = state.get("preferred_doctor", "")
     doctor_label = {"julio": "Dr. Júlio", "bruna": "Dra. Bruna"}.get(doctor_key, "médico(a)")
 
