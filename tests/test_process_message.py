@@ -797,3 +797,66 @@ def test_pricing_exception_rule_custom_price_fee_waived():
     assert "PIX" not in block
 
 
+@pytest.mark.asyncio
+async def test_pricing_exception_block_injected_in_system_prompt():
+    """When user has booking_fee_waived=True, the exception block appears in patient_agent_node system prompt."""
+    from app.graph.nodes import patient_agent_node
+    from langchain_core.messages import HumanMessage, AIMessage, SystemMessage
+
+    user_with_waiver = {
+        "id": "user-99",
+        "name": "Ana",
+        "patient_name": "Ana",
+        "number": PHONE,
+        "booking_fee_waived": True,
+        "custom_price": None,
+        "age": 32,
+        "birth_date": "01/01/1994",
+        "email": "ana@test.com",
+        "active": True,
+        "doctor_id": "d5baa58b-a788-4f40-b8c0-512c189150be",  # julio
+        "is_returning_patient": True,
+        "price_adjustment_notified_at": "2026-01-01T00:00:00",  # skip price notice
+    }
+
+    state = {
+        "phone": PHONE,
+        "stage": "patient_agent",
+        "user_name": "Ana",
+        "patient_name": "Ana",
+        "patient_age": 32,
+        "birth_date": "01/01/1994",
+        "is_patient": True,
+        "preferred_doctor": "julio",
+        "is_returning_patient": True,
+        "modality_restriction": None,
+        "silent_mode": False,
+        "messages": [HumanMessage(content="qual o meu valor de consulta?")],
+    }
+
+    captured_system_prompt = []
+
+    async def fake_ainvoke(messages):
+        for m in messages:
+            if isinstance(m, SystemMessage):
+                captured_system_prompt.append(m.content)
+                break
+        return AIMessage(content="Resposta mock")
+
+    with patch("app.graph.nodes._get_agent_llm") as mock_llm_fn, \
+         patch("app.graph.nodes.get_user_by_phone", new_callable=AsyncMock, return_value=user_with_waiver), \
+         patch("app.graph.nodes.get_upcoming_appointments", new_callable=AsyncMock, return_value=[]), \
+         patch("app.graph.nodes.send_text", new_callable=AsyncMock), \
+         patch("app.graph.nodes.save_message", new_callable=AsyncMock), \
+         patch("app.graph.nodes.get_last_assistant_message_time", new_callable=AsyncMock, return_value=None), \
+         patch("app.google_calendar.format_doctor_schedules", return_value="schedules mock"):
+        mock_llm = MagicMock()
+        mock_llm.ainvoke = fake_ainvoke
+        mock_llm_fn.return_value = mock_llm
+        await patient_agent_node(state, CONFIG)
+
+    assert len(captured_system_prompt) == 1, "SystemMessage must be passed to LLM"
+    system_prompt = captured_system_prompt[0]
+    assert "DISPENSADA" in system_prompt, "Exception block must appear in system prompt for booking_fee_waived=True"
+
+
