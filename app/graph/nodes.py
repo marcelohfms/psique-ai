@@ -1,3 +1,4 @@
+import os
 from datetime import datetime
 from zoneinfo import ZoneInfo
 from langchain_openai import ChatOpenAI
@@ -699,6 +700,16 @@ async def patient_agent_node(state: ConversationState, config: RunnableConfig) -
             if next_msg is None or next_msg.type != "tool":
                 continue  # skip orphan tool call
         clean_messages.append(msg)
+
+    # Trim history to cap per-request token usage and avoid TPM rate limits.
+    # Keep the most recent MAX_HISTORY_MESSAGES messages; always start on a
+    # human turn so the LLM never sees an orphan tool-response as first message.
+    _max_hist = int(os.getenv("MAX_HISTORY_MESSAGES", "30"))
+    if len(clean_messages) > _max_hist:
+        clean_messages = clean_messages[-_max_hist:]
+        # Walk forward until the first message is a human message
+        while clean_messages and getattr(clean_messages[0], "type", "") != "human":
+            clean_messages = clean_messages[1:]
 
     # Detect whether this is the start of a new session:
     # (a) no prior AI messages at all — patient_agent_node seeing this patient for the first time, or
