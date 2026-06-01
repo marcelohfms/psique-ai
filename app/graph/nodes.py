@@ -13,8 +13,9 @@ from app.graph.tools import (
     register_payment, update_preferred_doctor, save_patient_email,
     register_refund_request, confirm_refund_completed,
     request_registration_update,
+    _expected_consultation_amount,
 )
-from app.graph.prompts import COLLECT_SYSTEM, MINOR_RULE, ADULT_RULE, EXISTING_PATIENT_SYSTEM, NEW_PATIENT_SYSTEM, CANCELLATION_RULES, CLINIC_ADDRESS, DOCTORS_INFO, get_booking_fee_rule, MEDICAL_LIMITS_RULE, DOCTOR_CORRECTION_RULE, EMAIL_RULE, get_pricing_rules, ATTENDANT_INSTRUCTION_RULE
+from app.graph.prompts import COLLECT_SYSTEM, MINOR_RULE, ADULT_RULE, EXISTING_PATIENT_SYSTEM, NEW_PATIENT_SYSTEM, CANCELLATION_RULES, CLINIC_ADDRESS, DOCTORS_INFO, get_booking_fee_rule, MEDICAL_LIMITS_RULE, DOCTOR_CORRECTION_RULE, EMAIL_RULE, get_pricing_rules, ATTENDANT_INSTRUCTION_RULE, get_pricing_exception_rule
 from app.whatsapp import send_text
 from app.database import upsert_user, log_event, get_upcoming_appointments, get_user_by_phone, get_users_by_phone, DOCTOR_IDS, DOCTOR_NAMES, save_message, get_last_assistant_message_time
 from app.chatwoot import get_conversation_id, add_private_note
@@ -640,7 +641,10 @@ async def patient_agent_node(state: ConversationState, config: RunnableConfig) -
     needs_price_notice = False
     now_dt = datetime.now(ZoneInfo("America/Recife"))
     user = await get_user_by_phone(state["phone"])
-    if user and not user.get("price_adjustment_notified_at"):
+    _custom_price = (user or {}).get("custom_price")
+    _fee_waived = bool((user or {}).get("booking_fee_waived", False))
+    _is_exception_patient = _custom_price is not None or _fee_waived
+    if user and not user.get("price_adjustment_notified_at") and not _is_exception_patient:
         needs_price_notice = True
         if (now_dt.year, now_dt.month) < (2026, 6):
             system_prompt += (
@@ -664,6 +668,13 @@ async def patient_agent_node(state: ConversationState, config: RunnableConfig) -
                 "em junho de 2026. Não mencione os valores anteriores. "
                 "Faça isso independentemente do assunto da conversa."
             )
+
+    # ── Per-patient pricing exception block ──────────────────────────────────
+    if _is_exception_patient:
+        _doctor_key = state.get("preferred_doctor") or ""
+        _p_age = state.get("patient_age") or 99
+        _standard_price = _expected_consultation_amount(_doctor_key, _p_age, None, now_dt)
+        system_prompt += get_pricing_exception_rule(_custom_price, _fee_waived, _standard_price)
 
     # Inject upcoming appointments so the LLM knows what already exists
     upcoming = await get_upcoming_appointments(state["phone"])

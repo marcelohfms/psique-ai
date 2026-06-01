@@ -544,6 +544,8 @@ async def confirm_appointment(
                 _logger.exception("CONSULTATION_TYPE_CHECK FAILED patient=%s", patient_name)
         consultation_type = "acompanhamento" if (state_says_returning or prior_completed) else "primeira_consulta"
 
+    _bfw = bool((user or {}).get("booking_fee_waived", False))
+    _bfp_at = datetime.now(TZ).isoformat() if _bfw else None
     try:
         await client.from_("appointments").insert({
             "user_id": user["id"] if user else None,
@@ -554,6 +556,8 @@ async def confirm_appointment(
             "status": "scheduled",
             "modality": effective_modality or None,
             "consultation_type": consultation_type,
+            "booking_fee_waived": _bfw,
+            "booking_fee_paid_at": _bfp_at,
         }).execute()
     except Exception:
         from app.google_calendar import cancel_event
@@ -592,12 +596,26 @@ async def confirm_appointment(
     ))
 
     pix_key = os.environ.get("PIX_KEY", "42006848000178")
-    return (
-        f"Consulta agendada com sucesso! ✅\n{doctor_label} — {formatted}{session_label}\nID: {event_id}\n\n"
-        f"INSTRUÇÃO OBRIGATÓRIA: informe agora ao paciente que a vaga só estará garantida após o pagamento "
-        f"da taxa de reserva de R$ 100,00 via PIX ({pix_key}) em até 2 horas. "
-        f"Peça que envie o comprovante aqui no chat."
-    )
+    _custom_price_ret = (user or {}).get("custom_price")
+    if _custom_price_ret == 0:
+        return (
+            f"Consulta agendada com sucesso! ✅\n{doctor_label} — {formatted}{session_label}\nID: {event_id}\n\n"
+            f"INSTRUÇÃO: Esta consulta é cortesia. Envie a mensagem de cortesia conforme o bloco de exceção "
+            f"de preço no seu system prompt. NÃO solicite nenhum pagamento."
+        )
+    elif _bfw:
+        return (
+            f"Consulta agendada com sucesso! ✅\n{doctor_label} — {formatted}{session_label}\nID: {event_id}\n\n"
+            f"INSTRUÇÃO: A cobrança de reserva está DISPENSADA para este paciente. Envie a mensagem de confirmação "
+            f"conforme o bloco de exceção de preço no seu system prompt. NÃO solicite nenhum pagamento."
+        )
+    else:
+        return (
+            f"Consulta agendada com sucesso! ✅\n{doctor_label} — {formatted}{session_label}\nID: {event_id}\n\n"
+            f"INSTRUÇÃO OBRIGATÓRIA: informe agora ao paciente que a vaga só estará garantida após o pagamento "
+            f"da taxa de reserva de R$ 100,00 via PIX ({pix_key}) em até 2 horas. "
+            f"Peça que envie o comprovante aqui no chat."
+        )
 
 
 @tool
@@ -959,13 +977,22 @@ async def confirm_attendance(
     return "Presença confirmada! ✅"
 
 
-def _expected_consultation_amount(doctor_key: str, patient_age: int, consultation_type: str | None, now_dt) -> int:
-    """Return the expected full payment amount (with R$50 PIX discount).
+def _expected_consultation_amount(
+    doctor_key: str,
+    patient_age: int,
+    consultation_type: str | None,
+    now_dt,
+    price_override: int | None = None,
+) -> int:
+    """Return the expected full payment amount (with R$50 PIX discount for standard pricing).
 
+    price_override: if set, returns that value directly — no standard formula, no PIX discount.
     consultation_type: value stored in appointments.consultation_type at booking time.
         'primeira_consulta' → first visit pricing (higher)
         'acompanhamento' or None → follow-up pricing (default for unknown)
     """
+    if price_override is not None:
+        return price_override
     post_june = (now_dt.year, now_dt.month) >= (2026, 6)
     if doctor_key == "bruna":
         base = 700 if post_june else 600
@@ -1126,7 +1153,7 @@ async def register_payment(
     # (patients commonly delay payment by several days after the consultation).
     lookback_iso = (datetime.now(TZ) - timedelta(days=15)).isoformat()
     appt_result = await client.from_("appointments").select(
-        "appointment_id, start_time, end_time, doctor_id, paid_at, booking_fee_paid_at, status, consultation_type"
+        "appointment_id, start_time, end_time, doctor_id, paid_at, booking_fee_paid_at, status, consultation_type, booking_fee_waived"
     ).eq("user_id", user_id).in_("status", ["scheduled", "completed"]).gte("start_time", lookback_iso).order("start_time", desc=True).limit(1).execute()
 
     # IDs of all appointments that should be updated together on payment.
@@ -1282,14 +1309,36 @@ async def register_payment(
     # arrives in June (after the price reajuste). apt_start was already set to the
     # earliest slot when linked appointments were fetched.
     pricing_dt = apt_start if apt_start else now_dt
-    expected = _expected_consultation_amount(doctor_key, _age, _consultation_type, pricing_dt)
-
     # If the booking fee was already paid, the remaining balance to settle is expected - 100.
     # This prevents Eva from treating the saldo payment as "partial" and charging R$ 100 again.
     booking_fee_already_paid = bool(
         appt_result.data and appt_result.data[0].get("booking_fee_paid_at")
     ) if appt_result and appt_result.data else False
-    expected_remaining = (expected - 100) if booking_fee_already_paid else expected
+
+    # booking_fee_waived: the fee was never owed — don't deduct R$100 from expected_remaining
+    _appt_bfw = bool(
+        appt_result.data[0].get("booking_fee_waived", False)
+    ) if appt_result and appt_result.data else False
+
+    # custom_price from user record (overrides standard formula in _expected_consultation_amount)
+    custom_price: int | None = None
+    if user_id:
+        try:
+            _user_cp = await client.from_("users").select("custom_price").eq(
+                "id", user_id
+            ).maybe_single().execute()
+            custom_price = (_user_cp.data or {}).get("custom_price")
+        except Exception:
+            pass
+
+    expected = _expected_consultation_amount(
+        doctor_key, _age, _consultation_type, pricing_dt, price_override=custom_price
+    )
+
+    if _appt_bfw:
+        expected_remaining = expected        # booking fee was never owed
+    else:
+        expected_remaining = (expected - 100) if booking_fee_already_paid else expected
 
     async def _update_appts(fields: dict) -> None:
         """Apply a payment field update to all linked appointment IDs."""
@@ -1299,6 +1348,31 @@ async def register_payment(
                 await client.from_("appointments").update(fields).eq("appointment_id", aid).execute()
             except Exception:
                 _logger.exception("APPT UPDATE FAILED appt=%s patient=%s", aid, patient_name)
+
+    # ── Courtesy (custom_price == 0) — always QUITADA ────────────────────────
+    if custom_price == 0:
+        if appt_id_to_pay:
+            await _update_appts({
+                "paid_at": now_dt.isoformat(),
+                "booking_fee_paid_at": now_dt.isoformat(),
+            })
+        try:
+            await append_payment_receipt(
+                patient_name, patient_phone, doctor_label, appointment_dt,
+                amount, drive_link, payment_type="Consulta", payment_method_override="",
+            )
+        except Exception:
+            _logger.exception("SHEETS_APPEND FAILED patient=%s", patient_name)
+        await _notify_clinic(
+            f"💰 Comprovante recebido!\nPaciente: {patient_name}\nValor: R$ {amount}"
+            f"\nTipo: Consulta (cortesia)\nConsulta: {appointment_dt}\nLink: {drive_link}",
+            subject=f"Comprovante recebido — {patient_name}",
+        )
+        await log_event("payment_receipt_registered", phone, {
+            "patient_name": patient_name, "amount": amount,
+            "payment_type": "Consulta", "drive_link": drive_link,
+        })
+        return f"{confirmation_msg}\n\nConsulta QUITADA (cortesia). ✅ Nenhum valor adicional será cobrado."
 
     _sheets_payment_method: str = ""  # populated below, passed to append_payment_receipt
     if is_link or payment_method:
@@ -1342,10 +1416,16 @@ async def register_payment(
         if appt_id_to_pay:
             await _update_appts({"booking_fee_paid_at": now_dt.isoformat()})
         saldo = expected_remaining - amount_float
-        payment_note = (
-            f"Valor pago: R$ {amount}. Consulta ainda NÃO quitada. "
-            f"Saldo restante: R$ {saldo:.2f} (valor total com desconto PIX: R$ {expected:.0f},00)."
-        )
+        if custom_price is not None:
+            payment_note = (
+                f"Valor pago: R$ {amount}. Consulta ainda NÃO quitada. "
+                f"Saldo restante: R$ {saldo:.2f} (valor especial do paciente: R$ {expected:.0f},00)."
+            )
+        else:
+            payment_note = (
+                f"Valor pago: R$ {amount}. Consulta ainda NÃO quitada. "
+                f"Saldo restante: R$ {saldo:.2f} (valor total com desconto PIX: R$ {expected:.0f},00)."
+            )
 
     # ── Record in Google Sheets ────────────────────────────────────────────────
     try:

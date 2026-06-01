@@ -544,6 +544,51 @@ async def test_confirm_attendance_sets_confirmed_at():
     assert "confirmed_at" in update_call
 
 
+async def test_confirm_appointment_copies_booking_fee_waived_to_appointment():
+    """When user has booking_fee_waived=True, the appointment row gets booking_fee_waived=True
+    and booking_fee_paid_at is set immediately. Return string must NOT instruct PIX payment."""
+    from app.graph.tools import confirm_appointment
+    client, table, execute = _make_supabase_client()
+    mock_user = {"id": "user-wv", "booking_fee_waived": True, "custom_price": None}
+    with patch("app.graph.tools._get_doctor_calendar_id", new_callable=AsyncMock, return_value="cal123"), \
+         patch("app.google_calendar.create_event", new_callable=AsyncMock, return_value="evt-waived"), \
+         patch("app.graph.tools.get_supabase", new_callable=AsyncMock, return_value=client), \
+         patch("app.graph.tools.get_user_by_phone", new_callable=AsyncMock, return_value=mock_user), \
+         patch("app.graph.tools.log_event", new_callable=AsyncMock), \
+         patch("app.graph.tools._notify_clinic", new_callable=AsyncMock):
+        result = await confirm_appointment.coroutine(
+            slot_datetime="2026-07-09T09:00:00",
+            slot_duration_minutes=60,
+            state=_make_state(),
+            config=CONFIG,
+        )
+    # Return string must NOT contain PIX instructions
+    assert "PIX" not in result
+    assert "taxa de reserva" not in result.lower()
+    # DB insert must include booking_fee_waived=True and non-null booking_fee_paid_at
+    insert_call_data = table.insert.call_args[0][0]
+    assert insert_call_data["booking_fee_waived"] is True
+    assert insert_call_data["booking_fee_paid_at"] is not None
+
+
+# ── _expected_consultation_amount ────────────────────────────────────────────
+
+def test_expected_consultation_amount_price_override():
+    """price_override bypasses the standard formula and returns the override directly, no PIX discount."""
+    from app.graph.tools import _expected_consultation_amount
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+    now = datetime(2026, 6, 1, tzinfo=ZoneInfo("America/Recife"))
+    # Baseline: Dr. Júlio adult post-June → 700 - 50 = 650
+    assert _expected_consultation_amount("julio", 35, None, now) == 650
+    # price_override=500: returns exactly 500 (no PIX discount subtracted)
+    assert _expected_consultation_amount("julio", 35, None, now, price_override=500) == 500
+    # price_override=0: returns 0 (courtesy)
+    assert _expected_consultation_amount("julio", 35, None, now, price_override=0) == 0
+    # price_override=None: standard formula still applies
+    assert _expected_consultation_amount("bruna", 40, None, now, price_override=None) == 650
+
+
 # ── register_payment ──────────────────────────────────────────────────────────
 
 def _make_supabase_client_with_appointment():
@@ -715,6 +760,98 @@ async def test_register_payment_full_amount_sets_paid_at():
     update_calls = [c for c in table.update.call_args_list if "paid_at" in c[0][0]]
     assert len(update_calls) == 1
     assert "QUITADA" in result
+
+
+def _make_supabase_client_with_appointment_waived(booking_fee_waived=True, custom_price=None):
+    """Like _make_supabase_client_with_appointment but with booking_fee_waived in the appointment row.
+    Call 3 returns custom_price data instead of empty."""
+    appts_with_users = MagicMock(data=[{
+        "appointment_id": "apt-wv",
+        "start_time": "2026-06-15T10:00:00+00:00",
+        "doctor_id": "d5baa58b-a788-4f40-b8c0-512c189150be",
+        "status": "scheduled",
+        "users": {"id": "user-123", "patient_name": "Maria", "name": "Maria"},
+    }])
+    apt_data = MagicMock(data=[{
+        "appointment_id": "apt-wv",
+        "start_time": "2026-06-15T10:00:00+00:00",
+        "doctor_id": "d5baa58b-a788-4f40-b8c0-512c189150be",
+        "end_time": "2026-06-15T11:00:00+00:00",
+        "paid_at": None,
+        "booking_fee_paid_at": None,
+        "status": "scheduled",
+        "consultation_type": None,
+        "booking_fee_waived": booking_fee_waived,
+    }])
+    custom_price_data = MagicMock(data={"custom_price": custom_price})
+    empty = MagicMock(data=[])
+
+    def _side_effect(*_a, **_kw):
+        _side_effect.call_count += 1
+        if _side_effect.call_count == 1:
+            return appts_with_users
+        if _side_effect.call_count == 2:
+            return apt_data
+        if _side_effect.call_count == 3:
+            return custom_price_data
+        return empty
+    _side_effect.call_count = 0
+
+    execute = AsyncMock(side_effect=_side_effect)
+    table = MagicMock()
+    for m in ("select", "eq", "in_", "limit", "single", "maybe_single",
+              "gte", "order", "insert", "update", "upsert"):
+        getattr(table, m).return_value = table
+    table.execute = execute
+    client = MagicMock()
+    client.from_.return_value = table
+    return client, table, execute
+
+
+async def test_register_payment_booking_fee_waived_no_deduction():
+    """When booking_fee_waived=True on the appointment, expected_remaining = expected (no R$100 deduction).
+    Dr. Júlio adult June 2026: expected=650. Paying 650 → QUITADA."""
+    from app.graph.tools import register_payment
+    client, table, execute = _make_supabase_client_with_appointment_waived(
+        booking_fee_waived=True, custom_price=None
+    )
+    with patch("app.graph.tools.get_supabase", new_callable=AsyncMock, return_value=client), \
+         patch("app.graph.tools.get_users_by_phone", new_callable=AsyncMock, return_value=[{"id": "user-123", "patient_name": "Maria"}]), \
+         patch("app.graph.tools.log_event", new_callable=AsyncMock), \
+         patch("app.graph.tools._notify_clinic", new_callable=AsyncMock), \
+         patch("app.google_drive.rename_file", new_callable=AsyncMock), \
+         patch("app.google_sheets.append_payment_receipt", new_callable=AsyncMock), \
+         patch("app.graph.tools.send_text", new_callable=AsyncMock):
+        result = await register_payment.coroutine(
+            amount="650,00",
+            drive_link="https://drive.google.com/file/d/abc/view",
+            state=_make_state(preferred_doctor="julio", patient_age=35),
+            config=CONFIG,
+        )
+    assert "QUITADA" in result
+
+
+async def test_register_payment_courtesy_zero_price():
+    """When custom_price=0 (courtesy), the tool returns QUITADA immediately."""
+    from app.graph.tools import register_payment
+    client, table, execute = _make_supabase_client_with_appointment_waived(
+        booking_fee_waived=True, custom_price=0
+    )
+    with patch("app.graph.tools.get_supabase", new_callable=AsyncMock, return_value=client), \
+         patch("app.graph.tools.get_users_by_phone", new_callable=AsyncMock, return_value=[{"id": "user-123", "patient_name": "Maria"}]), \
+         patch("app.graph.tools.log_event", new_callable=AsyncMock), \
+         patch("app.graph.tools._notify_clinic", new_callable=AsyncMock), \
+         patch("app.google_drive.rename_file", new_callable=AsyncMock), \
+         patch("app.google_sheets.append_payment_receipt", new_callable=AsyncMock), \
+         patch("app.graph.tools.send_text", new_callable=AsyncMock):
+        result = await register_payment.coroutine(
+            amount="0,00",
+            drive_link="",
+            state=_make_state(preferred_doctor="julio", patient_age=35),
+            config=CONFIG,
+        )
+    assert "QUITADA" in result
+    assert "cortesia" in result.lower()
 
 
 # ── update_patient_ages script logic ─────────────────────────────────────────
@@ -919,3 +1056,25 @@ async def test_reschedule_appointment_presencial_restriction_on_online_only_slot
     assert mock_update.called
     _, kwargs = mock_update.call_args
     assert kwargs.get("modality") == "online"  # online-only slot wins over presencial restriction
+
+
+# ── send_pending_payments_reminder filter logic ───────────────────────────────
+
+def test_pending_payments_courtesy_filter():
+    """Courtesy appointments (users.custom_price == 0) must be excluded from consulta_pendente."""
+    appts = [
+        {"appointment_id": "apt-1", "start_time": "2026-06-01T10:00:00+00:00",
+         "doctor_id": "d5baa58b-a788-4f40-b8c0-512c189150be",
+         "booking_fee_paid_at": None, "paid_at": None, "consultation_type": None,
+         "users": {"number": "5581999999999", "patient_name": "Ana", "name": "Ana", "custom_price": None}},
+        {"appointment_id": "apt-2", "start_time": "2026-06-02T10:00:00+00:00",
+         "doctor_id": "d5baa58b-a788-4f40-b8c0-512c189150be",
+         "booking_fee_paid_at": None, "paid_at": None, "consultation_type": None,
+         "users": {"number": "5581888888888", "patient_name": "Cortesia", "name": "Cortesia", "custom_price": 0}},
+    ]
+    consulta_pendente = [
+        appt for appt in appts
+        if (appt.get("users") or {}).get("custom_price") != 0
+    ]
+    assert len(consulta_pendente) == 1
+    assert consulta_pendente[0]["appointment_id"] == "apt-1"

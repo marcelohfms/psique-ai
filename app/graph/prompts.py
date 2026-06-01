@@ -336,6 +336,69 @@ def get_pricing_rules(today) -> str:
         return _PRICING_BODY_POS
 
 
+def get_pricing_exception_rule(
+    custom_price: int | None,
+    booking_fee_waived: bool,
+    standard_price: int,
+) -> str:
+    """Returns an override block for Eva when this patient has special pricing.
+
+    Returns empty string when no exception applies (standard pricing and no waiver).
+    standard_price: value from _expected_consultation_amount (with PIX discount already applied).
+    """
+    if custom_price is None and not booking_fee_waived:
+        return ""
+
+    # Courtesy: zero-price consultation (no payment at all)
+    if custom_price == 0:
+        return (
+            "\n\n⚠️ EXCEÇÃO PARA ESTE PACIENTE — cortesia:\n"
+            "- Esta consulta é cortesia, sem nenhum valor a pagar.\n"
+            "- Após confirm_appointment, envie: "
+            "\"Consulta registrada! ✅ Esta consulta é cortesia — nenhum valor será cobrado. 😊\"\n"
+            "- NÃO envie nenhuma instrução de pagamento ou taxa.\n"
+            "- Se perguntado sobre preço, diga: \"Para você, esta consulta é cortesia.\""
+        )
+
+    consultation_price = custom_price if custom_price is not None else standard_price
+    price_label = f"R$ {consultation_price},00"
+
+    if custom_price is not None and not booking_fee_waived:
+        # Custom price, normal booking fee
+        return (
+            f"\n\n⚠️ EXCEÇÃO PARA ESTE PACIENTE:\n"
+            f"- Este paciente tem valor especial de {price_label} por consulta.\n"
+            f"- A taxa de reserva de R$ 100,00 se aplica normalmente (abatida do total).\n"
+            f"- Quando informar o preço, diga: \"O seu valor especial para esta consulta é {price_label}.\"\n"
+            f"- NÃO mencione os valores padrão da clínica nem o reajuste de junho."
+        )
+
+    if custom_price is None and booking_fee_waived:
+        # Standard price, booking fee waived
+        return (
+            f"\n\n⚠️ EXCEÇÃO PARA ESTE PACIENTE — sobrepõe qualquer regra de preço acima:\n"
+            f"- A taxa de reserva está DISPENSADA para este paciente.\n"
+            f"- Após confirm_appointment, envie EXATAMENTE:\n"
+            f"  \"Consulta registrada! ✅ Para você, a taxa de reserva está dispensada 😊\n"
+            f"  O valor integral da consulta ({price_label}) deverá ser pago no dia da consulta.\"\n"
+            f"- NÃO envie instruções de cobrança de taxa de reserva.\n"
+            f"- Quando informar o preço, diga: \"O seu valor especial para esta consulta é {price_label}.\""
+        )
+
+    # custom_price > 0 AND booking_fee_waived
+    return (
+        f"\n\n⚠️ EXCEÇÃO PARA ESTE PACIENTE:\n"
+        f"- Este paciente tem valor especial de {price_label} por consulta.\n"
+        f"- A taxa de reserva está DISPENSADA para este paciente.\n"
+        f"- Após confirm_appointment, envie EXATAMENTE:\n"
+        f"  \"Consulta registrada! ✅ Para você, a taxa de reserva está dispensada 😊\n"
+        f"  O valor integral da consulta ({price_label}) deverá ser pago no dia da consulta.\"\n"
+        f"- NÃO envie instruções de cobrança de taxa de reserva.\n"
+        f"- Quando informar o preço, diga: \"O seu valor especial para esta consulta é {price_label}.\"\n"
+        f"- NÃO mencione os valores padrão da clínica."
+    )
+
+
 # Keep alias for any external references
 PRICING_RULES = _PRICING_BODY_PRE
 
