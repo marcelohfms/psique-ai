@@ -544,6 +544,24 @@ async def test_confirm_attendance_sets_confirmed_at():
     assert "confirmed_at" in update_call
 
 
+# ── _expected_consultation_amount ────────────────────────────────────────────
+
+def test_expected_consultation_amount_price_override():
+    """price_override bypasses the standard formula and returns the override directly, no PIX discount."""
+    from app.graph.tools import _expected_consultation_amount
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+    now = datetime(2026, 6, 1, tzinfo=ZoneInfo("America/Recife"))
+    # Baseline: Dr. Júlio adult post-June → 700 - 50 = 650
+    assert _expected_consultation_amount("julio", 35, None, now) == 650
+    # price_override=500: returns exactly 500 (no PIX discount subtracted)
+    assert _expected_consultation_amount("julio", 35, None, now, price_override=500) == 500
+    # price_override=0: returns 0 (courtesy)
+    assert _expected_consultation_amount("julio", 35, None, now, price_override=0) == 0
+    # price_override=None: standard formula still applies
+    assert _expected_consultation_amount("bruna", 40, None, now, price_override=None) == 650
+
+
 # ── register_payment ──────────────────────────────────────────────────────────
 
 def _make_supabase_client_with_appointment():

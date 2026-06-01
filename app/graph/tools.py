@@ -959,13 +959,22 @@ async def confirm_attendance(
     return "Presença confirmada! ✅"
 
 
-def _expected_consultation_amount(doctor_key: str, patient_age: int, consultation_type: str | None, now_dt) -> int:
-    """Return the expected full payment amount (with R$50 PIX discount).
+def _expected_consultation_amount(
+    doctor_key: str,
+    patient_age: int,
+    consultation_type: str | None,
+    now_dt,
+    price_override: int | None = None,
+) -> int:
+    """Return the expected full payment amount (with R$50 PIX discount for standard pricing).
 
+    price_override: if set, returns that value directly — no standard formula, no PIX discount.
     consultation_type: value stored in appointments.consultation_type at booking time.
         'primeira_consulta' → first visit pricing (higher)
         'acompanhamento' or None → follow-up pricing (default for unknown)
     """
+    if price_override is not None:
+        return price_override
     post_june = (now_dt.year, now_dt.month) >= (2026, 6)
     if doctor_key == "bruna":
         base = 700 if post_june else 600
