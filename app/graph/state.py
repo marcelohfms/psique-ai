@@ -54,3 +54,6 @@ class ConversationState(TypedDict):
 
     # Modality restriction from DB: "online", "presencial", or None (no restriction)
     modality_restriction: Literal["online", "presencial"] | None
+
+    # Age exception from DB: True = patient bypasses doctor age limits
+    age_exception: bool | None

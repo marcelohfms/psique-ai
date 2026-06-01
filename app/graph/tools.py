@@ -126,16 +126,18 @@ async def get_available_slots(
     if not calendar_id:
         return "Não foi possível identificar o calendário do médico."
 
+    age_exception = state.get("age_exception")
+
     # Dra. Bruna only attends patients aged 12 or older
-    if doctor == "bruna" and (state.get("patient_age") or 99) < 12:
+    if not age_exception and doctor == "bruna" and (state.get("patient_age") or 99) < 12:
         return (
             "Dra. Bruna atende apenas pacientes a partir de 12 anos. "
             "Este paciente tem menos de 12 anos e precisa ser atendido pelo Dr. Júlio. "
             "Por favor, informe o paciente e pergunte se deseja agendar com o Dr. Júlio."
         )
 
-    # Dr. Júlio only attends patients up to 65 years old
-    if doctor == "julio" and (state.get("patient_age") or 0) > 65:
+    # Dr. Júlio only attends patients up to 65 anos
+    if not age_exception and doctor == "julio" and (state.get("patient_age") or 0) > 65:
         return (
             "Dr. Júlio atende pacientes até 65 anos. "
             "Este paciente tem mais de 65 anos e precisa ser atendido pela Dra. Bruna. "
@@ -715,7 +717,35 @@ async def reschedule_appointment(
     # This avoids using the conversation state's patient_name (which may be the guardian/contact,
     # not the actual patient — e.g. when the phone has multiple patients like parent + child).
     client = await get_supabase()
-    appt_result = await client.from_("appointments").select("start_time, users(patient_name, name)").eq("appointment_id", appointment_id).maybe_single().execute()
+    phone = config["configurable"]["phone"]
+    appt_result = await client.from_("appointments").select("start_time, users(id, patient_name, name, number)").eq("appointment_id", appointment_id).maybe_single().execute()
+
+    # Validate that this appointment actually belongs to this phone number
+    if appt_result.data:
+        _appt_user = appt_result.data.get("users") or {}
+        _appt_user_number = (_appt_user.get("number") or "").replace("@s.whatsapp.net", "")
+        _phone_clean = phone.replace("@s.whatsapp.net", "")
+        if _appt_user.get("id") is None or _appt_user_number != _phone_clean:
+            logger.error(
+                "RESCHEDULE_VALIDATION FAILED: appointment %s does not belong to phone %s (belongs to %s)",
+                appointment_id, _phone_clean, _appt_user_number or "unknown",
+            )
+            # Fetch the correct appointment_id for this phone to help the LLM recover
+            _correct = await client.from_("appointments").select(
+                "appointment_id, start_time"
+            ).in_("user_id", [u["id"] for u in await get_users_by_phone(_phone_clean)]).eq(
+                "status", "scheduled"
+            ).order("start_time").limit(1).execute()
+            if _correct.data:
+                _cid = _correct.data[0]["appointment_id"]
+                _cdt = datetime.fromisoformat(_correct.data[0]["start_time"]).astimezone(TZ).strftime("%d/%m/%Y às %H:%M")
+                return (
+                    f"ID de agendamento inválido para este paciente. "
+                    f"O agendamento correto é: {_cdt} (ID: {_cid}). "
+                    f"Chame reschedule_appointment novamente com o ID correto."
+                )
+            return "ID de agendamento inválido para este paciente. Verifique o ID correto nas consultas agendadas."
+
     old_start_time = appt_result.data.get("start_time") if appt_result.data else None
     if appt_result.data:
         _appt_user = appt_result.data.get("users") or {}
@@ -764,7 +794,6 @@ async def reschedule_appointment(
         reschedule_update["modality"] = effective_modality
     await client.from_("appointments").update(reschedule_update).eq("appointment_id", appointment_id).execute()
 
-    phone = config["configurable"]["phone"]
     formatted_new = new_start.strftime("%d/%m/%Y às %H:%M")
     await log_event("appointment_rescheduled", phone, {
         "appointment_id": appointment_id,

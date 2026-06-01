@@ -106,6 +106,52 @@ async def test_get_available_slots_bruna_rejects_patient_under_12():
     mock_slots.assert_not_called()
 
 
+async def test_get_available_slots_bruna_age_exception_bypasses_under_12():
+    """age_exception=True deve permitir paciente menor de 12 anos com Dra. Bruna."""
+    from app.graph.tools import get_available_slots
+    with patch("app.graph.tools._get_doctor_calendar_id", new_callable=AsyncMock, return_value="cal-bruna"), \
+         patch("app.google_calendar.get_available_slots", new_callable=AsyncMock, return_value=[]):
+        result = await get_available_slots.coroutine(
+            preferred_day="quarta",
+            preferred_shift="manha",
+            slot_duration_minutes=60,
+            state=_make_state(preferred_doctor="bruna", patient_age=8, age_exception=True),
+            config=CONFIG,
+        )
+    assert "12 anos" not in result
+
+
+async def test_get_available_slots_julio_rejects_patient_over_65():
+    """Dr. Júlio não deve atender pacientes acima de 65 anos."""
+    from app.graph.tools import get_available_slots
+    with patch("app.graph.tools._get_doctor_calendar_id", new_callable=AsyncMock, return_value="cal-julio"), \
+         patch("app.google_calendar.get_available_slots", new_callable=AsyncMock) as mock_slots:
+        result = await get_available_slots.coroutine(
+            preferred_day="segunda",
+            preferred_shift="manha",
+            slot_duration_minutes=60,
+            state=_make_state(preferred_doctor="julio", patient_age=70),
+            config=CONFIG,
+        )
+    assert "65 anos" in result
+    mock_slots.assert_not_called()
+
+
+async def test_get_available_slots_julio_age_exception_bypasses_over_65():
+    """age_exception=True deve permitir paciente acima de 65 anos com Dr. Júlio."""
+    from app.graph.tools import get_available_slots
+    with patch("app.graph.tools._get_doctor_calendar_id", new_callable=AsyncMock, return_value="cal-julio"), \
+         patch("app.google_calendar.get_available_slots", new_callable=AsyncMock, return_value=[]):
+        result = await get_available_slots.coroutine(
+            preferred_day="segunda",
+            preferred_shift="manha",
+            slot_duration_minutes=60,
+            state=_make_state(preferred_doctor="julio", patient_age=70, age_exception=True),
+            config=CONFIG,
+        )
+    assert "65 anos" not in result
+
+
 # ── confirm_appointment ───────────────────────────────────────────────────────
 
 async def test_confirm_appointment_creates_event_and_notifies():
@@ -312,7 +358,7 @@ async def test_cancel_appointment_cancels_and_notifies():
 async def test_reschedule_appointment_updates_event_and_notifies():
     from app.graph.tools import reschedule_appointment
     client, table, execute = _make_supabase_client()
-    execute.return_value = MagicMock(data={"start_time": "2026-03-23T09:00:00+00:00"})
+    execute.return_value = MagicMock(data={"start_time": "2026-03-23T09:00:00+00:00", "users": {"id": "user-1", "patient_name": "Maria", "name": "Maria", "number": "5583999999999"}})
     with patch("app.graph.tools._get_doctor_calendar_id", new_callable=AsyncMock, return_value="cal123"), \
          patch("app.google_calendar.update_event", new_callable=AsyncMock) as mock_update, \
          patch("app.graph.tools.get_supabase", new_callable=AsyncMock, return_value=client), \
@@ -336,7 +382,7 @@ async def test_reschedule_appointment_respects_modality_restriction():
     client, table, execute = _make_supabase_client()
     appt_data = {
         "start_time": "2026-03-20T09:00:00-03:00",
-        "users": {"patient_name": "Maria", "name": "Maria"},
+        "users": {"id": "user-1", "patient_name": "Maria", "name": "Maria", "number": "5583999999999"},
     }
     execute.return_value = MagicMock(data=appt_data)
     with patch("app.graph.tools._get_doctor_calendar_id", new_callable=AsyncMock, return_value="cal123"), \
@@ -851,7 +897,7 @@ async def test_reschedule_appointment_presencial_restriction_on_online_only_slot
     client, table, execute = _make_supabase_client()
     appt_data = {
         "start_time": "2026-03-20T09:00:00-03:00",
-        "users": {"patient_name": "Maria", "name": "Maria"},
+        "users": {"id": "user-1", "patient_name": "Maria", "name": "Maria", "number": "5583999999999"},
     }
     execute.return_value = MagicMock(data=appt_data)
     with patch("app.graph.tools._get_doctor_calendar_id", new_callable=AsyncMock, return_value="cal123"), \
