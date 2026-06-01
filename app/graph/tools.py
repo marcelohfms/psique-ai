@@ -11,7 +11,7 @@ from langgraph.prebuilt import InjectedState
 import logging
 
 from app.whatsapp import send_text
-from app.database import get_supabase, log_event, upsert_user, get_user_by_phone, get_users_by_phone, DOCTOR_IDS, DOCTOR_NAMES
+from app.database import get_supabase, log_event, upsert_user, get_user_by_phone, get_users_by_phone, _phone_variants, DOCTOR_IDS, DOCTOR_NAMES
 from app.chatwoot import get_conversation_id, unassign_agent_bot, add_label
 
 logger = logging.getLogger(__name__)
@@ -743,7 +743,7 @@ async def reschedule_appointment(
         _appt_user = appt_result.data.get("users") or {}
         _appt_user_number = (_appt_user.get("number") or "").replace("@s.whatsapp.net", "")
         _phone_clean = phone.replace("@s.whatsapp.net", "")
-        if _appt_user.get("id") is None or _appt_user_number != _phone_clean:
+        if _appt_user.get("id") is None or _appt_user_number not in _phone_variants(_phone_clean):
             logger.error(
                 "RESCHEDULE_VALIDATION FAILED: appointment %s does not belong to phone %s (belongs to %s)",
                 appointment_id, _phone_clean, _appt_user_number or "unknown",
