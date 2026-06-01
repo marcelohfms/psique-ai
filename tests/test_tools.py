@@ -329,6 +329,59 @@ async def test_reschedule_appointment_updates_event_and_notifies():
     mock_notify.assert_called()
 
 
+async def test_reschedule_appointment_respects_modality_restriction():
+    """reschedule_appointment deve respeitar modality_restriction do state."""
+    from app.graph.tools import reschedule_appointment
+    client, table, execute = _make_supabase_client()
+    appt_data = {
+        "start_time": "2026-03-20T09:00:00-03:00",
+        "users": {"patient_name": "Maria", "name": "Maria"},
+    }
+    execute.return_value = MagicMock(data=appt_data)
+    with patch("app.graph.tools._get_doctor_calendar_id", new_callable=AsyncMock, return_value="cal123"), \
+         patch("app.google_calendar.update_event", new_callable=AsyncMock) as mock_update, \
+         patch("app.graph.tools.get_supabase", new_callable=AsyncMock, return_value=client), \
+         patch("app.graph.tools.log_event", new_callable=AsyncMock), \
+         patch("app.graph.tools._notify_clinic", new_callable=AsyncMock), \
+         patch("app.graph.tools.send_text", new_callable=AsyncMock), \
+         patch("app.google_calendar.SCHEDULE_EXCEPTIONS", {}), \
+         patch("app.google_calendar.get_modality_for_slot", return_value="escolha"):
+        result = await reschedule_appointment.coroutine(
+            appointment_id="evt-orig",
+            new_slot_datetime="2026-03-25T10:00:00",
+            slot_duration_minutes=60,
+            state=_make_state(modality_restriction="online"),
+            config=CONFIG,
+            modality="presencial",  # LLM passed presencial — should be overridden
+        )
+    assert mock_update.called
+    _, kwargs = mock_update.call_args
+    assert kwargs.get("modality") == "online"
+
+
+async def test_confirm_appointment_presencial_restriction_on_online_only_slot():
+    """Restrição presencial NÃO pode sobrepor slot online-only — deve continuar online."""
+    from app.graph.tools import confirm_appointment
+    client, _, _ = _make_supabase_client()
+    with patch("app.graph.tools._get_doctor_calendar_id", new_callable=AsyncMock, return_value="cal123"), \
+         patch("app.google_calendar.create_event", new_callable=AsyncMock, return_value="evt-onlineonly") as mock_create, \
+         patch("app.graph.tools.get_supabase", new_callable=AsyncMock, return_value=client), \
+         patch("app.graph.tools.get_user_by_phone", new_callable=AsyncMock, return_value={"id": "user-1"}), \
+         patch("app.graph.tools.log_event", new_callable=AsyncMock), \
+         patch("app.graph.tools._notify_clinic", new_callable=AsyncMock), \
+         patch("app.google_calendar.get_modality_for_slot", return_value="online"):  # slot is online-only
+        result = await confirm_appointment.coroutine(
+            slot_datetime="2026-03-23T09:00:00",
+            slot_duration_minutes=60,
+            state=_make_state(modality_restriction="presencial"),  # restriction says presencial
+            config=CONFIG,
+            modality="presencial",
+        )
+    assert "evt-onlineonly" in result
+    _, kwargs = mock_create.call_args
+    assert kwargs.get("modality") == "online"  # online-only wins over presencial restriction
+
+
 # ── request_document ──────────────────────────────────────────────────────────
 
 async def test_request_document_inserts_record_and_returns_success():
