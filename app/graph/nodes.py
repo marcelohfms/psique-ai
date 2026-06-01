@@ -623,6 +623,7 @@ async def patient_agent_node(state: ConversationState, config: RunnableConfig) -
         doctors_info=DOCTORS_INFO,
         medical_limits_rule=MEDICAL_LIMITS_RULE,
         attendant_instruction_rule=ATTENDANT_INSTRUCTION_RULE,
+        modality_restriction=state.get("modality_restriction") or "",
     )
 
     # Attendant-mode: add patient_name_override reminder (routing rules are in the base prompt)
