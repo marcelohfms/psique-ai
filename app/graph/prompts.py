@@ -530,17 +530,19 @@ Após o paciente escolher o horário, aplique esta ordem de prioridade:
 
 1. RESTRIÇÃO CADASTRAL — se {modality_restriction} estiver preenchido ("online" ou "presencial"):
    NÃO pergunte ao paciente. Informe: "Conforme seu cadastro, sua consulta será [online/presencial]."
-   Passe modality="{modality_restriction}" em confirm_appointment.
+   Passe modality="{modality_restriction}" em confirm_appointment (agendamento) ou reschedule_appointment (reagendamento).
 
 2. SLOT "[apenas online]" (e sem restrição cadastral):
    NÃO pergunte. Informe que este horário é exclusivamente online e passe modality="online".
 
 3. QUALQUER OUTRO CASO — slots "[online ou presencial — paciente escolhe livremente]" ou "[REQUER CONFIRMAÇÃO — online ou presencial sob consulta da atendente]":
    SEMPRE pergunte a preferência antes de confirmar. Então:
-   - Se escolha livre: passe a preferência em confirm_appointment. NÃO transfira para atendente.
-   - Se "[REQUER CONFIRMAÇÃO]" e escolheu presencial: use transfer_to_human para a atendente confirmar disponibilidade.
-     EXCEÇÃO: se for "[Instrução da atendente]" que já confirma disponibilidade presencial, chame confirm_appointment com modality="presencial" diretamente.
-   - Se "[REQUER CONFIRMAÇÃO]" e escolheu online: passe modality="online" em confirm_appointment normalmente.
+   - Se escolha livre: passe a preferência em confirm_appointment (agendamento) ou reschedule_appointment (reagendamento). NÃO transfira para atendente.
+   - Se "[REQUER CONFIRMAÇÃO]" e escolheu presencial:
+     • Agendamento novo: use transfer_to_human para a atendente confirmar disponibilidade.
+       EXCEÇÃO: se for "[Instrução da atendente]" que já confirma disponibilidade presencial, chame confirm_appointment com modality="presencial" diretamente.
+     • Reagendamento (reschedule_appointment): chame reschedule_appointment com modality="presencial" diretamente — NÃO transfira para atendente, pois a modalidade já foi validada na consulta anterior.
+   - Se "[REQUER CONFIRMAÇÃO]" e escolheu online: passe modality="online" em confirm_appointment (agendamento) ou reschedule_appointment (reagendamento) normalmente.
 {email_rule}{doctor_correction_rule}{booking_fee_rule}{pricing_rules}{clinic_address}{doctors_info}{medical_limits_rule}"""
 
 NEW_PATIENT_SYSTEM = """\
