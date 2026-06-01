@@ -140,6 +140,7 @@ async def append_payment_receipt(
     amount: str,
     drive_link: str,
     payment_type: str = "",
+    payment_method_override: str = "",
 ) -> None:
     """Append a payment receipt row to the Pagamentos sheet.
     Does nothing if GOOGLE_SHEETS_PAYMENTS_ID is not configured.
@@ -153,8 +154,11 @@ async def append_payment_receipt(
     now = datetime.now(TZ).strftime("%d/%m/%Y %H:%M")
     phone_clean = phone.replace("@s.whatsapp.net", "")
 
-    # Infer payment method from payment_type
-    payment_method = "Link" if "link" in payment_type.lower() else "PIX"
+    # Determine payment method for the Forma de Pagamento column
+    if payment_method_override:
+        payment_method = payment_method_override
+    else:
+        payment_method = "Link" if "link" in payment_type.lower() else "PIX"
 
     # Build filename for the comprovante hyperlink
     comprovante_formula_args: tuple[str, str] | None = None

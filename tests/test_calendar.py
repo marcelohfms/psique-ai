@@ -214,3 +214,86 @@ async def test_timezone_america_recife(freeze_calendar_now):
         )
     assert all(dt.tzinfo is not None for dt, _ in slots)
     assert all(str(dt.tzinfo) == "America/Recife" for dt, _ in slots)
+
+
+# ── format_doctor_schedules ────────────────────────────────────────────────────
+
+def test_format_schedules_shows_regular_when_exception_blocks_day():
+    """Blocked exception days must NOT hide the regular weekday schedule.
+
+    When SCHEDULE_EXCEPTIONS has an empty-list entry for a weekday (blocking that
+    specific date), format_doctor_schedules must still show the regular schedule
+    for that weekday so the LLM knows the doctor is available on other occurrences.
+    Without this fix the LLM would think the doctor never works that weekday.
+    """
+    from app.google_calendar import format_doctor_schedules
+
+    # Freeze 'today' inside google_calendar to 2026-05-28 so the June 1-4
+    # exceptions fall within the 14-day look-ahead window.
+    with patch("app.google_calendar.date") as mock_date:
+        mock_date.today.return_value = date(2026, 5, 28)
+        mock_date.fromisoformat = date.fromisoformat
+        mock_date.side_effect = lambda *a, **kw: date(*a, **kw)
+        text = format_doctor_schedules()
+
+    # Parse out Dr. Júlio's section only (lines after "Dr. Júlio:")
+    text_lines = text.splitlines()
+    julio_start = next(i for i, l in enumerate(text_lines) if "Dr. Júlio" in l)
+    julio_lines = text_lines[julio_start + 1:]
+
+    # Quinta should show the regular schedule (manhã, tarde, noite) AND note
+    # the exception — NOT just "SEM ATENDIMENTO" with no regular schedule.
+    quinta_line = next(l for l in julio_lines if "Quinta" in l)
+    assert "manhã" in quinta_line, f"Regular Thursday schedule missing: {quinta_line!r}"
+    assert "EXCETO 04/06" in quinta_line, f"Exception note missing: {quinta_line!r}"
+    assert "sem atendimento nesta data" in quinta_line
+
+    # Terça and Quarta similarly should show regular schedule + exception note
+    terca_line = next(l for l in julio_lines if "Terça" in l)
+    assert "tarde" in terca_line, f"Regular Tuesday schedule missing: {terca_line!r}"
+    assert "EXCETO 02/06" in terca_line
+
+    quarta_line = next(l for l in julio_lines if "Quarta" in l)
+    assert "manhã" in quarta_line, f"Regular Wednesday schedule missing: {quarta_line!r}"
+    assert "EXCETO 03/06" in quarta_line
+
+
+def test_format_schedules_extended_exception_shows_regular_too():
+    """Extended-schedule exceptions must show both regular and exception windows."""
+    from app.google_calendar import format_doctor_schedules
+
+    with patch("app.google_calendar.date") as mock_date:
+        mock_date.today.return_value = date(2026, 5, 28)
+        mock_date.fromisoformat = date.fromisoformat
+        mock_date.side_effect = lambda *a, **kw: date(*a, **kw)
+        text = format_doctor_schedules()
+
+    # Segunda has an extended schedule on 01/06 (adds afternoon).
+    # The line should show the regular morning schedule AND note the June 1 exception.
+    segunda_line = next(l for l in text.splitlines() if "Segunda" in l and "Dr. Júlio" not in l)
+    julio_lines = [l for l in text.splitlines() if "Segunda" in l]
+    # Find the Dr. Júlio Segunda line (comes after "Dr. Júlio:" header)
+    text_lines = text.splitlines()
+    julio_idx = next(i for i, l in enumerate(text_lines) if "Dr. Júlio" in l)
+    julio_segunda = next(l for l in text_lines[julio_idx:] if "Segunda" in l)
+    assert "manhã" in julio_segunda, f"Regular Monday schedule missing: {julio_segunda!r}"
+    assert "em 01/06" in julio_segunda, f"Exception date missing: {julio_segunda!r}"
+
+
+def test_format_schedules_no_exceptions_clean():
+    """After exceptions have expired, output shows plain regular schedules."""
+    from app.google_calendar import format_doctor_schedules
+
+    # June 10 — all June 1-4 exceptions are outside the 14-day window
+    with patch("app.google_calendar.date") as mock_date:
+        mock_date.today.return_value = date(2026, 6, 10)
+        mock_date.fromisoformat = date.fromisoformat
+        mock_date.side_effect = lambda *a, **kw: date(*a, **kw)
+        text = format_doctor_schedules()
+
+    assert "EXCETO" not in text
+    assert "SEM ATENDIMENTO" not in text
+    assert "exceção" not in text
+    # Regular Thursday schedule should be present
+    quinta_line = next(l for l in text.splitlines() if "Quinta" in l)
+    assert "manhã" in quinta_line

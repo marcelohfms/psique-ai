@@ -98,45 +98,51 @@ def format_doctor_schedules() -> str:
 
         for weekday in all_weekdays:
             exc_entry = doc_exc.get(weekday)  # None means no exception this week
+
+            # Build regular-schedule description for this weekday (used below)
+            regular_windows = days.get(weekday, [])
+            regular_parts: list[str] = []
+            regular_seen: set = set()
+            for entry in regular_windows:
+                sh, sm, eh, em, modality = entry
+                shift = _shift_label(sh, eh)
+                mod = _MODALITY_LABELS.get(modality, modality)
+                key = (shift, modality)
+                if key not in regular_seen:
+                    regular_parts.append(f"{shift} ({mod})")
+                    regular_seen.add(key)
+            regular_str = ", ".join(regular_parts) if regular_parts else "sem atendimento"
+
             if exc_entry is not None:
                 exc_date_str, exc_windows = exc_entry
                 exc_date_label = date.fromisoformat(exc_date_str).strftime("%d/%m")
                 if exc_windows is None:
-                    # Explicitly blocked on this date
+                    # Blocked on this specific date — still show the regular schedule so
+                    # the LLM knows the doctor normally works on this weekday.
                     lines.append(
-                        f"  - {_WEEKDAY_NAMES[weekday]}: SEM ATENDIMENTO em {exc_date_label} (exceção de agenda)"
+                        f"  - {_WEEKDAY_NAMES[weekday]}: {regular_str} "
+                        f"[EXCETO {exc_date_label}: sem atendimento nesta data]"
                     )
-                    continue
-                # Extended/different schedule — show with the specific date
-                windows_to_use = exc_windows
-                parts = []
-                seen: set = set()
-                for entry in windows_to_use:
-                    sh, sm, eh, em, modality = entry
-                    shift = _shift_label(sh, eh)
-                    mod = _MODALITY_LABELS.get(modality, modality)
-                    key = (shift, modality)
-                    if key not in seen:
-                        parts.append(f"{shift} ({mod})")
-                        seen.add(key)
-                lines.append(
-                    f"  - {_WEEKDAY_NAMES[weekday]}: {', '.join(parts)} "
-                    f"[exceção — disponível SOMENTE em {exc_date_label}]"
-                )
+                else:
+                    # Different/extended schedule on this specific date — show both the
+                    # exception windows and the regular schedule for other occurrences.
+                    exc_parts: list[str] = []
+                    exc_seen: set = set()
+                    for entry in exc_windows:
+                        sh, sm, eh, em, modality = entry
+                        shift = _shift_label(sh, eh)
+                        mod = _MODALITY_LABELS.get(modality, modality)
+                        key = (shift, modality)
+                        if key not in exc_seen:
+                            exc_parts.append(f"{shift} ({mod})")
+                            exc_seen.add(key)
+                    lines.append(
+                        f"  - {_WEEKDAY_NAMES[weekday]}: {regular_str} "
+                        f"[em {exc_date_label}: {', '.join(exc_parts)}]"
+                    )
             else:
-                # Regular schedule
-                windows_to_use = days.get(weekday, [])
-                parts = []
-                seen = set()
-                for entry in windows_to_use:
-                    sh, sm, eh, em, modality = entry
-                    shift = _shift_label(sh, eh)
-                    mod = _MODALITY_LABELS.get(modality, modality)
-                    key = (shift, modality)
-                    if key not in seen:
-                        parts.append(f"{shift} ({mod})")
-                        seen.add(key)
-                lines.append(f"  - {_WEEKDAY_NAMES[weekday]}: {', '.join(parts)}")
+                # Regular schedule — no upcoming exception
+                lines.append(f"  - {_WEEKDAY_NAMES[weekday]}: {regular_str}")
     return "\n".join(lines)
 
 

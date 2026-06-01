@@ -171,9 +171,17 @@ async def describe_image_bytes(
             logger.warning("GOOGLE_DRIVE_PAYMENTS_FOLDER_ID not set — skipping Drive upload for comprovante")
         else:
             try:
-                from app.google_drive import upload_image
-                drive_link = await upload_image(image_bytes, f"comprovante_{patient}_{now_str}.jpg")
-                logger.info("DRIVE_UPLOAD OK link=%s", drive_link)
+                upload_bytes = source_bytes if source_bytes is not None else image_bytes
+                ext = source_ext  # "pdf" or "jpg"
+                comprovante_filename = f"comprovante_{patient}_{now_str}.{ext}"
+                if ext == "pdf":
+                    from app.google_drive import upload_document
+                    mimetype = "application/pdf"
+                    drive_link = await upload_document(upload_bytes, comprovante_filename, mimetype)
+                else:
+                    from app.google_drive import upload_image
+                    drive_link = await upload_image(upload_bytes, comprovante_filename)
+                logger.info("DRIVE_UPLOAD OK filename=%s link=%s", comprovante_filename, drive_link)
                 return f"[imagem]: {description} [drive_link:{drive_link}]"
             except Exception:
                 logger.exception("DRIVE_UPLOAD FAILED folder_id=%s — comprovante enviado para Eva sem link", folder_id)
