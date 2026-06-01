@@ -762,6 +762,98 @@ async def test_register_payment_full_amount_sets_paid_at():
     assert "QUITADA" in result
 
 
+def _make_supabase_client_with_appointment_waived(booking_fee_waived=True, custom_price=None):
+    """Like _make_supabase_client_with_appointment but with booking_fee_waived in the appointment row.
+    Call 3 returns custom_price data instead of empty."""
+    appts_with_users = MagicMock(data=[{
+        "appointment_id": "apt-wv",
+        "start_time": "2026-06-15T10:00:00+00:00",
+        "doctor_id": "d5baa58b-a788-4f40-b8c0-512c189150be",
+        "status": "scheduled",
+        "users": {"id": "user-123", "patient_name": "Maria", "name": "Maria"},
+    }])
+    apt_data = MagicMock(data=[{
+        "appointment_id": "apt-wv",
+        "start_time": "2026-06-15T10:00:00+00:00",
+        "doctor_id": "d5baa58b-a788-4f40-b8c0-512c189150be",
+        "end_time": "2026-06-15T11:00:00+00:00",
+        "paid_at": None,
+        "booking_fee_paid_at": None,
+        "status": "scheduled",
+        "consultation_type": None,
+        "booking_fee_waived": booking_fee_waived,
+    }])
+    custom_price_data = MagicMock(data={"custom_price": custom_price})
+    empty = MagicMock(data=[])
+
+    def _side_effect(*_a, **_kw):
+        _side_effect.call_count += 1
+        if _side_effect.call_count == 1:
+            return appts_with_users
+        if _side_effect.call_count == 2:
+            return apt_data
+        if _side_effect.call_count == 3:
+            return custom_price_data
+        return empty
+    _side_effect.call_count = 0
+
+    execute = AsyncMock(side_effect=_side_effect)
+    table = MagicMock()
+    for m in ("select", "eq", "in_", "limit", "single", "maybe_single",
+              "gte", "order", "insert", "update", "upsert"):
+        getattr(table, m).return_value = table
+    table.execute = execute
+    client = MagicMock()
+    client.from_.return_value = table
+    return client, table, execute
+
+
+async def test_register_payment_booking_fee_waived_no_deduction():
+    """When booking_fee_waived=True on the appointment, expected_remaining = expected (no R$100 deduction).
+    Dr. Júlio adult June 2026: expected=650. Paying 650 → QUITADA."""
+    from app.graph.tools import register_payment
+    client, table, execute = _make_supabase_client_with_appointment_waived(
+        booking_fee_waived=True, custom_price=None
+    )
+    with patch("app.graph.tools.get_supabase", new_callable=AsyncMock, return_value=client), \
+         patch("app.graph.tools.get_users_by_phone", new_callable=AsyncMock, return_value=[{"id": "user-123", "patient_name": "Maria"}]), \
+         patch("app.graph.tools.log_event", new_callable=AsyncMock), \
+         patch("app.graph.tools._notify_clinic", new_callable=AsyncMock), \
+         patch("app.google_drive.rename_file", new_callable=AsyncMock), \
+         patch("app.google_sheets.append_payment_receipt", new_callable=AsyncMock), \
+         patch("app.graph.tools.send_text", new_callable=AsyncMock):
+        result = await register_payment.coroutine(
+            amount="650,00",
+            drive_link="https://drive.google.com/file/d/abc/view",
+            state=_make_state(preferred_doctor="julio", patient_age=35),
+            config=CONFIG,
+        )
+    assert "QUITADA" in result
+
+
+async def test_register_payment_courtesy_zero_price():
+    """When custom_price=0 (courtesy), the tool returns QUITADA immediately."""
+    from app.graph.tools import register_payment
+    client, table, execute = _make_supabase_client_with_appointment_waived(
+        booking_fee_waived=True, custom_price=0
+    )
+    with patch("app.graph.tools.get_supabase", new_callable=AsyncMock, return_value=client), \
+         patch("app.graph.tools.get_users_by_phone", new_callable=AsyncMock, return_value=[{"id": "user-123", "patient_name": "Maria"}]), \
+         patch("app.graph.tools.log_event", new_callable=AsyncMock), \
+         patch("app.graph.tools._notify_clinic", new_callable=AsyncMock), \
+         patch("app.google_drive.rename_file", new_callable=AsyncMock), \
+         patch("app.google_sheets.append_payment_receipt", new_callable=AsyncMock), \
+         patch("app.graph.tools.send_text", new_callable=AsyncMock):
+        result = await register_payment.coroutine(
+            amount="0,00",
+            drive_link="",
+            state=_make_state(preferred_doctor="julio", patient_age=35),
+            config=CONFIG,
+        )
+    assert "QUITADA" in result
+    assert "cortesia" in result.lower()
+
+
 # ── update_patient_ages script logic ─────────────────────────────────────────
 
 def test_age_from_birth_date_dd_mm_yyyy():
