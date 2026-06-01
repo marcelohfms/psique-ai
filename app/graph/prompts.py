@@ -370,7 +370,7 @@ def get_pricing_exception_rule(
             f"- Este paciente tem valor especial de {price_label} por consulta.\n"
             f"- A taxa de reserva de R$ 100,00 se aplica normalmente (abatida do total).\n"
             f"- Quando informar o preço, diga: \"O seu valor especial para esta consulta é {price_label}.\"\n"
-            f"- NÃO mencione os valores padrão da clínica."
+            f"- NÃO mencione os valores padrão da clínica nem o reajuste de junho."
         )
 
     if custom_price is None and booking_fee_waived:

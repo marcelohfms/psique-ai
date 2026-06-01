@@ -1416,10 +1416,16 @@ async def register_payment(
         if appt_id_to_pay:
             await _update_appts({"booking_fee_paid_at": now_dt.isoformat()})
         saldo = expected_remaining - amount_float
-        payment_note = (
-            f"Valor pago: R$ {amount}. Consulta ainda NÃO quitada. "
-            f"Saldo restante: R$ {saldo:.2f} (valor total com desconto PIX: R$ {expected:.0f},00)."
-        )
+        if custom_price is not None:
+            payment_note = (
+                f"Valor pago: R$ {amount}. Consulta ainda NÃO quitada. "
+                f"Saldo restante: R$ {saldo:.2f} (valor especial do paciente: R$ {expected:.0f},00)."
+            )
+        else:
+            payment_note = (
+                f"Valor pago: R$ {amount}. Consulta ainda NÃO quitada. "
+                f"Saldo restante: R$ {saldo:.2f} (valor total com desconto PIX: R$ {expected:.0f},00)."
+            )
 
     # ── Record in Google Sheets ────────────────────────────────────────────────
     try:

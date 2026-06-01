@@ -641,7 +641,10 @@ async def patient_agent_node(state: ConversationState, config: RunnableConfig) -
     needs_price_notice = False
     now_dt = datetime.now(ZoneInfo("America/Recife"))
     user = await get_user_by_phone(state["phone"])
-    if user and not user.get("price_adjustment_notified_at"):
+    _custom_price = (user or {}).get("custom_price")
+    _fee_waived = bool((user or {}).get("booking_fee_waived", False))
+    _is_exception_patient = _custom_price is not None or _fee_waived
+    if user and not user.get("price_adjustment_notified_at") and not _is_exception_patient:
         needs_price_notice = True
         if (now_dt.year, now_dt.month) < (2026, 6):
             system_prompt += (
@@ -667,9 +670,7 @@ async def patient_agent_node(state: ConversationState, config: RunnableConfig) -
             )
 
     # ── Per-patient pricing exception block ──────────────────────────────────
-    _custom_price = (user or {}).get("custom_price")   # None, 0, or positive int
-    _fee_waived = bool((user or {}).get("booking_fee_waived", False))
-    if _custom_price is not None or _fee_waived:
+    if _is_exception_patient:
         _doctor_key = state.get("preferred_doctor") or ""
         _p_age = state.get("patient_age") or 99
         _standard_price = _expected_consultation_amount(_doctor_key, _p_age, None, now_dt)

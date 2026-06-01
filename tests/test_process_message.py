@@ -786,7 +786,7 @@ def test_pricing_exception_rule_custom_price_normal_fee():
     block = get_pricing_exception_rule(500, False, 650)
     assert "R$ 500,00" in block
     assert "R$ 100,00" in block  # taxa de reserva still applies
-    assert "reajuste" not in block.lower()
+    assert "NÃO mencione" in block  # Eva is instructed not to mention standard prices or reajuste
 
 
 def test_pricing_exception_rule_custom_price_fee_waived():

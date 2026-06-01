@@ -61,7 +61,7 @@ async def main() -> None:
     # ── 2. Pagamento de consulta pendente (realizadas, sem paid_at) ──────────────
     r2 = await (
         client.from_("appointments")
-        .select("appointment_id, start_time, doctor_id, consultation_type, booking_fee_paid_at, paid_at, users(number, patient_name, name, custom_price)")
+        .select("appointment_id, start_time, doctor_id, consultation_type, booking_fee_paid_at, paid_at, booking_fee_waived, users(number, patient_name, name, custom_price)")
         .eq("status", "completed")
         .is_("paid_at", "null")
         .order("start_time", desc=True)
@@ -123,14 +123,17 @@ async def main() -> None:
             phone = user.get("number") or "—"
             doctor = DOCTOR_LABELS.get(appt.get("doctor_id", ""), "—")
             dt = _fmt_date(appt["start_time"])
-            taxa_paga = bool(appt.get("booking_fee_paid_at"))
+            taxa_waived = bool(appt.get("booking_fee_waived"))
+            taxa_paga = bool(appt.get("booking_fee_paid_at")) and not taxa_waived
 
             line = f"• {patient}"
             if contact and contact != patient:
                 line += f"\n  Responsável: {contact}"
             line += f"\n  {doctor} — realizada em {dt}"
             line += f"\n  WhatsApp: {phone}"
-            if taxa_paga:
+            if taxa_waived:
+                line += "\n  Taxa de reserva: Dispensada"
+            elif taxa_paga:
                 line += f"\n  Taxa de reserva: Paga (R${BOOKING_FEE},00) — consulta pendente"
             else:
                 line += f"\n  Taxa de reserva: Não paga — R${BOOKING_FEE},00 + consulta em aberto"
