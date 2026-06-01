@@ -709,3 +709,52 @@ async def test_patient_agent_no_greeting_injection_on_same_day():
     assert "INÍCIO DE CONVERSA" not in system_msg.content
 
 
+async def _run_patient_agent_with_user(state: dict, user: dict) -> "SystemMessage":
+    """Helper variant that accepts a custom user dict for get_user_by_phone."""
+    from app.graph.nodes import patient_agent_node
+    from langchain_core.messages import SystemMessage
+
+    ai_response = MagicMock()
+    ai_response.tool_calls = []
+    ai_response.content = "resposta"
+
+    captured = []
+
+    async def fake_ainvoke(messages):
+        captured.extend(messages)
+        return ai_response
+
+    with patch("app.graph.nodes._get_agent_llm") as mock_llm_fn, \
+         patch("app.graph.nodes.send_text", new_callable=AsyncMock), \
+         patch("app.graph.nodes.save_message", new_callable=AsyncMock), \
+         patch("app.graph.nodes.upsert_user", new_callable=AsyncMock), \
+         patch("app.graph.nodes.get_upcoming_appointments", new_callable=AsyncMock, return_value=[]), \
+         patch("app.graph.nodes.get_user_by_phone", new_callable=AsyncMock, return_value=user), \
+         patch("app.graph.nodes.get_last_assistant_message_time", new_callable=AsyncMock, return_value=None), \
+         patch("app.google_calendar.format_doctor_schedules", return_value="seg-sex"):
+        mock_llm = MagicMock()
+        mock_llm.ainvoke = fake_ainvoke
+        mock_llm_fn.return_value = mock_llm
+        await patient_agent_node(state, {})
+
+    return next((m for m in captured if isinstance(m, SystemMessage)), None)
+
+
+async def test_price_notice_injected_when_not_yet_notified():
+    """price_adjustment_notified_at=None → price notice IS injected into system prompt."""
+    state = _make_patient_agent_state(messages=[HumanMessage(content="quero agendar")])
+    user = {"price_adjustment_notified_at": None}
+    system_msg = await _run_patient_agent_with_user(state, user=user)
+    assert system_msg is not None
+    assert "AVISO ÚNICO OBRIGATÓRIO" in system_msg.content
+
+
+async def test_price_notice_not_injected_when_already_notified():
+    """price_adjustment_notified_at set → price notice is NOT injected into system prompt."""
+    state = _make_patient_agent_state(messages=[HumanMessage(content="quero agendar")])
+    user = {"price_adjustment_notified_at": "2026-05-01T10:00:00"}
+    system_msg = await _run_patient_agent_with_user(state, user=user)
+    assert system_msg is not None
+    assert "AVISO ÚNICO OBRIGATÓRIO" not in system_msg.content
+
+

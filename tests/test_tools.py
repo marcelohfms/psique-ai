@@ -21,6 +21,7 @@ def _make_state(**kwargs) -> dict:
         "preferred_doctor": "julio",
         "guardian_relationship": None,
         "messages": [],
+        "modality_restriction": None,
     }
     base.update(kwargs)
     return base
@@ -842,3 +843,33 @@ async def test_request_registration_update_returns_confirmation():
     # Bot stays active — no transfer indicator in return value
     assert "transfer" not in result.lower()
     assert "atendente" not in result.lower() or "equipe" in result.lower()
+
+
+async def test_reschedule_appointment_presencial_restriction_on_online_only_slot():
+    """Restrição presencial NÃO pode sobrepor slot online-only no reagendamento — deve continuar online."""
+    from app.graph.tools import reschedule_appointment
+    client, table, execute = _make_supabase_client()
+    appt_data = {
+        "start_time": "2026-03-20T09:00:00-03:00",
+        "users": {"patient_name": "Maria", "name": "Maria"},
+    }
+    execute.return_value = MagicMock(data=appt_data)
+    with patch("app.graph.tools._get_doctor_calendar_id", new_callable=AsyncMock, return_value="cal123"), \
+         patch("app.google_calendar.update_event", new_callable=AsyncMock) as mock_update, \
+         patch("app.graph.tools.get_supabase", new_callable=AsyncMock, return_value=client), \
+         patch("app.graph.tools.log_event", new_callable=AsyncMock), \
+         patch("app.graph.tools._notify_clinic", new_callable=AsyncMock), \
+         patch("app.graph.tools.send_text", new_callable=AsyncMock), \
+         patch("app.google_calendar.SCHEDULE_EXCEPTIONS", {}), \
+         patch("app.google_calendar.get_modality_for_slot", return_value="online"):  # slot is online-only
+        result = await reschedule_appointment.coroutine(
+            appointment_id="evt-orig",
+            new_slot_datetime="2026-03-25T10:00:00",
+            slot_duration_minutes=60,
+            state=_make_state(modality_restriction="presencial"),  # restriction says presencial
+            config=CONFIG,
+            modality="presencial",  # LLM passed presencial — online-only slot should win
+        )
+    assert mock_update.called
+    _, kwargs = mock_update.call_args
+    assert kwargs.get("modality") == "online"  # online-only slot wins over presencial restriction
