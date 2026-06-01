@@ -50,6 +50,7 @@ async def main() -> None:
         client.from_("appointments")
         .select("appointment_id, start_time, doctor_id, consultation_type, booking_fee_paid_at, paid_at, users(number, patient_name, name)")
         .eq("status", "scheduled")
+        .eq("booking_fee_waived", False)
         .is_("booking_fee_paid_at", "null")
         .gt("start_time", now.isoformat())
         .order("start_time")
@@ -60,13 +61,17 @@ async def main() -> None:
     # ── 2. Pagamento de consulta pendente (realizadas, sem paid_at) ──────────────
     r2 = await (
         client.from_("appointments")
-        .select("appointment_id, start_time, doctor_id, consultation_type, booking_fee_paid_at, paid_at, users(number, patient_name, name)")
+        .select("appointment_id, start_time, doctor_id, consultation_type, booking_fee_paid_at, paid_at, users(number, patient_name, name, custom_price)")
         .eq("status", "completed")
         .is_("paid_at", "null")
         .order("start_time", desc=True)
         .execute()
     )
-    consulta_pendente = r2.data or []
+    # Exclude courtesy patients (custom_price == 0) — they have no balance to collect
+    consulta_pendente = [
+        appt for appt in (r2.data or [])
+        if (appt.get("users") or {}).get("custom_price") != 0
+    ]
 
     # ── Build email ───────────────────────────────────────────────────────────────
     total = len(taxa_pendente) + len(consulta_pendente)

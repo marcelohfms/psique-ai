@@ -964,3 +964,25 @@ async def test_reschedule_appointment_presencial_restriction_on_online_only_slot
     assert mock_update.called
     _, kwargs = mock_update.call_args
     assert kwargs.get("modality") == "online"  # online-only slot wins over presencial restriction
+
+
+# ── send_pending_payments_reminder filter logic ───────────────────────────────
+
+def test_pending_payments_courtesy_filter():
+    """Courtesy appointments (users.custom_price == 0) must be excluded from consulta_pendente."""
+    appts = [
+        {"appointment_id": "apt-1", "start_time": "2026-06-01T10:00:00+00:00",
+         "doctor_id": "d5baa58b-a788-4f40-b8c0-512c189150be",
+         "booking_fee_paid_at": None, "paid_at": None, "consultation_type": None,
+         "users": {"number": "5581999999999", "patient_name": "Ana", "name": "Ana", "custom_price": None}},
+        {"appointment_id": "apt-2", "start_time": "2026-06-02T10:00:00+00:00",
+         "doctor_id": "d5baa58b-a788-4f40-b8c0-512c189150be",
+         "booking_fee_paid_at": None, "paid_at": None, "consultation_type": None,
+         "users": {"number": "5581888888888", "patient_name": "Cortesia", "name": "Cortesia", "custom_price": 0}},
+    ]
+    consulta_pendente = [
+        appt for appt in appts
+        if (appt.get("users") or {}).get("custom_price") != 0
+    ]
+    assert len(consulta_pendente) == 1
+    assert consulta_pendente[0]["appointment_id"] == "apt-1"
