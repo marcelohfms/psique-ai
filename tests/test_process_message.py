@@ -758,3 +758,42 @@ async def test_price_notice_not_injected_when_already_notified():
     assert "AVISO ÚNICO OBRIGATÓRIO" not in system_msg.content
 
 
+# ── get_pricing_exception_rule ────────────────────────────────────────────────
+
+def test_pricing_exception_rule_no_exception_returns_empty():
+    from app.graph.prompts import get_pricing_exception_rule
+    assert get_pricing_exception_rule(None, False, 650) == ""
+
+
+def test_pricing_exception_rule_courtesy():
+    from app.graph.prompts import get_pricing_exception_rule
+    block = get_pricing_exception_rule(0, True, 650)
+    assert "cortesia" in block
+    assert "PIX" not in block
+    assert "nenhum valor" in block.lower()
+
+
+def test_pricing_exception_rule_fee_waived_standard_price():
+    from app.graph.prompts import get_pricing_exception_rule
+    block = get_pricing_exception_rule(None, True, 650)
+    assert "DISPENSADA" in block
+    assert "R$ 650,00" in block
+    assert "PIX" not in block
+
+
+def test_pricing_exception_rule_custom_price_normal_fee():
+    from app.graph.prompts import get_pricing_exception_rule
+    block = get_pricing_exception_rule(500, False, 650)
+    assert "R$ 500,00" in block
+    assert "R$ 100,00" in block  # taxa de reserva still applies
+    assert "reajuste" not in block.lower()
+
+
+def test_pricing_exception_rule_custom_price_fee_waived():
+    from app.graph.prompts import get_pricing_exception_rule
+    block = get_pricing_exception_rule(500, True, 650)
+    assert "R$ 500,00" in block
+    assert "DISPENSADA" in block
+    assert "PIX" not in block
+
+
