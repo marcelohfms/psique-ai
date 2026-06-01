@@ -51,3 +51,6 @@ class ConversationState(TypedDict):
 
     # DB id of the patient selected during disambiguation (used for targeted upserts).
     user_db_id: str | None
+
+    # Modality restriction from DB: "online", "presencial", or None (no restriction)
+    modality_restriction: Literal["online", "presencial"] | None
