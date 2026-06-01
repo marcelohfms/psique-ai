@@ -12,6 +12,7 @@ from app.graph.tools import (
     request_document, transfer_to_human, confirm_attendance,
     register_payment, update_preferred_doctor, save_patient_email,
     register_refund_request, confirm_refund_completed,
+    request_registration_update,
 )
 from app.graph.prompts import COLLECT_SYSTEM, MINOR_RULE, ADULT_RULE, EXISTING_PATIENT_SYSTEM, NEW_PATIENT_SYSTEM, CANCELLATION_RULES, CLINIC_ADDRESS, DOCTORS_INFO, get_booking_fee_rule, MEDICAL_LIMITS_RULE, DOCTOR_CORRECTION_RULE, EMAIL_RULE, get_pricing_rules, ATTENDANT_INSTRUCTION_RULE
 from app.whatsapp import send_text
@@ -26,6 +27,7 @@ TOOLS = [
     request_document, transfer_to_human, confirm_attendance,
     register_payment, update_preferred_doctor, save_patient_email,
     register_refund_request, confirm_refund_completed,
+    request_registration_update,
 ]
 
 _collect_llm = None
@@ -112,6 +114,7 @@ async def collect_info_node(state: ConversationState, config: RunnableConfig) ->
                     "guardian_cpf": u.get("guardian_cpf"),
                     "guardian_relationship": u.get("guardian_relationship"),
                     "patient_cpf": u.get("patient_cpf"),
+                    "modality_restriction": u.get("modality_restriction"),
                 }
                 # Only skip collect_info if the patient already has an email.
                 # If email is missing, stay in collect_info so Eva can ask for it.
@@ -158,6 +161,7 @@ async def collect_info_node(state: ConversationState, config: RunnableConfig) ->
                     "guardian_cpf": selected.get("guardian_cpf"),
                     "guardian_relationship": selected.get("guardian_relationship"),
                     "patient_cpf": selected.get("patient_cpf"),
+                    "modality_restriction": selected.get("modality_restriction"),
                     "stage": "patient_agent",
                     "messages": [],
                 }
@@ -629,13 +633,13 @@ async def patient_agent_node(state: ConversationState, config: RunnableConfig) -
             "confirm_appointment para garantir que o agendamento fique no nome correto."
         )
 
-    # One-time price adjustment notice injected into the system prompt (before June 2026)
+    # One-time price adjustment notice injected into the system prompt
     needs_price_notice = False
     now_dt = datetime.now(ZoneInfo("America/Recife"))
-    if (now_dt.year, now_dt.month) < (2026, 6):
-        user = await get_user_by_phone(state["phone"])
-        if user and not user.get("price_adjustment_notified_at"):
-            needs_price_notice = True
+    user = await get_user_by_phone(state["phone"])
+    if user and not user.get("price_adjustment_notified_at"):
+        needs_price_notice = True
+        if (now_dt.year, now_dt.month) < (2026, 6):
             system_prompt += (
                 "\n\nAVISO ÚNICO OBRIGATÓRIO NESTA MENSAGEM: Inclua no início da sua resposta, "
                 "de forma natural e acolhedora, que o valor da consulta deste paciente será "
@@ -648,6 +652,13 @@ async def patient_agent_node(state: ConversationState, config: RunnableConfig) -
                 "  • Dr. Júlio, retorno infantil → até maio: R$ 650,00 / a partir de junho: R$ 750,00\n"
                 "Se for Dr. Júlio e ainda não souber se é primeira consulta ou retorno, "
                 "pergunte antes de informar o valor. "
+                "Faça isso independentemente do assunto da conversa."
+            )
+        else:
+            system_prompt += (
+                "\n\nAVISO ÚNICO OBRIGATÓRIO NESTA MENSAGEM: Inclua no início da sua resposta, "
+                "de forma natural e acolhedora, que os valores das consultas foram atualizados "
+                "em junho de 2026. Não mencione os valores anteriores. "
                 "Faça isso independentemente do assunto da conversa."
             )
 
