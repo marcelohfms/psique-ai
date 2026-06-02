@@ -860,3 +860,153 @@ async def test_pricing_exception_block_injected_in_system_prompt():
     assert "DISPENSADA" in system_prompt, "Exception block must appear in system prompt for booking_fee_waived=True"
 
 
+# ── Multi-patient selection confirmation ─────────────────────────────────────
+
+def _base_multi_patient_state(**kwargs):
+    """Base state for multi-patient disambiguation tests."""
+    base = {
+        "phone": "558199999999@s.whatsapp.net",
+        "stage": "collect_info",
+        "user_name": None,
+        "patient_name": None,
+        "patient_age": None,
+        "birth_date": None,
+        "patient_cpf": None,
+        "guardian_name": None,
+        "guardian_cpf": None,
+        "guardian_relationship": None,
+        "is_patient": None,
+        "preferred_doctor": None,
+        "patient_email": None,
+        "consultation_reason": None,
+        "referral_professional": None,
+        "medication_note": None,
+        "pending_patients": None,
+        "pending_confirmation_patient": None,
+        "user_db_id": None,
+        "silent_mode": None,
+        "modality_restriction": None,
+        "age_exception": None,
+        "messages": [],
+    }
+    base.update(kwargs)
+    return base
+
+
+async def test_patient_selection_sends_confirmation_message():
+    """When Eva matches a patient from pending_patients, she sends a confirmation
+    message and stores the candidate in pending_confirmation_patient instead of
+    advancing to patient_agent immediately."""
+    from app.graph.nodes import collect_info_node
+
+    patients = [
+        {"id": "aaa", "patient_name": "Mariana França", "name": "Rebeka França",
+         "age": 17, "birth_date": "09/12/2008", "doctor_id": None,
+         "is_patient": False, "is_returning_patient": True,
+         "email": "r@example.com", "guardian_name": None, "guardian_cpf": None,
+         "guardian_relationship": "mãe", "patient_cpf": None,
+         "modality_restriction": None, "age_exception": None},
+        {"id": "bbb", "patient_name": "Manuela França", "name": "Rebeka França",
+         "age": 17, "birth_date": "09/12/2008", "doctor_id": None,
+         "is_patient": False, "is_returning_patient": True,
+         "email": "r@example.com", "guardian_name": None, "guardian_cpf": None,
+         "guardian_relationship": "mãe", "patient_cpf": None,
+         "modality_restriction": None, "age_exception": None},
+    ]
+    state = _base_multi_patient_state(
+        pending_patients=patients,
+        messages=[
+            AIMessage(content="Para qual paciente?\n1. Mariana França\n2. Manuela França"),
+            HumanMessage(content="Manuela"),
+        ],
+    )
+
+    with patch("app.graph.nodes.send_text", new_callable=AsyncMock) as mock_send, \
+         patch("app.graph.nodes.save_message", new_callable=AsyncMock), \
+         patch("app.graph.nodes.get_users_by_phone", new_callable=AsyncMock, return_value=[]):
+        result = await collect_info_node(state, {})
+
+    assert result.get("stage") != "patient_agent", "Should not advance yet"
+    assert result.get("pending_confirmation_patient") == patients[1]
+    assert result.get("pending_patients") == patients
+    sent = mock_send.call_args[0][1]
+    assert "Manuela França" in sent
+    assert "certo" in sent.lower() or "confirmar" in sent.lower()
+
+
+async def test_patient_confirmation_affirmative_advances():
+    """When pending_confirmation_patient is set and the guardian replies
+    affirmatively, Eva clears disambiguation state and advances to patient_agent."""
+    from app.graph.nodes import collect_info_node
+
+    candidate = {
+        "id": "bbb", "patient_name": "Manuela França", "name": "Rebeka França",
+        "age": 17, "birth_date": "09/12/2008", "doctor_id": None,
+        "is_patient": False, "is_returning_patient": True,
+        "email": "r@example.com", "guardian_name": None, "guardian_cpf": None,
+        "guardian_relationship": "mãe", "patient_cpf": None,
+        "modality_restriction": None, "age_exception": None,
+    }
+    state = _base_multi_patient_state(
+        pending_confirmation_patient=candidate,
+        pending_patients=[{}, candidate],
+        messages=[
+            AIMessage(content="Só confirmar: você está entrando em contato para Manuela França, certo?"),
+            HumanMessage(content="sim"),
+        ],
+    )
+
+    with patch("app.graph.nodes.send_text", new_callable=AsyncMock), \
+         patch("app.graph.nodes.save_message", new_callable=AsyncMock), \
+         patch("app.graph.nodes.get_users_by_phone", new_callable=AsyncMock, return_value=[]):
+        result = await collect_info_node(state, {})
+
+    assert result.get("stage") == "patient_agent"
+    assert result.get("patient_name") == "Manuela França"
+    assert result.get("user_db_id") == "bbb"
+    assert result.get("pending_confirmation_patient") is None
+    assert result.get("pending_patients") is None
+
+
+async def test_patient_confirmation_negative_reshows_list():
+    """When pending_confirmation_patient is set and the guardian says no,
+    Eva re-shows the patient list and clears pending_confirmation_patient."""
+    from app.graph.nodes import collect_info_node
+
+    patients = [
+        {"id": "aaa", "patient_name": "Mariana França", "name": "Rebeka França",
+         "age": 17, "birth_date": "09/12/2008", "doctor_id": None,
+         "is_patient": False, "is_returning_patient": True,
+         "email": None, "guardian_name": None, "guardian_cpf": None,
+         "guardian_relationship": "mãe", "patient_cpf": None,
+         "modality_restriction": None, "age_exception": None},
+        {"id": "bbb", "patient_name": "Manuela França", "name": "Rebeka França",
+         "age": 17, "birth_date": "09/12/2008", "doctor_id": None,
+         "is_patient": False, "is_returning_patient": True,
+         "email": None, "guardian_name": None, "guardian_cpf": None,
+         "guardian_relationship": "mãe", "patient_cpf": None,
+         "modality_restriction": None, "age_exception": None},
+    ]
+    candidate = patients[1]
+    state = _base_multi_patient_state(
+        pending_confirmation_patient=candidate,
+        pending_patients=patients,
+        messages=[
+            AIMessage(content="Só confirmar: você está entrando em contato para Manuela França, certo?"),
+            HumanMessage(content="não"),
+        ],
+    )
+
+    with patch("app.graph.nodes.send_text", new_callable=AsyncMock) as mock_send, \
+         patch("app.graph.nodes.save_message", new_callable=AsyncMock), \
+         patch("app.graph.nodes.get_users_by_phone", new_callable=AsyncMock, return_value=[]):
+        result = await collect_info_node(state, {})
+
+    assert result.get("stage") != "patient_agent"
+    assert result.get("pending_confirmation_patient") is None
+    assert result.get("pending_patients") == patients
+    sent = mock_send.call_args[0][1]
+    assert "Mariana França" in sent
+    assert "Manuela França" in sent
+
+
