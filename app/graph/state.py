@@ -49,6 +49,10 @@ class ConversationState(TypedDict):
     # while the bot waits for the guardian to pick one.
     pending_patients: list | None
 
+    # Holds a candidate patient dict while Eva waits for the guardian to confirm
+    # the selection before advancing to patient_agent.
+    pending_confirmation_patient: dict | None
+
     # DB id of the patient selected during disambiguation (used for targeted upserts).
     user_db_id: str | None
 
