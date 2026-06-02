@@ -508,7 +508,8 @@ async def confirm_appointment(
         _logger.error("CONFIRM_DEBUG create_event FAILED: %s", e, exc_info=True)
         return f"Erro ao criar evento no Google Calendar: {e}"
 
-    formatted = start.strftime("%d/%m/%Y às %H:%M")
+    _weekday_name = _WEEKDAY_LABELS_PT.get(start.weekday(), "")
+    formatted = f"{_weekday_name}, {start.strftime('%d/%m/%Y às %H:%M')}" if _weekday_name else start.strftime("%d/%m/%Y às %H:%M")
     phone = config["configurable"]["phone"]
 
     # Persist to appointments table; roll back calendar event on failure
@@ -807,12 +808,15 @@ async def reschedule_appointment(
         "start_time": new_start.isoformat(),
         "end_time": new_end.isoformat(),
         "updated_at": datetime.now(TZ).isoformat(),
+        "reminder_day_before_sent_at": None,
+        "reminder_day_of_sent_at": None,
     }
     if effective_modality:
         reschedule_update["modality"] = effective_modality
     await client.from_("appointments").update(reschedule_update).eq("appointment_id", appointment_id).execute()
 
-    formatted_new = new_start.strftime("%d/%m/%Y às %H:%M")
+    _weekday_new = _WEEKDAY_LABELS_PT.get(new_start.weekday(), "")
+    formatted_new = f"{_weekday_new}, {new_start.strftime('%d/%m/%Y às %H:%M')}" if _weekday_new else new_start.strftime("%d/%m/%Y às %H:%M")
     await log_event("appointment_rescheduled", phone, {
         "appointment_id": appointment_id,
         "new_datetime": new_slot_datetime,
