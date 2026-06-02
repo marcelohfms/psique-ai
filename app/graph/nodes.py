@@ -132,6 +132,61 @@ async def collect_info_node(state: ConversationState, config: RunnableConfig) ->
                 await save_message(state["phone"], "assistant", reply)
                 return {"pending_patients": all_users, "messages": [AIMessage(content=reply)]}
 
+        elif state.get("pending_confirmation_patient"):
+            candidate = state["pending_confirmation_patient"]
+            last_human = ""
+            for msg in reversed(state["messages"]):
+                if getattr(msg, "type", None) == "human":
+                    last_human = (msg.content or "").strip().lower()
+                    break
+
+            _affirmative = {"sim", "s", "yes", "y", "isso", "correto", "certo", "exato", "confirmado", "confirmo", "ok"}
+            _negative    = {"não", "nao", "no", "n", "errado", "incorreto", "outro", "outra"}
+
+            if any(w in last_human for w in _affirmative):
+                doc_key = DOCTOR_NAMES.get(candidate.get("doctor_id", ""), None)
+                return {
+                    "pending_confirmation_patient": None,
+                    "pending_patients": None,
+                    "user_db_id": candidate["id"],
+                    "user_name": candidate.get("name"),
+                    "patient_name": candidate.get("patient_name") or candidate.get("name"),
+                    "patient_age": candidate.get("age"),
+                    "birth_date": candidate.get("birth_date"),
+                    "is_patient": candidate.get("is_patient"),
+                    "is_returning_patient": candidate.get("is_returning_patient"),
+                    "preferred_doctor": doc_key,
+                    "patient_email": candidate.get("email"),
+                    "guardian_name": candidate.get("guardian_name"),
+                    "guardian_cpf": candidate.get("guardian_cpf"),
+                    "guardian_relationship": candidate.get("guardian_relationship"),
+                    "patient_cpf": candidate.get("patient_cpf"),
+                    "modality_restriction": candidate.get("modality_restriction"),
+                    "age_exception": candidate.get("age_exception"),
+                    "stage": "patient_agent",
+                    "messages": [],
+                }
+            elif any(w in last_human for w in _negative):
+                # Guardian rejected — re-show full list
+                all_pending = state.get("pending_patients") or []
+                names = [u.get("patient_name") or u.get("name") or "Paciente" for u in all_pending]
+                options = "\n".join(f"{i + 1}. {n}" for i, n in enumerate(names))
+                reply = f"Sem problema! Para qual paciente você está entrando em contato?\n\n{options}"
+                await send_text(state["phone"], reply)
+                await save_message(state["phone"], "assistant", reply)
+                return {
+                    "pending_confirmation_patient": None,
+                    "pending_patients": all_pending,
+                    "messages": [AIMessage(content=reply)],
+                }
+            else:
+                # Ambiguous — ask again
+                patient_name = candidate.get("patient_name") or candidate.get("name") or "o paciente"
+                reply = f"Desculpe, não entendi. Você está entrando em contato para *{patient_name}*? (sim/não)"
+                await send_text(state["phone"], reply)
+                await save_message(state["phone"], "assistant", reply)
+                return {"messages": [AIMessage(content=reply)]}
+
         elif pending:
             last_human = ""
             for msg in reversed(state["messages"]):
@@ -148,26 +203,14 @@ async def collect_info_node(state: ConversationState, config: RunnableConfig) ->
                     break
 
             if selected:
-                doc_key = DOCTOR_NAMES.get(selected.get("doctor_id", ""), None)
+                patient_name = selected.get("patient_name") or selected.get("name") or "o paciente"
+                reply = f"Só confirmar: você está entrando em contato para *{patient_name}*, certo? (sim/não)"
+                await send_text(state["phone"], reply)
+                await save_message(state["phone"], "assistant", reply)
                 return {
-                    "pending_patients": None,
-                    "user_db_id": selected["id"],
-                    "user_name": selected.get("name"),
-                    "patient_name": selected.get("patient_name") or selected.get("name"),
-                    "patient_age": selected.get("age"),
-                    "birth_date": selected.get("birth_date"),
-                    "is_patient": selected.get("is_patient"),
-                    "is_returning_patient": selected.get("is_returning_patient"),
-                    "preferred_doctor": doc_key,
-                    "patient_email": selected.get("email"),
-                    "guardian_name": selected.get("guardian_name"),
-                    "guardian_cpf": selected.get("guardian_cpf"),
-                    "guardian_relationship": selected.get("guardian_relationship"),
-                    "patient_cpf": selected.get("patient_cpf"),
-                    "modality_restriction": selected.get("modality_restriction"),
-                    "age_exception": selected.get("age_exception"),
-                    "stage": "patient_agent",
-                    "messages": [],
+                    "pending_confirmation_patient": selected,
+                    "pending_patients": pending,
+                    "messages": [AIMessage(content=reply)],
                 }
             else:
                 # Could not parse — ask again
