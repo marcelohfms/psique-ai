@@ -39,14 +39,14 @@ _agent_llm = None
 def _get_collect_llm():
     global _collect_llm
     if _collect_llm is None:
-        _collect_llm = ChatOpenAI(model="gpt-4o", temperature=0).with_structured_output(CollectInfoOutput)
+        _collect_llm = ChatOpenAI(model="gpt-4.1-mini", temperature=0).with_structured_output(CollectInfoOutput)
     return _collect_llm
 
 
 def _get_agent_llm():
     global _agent_llm
     if _agent_llm is None:
-        _agent_llm = ChatOpenAI(model="gpt-4o", temperature=0).bind_tools(TOOLS)
+        _agent_llm = ChatOpenAI(model="gpt-4.1-mini", temperature=0).bind_tools(TOOLS)
     return _agent_llm
 
 
