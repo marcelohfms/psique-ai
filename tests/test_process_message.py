@@ -273,6 +273,7 @@ def _base_minor_state(**kwargs) -> dict:
         "referral_professional": None,
         "medication_note": None,
         "pending_patients": None,
+        "pending_confirmation_patient": None,
         "user_db_id": None,
         "silent_mode": None,
         "messages": [],
