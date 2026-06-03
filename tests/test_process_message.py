@@ -371,7 +371,7 @@ async def test_collect_info_no_to_is_patient_sets_returning_patient_false():
     from app.graph.nodes import collect_info_node
     from langchain_core.messages import HumanMessage, AIMessage
 
-    _Q = "O paciente já é paciente da clínica?"
+    _Q = "É a primeira consulta ou o paciente já está em acompanhamento na clínica?"
     state = _base_minor_state(
         patient_age=30,
         birth_date="15/03/1994",
@@ -398,7 +398,7 @@ async def test_collect_info_yes_to_is_patient_sets_returning_patient_true():
     from app.graph.nodes import collect_info_node
     from langchain_core.messages import HumanMessage, AIMessage
 
-    _Q = "O paciente já é paciente da clínica?"
+    _Q = "É a primeira consulta ou o paciente já está em acompanhamento na clínica?"
     state = _base_minor_state(
         patient_age=30,
         birth_date="15/03/1994",
@@ -471,7 +471,7 @@ async def test_collect_info_is_patient_yes_proceeds_to_clinic_question():
 
     assert result.get("is_patient") is True
     sent = mock_send.call_args[0][1]
-    assert "paciente da clínica" in sent.lower() or "paciente" in sent.lower()
+    assert "acompanhamento" in sent.lower() or "primeira consulta" in sent.lower()
 
 
 async def test_collect_info_is_patient_no_asks_contact_name():
@@ -530,7 +530,7 @@ async def test_collect_info_contact_name_updates_user_name():
     assert result.get("user_name") == "Maria Silva"
     assert result.get("patient_name") is None  # patient_name must NOT be changed
     sent = mock_send.call_args[0][1]
-    assert "paciente da clínica" in sent.lower()
+    assert "acompanhamento" in sent.lower()
 
 
 async def test_collect_info_guardian_name_also_sets_user_name():
@@ -572,7 +572,7 @@ async def test_collect_info_adult_skips_guardian_steps():
         birth_date="15/03/1994",
         is_patient=True,  # contact is the patient — is_patient question already answered
         messages=[
-            AIMessage(content="O paciente já é paciente da clínica?"),
+            AIMessage(content="É a primeira consulta ou o paciente já está em acompanhamento na clínica?"),
             HumanMessage(content="sim"),
         ],
     )

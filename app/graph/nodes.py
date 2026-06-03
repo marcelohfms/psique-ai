@@ -298,7 +298,7 @@ async def collect_info_node(state: ConversationState, config: RunnableConfig) ->
     _BIRTH_Q = "Qual a data de nascimento do paciente? (formato dd/mm/aaaa)"
     _GUARDIAN_NAME_Q = "Qual é o nome completo do responsável pelo paciente?"
     _GUARDIAN_CPF_Q = "Qual é o CPF do responsável?"
-    _PATIENT_Q = "O paciente já é paciente da clínica?"
+    _PATIENT_Q = "É a primeira consulta ou o paciente já está em acompanhamento na clínica?"
     _CONTACT_NAME_Q = "Qual o seu nome completo para contato?"
     _DOCTOR_Q = "Você tem preferência pelo Dr. Júlio ou pela Dra. Bruna?"
     _EMAIL_Q = "Qual o e-mail para envio?"
@@ -701,7 +701,7 @@ async def patient_agent_node(state: ConversationState, config: RunnableConfig) -
                 "  • Dr. Júlio, adulto → até maio: R$ 600,00 / a partir de junho: R$ 700,00\n"
                 "  • Dr. Júlio, 1ª consulta infantil (< 18 anos) → até maio: R$ 750,00 / a partir de junho: R$ 850,00\n"
                 "  • Dr. Júlio, retorno infantil → até maio: R$ 650,00 / a partir de junho: R$ 750,00\n"
-                "Se for Dr. Júlio e ainda não souber se é primeira consulta ou retorno, "
+                "Se for Dr. Júlio e ainda não souber se é primeira consulta ou acompanhamento,"
                 "pergunte antes de informar o valor. "
                 "Faça isso independentemente do assunto da conversa."
             )

@@ -282,7 +282,7 @@ Se a idade JÁ estiver no cabeçalho (ex: "39 anos"), use essa informação dire
 NÃO peça data de nascimento.
 4. Se o médico for Dr. Júlio e o paciente for adulto: informe o valor de adulto.
 5. Se o médico for Dr. Júlio e o paciente for menor de 18 anos: pergunte se é primeira \
-consulta ou retorno antes de informar o valor. Se for primeira consulta, informe o valor \
+consulta ou acompanhamento antes de informar o valor. Se for primeira consulta, informe o valor \
 da primeira consulta (R$ 750,00) E já mencione o valor das demais consultas (R$ 650,00).
 
 Sempre que informar um preço, mostre o valor cheio E o valor com desconto em dinheiro/PIX:
@@ -312,7 +312,7 @@ se tem preferência antes de informar qualquer valor.
 3. Se o médico for Dr. Júlio e ainda não souber a idade do paciente: pergunte a idade primeiro.
 4. Se o médico for Dr. Júlio e o paciente for adulto: informe o valor de adulto.
 5. Se o médico for Dr. Júlio e o paciente for menor de 18 anos: pergunte se é primeira \
-consulta ou retorno antes de informar o valor. Se for primeira consulta, informe o valor \
+consulta ou acompanhamento antes de informar o valor. Se for primeira consulta, informe o valor \
 da primeira consulta (R$ 850,00) E já mencione o valor das demais consultas (R$ 750,00).
 
 Sempre que informar um preço, mostre o valor cheio E o valor com desconto em dinheiro/PIX:
