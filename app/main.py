@@ -741,6 +741,18 @@ async def _handle_attendant_note(payload: dict) -> None:
                     "is_returning_patient": existing.get("is_returning_patient"),
                     "preferred_doctor": doctor_key,
                 })
+
+        # If preferred_doctor is still unknown (not in state_update nor in existing
+        # snapshot), infer from the note text so that attendant instructions like
+        # "agende com Dra. Bruna" work even for patients with no prior conversation.
+        _doctor_in_snapshot = snapshot.values.get("preferred_doctor") if snapshot.values else None
+        if not state_update.get("preferred_doctor") and not _doctor_in_snapshot:
+            text_lower = text.lower()
+            if "bruna" in text_lower:
+                state_update["preferred_doctor"] = "bruna"
+            elif "júlio" in text_lower or "julio" in text_lower:
+                state_update["preferred_doctor"] = "julio"
+
         await graph_module.chatbot.ainvoke(state_update, config=config)
 
     instruction = f"[Instrução da atendente]: {content}"
@@ -767,20 +779,27 @@ async def _handle_chatwoot_payload(payload: dict) -> None:
             _is_private = payload.get("private", False)
             _sender_type = payload.get("sender", {}).get("type", "")
             _is_human_agent = _sender_type in ("user", "agent")
-            _conv_labels_out = set(payload.get("conversation", {}).get("labels") or [])
-            # Route to Eva when:
-            #   1. Private note from a human agent (always), OR
-            #   2. Non-private message from a human agent while eva-ativa is present
-            #      (attendants sometimes send instructions as regular messages, not private notes)
-            _should_route = _is_human_agent and (
-                _is_private or _EVA_ACTIVE_LABEL in _conv_labels_out
-            )
             logger.info(
-                "OUTGOING_CHECK sender_type=%s private=%s labels=%s should_route=%s",
-                _sender_type, _is_private, _conv_labels_out, _should_route,
+                "OUTGOING_CHECK sender_type=%s private=%s",
+                _sender_type, _is_private,
             )
-            if _should_route:
+            if _is_human_agent and _is_private:
+                # Private note = direct instruction to Eva → process and respond
                 await _handle_attendant_note(payload)
+            elif _is_human_agent and not _is_private:
+                # Public message from attendant to patient → save to checkpoint for
+                # context but do NOT trigger Eva to respond
+                _phone_out = _extract_phone_from_payload(payload)
+                _content_out = (payload.get("content") or "").strip()
+                if _phone_out and _content_out:
+                    from langchain_core.messages import AIMessage
+                    _config_out = {"configurable": {"thread_id": _phone_out, "phone": _phone_out}}
+                    await graph_module.chatbot.aupdate_state(
+                        _config_out,
+                        {"messages": [AIMessage(content=_content_out)]},
+                        as_node="patient_agent",
+                    )
+                    logger.info("OUTGOING_SAVED phone=%s content=%.80s", _phone_out, _content_out)
             return
 
         # ── Label change: eva-inativa added/removed ───────────────────────────
@@ -804,14 +823,14 @@ async def _handle_chatwoot_payload(payload: dict) -> None:
             except Exception:
                 logger.warning("Failed to reopen conversation %s", conversation_id)
 
-        # If eva-ativa label is present on the conversation, force-reactivate Eva now.
-        # This handles cases where the label was added but the activation event was missed
-        # (server restart, race condition, etc.).
         conv_labels = set(payload.get("conversation", {}).get("labels") or [])
-        if _EVA_ACTIVE_LABEL in conv_labels:
-            await _resume_bot_for_patient(phone)
-        elif _EVA_INACTIVE_LABEL in conv_labels:
+
+        # eva-inativa has absolute priority over eva-ativa
+        if _EVA_INACTIVE_LABEL in conv_labels:
             return
+        # If eva-ativa label is present, force-reactivate Eva (handles missed activation events)
+        elif _EVA_ACTIVE_LABEL in conv_labels:
+            await _resume_bot_for_patient(phone)
 
         if text is None:
             text = await _process_chatwoot_attachments(payload.get("attachments", []))
