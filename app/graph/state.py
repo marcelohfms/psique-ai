@@ -61,3 +61,10 @@ class ConversationState(TypedDict):
 
     # Age exception from DB: True = patient bypasses doctor age limits
     age_exception: bool | None
+
+    # Carries the user's original intent from collect_info → patient_agent (same turn).
+    # Set when collect_info completes during a document or scheduling request so
+    # patient_agent_node knows what to do immediately without being distracted by
+    # unrelated context (e.g. upcoming appointments).
+    # Cleared by patient_agent_node after injecting the directive.
+    pending_action: str | None

@@ -355,7 +355,7 @@ async def collect_info_node(state: ConversationState, config: RunnableConfig) ->
 
         # Step 3: CPF
         if not state.get("patient_cpf"):
-            if last_ai == _CPF_Q and last_human:
+            if last_ai and _CPF_Q in last_ai and last_human:
                 import re as _re
                 if _re.search(r'\d', last_human):
                     return await _extract_and_ask({"patient_cpf": last_human}, _BIRTH_Q)
@@ -395,7 +395,7 @@ async def collect_info_node(state: ConversationState, config: RunnableConfig) ->
         # Step 4b: guardian name (only for minors)
         # Also update user_name — the guardian IS the contact on WhatsApp.
         if (state.get("patient_age") or 99) < 18 and not state.get("guardian_name"):
-            if last_ai == _GUARDIAN_NAME_Q and last_human:
+            if last_ai and _GUARDIAN_NAME_Q in last_ai and last_human:
                 return await _extract_and_ask(
                     {"guardian_name": last_human, "user_name": last_human}, _GUARDIAN_CPF_Q
                 )
@@ -403,7 +403,7 @@ async def collect_info_node(state: ConversationState, config: RunnableConfig) ->
 
         # Step 4c: guardian CPF (only for minors)
         if (state.get("patient_age") or 99) < 18 and not state.get("guardian_cpf"):
-            if last_ai == _GUARDIAN_CPF_Q and last_human:
+            if last_ai and _GUARDIAN_CPF_Q in last_ai and last_human:
                 return await _extract_and_ask({"guardian_cpf": last_human}, _PATIENT_Q)
             return await _ask(_GUARDIAN_CPF_Q)
 
@@ -436,7 +436,7 @@ async def collect_info_node(state: ConversationState, config: RunnableConfig) ->
             and state.get("is_patient") is False
             and state.get("user_name") == state.get("patient_name")
         ):
-            if last_ai == _CONTACT_NAME_Q and last_human:
+            if last_ai and _CONTACT_NAME_Q in last_ai and last_human:
                 return await _extract_and_ask({"user_name": last_human}, _PATIENT_Q)
             return await _ask(_CONTACT_NAME_Q)
 
@@ -445,7 +445,7 @@ async def collect_info_node(state: ConversationState, config: RunnableConfig) ->
         # is_patient (contact IS the patient vs scheduling for someone else) is a separate concept
         # and must NOT be set here.
         if state.get("is_returning_patient") is None:
-            if last_ai == _PATIENT_Q and last_human:
+            if last_ai and _PATIENT_Q in last_ai and last_human:
                 h = last_human.lower()
                 if any(kw in h for kw in ["sim", "já", "ja", "sou", "é", "e paciente", "paciente"]):
                     is_returning_patient = True
@@ -461,7 +461,7 @@ async def collect_info_node(state: ConversationState, config: RunnableConfig) ->
 
         # Step 6: preferred doctor
         if not state.get("preferred_doctor"):
-            if last_ai == _DOCTOR_Q and last_human:
+            if last_ai and _DOCTOR_Q in last_ai and last_human:
                 h = last_human.lower()
                 if "julio" in h or "júlio" in h:
                     doctor = "julio"
@@ -488,7 +488,7 @@ async def collect_info_node(state: ConversationState, config: RunnableConfig) ->
 
         # Step 8: medication — only for receita (last step)
         if _is_receita and not state.get("medication_note"):
-            if last_ai == _MED_Q and last_human:
+            if last_ai and _MED_Q in last_ai and last_human:
                 # Last step — save and fall through to LLM to confirm
                 _extracted["medication_note"] = last_human
                 collected["medication_note"] = last_human
@@ -549,6 +549,8 @@ async def collect_info_node(state: ConversationState, config: RunnableConfig) ->
 
     if result.is_complete and not birth_date_invalid:
         update["stage"] = "patient_agent"
+        if _is_document:
+            update["pending_action"] = "request_document"
 
         # Merge collected fields with existing state for the upsert
         merged = {**state, **{k: v for k, v in update.items() if k not in ("messages", "stage")}}
@@ -786,6 +788,18 @@ async def patient_agent_node(state: ConversationState, config: RunnableConfig) -
             f"(ex: 'Qual a data de nascimento de {first_name}?', 'Qual o e-mail de {first_name}?')."
         )
 
+    # When we just transitioned from collect_info in the same turn, tell the agent
+    # exactly what the user was trying to do so it doesn't get distracted by
+    # unrelated context such as upcoming appointments.
+    pending_action = state.get("pending_action")
+    if pending_action == "request_document":
+        system_prompt += (
+            "\n\nAÇÃO IMEDIATA: O cadastro foi concluído agora mesmo nesta mesma mensagem. "
+            "O usuário havia solicitado um documento (nota fiscal, laudo, receita, etc.). "
+            "Chame request_document agora para processar essa solicitação. "
+            "NÃO mencione consultas agendadas nem inicie outro assunto."
+        )
+
     messages = [SystemMessage(content=system_prompt), *clean_messages]
     response = await _get_agent_llm().ainvoke(messages)
 
@@ -840,4 +854,7 @@ async def patient_agent_node(state: ConversationState, config: RunnableConfig) -
             if needs_price_notice:
                 await upsert_user(phone, {"price_adjustment_notified_at": now_dt.isoformat()}, user_id=state.get("user_db_id"))
 
-    return {"messages": [response]}
+    update: dict = {"messages": [response]}
+    if pending_action:
+        update["pending_action"] = None
+    return update
