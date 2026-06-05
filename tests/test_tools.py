@@ -376,6 +376,32 @@ async def test_reschedule_appointment_updates_event_and_notifies():
     mock_notify.assert_called()
 
 
+async def test_reschedule_appointment_resets_reminder_fields():
+    """Reagendar deve zerar reminder_day_before_sent_at e reminder_day_of_sent_at."""
+    from app.graph.tools import reschedule_appointment
+    client, table, execute = _make_supabase_client()
+    execute.return_value = MagicMock(data={"start_time": "2026-03-23T09:00:00+00:00", "users": {"id": "user-1", "patient_name": "Maria", "name": "Maria", "number": "5583999999999"}})
+    with patch("app.graph.tools._get_doctor_calendar_id", new_callable=AsyncMock, return_value="cal123"), \
+         patch("app.google_calendar.update_event", new_callable=AsyncMock), \
+         patch("app.graph.tools.get_supabase", new_callable=AsyncMock, return_value=client), \
+         patch("app.graph.tools.log_event", new_callable=AsyncMock), \
+         patch("app.graph.tools._notify_clinic", new_callable=AsyncMock):
+        await reschedule_appointment.coroutine(
+            appointment_id="evt-abc",
+            new_slot_datetime="2026-03-25T10:00:00",
+            slot_duration_minutes=60,
+            state=_make_state(),
+            config=CONFIG,
+        )
+    update_call = table.update.call_args
+    assert update_call is not None
+    update_data = update_call[0][0]
+    assert update_data.get("reminder_day_before_sent_at") is None
+    assert update_data.get("reminder_day_of_sent_at") is None
+    assert "reminder_day_before_sent_at" in update_data
+    assert "reminder_day_of_sent_at" in update_data
+
+
 async def test_reschedule_appointment_respects_modality_restriction():
     """reschedule_appointment deve respeitar modality_restriction do state."""
     from app.graph.tools import reschedule_appointment
