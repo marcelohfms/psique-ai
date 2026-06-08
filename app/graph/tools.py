@@ -109,6 +109,9 @@ async def get_available_slots(
     Busca horários disponíveis no Google Calendar para o médico do paciente.
     Quando preferred_day for um dia da semana (ex: "quarta"), a ferramenta busca
     automaticamente nas próximas semanas até encontrar um horário disponível (máx. 4 semanas).
+    IMPORTANTE: Se o paciente informar uma data específica (ex: "dia 17", "17/06", "17 de junho"),
+    passe SEMPRE a data completa no formato dd/mm (ex: "17/06") — NUNCA converta para o nome
+    do dia da semana. Converter "17/06" para "quarta" causaria busca na semana errada.
     Use slot_duration_minutes=120 para primeira consulta de paciente menor de 18 anos,
     60 para todos os outros casos.
     Use preferred_shift="qualquer" quando o paciente informar um dia mas ainda não tiver

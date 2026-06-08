@@ -461,7 +461,15 @@ async def collect_info_node(state: ConversationState, config: RunnableConfig) ->
 
         # Step 6: preferred doctor
         if not state.get("preferred_doctor"):
-            if last_ai and _DOCTOR_Q in last_ai and last_human:
+            _last_ai_asked_doctor = last_ai and (
+                _DOCTOR_Q in last_ai
+                or "júlio" in last_ai.lower()
+                or "julio" in last_ai.lower()
+                or "bruna" in last_ai.lower()
+                or "médico" in last_ai.lower()
+                or "preferência" in last_ai.lower()
+            )
+            if _last_ai_asked_doctor and last_human:
                 h = last_human.lower()
                 if "julio" in h or "júlio" in h:
                     doctor = "julio"
@@ -857,4 +865,26 @@ async def patient_agent_node(state: ConversationState, config: RunnableConfig) -
     update: dict = {"messages": [response]}
     if pending_action:
         update["pending_action"] = None
+
+    # If preferred_doctor is missing from state, check whether update_preferred_doctor
+    # was just called (state may not reflect it yet because ToolNode only updates messages).
+    if not state.get("preferred_doctor"):
+        all_msgs = list(state["messages"]) + [response]
+        for msg in reversed(all_msgs):
+            tool_calls = getattr(msg, "tool_calls", None) or []
+            for tc in tool_calls:
+                if tc.get("name") == "update_preferred_doctor":
+                    doctor_val = (tc.get("args") or {}).get("doctor")
+                    if doctor_val:
+                        update["preferred_doctor"] = doctor_val
+                        if state.get("user_db_id"):
+                            from app.database import DOCTOR_IDS as _DIDS
+                            try:
+                                await upsert_user(state["phone"], {"doctor_id": _DIDS.get(doctor_val)}, user_id=state.get("user_db_id"))
+                            except Exception:
+                                _logger.exception("Failed to persist preferred_doctor after update_preferred_doctor tool call")
+                        break
+            if "preferred_doctor" in update:
+                break
+
     return update
