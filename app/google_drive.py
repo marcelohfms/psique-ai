@@ -69,15 +69,15 @@ async def rename_file(file_id: str, new_name: str) -> None:
     await loop.run_in_executor(None, _rename_file, service, file_id, new_name)
 
 
-async def upload_image(image_bytes: bytes, filename: str) -> str:
-    """Upload image bytes to the payments Drive folder. Returns public web view URL."""
+async def upload_image(image_bytes: bytes, filename: str, mimetype: str = "image/jpeg") -> str:
+    """Upload image or PDF bytes to the payments Drive folder. Returns public web view URL."""
     folder_id = os.getenv("GOOGLE_DRIVE_PAYMENTS_FOLDER_ID", "")
     if not folder_id:
         raise ValueError("GOOGLE_DRIVE_PAYMENTS_FOLDER_ID is not set")
     creds = _credentials()
     service = build("drive", "v3", credentials=creds)
     loop = asyncio.get_event_loop()
-    return await loop.run_in_executor(None, _upload_and_share, service, folder_id, filename, image_bytes)
+    return await loop.run_in_executor(None, _upload_and_share, service, folder_id, filename, image_bytes, mimetype)
 
 
 async def upload_document(file_bytes: bytes, filename: str, mimetype: str = "image/jpeg") -> str:
