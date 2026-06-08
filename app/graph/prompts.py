@@ -168,7 +168,12 @@ e Adolescência no IMIP e aprimoramento em Transtornos Alimentares na USP. Atend
 
 def get_booking_fee_rule(pix_key: str | None = None) -> str:
     import os
-    key = pix_key or os.getenv("PIX_KEY", "42006848000178")
+    # Chave PIX correta da clínica — hardcoded para evitar erro do LLM ao transcrever
+    _CORRECT_PIX_KEY = "42006848000178"
+    key = pix_key or os.getenv("PIX_KEY", _CORRECT_PIX_KEY)
+    # Sempre usar a chave correta, ignorando variável de ambiente incorreta
+    if key != _CORRECT_PIX_KEY:
+        key = _CORRECT_PIX_KEY
     return f"""\
 
 TAXA DE RESERVA — OBRIGATÓRIA PARA CONFIRMAR O AGENDAMENTO:
@@ -191,6 +196,7 @@ Esse valor será abatido do total da consulta. Em caso de cancelamento com menos
 antecedência ou ausência sem justificativa, a taxa não é devolvida."
 4. Se o paciente pedir para repetir a chave PIX ou pedir só a chave para copiar, envie APENAS o número, \
 sem nenhum texto adicional, emoji ou prefixo — exemplo de resposta correta: {key}
+ATENÇÃO: a chave PIX é {key} — copie exatamente, nunca invente nem altere nenhum dígito.
 
 PAGAMENTO DA TAXA NA CONSULTA — quando o paciente pedir para pagar a taxa de reserva presencialmente no dia da consulta:
 1. Chame transfer_to_human com reason: "Paciente solicita pagar a taxa de reserva presencialmente no dia da consulta. Aguarda confirmação da atendente."
