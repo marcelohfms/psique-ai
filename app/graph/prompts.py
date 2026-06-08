@@ -91,7 +91,9 @@ você DEVE perguntar guardian_name e guardian_cpf ANTES de prosseguir para is_pa
 NÃO marque is_complete=true enquanto guardian_name ou guardian_cpf estiverem faltando para pacientes menores de 18 anos. \
 Esta regra é inegociável — nunca pule essa etapa para menores de idade.
 - consultation_reason e referral_professional: obrigatórios SOMENTE se is_returning_patient=false.
-- patient_email é SEMPRE obrigatório — NÃO marque is_complete=true sem ele. Pergunte após preferred_doctor.
+- patient_email é SEMPRE obrigatório, tanto para agendamento quanto para documentos — \
+NÃO marque is_complete=true sem ele. Pergunte após preferred_doctor. \
+Se o usuário informar algo que não parece e-mail válido (sem "@"), peça novamente.
 - Só marque is_complete=true quando TODOS os campos obrigatórios estiverem preenchidos.
 - Quando is_complete=true, envie apenas uma mensagem curta de confirmação do cadastro, \
 sem fazer perguntas. Exemplo: "Perfeito, tudo anotado! 😊"

@@ -395,7 +395,12 @@ async def collect_info_node(state: ConversationState, config: RunnableConfig) ->
         # Step 4b: guardian name (only for minors)
         # Also update user_name — the guardian IS the contact on WhatsApp.
         if (state.get("patient_age") or 99) < 18 and not state.get("guardian_name"):
-            if last_ai and _GUARDIAN_NAME_Q in last_ai and last_human:
+            _last_ai_asked_guardian_name = last_ai and (
+                _GUARDIAN_NAME_Q in last_ai
+                or "responsável" in last_ai.lower()
+                or "nome completo do" in last_ai.lower()
+            )
+            if _last_ai_asked_guardian_name and last_human:
                 return await _extract_and_ask(
                     {"guardian_name": last_human, "user_name": last_human}, _GUARDIAN_CPF_Q
                 )
@@ -403,7 +408,12 @@ async def collect_info_node(state: ConversationState, config: RunnableConfig) ->
 
         # Step 4c: guardian CPF (only for minors)
         if (state.get("patient_age") or 99) < 18 and not state.get("guardian_cpf"):
-            if last_ai and _GUARDIAN_CPF_Q in last_ai and last_human:
+            _last_ai_asked_guardian_cpf = last_ai and (
+                _GUARDIAN_CPF_Q in last_ai
+                or ("cpf" in last_ai.lower() and "responsável" in last_ai.lower())
+                or ("cpf" in last_ai.lower() and (state.get("guardian_name") or "").split()[0].lower() in last_ai.lower())
+            )
+            if _last_ai_asked_guardian_cpf and last_human:
                 return await _extract_and_ask({"guardian_cpf": last_human}, _PATIENT_Q)
             return await _ask(_GUARDIAN_CPF_Q)
 
@@ -482,15 +492,23 @@ async def collect_info_node(state: ConversationState, config: RunnableConfig) ->
                     return await _extract_and_ask({"preferred_doctor": doctor}, next_email_q)
             return await _ask(_DOCTOR_Q)
 
-        # Step 7: email
+        # Step 7: email — ALWAYS required, whether scheduling or requesting a document
         if not state.get("patient_email"):
-            if last_ai in (_EMAIL_Q, _EMAIL_Q_CADASTRO) and last_human:
+            _last_ai_asked_email = last_ai and (
+                _EMAIL_Q in last_ai
+                or _EMAIL_Q_CADASTRO in last_ai
+                or "e-mail" in last_ai.lower()
+                or "email" in last_ai.lower()
+            )
+            if _last_ai_asked_email and last_human and "@" in last_human:
                 if _is_receita and not state.get("medication_note"):
                     return await _extract_and_ask({"patient_email": last_human}, _MED_Q)
                 else:
                     # Last step — save and fall through to LLM to confirm
                     _extracted["patient_email"] = last_human
                     collected["patient_email"] = last_human
+            elif _last_ai_asked_email and last_human and "@" not in last_human:
+                return await _ask("E-mail inválido. Por favor, informe um e-mail válido (ex: nome@email.com).")
             else:
                 return await _ask(_EMAIL_Q if _is_document else _EMAIL_Q_CADASTRO)
 
