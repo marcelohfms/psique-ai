@@ -432,6 +432,27 @@ async def confirm_appointment(
 
     # Double-check slot is still free before booking — skipped for encaixe
     if not force_encaixe:
+        # Guard 1: check Supabase for an existing scheduled appointment for this patient
+        # at the same time — catches race conditions where two messages trigger confirm_appointment
+        # simultaneously before either Calendar event is visible.
+        try:
+            _supabase = await get_supabase()
+            _phone = config["configurable"]["phone"]
+            _existing_user = await _supabase.from_("users").select("id").eq("number", _phone.replace("@s.whatsapp.net", "")).single().execute()
+            if _existing_user.data:
+                _uid = _existing_user.data["id"]
+                _slot_end_check = start + timedelta(minutes=slot_duration_minutes)
+                _dup = await _supabase.from_("appointments").select("appointment_id").eq("user_id", _uid).eq("status", "scheduled").eq("start_time", start.isoformat()).execute()
+                if _dup.data:
+                    _logger.warning("confirm_appointment: duplicate guard fired for user=%s slot=%s", _uid, start.isoformat())
+                    return (
+                        f"A consulta das {start.strftime('%H:%M')} do dia {start.strftime('%d/%m/%Y')} "
+                        "já está registrada. Não é necessário confirmar novamente."
+                    )
+        except Exception:
+            pass  # Non-fatal — proceed to Calendar check
+
+        # Guard 2: check Google Calendar for conflicts
         from app.google_calendar import _get_busy, _credentials
         from googleapiclient.discovery import build as _build
         slot_end_check = start + timedelta(minutes=slot_duration_minutes)
