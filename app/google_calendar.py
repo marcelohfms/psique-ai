@@ -49,6 +49,34 @@ DOCTOR_SCHEDULES: dict[str, dict[int, list[tuple[int, int, int, int, str]]]] = {
     },
 }
 
+# Permanent schedule changes starting from a given date.
+# Format: { doctor_key: [ (date_from, new_schedule_dict) ] }
+# new_schedule_dict has the same format as DOCTOR_SCHEDULES (weekday → windows).
+# The first entry whose date_from <= target_date applies (list is checked in reverse order).
+SCHEDULE_CHANGES: dict[str, list[tuple[date, dict[int, list[tuple[int, int, int, int, str]]]]]] = {
+    "julio": [
+        (date(2027, 7, 1), {
+            0: [(9, 0, 12, 0, "escolha"), (13, 0, 18, 0, "escolha")],  # Segunda: manhã + tarde (antes era só manhã)
+            1: [],                                                        # Terça: sem atendimento (horários movidos para segunda)
+            2: [(9, 0, 12, 0, "escolha")],                               # Quarta: inalterado
+            3: [(9, 0, 12, 0, "escolha"), (14, 0, 18, 0, "presencial_sob_consulta"), (18, 0, 20, 0, "escolha")],  # Quinta: inalterado
+        }),
+    ],
+}
+
+
+def _get_doctor_schedule(doctor_key: str, target_date: date) -> dict[int, list[tuple[int, int, int, int, str]]]:
+    """Return the correct weekly schedule for a doctor on a given date,
+    applying any permanent schedule changes that took effect on or before that date."""
+    base = DOCTOR_SCHEDULES.get(doctor_key, {})
+    changes = SCHEDULE_CHANGES.get(doctor_key, [])
+    # Apply changes in order — last applicable one wins
+    for change_date, new_schedule in sorted(changes, key=lambda x: x[0]):
+        if target_date >= change_date:
+            base = new_schedule
+    return base
+
+
 _WEEKDAY_NAMES = {0: "Segunda", 1: "Terça", 2: "Quarta", 3: "Quinta", 4: "Sexta", 5: "Sábado", 6: "Domingo"}
 _DOCTOR_LABELS = {"bruna": "Dra. Bruna", "julio": "Dr. Júlio"}
 
@@ -92,7 +120,8 @@ def format_doctor_schedules() -> str:
                 upcoming_exceptions[doctor_key][exc_date.weekday()] = (date_str, windows or None)
 
     lines = []
-    for doctor_key, days in DOCTOR_SCHEDULES.items():
+    for doctor_key in DOCTOR_SCHEDULES:
+        days = _get_doctor_schedule(doctor_key, today)
         label = _DOCTOR_LABELS.get(doctor_key, doctor_key)
         lines.append(f"{label}:")
         doc_exc = upcoming_exceptions.get(doctor_key, {})
@@ -299,7 +328,7 @@ async def get_available_slots(
     slot_delta = timedelta(minutes=slot_minutes)
 
     # Build working windows: use doctor schedule if available, else fall back to shift
-    doctor_schedule = DOCTOR_SCHEDULES.get(doctor_key or "", {})
+    doctor_schedule = _get_doctor_schedule(doctor_key or "", target_date) if doctor_key else DOCTOR_SCHEDULES.get(doctor_key or "", {})
     shift = _normalize_shift(preferred_shift)
     shift_start_h, shift_end_h = SHIFT_HOURS.get(shift, (8, 18))
 
