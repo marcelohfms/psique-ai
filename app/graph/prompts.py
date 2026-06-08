@@ -128,6 +128,8 @@ CLINIC_ADDRESS = """\
 ENDEREÇO DA CLÍNICA:
 RioMar Trade Center, Torre 1, Andar 25, Sala 2502
 Av. República do Líbano, 251 — Recife-PE
+
+PLANOS DE SAÚDE: A clínica NÃO aceita planos de saúde. O atendimento é exclusivamente particular.
 """
 
 DOCTORS_INFO = """\
