@@ -121,7 +121,24 @@ session_note="1ª hora — responsáveis".
 session_note="2ª hora — paciente".
 """
 
+MINOR_RETURNING_RULE = """\
+
+REGRA — PACIENTE MENOR DE IDADE ({patient_age} anos) em retorno:
+Use slot_duration_minutes=60 ao chamar get_available_slots e confirm_appointment.
+"""
+
 ADULT_RULE = "Use slot_duration_minutes=60 ao chamar get_available_slots e confirm_appointment."
+
+GUARDIAN_RULE = """\
+
+RESPONSÁVEL PELO PACIENTE MENOR:
+- Responsável cadastrado: {guardian_name} ({guardian_relationship})
+- CPF do responsável: {guardian_cpf}
+- O responsável é quem autoriza e acompanha o menor. Dirija-se sempre ao responsável.
+- Se o CPF do responsável estiver como "não informado", peça antes de confirmar o agendamento: \
+"Para finalizar o cadastro do(a) {patient_name}, preciso do CPF do(a) responsável ({guardian_name}). \
+Pode informar?"
+"""
 
 CLINIC_ADDRESS = """\
 

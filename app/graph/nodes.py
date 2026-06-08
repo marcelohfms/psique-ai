@@ -16,7 +16,7 @@ from app.graph.tools import (
     request_registration_update,
     _expected_consultation_amount,
 )
-from app.graph.prompts import COLLECT_SYSTEM, MINOR_RULE, ADULT_RULE, EXISTING_PATIENT_SYSTEM, NEW_PATIENT_SYSTEM, CANCELLATION_RULES, CLINIC_ADDRESS, DOCTORS_INFO, get_booking_fee_rule, MEDICAL_LIMITS_RULE, DOCTOR_CORRECTION_RULE, EMAIL_RULE, get_pricing_rules, ATTENDANT_INSTRUCTION_RULE, get_pricing_exception_rule
+from app.graph.prompts import COLLECT_SYSTEM, MINOR_RULE, MINOR_RETURNING_RULE, ADULT_RULE, GUARDIAN_RULE, EXISTING_PATIENT_SYSTEM, NEW_PATIENT_SYSTEM, CANCELLATION_RULES, CLINIC_ADDRESS, DOCTORS_INFO, get_booking_fee_rule, MEDICAL_LIMITS_RULE, DOCTOR_CORRECTION_RULE, EMAIL_RULE, get_pricing_rules, ATTENDANT_INSTRUCTION_RULE, get_pricing_exception_rule
 from app.whatsapp import send_text
 from app.database import upsert_user, log_event, get_upcoming_appointments, get_user_by_phone, get_users_by_phone, DOCTOR_IDS, DOCTOR_NAMES, save_message, get_last_assistant_message_time
 from app.chatwoot import get_conversation_id, add_private_note
@@ -614,19 +614,18 @@ async def patient_agent_node(state: ConversationState, config: RunnableConfig) -
     )
     contact_first_name = _contact_full.split()[0]
     contact_name = _contact_full
+    is_minor = patient_age < 18
     is_minor_first = (
-        patient_age < 18
+        is_minor
         and not state.get("is_returning_patient", False)
         and state.get("preferred_doctor") == "julio"
     )
-    duration_rule = (
-        MINOR_RULE.format(
-            patient_name=first_name,
-            patient_age=patient_age,
-        )
-        if is_minor_first
-        else ADULT_RULE
-    )
+    if is_minor_first:
+        duration_rule = MINOR_RULE.format(patient_name=first_name, patient_age=patient_age)
+    elif is_minor:
+        duration_rule = MINOR_RETURNING_RULE.format(patient_age=patient_age)
+    else:
+        duration_rule = ADULT_RULE
 
     # ── Auto-extract birth_date from recent messages if still missing ─────────
     # Handles the case where the LLM asked for birth_date but the node never
@@ -682,6 +681,15 @@ async def patient_agent_node(state: ConversationState, config: RunnableConfig) -
         attendant_instruction_rule=ATTENDANT_INSTRUCTION_RULE,
         modality_restriction=state.get("modality_restriction") or "",
     )
+
+    # Inject guardian context for minor patients
+    if is_minor:
+        system_prompt += GUARDIAN_RULE.format(
+            patient_name=first_name,
+            guardian_name=state.get("guardian_name") or "não informado",
+            guardian_relationship=state.get("guardian_relationship") or "responsável",
+            guardian_cpf=state.get("guardian_cpf") or "não informado",
+        )
 
     # Attendant-mode: add patient_name_override reminder (routing rules are in the base prompt)
     if state.get("silent_mode"):
