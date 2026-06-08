@@ -822,6 +822,37 @@ async def patient_agent_node(state: ConversationState, config: RunnableConfig) -
             f"(ex: 'Qual a data de nascimento de {first_name}?', 'Qual o e-mail de {first_name}?')."
         )
 
+    # Detect when the last AI message was the appointment confirmation summary
+    # ("Só confirmar antes de registrar") and the patient just replied affirmatively.
+    # In this situation the ONLY correct next action is confirm_appointment.
+    # Without this guard, the NEW_PATIENT_SYSTEM step-1 instruction ("if the user
+    # mentioned a day, call get_available_slots immediately") fires on the human's
+    # confirmation reply and Eva re-queries slots instead of confirming.
+    _CONFIRM_SUMMARY_MARKER = "Só confirmar antes de registrar"
+    _AFFIRMATIVE = {"sim", "pode", "confirma", "confirmo", "ok", "isso", "pode ser",
+                    "tá", "ta", "tá bom", "ta bom", "perfeito", "ótimo", "otimo",
+                    "certo", "claro", "exato", "👍", "✅"}
+    _last_ai_content = ""
+    _last_human_content = ""
+    for _m in reversed(clean_messages):
+        if not _last_human_content and getattr(_m, "type", "") == "human":
+            _last_human_content = (getattr(_m, "content", "") or "").strip().lower()
+        elif not _last_ai_content and getattr(_m, "type", "") == "ai":
+            _last_ai_content = getattr(_m, "content", "") or ""
+        if _last_ai_content and _last_human_content:
+            break
+    _awaiting_confirm = (
+        _CONFIRM_SUMMARY_MARKER in _last_ai_content
+        and any(w in _last_human_content for w in _AFFIRMATIVE)
+    )
+    if _awaiting_confirm:
+        system_prompt += (
+            "\n\nAÇÃO OBRIGATÓRIA AGORA: O contato acabou de confirmar o agendamento. "
+            "Chame confirm_appointment com os dados do resumo acima. "
+            "É PROIBIDO chamar get_available_slots neste momento. "
+            "Não faça nenhuma outra pergunta antes de chamar confirm_appointment."
+        )
+
     # When we just transitioned from collect_info in the same turn, tell the agent
     # exactly what the user was trying to do so it doesn't get distracted by
     # unrelated context such as upcoming appointments.
