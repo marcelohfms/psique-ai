@@ -1529,10 +1529,15 @@ async def update_preferred_doctor(
     ele escolher um médico pela primeira vez.
     """
     phone = config["configurable"]["phone"]
-    doctor_id = DOCTOR_IDS.get(doctor)
-    await upsert_user(phone, {"doctor_id": doctor_id})
-    doctor_label = {"julio": "Dr. Júlio", "bruna": "Dra. Bruna"}.get(doctor, doctor)
-    await log_event("doctor_updated", phone, {"doctor": doctor})
+    # Normalize: strip accents so "júlio" → "julio" in case the LLM adds one
+    doctor_normalized = doctor.lower().replace("ú", "u").replace("ü", "u")
+    doctor_key = doctor_normalized if doctor_normalized in DOCTOR_IDS else doctor
+    doctor_id = DOCTOR_IDS.get(doctor_key)
+    if not doctor_id:
+        return f"Médico '{doctor}' não reconhecido. Use 'julio' ou 'bruna'."
+    await upsert_user(phone, {"doctor_id": doctor_id}, user_id=state.get("user_db_id"))
+    doctor_label = {"julio": "Dr. Júlio", "bruna": "Dra. Bruna"}.get(doctor_key, doctor_key)
+    await log_event("doctor_updated", phone, {"doctor": doctor_key})
     return f"Médico atualizado para {doctor_label}! Pode continuar."
 
 
