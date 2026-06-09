@@ -846,12 +846,15 @@ async def patient_agent_node(state: ConversationState, config: RunnableConfig) -
         and any(w in _last_human_content for w in _AFFIRMATIVE)
     )
     if _awaiting_confirm:
-        system_prompt += (
-            "\n\nAÇÃO OBRIGATÓRIA AGORA: O contato acabou de confirmar o agendamento. "
-            "Chame confirm_appointment com os dados do resumo acima. "
-            "É PROIBIDO chamar get_available_slots neste momento. "
-            "Não faça nenhuma outra pergunta antes de chamar confirm_appointment."
+        _confirm_instruction = (
+            "⚠️ ATENÇÃO — AÇÃO ÚNICA OBRIGATÓRIA AGORA: "
+            "O paciente acabou de confirmar o agendamento que você apresentou na mensagem anterior. "
+            "Você JÁ tem todos os dados necessários no histórico da conversa (data, hora, médico, paciente, modalidade). "
+            "Chame confirm_appointment IMEDIATAMENTE com esses dados. "
+            "NÃO chame get_available_slots. NÃO faça perguntas. NÃO busque novos horários. "
+            "Apenas chame confirm_appointment agora.\n\n"
         )
+        system_prompt = _confirm_instruction + system_prompt
 
     # When we just transitioned from collect_info in the same turn, tell the agent
     # exactly what the user was trying to do so it doesn't get distracted by
