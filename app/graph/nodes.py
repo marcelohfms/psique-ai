@@ -829,25 +829,40 @@ async def patient_agent_node(state: ConversationState, config: RunnableConfig) -
     # mentioned a day, call get_available_slots immediately") fires on the human's
     # confirmation reply and Eva re-queries slots instead of confirming.
     _CONFIRM_SUMMARY_MARKER = "Só confirmar antes de registrar"
+    # 🙏 is a thank-you gesture, NOT a booking confirmation — keep it out of this set
     _AFFIRMATIVE = {"sim", "pode", "confirma", "confirmo", "ok", "isso", "pode ser",
                     "tá", "ta", "tá bom", "ta bom", "perfeito", "ótimo", "otimo",
-                    "certo", "claro", "exato", "👍", "✅", "🙏", "pode confirmar",
+                    "certo", "claro", "exato", "👍", "✅", "pode confirmar",
                     "confirmar", "quero", "quero confirmar", "vai", "bora", "fechado"}
     _last_human_content = ""
     for _m in reversed(clean_messages):
         if not _last_human_content and getattr(_m, "type", "") == "human":
             _last_human_content = (getattr(_m, "content", "") or "").strip().lower()
             break
-    # Search the last few AI messages for the confirmation marker, not just the most recent.
-    # Eva sometimes asks "Por favor, confirme..." as a follow-up, pushing the summary further back.
+    # Search all AI messages for the confirmation summary marker.
     _summary_in_recent_ai = any(
         _CONFIRM_SUMMARY_MARKER in (getattr(_m, "content", "") or "")
         for _m in reversed(clean_messages)
         if getattr(_m, "type", "") == "ai"
     )
+    # Do NOT re-fire the guard if confirm_appointment was already called successfully
+    # in this conversation (prevents double-booking when patient sends a non-affirmative
+    # gesture like 🙏 that the LLM interprets as confirmation and books the slot).
+    _already_confirmed = any(
+        getattr(_m, "type", "") == "tool"
+        and "registrada" in (getattr(_m, "content", "") or "").lower()
+        and any(
+            tc.get("name") == "confirm_appointment"
+            for ai_m in clean_messages
+            if getattr(ai_m, "type", "") == "ai"
+            for tc in (getattr(ai_m, "tool_calls", None) or [])
+        )
+        for _m in clean_messages
+    )
     _awaiting_confirm = (
         _summary_in_recent_ai
         and any(w in _last_human_content for w in _AFFIRMATIVE)
+        and not _already_confirmed
     )
     if _awaiting_confirm:
         _confirm_instruction = (
