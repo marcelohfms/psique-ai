@@ -1006,6 +1006,64 @@ async def patient_agent_node(state: ConversationState, config: RunnableConfig) -
                  [t["name"] for t in response.tool_calls] if response.tool_calls else [],
                  len(response.content) if response.content else 0)
 
+    # ── Guard: block premature confirm_appointment ────────────────────────────
+    # If the LLM is trying to call confirm_appointment but the patient has NOT
+    # yet confirmed (pending_appointment is not set), intercept the call:
+    # extract the slot data from the tool args, send the confirmation summary
+    # to the patient, and store pending_appointment — bypassing the tool call.
+    # Exception: attendant-mode (silent_mode) skips this guard.
+    if (
+        response.tool_calls
+        and not state.get("silent_mode")
+        and not state.get("pending_appointment")
+        and any(tc.get("name") == "confirm_appointment" for tc in response.tool_calls)
+    ):
+        _confirm_tc = next(tc for tc in response.tool_calls if tc.get("name") == "confirm_appointment")
+        _args = _confirm_tc.get("args") or {}
+        _slot_dt = _args.get("slot_datetime", "")
+        _duration = _args.get("slot_duration_minutes", 60)
+        _modality = _args.get("modality", "")
+
+        # Build the human-readable summary from the slot datetime
+        _doctor_key = state.get("preferred_doctor") or ""
+        _doctor_lbl = {"julio": "Dr. Júlio", "bruna": "Dra. Bruna"}.get(_doctor_key, "médico(a)")
+        _patient_nm = state.get("patient_name") or state.get("user_name") or "Paciente"
+        _mod_lbl = {"presencial": "Presencial", "online": "Online"}.get(_modality, _modality.capitalize() if _modality else "—")
+
+        _summary = ""
+        try:
+            from datetime import datetime as _dt2
+            from zoneinfo import ZoneInfo as _ZI2
+            _slot = _dt2.fromisoformat(_slot_dt).astimezone(_ZI2("America/Recife"))
+            _weekdays_pt = ["Segunda-feira", "Terça-feira", "Quarta-feira", "Quinta-feira", "Sexta-feira", "Sábado", "Domingo"]
+            _weekday_name = _weekdays_pt[_slot.weekday()]
+            _summary = (
+                f"Só confirmar antes de registrar: 😊\n"
+                f"📅 {_weekday_name}, dia {_slot.strftime('%d/%m')}, às {_slot.strftime('%H:%M')}\n"
+                f"👨‍⚕️ {_doctor_lbl}\n"
+                f"👤 Paciente: {_patient_nm}\n"
+                f"📍 Modalidade: {_mod_lbl}\n"
+                f"Posso confirmar o agendamento?"
+            )
+        except Exception:
+            _logger.exception("GUARD_PREMATURE_CONFIRM: failed to build summary for slot=%s", _slot_dt)
+
+        if _summary:
+            _logger.info("GUARD_PREMATURE_CONFIRM: intercepted confirm_appointment, sending summary instead. slot=%s", _slot_dt)
+            await send_text(state["phone"], _summary)
+            await save_message(state["phone"], "assistant", _summary)
+            from langchain_core.messages import AIMessage as _AIMsg2
+            _pending_from_args = {
+                "slot_datetime": _slot_dt,
+                "slot_duration_minutes": _duration,
+                "modality": _modality,
+                "doctor": _doctor_key,
+            }
+            return {
+                "messages": [_AIMsg2(content=_summary)],
+                "pending_appointment": _pending_from_args,
+            }
+
     # Only send to WhatsApp when the LLM produces a final text (no tool calls)
     if not response.tool_calls and response.content:
         phone = state["phone"]
