@@ -68,3 +68,9 @@ class ConversationState(TypedDict):
     # unrelated context (e.g. upcoming appointments).
     # Cleared by patient_agent_node after injecting the directive.
     pending_action: str | None
+
+    # Stores appointment data extracted from the confirmation summary Eva sent the patient.
+    # When set and the patient replies affirmatively, patient_agent_node calls
+    # confirm_appointment directly (bypassing the LLM) to prevent double-booking.
+    # Keys: slot_datetime (ISO), slot_duration_minutes, modality, doctor
+    pending_appointment: dict | None

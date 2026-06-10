@@ -610,11 +610,123 @@ async def collect_info_node(state: ConversationState, config: RunnableConfig) ->
     return update
 
 
+def _extract_pending_appointment(text: str, state: dict) -> dict | None:
+    """Parse the confirmation summary Eva sends and return structured appointment data.
+
+    Summary format:
+        Só confirmar antes de registrar: 😊
+        📅 Terça-feira, dia 16/06, às 17:00
+        👨‍⚕️ Dr. Júlio
+        👤 Paciente: Paula Muniz
+        📍 Modalidade: Presencial
+    """
+    import re as _re
+    _CONFIRM_SUMMARY_MARKER = "Só confirmar antes de registrar"
+    if _CONFIRM_SUMMARY_MARKER not in text:
+        return None
+
+    # Date + time
+    date_match = _re.search(r'dia\s+(\d{1,2}/\d{2}).*?às\s+(\d{2}:\d{2})', text, _re.DOTALL)
+    if not date_match:
+        return None
+    date_str = date_match.group(1)   # "16/06"
+    time_str = date_match.group(2)   # "17:00"
+
+    from datetime import date as _date
+    from zoneinfo import ZoneInfo as _ZI
+    _TZ_rec = _ZI("America/Recife")
+    today = datetime.now(_TZ_rec).date()
+    try:
+        day, month = map(int, date_str.split('/'))
+        year = today.year
+        candidate = _date(year, month, day)
+        if candidate < today:
+            candidate = _date(year + 1, month, day)
+    except (ValueError, OverflowError):
+        return None
+
+    slot_datetime = f"{candidate.isoformat()}T{time_str}:00"
+
+    # Doctor
+    if "Dr. Júlio" in text or "Dr. Julio" in text:
+        doctor = "julio"
+    elif "Dra. Bruna" in text:
+        doctor = "bruna"
+    else:
+        doctor = state.get("preferred_doctor") or ""
+
+    # Modality
+    mod_match = _re.search(r'Modalidade[:\s]+(\w+)', text)
+    modality = ""
+    if mod_match:
+        mod_raw = mod_match.group(1).lower()
+        if mod_raw in ("presencial", "online"):
+            modality = mod_raw
+
+    # Duration
+    p_age = state.get("patient_age") or 99
+    is_returning = state.get("is_returning_patient")
+    duration = 120 if (p_age < 18 and not is_returning and doctor == "julio") else 60
+
+    return {
+        "slot_datetime": slot_datetime,
+        "slot_duration_minutes": duration,
+        "modality": modality,
+        "doctor": doctor,
+    }
+
+
 async def patient_agent_node(state: ConversationState, config: RunnableConfig) -> dict:
     """
     Single LLM call per turn. If the LLM returns tool calls, the graph routes
     to the ToolNode. When it returns plain text, it sends to WhatsApp and ends.
     """
+    import logging as _log_pa
+    _pa_logger = _log_pa.getLogger(__name__)
+
+    # ── Programmatic confirmation bypass ─────────────────────────────────────
+    # If Eva already sent the confirmation summary and the patient is now confirming,
+    # call confirm_appointment DIRECTLY without going through the LLM.
+    # This prevents: (a) LLM ignoring the guard and re-fetching slots,
+    #                (b) double-booking when patient sends a non-standard affirmative
+    #                    that the LLM interprets as confirmation without the guard.
+    _PENDING_AFFIRMATIVE = {
+        "sim", "pode", "confirma", "confirmo", "ok", "isso", "pode ser",
+        "tá", "ta", "tá bom", "ta bom", "perfeito", "ótimo", "otimo",
+        "certo", "claro", "exato", "👍", "✅", "pode confirmar",
+        "confirmar", "quero", "quero confirmar", "vai", "bora", "fechado",
+    }
+    _pending_appt = state.get("pending_appointment")
+    if _pending_appt:
+        _last_msg = ""
+        for _m in reversed(list(state["messages"])):
+            if getattr(_m, "type", "") == "human":
+                _last_msg = (getattr(_m, "content", "") or "").strip().lower()
+                break
+        if _last_msg and any(w in _last_msg for w in _PENDING_AFFIRMATIVE):
+            _pa_logger.info("PENDING_APPT_CONFIRM slot=%s modality=%s", _pending_appt.get("slot_datetime"), _pending_appt.get("modality"))
+            from app.graph.tools import confirm_appointment as _confirm_tool
+            from app.chatwoot import send_text as _send_text
+            from app.database import save_message as _save_msg
+            try:
+                _result = await _confirm_tool.coroutine(
+                    slot_datetime=_pending_appt["slot_datetime"],
+                    slot_duration_minutes=_pending_appt["slot_duration_minutes"],
+                    modality=_pending_appt.get("modality", ""),
+                    session_note="",
+                    force_encaixe=False,
+                    patient_name_override="",
+                    state=state,
+                    config=config,
+                )
+            except Exception:
+                _pa_logger.exception("PENDING_APPT_CONFIRM failed")
+                _result = "Erro ao confirmar o agendamento. Tente novamente."
+            await _send_text(state["phone"], _result)
+            await _save_msg(state["phone"], "assistant", _result)
+            from langchain_core.messages import AIMessage as _AI
+            return {"pending_appointment": None, "messages": [_AI(content=_result)]}
+
     doctor_label = {"julio": "Dr. Júlio", "bruna": "Dra. Bruna"}.get(
         state.get("preferred_doctor", ""), "médico(a)"
     )
@@ -944,6 +1056,17 @@ async def patient_agent_node(state: ConversationState, config: RunnableConfig) -
     update: dict = {"messages": [response]}
     if pending_action:
         update["pending_action"] = None
+
+    # If the LLM just sent the confirmation summary, extract and store the slot data
+    # so the next turn can confirm directly without going through the LLM again.
+    if not response.tool_calls and response.content:
+        _parsed = _extract_pending_appointment(response.content, state)
+        if _parsed:
+            update["pending_appointment"] = _parsed
+            _logger.info("PENDING_APPT_STORED slot=%s", _parsed.get("slot_datetime"))
+        elif state.get("pending_appointment"):
+            # LLM replied with something other than a new summary — clear stale pending
+            update["pending_appointment"] = None
 
     # If preferred_doctor is missing from state, check whether update_preferred_doctor
     # was just called (state may not reflect it yet because ToolNode only updates messages).
