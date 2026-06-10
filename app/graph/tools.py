@@ -538,8 +538,28 @@ async def confirm_appointment(
 
     # Persist to appointments table; roll back calendar event on failure
     end = start + timedelta(minutes=slot_duration_minutes)
-    user = await get_user_by_phone(phone)
     client = await get_supabase()
+
+    # When the contact has multiple patients, match by patient_name to get the correct user_id.
+    # get_user_by_phone returns an arbitrary record — wrong when contact has e.g. parent + child.
+    all_users = await get_users_by_phone(phone)
+    user = None
+    if len(all_users) > 1:
+        _target = patient_name.strip().lower()
+        for _u in all_users:
+            _pname = (_u.get("patient_name") or _u.get("name") or "").strip().lower()
+            if _pname == _target:
+                user = _u
+                break
+        if user is None:
+            # Fallback: partial match
+            for _u in all_users:
+                _pname = (_u.get("patient_name") or _u.get("name") or "").strip().lower()
+                if _target and _target in _pname:
+                    user = _u
+                    break
+    if user is None:
+        user = await get_user_by_phone(phone)
 
     # Determine consultation_type for minor patients with Dr. Júlio.
     # Two signals are combined:
