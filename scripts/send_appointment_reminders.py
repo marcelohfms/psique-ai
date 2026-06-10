@@ -111,6 +111,9 @@ async def save_to_checkpoint(graph, phone: str, message: str, appt: dict) -> Non
         "patient_name": patient_name,
         "is_patient": True,
         "preferred_doctor": doctor_key,
+        # Clear any stale pending_appointment so a patient replying to the
+        # reminder with "pode confirmar" doesn't accidentally trigger a booking.
+        "pending_appointment": None,
     }
 
     await graph.aupdate_state(config, update, as_node="patient_agent")

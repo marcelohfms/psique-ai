@@ -951,10 +951,13 @@ async def patient_agent_node(state: ConversationState, config: RunnableConfig) -
         if not _last_human_content and getattr(_m, "type", "") == "human":
             _last_human_content = (getattr(_m, "content", "") or "").strip().lower()
             break
-    # Search all AI messages for the confirmation summary marker.
+    # Search only the last 6 messages for the confirmation summary marker.
+    # Searching all history causes false positives: an old "Só confirmar antes de registrar"
+    # from a previous booking would trigger the guard on an unrelated "Pode confirmar"
+    # reply to a reminder message.
     _summary_in_recent_ai = any(
         _CONFIRM_SUMMARY_MARKER in (getattr(_m, "content", "") or "")
-        for _m in reversed(clean_messages)
+        for _m in clean_messages[-6:]
         if getattr(_m, "type", "") == "ai"
     )
     # Do NOT re-fire the guard if confirm_appointment was already called successfully
