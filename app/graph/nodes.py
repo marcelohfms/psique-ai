@@ -101,29 +101,55 @@ async def collect_info_node(state: ConversationState, config: RunnableConfig) ->
 
             if len(all_users) == 1:
                 u = all_users[0]
-                doc_key = DOCTOR_NAMES.get(u.get("doctor_id", ""), None)
-                loaded = {
-                    "user_db_id": u["id"],
-                    "user_name": u.get("name"),
-                    "patient_name": u.get("patient_name") or u.get("name"),
-                    "patient_age": u.get("age"),
-                    "birth_date": u.get("birth_date"),
-                    "is_patient": u.get("is_patient"),
-                    "is_returning_patient": u.get("is_returning_patient"),
-                    "preferred_doctor": doc_key,
-                    "patient_email": u.get("email"),
-                    "guardian_name": u.get("guardian_name"),
-                    "guardian_cpf": u.get("guardian_cpf"),
-                    "guardian_relationship": u.get("guardian_relationship"),
-                    "patient_cpf": u.get("patient_cpf"),
-                    "modality_restriction": u.get("modality_restriction"),
-                    "age_exception": u.get("age_exception"),
-                }
-                # Only skip collect_info if the patient already has an email.
-                # If email is missing, stay in collect_info so Eva can ask for it.
-                if loaded.get("patient_email"):
-                    return {**loaded, "stage": "patient_agent", "messages": []}
-                return loaded
+
+                # If the existing record is for someone else (is_patient=False) and the
+                # contact is now booking for themselves ("para mim"), start a fresh
+                # registration instead of loading the third-party record. This creates
+                # a new user entry linked to this phone number with is_patient=True.
+                _self_keywords = [
+                    "para mim", "pra mim", "para eu", "sou eu", "sou a paciente",
+                    "sou o paciente", "é para mim", "e para mim", "é pra mim",
+                    "e pra mim", "para mim mesmo", "pra mim mesmo",
+                ]
+                _last_human_msg = ""
+                for _m in reversed(state.get("messages", [])):
+                    if getattr(_m, "type", "") == "human":
+                        _last_human_msg = (getattr(_m, "content", "") or "").lower()
+                        break
+                _contact_booking_for_self = (
+                    u.get("is_patient") is False
+                    and any(kw in _last_human_msg for kw in _self_keywords)
+                )
+                if _contact_booking_for_self:
+                    # Don't load the existing third-party record — let collect_info
+                    # gather fresh data and create a new user with is_patient=True.
+                    # Pre-fill only the contact name so Eva doesn't ask again.
+                    pass  # fall through to normal collect_info flow below
+
+                else:
+                    doc_key = DOCTOR_NAMES.get(u.get("doctor_id", ""), None)
+                    loaded = {
+                        "user_db_id": u["id"],
+                        "user_name": u.get("name"),
+                        "patient_name": u.get("patient_name") or u.get("name"),
+                        "patient_age": u.get("age"),
+                        "birth_date": u.get("birth_date"),
+                        "is_patient": u.get("is_patient"),
+                        "is_returning_patient": u.get("is_returning_patient"),
+                        "preferred_doctor": doc_key,
+                        "patient_email": u.get("email"),
+                        "guardian_name": u.get("guardian_name"),
+                        "guardian_cpf": u.get("guardian_cpf"),
+                        "guardian_relationship": u.get("guardian_relationship"),
+                        "patient_cpf": u.get("patient_cpf"),
+                        "modality_restriction": u.get("modality_restriction"),
+                        "age_exception": u.get("age_exception"),
+                    }
+                    # Only skip collect_info if the patient already has an email.
+                    # If email is missing, stay in collect_info so Eva can ask for it.
+                    if loaded.get("patient_email"):
+                        return {**loaded, "stage": "patient_agent", "messages": []}
+                    return loaded
             elif len(all_users) > 1:
                 names = [u.get("patient_name") or u.get("name") or "Paciente" for u in all_users]
                 options = "\n".join(f"{i + 1}. {n}" for i, n in enumerate(names))
