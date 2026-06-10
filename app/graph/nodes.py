@@ -838,6 +838,19 @@ async def patient_agent_node(state: ConversationState, config: RunnableConfig) -
         modality_restriction=state.get("modality_restriction") or "",
     )
 
+    # Inject contact-vs-patient rule when the WhatsApp contact is NOT the patient.
+    # Without this, the LLM defaults to using patient_name (prominent in the prompt header)
+    # to address the contact, even when they are different people.
+    if state.get("is_patient") is False and state.get("user_name"):
+        contact_first = contact_name.split()[0]
+        system_prompt += (
+            f"\n\nIMPORTANTE — CONTATO ≠ PACIENTE: Quem está no WhatsApp é *{contact_name}* "
+            f"(o contato/responsável), NÃO o paciente *{first_name}*. "
+            f"Em TODAS as mensagens, dirija-se a {contact_first} pelo nome. "
+            f"Use o nome {first_name} apenas quando falar SOBRE o paciente na terceira pessoa "
+            f"(ex: 'a consulta do {first_name}', 'o horário do {first_name}')."
+        )
+
     # Inject guardian context for minor patients
     if is_minor:
         system_prompt += GUARDIAN_RULE.format(
