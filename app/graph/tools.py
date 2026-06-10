@@ -1132,6 +1132,14 @@ async def register_payment(
         if not all_users:
             return "Para qual paciente é este comprovante? Por favor, informe o nome completo."
 
+        # If the contact has multiple patients, always ask — even if only one has a
+        # recent appointment. The payment could be for any of them.
+        if len(all_users) > 1:
+            names = ", ".join(
+                u.get("patient_name") or u.get("name", "Paciente") for u in all_users
+            )
+            return f"Encontrei mais de um paciente neste número: {names}. Para qual deles é o comprovante?"
+
         user_ids = [u["id"] for u in all_users]
         _appt_lookback = (datetime.now(TZ) - timedelta(days=15)).isoformat()
 
