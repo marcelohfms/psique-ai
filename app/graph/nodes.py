@@ -831,18 +831,22 @@ async def patient_agent_node(state: ConversationState, config: RunnableConfig) -
     _CONFIRM_SUMMARY_MARKER = "Só confirmar antes de registrar"
     _AFFIRMATIVE = {"sim", "pode", "confirma", "confirmo", "ok", "isso", "pode ser",
                     "tá", "ta", "tá bom", "ta bom", "perfeito", "ótimo", "otimo",
-                    "certo", "claro", "exato", "👍", "✅"}
-    _last_ai_content = ""
+                    "certo", "claro", "exato", "👍", "✅", "🙏", "pode confirmar",
+                    "confirmar", "quero", "quero confirmar", "vai", "bora", "fechado"}
     _last_human_content = ""
     for _m in reversed(clean_messages):
         if not _last_human_content and getattr(_m, "type", "") == "human":
             _last_human_content = (getattr(_m, "content", "") or "").strip().lower()
-        elif not _last_ai_content and getattr(_m, "type", "") == "ai":
-            _last_ai_content = getattr(_m, "content", "") or ""
-        if _last_ai_content and _last_human_content:
             break
+    # Search the last few AI messages for the confirmation marker, not just the most recent.
+    # Eva sometimes asks "Por favor, confirme..." as a follow-up, pushing the summary further back.
+    _summary_in_recent_ai = any(
+        _CONFIRM_SUMMARY_MARKER in (getattr(_m, "content", "") or "")
+        for _m in reversed(clean_messages)
+        if getattr(_m, "type", "") == "ai"
+    )
     _awaiting_confirm = (
-        _CONFIRM_SUMMARY_MARKER in _last_ai_content
+        _summary_in_recent_ai
         and any(w in _last_human_content for w in _AFFIRMATIVE)
     )
     if _awaiting_confirm:
