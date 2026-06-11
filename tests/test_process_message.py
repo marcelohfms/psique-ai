@@ -1011,3 +1011,80 @@ async def test_patient_confirmation_negative_reshows_list():
     assert "Manuela França" in sent
 
 
+@pytest.mark.asyncio
+async def test_pending_reschedule_injected_in_system_prompt(monkeypatch):
+    """Quando pending_reschedule está no estado, o system prompt menciona o horário sugerido."""
+    state = _make_patient_agent_state(
+        messages=[HumanMessage(content="sim, pode ser")],
+        pending_reschedule={
+            "appointment_id": "abc-123",
+            "suggested_start": "2026-06-16T14:00:00-03:00",
+            "suggested_end": "2026-06-16T15:00:00-03:00",
+        },
+    )
+
+    system_msg = await _run_patient_agent(state)
+
+    assert system_msg is not None
+    assert "REAGENDAMENTO PENDENTE" in system_msg.content or "reagendamento" in system_msg.content.lower()
+    assert "2026-06-16" in system_msg.content
+
+
+@pytest.mark.asyncio
+async def test_pending_reschedule_cleared_after_reschedule_tool_call():
+    """pending_reschedule deve ser None no retorno após reschedule_appointment ser chamado."""
+    from app.graph.nodes import patient_agent_node
+    from langchain_core.messages import AIMessage
+
+    state = _make_patient_agent_state(
+        messages=[HumanMessage(content="sim, pode ser")],
+        pending_reschedule={
+            "appointment_id": "abc-123",
+            "suggested_start": "2026-06-16T14:00:00-03:00",
+            "suggested_end": "2026-06-16T15:00:00-03:00",
+        },
+    )
+
+    # LangChain AIMessage with tool_calls as list of dicts (standard format)
+    ai_response = AIMessage(
+        content="",
+        tool_calls=[
+            {
+                "name": "reschedule_appointment",
+                "args": {
+                    "appointment_id": "abc-123",
+                    "new_slot_datetime": "2026-06-16T14:00:00",
+                    "slot_duration_minutes": 60,
+                },
+                "id": "call_1",
+            }
+        ],
+    )
+
+    async def fake_ainvoke(messages):
+        return ai_response
+
+    # Mock reschedule_appointment tool function to avoid hitting Calendar/Supabase
+    async def _mock_reschedule(**kwargs):
+        return "Consulta remarcada com sucesso. ✅"
+
+    with patch("app.graph.nodes._get_agent_llm") as mock_llm_fn, \
+         patch("app.graph.nodes.send_text", new_callable=AsyncMock), \
+         patch("app.graph.nodes.save_message", new_callable=AsyncMock), \
+         patch("app.graph.nodes.upsert_user", new_callable=AsyncMock), \
+         patch("app.graph.nodes.get_upcoming_appointments", new_callable=AsyncMock, return_value=[]), \
+         patch("app.graph.nodes.get_user_by_phone", new_callable=AsyncMock, return_value={"price_adjustment_notified_at": "2026-01-01"}), \
+         patch("app.graph.nodes.get_last_assistant_message_time", new_callable=AsyncMock, return_value=None), \
+         patch("app.graph.nodes.reschedule_appointment", side_effect=_mock_reschedule), \
+         patch("app.google_calendar.format_doctor_schedules", return_value="seg-sex"):
+        mock_llm = MagicMock()
+        mock_llm.ainvoke = fake_ainvoke
+        mock_llm_fn.return_value = mock_llm
+        result = await patient_agent_node(state, {})
+
+    # The update dict must explicitly contain pending_reschedule=None so LangGraph
+    # clears the field (not returning the key at all would leave the state unchanged).
+    assert "pending_reschedule" in result, "pending_reschedule must be explicitly returned in the update dict"
+    assert result["pending_reschedule"] is None
+
+
