@@ -92,13 +92,15 @@ async def main():
         first_name = patient_name.split()[0] if patient_name else "paciente"
 
         if phone:
-            # Skip if patient already has a future appointment scheduled
+            # Skip if patient already has a future/ongoing appointment scheduled
+            # Use end_time (not start_time) to also catch appointments that have
+            # already started but not yet finished (e.g. split first consultations).
             future = await (
                 client.from_("appointments")
                 .select("id")
                 .eq("user_id", appt["user_id"])
                 .eq("status", "scheduled")
-                .gt("start_time", now_iso)
+                .gt("end_time", now_iso)
                 .limit(1)
                 .execute()
             )
