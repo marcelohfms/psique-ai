@@ -144,6 +144,7 @@ async def collect_info_node(state: ConversationState, config: RunnableConfig) ->
                         "patient_cpf": u.get("patient_cpf"),
                         "modality_restriction": u.get("modality_restriction"),
                         "age_exception": u.get("age_exception"),
+                        "pending_reschedule": u.get("pending_reschedule"),
                     }
                     # Only skip collect_info if the patient already has an email.
                     # If email is missing, stay in collect_info so Eva can ask for it.
@@ -189,6 +190,7 @@ async def collect_info_node(state: ConversationState, config: RunnableConfig) ->
                     "patient_cpf": candidate.get("patient_cpf"),
                     "modality_restriction": candidate.get("modality_restriction"),
                     "age_exception": candidate.get("age_exception"),
+                    "pending_reschedule": candidate.get("pending_reschedule"),
                     "stage": "patient_agent",
                     "messages": [],
                 }
