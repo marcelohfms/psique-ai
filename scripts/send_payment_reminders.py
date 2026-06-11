@@ -50,10 +50,13 @@ def payment_reminder_message(contact_first_name: str, doctor_label: str, date_st
 
 
 def payment_cancel_message(contact_first_name: str, doctor_label: str, date_str: str, patient_first_name: str | None = None) -> str:
-    consulta = f"a consulta de *{patient_first_name}*" if patient_first_name else "sua consulta"
+    if patient_first_name:
+        consulta_ref = f"da consulta de *{patient_first_name}* com *{doctor_label}* no dia *{date_str}*"
+    else:
+        consulta_ref = f"da sua consulta com *{doctor_label}* no dia *{date_str}*"
     return (
         f"Olá, {contact_first_name}. Infelizmente, como não recebemos o pagamento da taxa "
-        f"de reserva de {consulta} com *{doctor_label}* no dia *{date_str}* dentro "
+        f"de reserva {consulta_ref} dentro "
         f"do prazo de 4 horas, precisamos liberar a vaga. 😔\n\n"
         f"Caso queira reagendar, é só nos chamar aqui! "
         f"Ficaremos felizes em atendê-lo(a). 💙"
