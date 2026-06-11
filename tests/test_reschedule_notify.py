@@ -49,7 +49,7 @@ async def test_send_reschedule_template_calls_send_template():
     mock_send.assert_called_once()
     call_args = mock_send.call_args[0]
     assert call_args[0] == "5583999999999"
-    assert call_args[1] == "psique_reagendamento"
+    assert call_args[1] == "reagendamento"
     assert call_args[2] == "pt_BR"
     components = call_args[3]
     params = components[0]["parameters"]

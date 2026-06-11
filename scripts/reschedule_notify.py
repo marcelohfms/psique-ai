@@ -75,7 +75,7 @@ async def send_reschedule_template(
             ],
         }
     ]
-    await send_template(phone, "psique_reagendamento", "pt_BR", components)
+    await send_template(phone, "reagendamento", "pt_BR", components)
 
 
 async def main() -> None:
