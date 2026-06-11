@@ -750,20 +750,38 @@ async def patient_agent_node(state: ConversationState, config: RunnableConfig) -
     # This prevents: (a) LLM ignoring the guard and re-fetching slots,
     #                (b) double-booking when patient sends a non-standard affirmative
     #                    that the LLM interprets as confirmation without the guard.
+    # Palavras-chave afirmativas para confirmar pending_appointment.
+    # IMPORTANTE: a verificação usa word-boundary (re.search) para evitar falsos
+    # positivos — ex: "ta" não deve bater em "quinta" ou "semana".
     _PENDING_AFFIRMATIVE = {
         "sim", "pode", "confirma", "confirmo", "ok", "isso", "pode ser",
         "tá", "ta", "tá bom", "ta bom", "perfeito", "ótimo", "otimo",
         "certo", "claro", "exato", "👍", "✅", "pode confirmar",
         "confirmar", "quero", "quero confirmar", "vai", "bora", "fechado",
     }
+    # Palavras-chave negativas — se presentes, NÃO confirmar mesmo que haja
+    # alguma palavra afirmativa na mesma mensagem.
+    _PENDING_NEGATIVE = {
+        "não", "nao", "cancela", "cancelar", "desculpe", "errado", "errei",
+        "outro", "outra", "diferente", "mudei", "prefiro outro", "não quero",
+    }
     _pending_appt = state.get("pending_appointment")
     if _pending_appt:
+        import re as _re
         _last_msg = ""
         for _m in reversed(list(state["messages"])):
             if getattr(_m, "type", "") == "human":
                 _last_msg = (getattr(_m, "content", "") or "").strip().lower()
                 break
-        if _last_msg and any(w in _last_msg for w in _PENDING_AFFIRMATIVE):
+
+        def _word_match(keyword: str, text: str) -> bool:
+            """True se keyword aparece como palavra inteira em text."""
+            return bool(_re.search(r'(?<!\w)' + _re.escape(keyword) + r'(?!\w)', text))
+
+        _has_negative = any(_word_match(w, _last_msg) for w in _PENDING_NEGATIVE)
+        _has_affirmative = any(_word_match(w, _last_msg) for w in _PENDING_AFFIRMATIVE)
+
+        if _last_msg and _has_affirmative and not _has_negative:
             _pa_logger.info("PENDING_APPT_CONFIRM slot=%s modality=%s", _pending_appt.get("slot_datetime"), _pending_appt.get("modality"))
             from app.graph.tools import confirm_appointment as _confirm_tool
             from app.whatsapp import send_text as _send_text
