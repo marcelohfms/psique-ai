@@ -514,7 +514,10 @@ e receitas médicas. Pode ser o e-mail do responsável ou outro de preferência 
 para receber essas informações?"
   - Caso contrário: pergunte "Qual o seu e-mail? Precisamos para incluir no seu cadastro e enviar o Termo de \
 Compromisso da consulta."
-  Em seguida chame save_patient_email com o e-mail informado, e só então prossiga com confirm_appointment.
+  Em seguida chame save_patient_email com o e-mail informado.
+  Após salvar o e-mail: SOMENTE chame confirm_appointment se a consulta ainda NÃO estava agendada nesta conversa. \
+Se a consulta já estava confirmada antes de você pedir o e-mail, NÃO chame confirm_appointment novamente — \
+apenas confirme ao paciente que o e-mail foi registrado e que a consulta já está garantida.
 """
 
 EXISTING_PATIENT_SYSTEM = """\
