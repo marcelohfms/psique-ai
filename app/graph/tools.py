@@ -649,21 +649,18 @@ async def confirm_appointment(
     _custom_price_ret = (user or {}).get("custom_price")
     if _custom_price_ret == 0:
         return (
-            f"Consulta agendada com sucesso! ✅\n{doctor_label} — {formatted}{session_label}\nID: {event_id}\n\n"
-            f"[sistema] Agendamento registrado como cortesia. Envie a mensagem de cortesia ao paciente "
-            f"conforme o bloco de exceção de preço no system prompt. NÃO solicite nenhum pagamento."
+            f"AGENDAMENTO_CORTESIA\n"
+            f"{doctor_label} — {formatted}{session_label}\nID: {event_id}"
         )
     elif _bfw:
         return (
-            f"Consulta agendada com sucesso! ✅\n{doctor_label} — {formatted}{session_label}\nID: {event_id}\n\n"
-            f"[sistema] Agendamento registrado com cobrança de reserva dispensada. Envie a mensagem de confirmação "
-            f"ao paciente conforme o bloco de exceção de preço no system prompt. NÃO solicite nenhum pagamento."
+            f"AGENDAMENTO_TAXA_DISPENSADA\n"
+            f"{doctor_label} — {formatted}{session_label}\nID: {event_id}"
         )
     else:
         return (
-            f"Consulta agendada com sucesso! ✅\n{doctor_label} — {formatted}{session_label}\nID: {event_id}\n\n"
-            f"[sistema] Agendamento registrado. Siga o passo 3 do fluxo de agendamento: "
-            f"envie ao paciente a mensagem de confirmação com as instruções de pagamento da taxa de reserva."
+            f"AGENDAMENTO_OK\n"
+            f"{doctor_label} — {formatted}{session_label}\nID: {event_id}"
         )
 
 
