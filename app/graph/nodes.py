@@ -9,7 +9,7 @@ from app.graph.state import ConversationState
 from app.graph.schemas import CollectInfoOutput
 from app.graph.tools import (
     get_available_slots, confirm_appointment,
-    cancel_appointment, reschedule_appointment,
+    cancel_appointment, reschedule_appointment, mark_reschedule_in_progress,
     request_document, transfer_to_human, confirm_attendance,
     register_payment, update_preferred_doctor, save_patient_email,
     register_refund_request, confirm_refund_completed,
@@ -25,7 +25,7 @@ from app.chatwoot import get_conversation_id, add_private_note
 
 TOOLS = [
     get_available_slots, confirm_appointment,
-    cancel_appointment, reschedule_appointment,
+    cancel_appointment, reschedule_appointment, mark_reschedule_in_progress,
     request_document, transfer_to_human, confirm_attendance,
     register_payment, update_preferred_doctor, save_patient_email,
     register_refund_request, confirm_refund_completed,

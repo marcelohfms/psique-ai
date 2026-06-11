@@ -178,9 +178,9 @@ async def get_upcoming_appointments(phone: str) -> list[dict]:
     now_iso = datetime.now(timezone.utc).isoformat()
     result = (
         await client.from_("appointments")
-        .select("appointment_id, start_time, end_time, status")
+        .select("appointment_id, start_time, end_time, status, reschedule_requested_at")
+        .in_("status", ["scheduled", "pending_reschedule"])
         .eq("user_id", user["id"])
-        .eq("status", "scheduled")
         .gte("start_time", now_iso)
         .order("start_time")
         .execute()
