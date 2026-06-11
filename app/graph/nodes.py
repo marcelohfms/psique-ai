@@ -976,6 +976,20 @@ async def patient_agent_node(state: ConversationState, config: RunnableConfig) -
                 "não chame get_available_slots nem peça mais informações."
             )
 
+    _pending_reschedule = state.get("pending_reschedule")
+    if _pending_reschedule:
+        system_prompt += (
+            f"\n\nREAGENDAMENTO PENDENTE: A clínica enviou ao paciente uma mensagem sugerindo "
+            f"o horário {_pending_reschedule.get('suggested_start')} como nova data para a consulta "
+            f"(ID do agendamento original: {_pending_reschedule.get('appointment_id')}). "
+            "O paciente acabou de responder. Interprete livremente a intenção:\n"
+            "- Se o paciente confirmar (ex: 'sim', 'pode ser', 'tudo bem', 'combinado'): "
+            "chame reschedule_appointment com appointment_id e new_slot_datetime = suggested_start.\n"
+            "- Se o paciente recusar ou querer outro horário: responda acolhedoramente e entre no fluxo "
+            "normal de escolha de horário. O campo pending_reschedule será limpo automaticamente.\n"
+            "- Se o paciente tiver dúvidas: responda e mantenha o contexto de reagendamento."
+        )
+
     # One-time price adjustment notice injected into the system prompt
     needs_price_notice = False
     now_dt = datetime.now(ZoneInfo("America/Recife"))

@@ -1011,3 +1011,22 @@ async def test_patient_confirmation_negative_reshows_list():
     assert "Manuela França" in sent
 
 
+@pytest.mark.asyncio
+async def test_pending_reschedule_injected_in_system_prompt(monkeypatch):
+    """Quando pending_reschedule está no estado, o system prompt menciona o horário sugerido."""
+    state = _make_patient_agent_state(
+        messages=[HumanMessage(content="sim, pode ser")],
+        pending_reschedule={
+            "appointment_id": "abc-123",
+            "suggested_start": "2026-06-16T14:00:00-03:00",
+            "suggested_end": "2026-06-16T15:00:00-03:00",
+        },
+    )
+
+    system_msg = await _run_patient_agent(state)
+
+    assert system_msg is not None
+    assert "REAGENDAMENTO PENDENTE" in system_msg.content or "reagendamento" in system_msg.content.lower()
+    assert "2026-06-16" in system_msg.content
+
+
