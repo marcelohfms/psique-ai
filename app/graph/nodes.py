@@ -744,6 +744,35 @@ async def patient_agent_node(state: ConversationState, config: RunnableConfig) -
     import logging as _log_pa
     _pa_logger = _log_pa.getLogger(__name__)
 
+    # ── DB ↔ checkpoint sync for contact identity fields ─────────────────────
+    # When the DB record is corrected after the conversation has started, the
+    # checkpoint may still carry stale values (user_name == patient_name,
+    # is_patient == True). Sync them here so Eva never addresses the wrong person.
+    _sync_updates: dict = {}
+    _user_db_id = state.get("user_db_id")
+    if _user_db_id:
+        try:
+            _db = await get_supabase()
+            _db_user = await _db.from_("users").select("name,patient_name,is_patient").eq("id", _user_db_id).maybe_single().execute()
+            if _db_user and _db_user.data:
+                _db_name = _db_user.data.get("name")
+                _db_is_patient = _db_user.data.get("is_patient")
+                _db_patient_name = _db_user.data.get("patient_name")
+                if _db_name and _db_name != state.get("user_name"):
+                    _sync_updates["user_name"] = _db_name
+                if _db_is_patient is not None and _db_is_patient != state.get("is_patient"):
+                    _sync_updates["is_patient"] = _db_is_patient
+                if _db_patient_name and _db_patient_name != state.get("patient_name"):
+                    _sync_updates["patient_name"] = _db_patient_name
+                if _sync_updates:
+                    _pa_logger.info("Syncing checkpoint with DB for %s: %s", state["phone"], _sync_updates)
+        except Exception:
+            _pa_logger.exception("Failed to sync checkpoint with DB for %s", state["phone"])
+
+    # Apply sync updates to local state view so this turn uses the correct values
+    if _sync_updates:
+        state = {**state, **_sync_updates}
+
     # ── Programmatic confirmation bypass ─────────────────────────────────────
     # If Eva already sent the confirmation summary and the patient is now confirming,
     # call confirm_appointment DIRECTLY without going through the LLM.
@@ -803,7 +832,7 @@ async def patient_agent_node(state: ConversationState, config: RunnableConfig) -
             await _send_text(state["phone"], _result)
             await _save_msg(state["phone"], "assistant", _result)
             from langchain_core.messages import AIMessage as _AI
-            return {"pending_appointment": None, "messages": [_AI(content=_result)]}
+            return {"pending_appointment": None, "messages": [_AI(content=_result)], **_sync_updates}
 
     doctor_label = {"julio": "Dr. Júlio", "bruna": "Dra. Bruna"}.get(
         state.get("preferred_doctor", ""), "médico(a)"
@@ -1251,7 +1280,7 @@ async def patient_agent_node(state: ConversationState, config: RunnableConfig) -
             if needs_price_notice:
                 await upsert_user(phone, {"price_adjustment_notified_at": now_dt.isoformat()}, user_id=state.get("user_db_id"))
 
-    update: dict = {"messages": [response]}
+    update: dict = {"messages": [response], **_sync_updates}
     if pending_action:
         update["pending_action"] = None
 
