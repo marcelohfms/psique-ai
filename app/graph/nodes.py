@@ -758,6 +758,21 @@ async def patient_agent_node(state: ConversationState, config: RunnableConfig) -
                 _db_name = _db_user.data.get("name")
                 _db_is_patient = _db_user.data.get("is_patient")
                 _db_patient_name = _db_user.data.get("patient_name")
+                # Auto-correct is_patient if DB has True but names clearly differ
+                if (
+                    _db_is_patient is True
+                    and _db_name and _db_patient_name
+                    and _db_name.strip().lower() != _db_patient_name.strip().lower()
+                ):
+                    _db_is_patient = False
+                    _pa_logger.warning(
+                        "Auto-correcting is_patient=False for %s (name=%r != patient_name=%r)",
+                        state["phone"], _db_name, _db_patient_name,
+                    )
+                    try:
+                        await _db.from_("users").update({"is_patient": False}).eq("id", _user_db_id).execute()
+                    except Exception:
+                        _pa_logger.exception("Failed to auto-correct is_patient in DB for %s", state["phone"])
                 if _db_name and _db_name != state.get("user_name"):
                     _sync_updates["user_name"] = _db_name
                 if _db_is_patient is not None and _db_is_patient != state.get("is_patient"):
