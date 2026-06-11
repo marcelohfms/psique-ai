@@ -2,8 +2,13 @@
 Payment reminder and auto-cancellation script.
 Runs every 30 minutes via GitHub Actions.
 
-- At 2h after booking (if unpaid): send a friendly payment reminder
-- At 4h after booking (if still unpaid): cancel the appointment and notify user
+Regras:
+- Só executa entre 7h e 23h (horário de Recife). Fora desse intervalo, encerra sem fazer nada.
+- 2h após o agendamento (se não pago): envia lembrete de pagamento via WhatsApp.
+  Se o envio falhar, não marca como enviado (a próxima execução tentará de novo).
+- 2h após o lembrete (se ainda não pago): tenta enviar aviso de cancelamento.
+  O cancelamento SÓ ocorre se o aviso for entregue com sucesso via WhatsApp.
+  Se o envio falhar, a consulta NÃO é cancelada e a próxima execução tentará de novo.
 
 Both messages are saved to the LangGraph checkpoint so the LLM has full
 conversation context when the patient replies.
@@ -118,6 +123,16 @@ async def main():
     )
 
     now = datetime.now(TZ)
+
+    # ── Janela de envio: apenas entre 7h e 23h (horário de Recife) ────────────
+    # Lembretes e cancelamentos fora desse intervalo são adiados para a próxima
+    # execução dentro da janela. Cancelamentos de madrugada não são permitidos.
+    WINDOW_START = 7
+    WINDOW_END = 23
+    if not (WINDOW_START <= now.hour < WINDOW_END):
+        print(f"Fora da janela de envio ({WINDOW_START}h–{WINDOW_END}h). Encerrando.")
+        return
+
     two_hours_ago = (now - timedelta(hours=2)).isoformat()
 
     # ── Step 1: 1st reminder (not yet reminded, booked >= 2h ago) ─────────────
@@ -230,20 +245,24 @@ async def main():
 
             message = payment_cancel_message(contact_first, doctor_label, date_str, patient_first)
 
-            # Step 1: Notify patient via WhatsApp — best-effort.
-            # A failure (e.g. no Chatwoot conversation exists) must NOT block the
-            # cancellation; the slot would never be freed if we kept retrying forever.
-            # The clinic email in Step 5 will include a warning so the team can
-            # follow up with the patient manually.
+            # Step 1: Notify patient via WhatsApp — OBRIGATÓRIO para cancelar.
+            # Se o envio falhar, a consulta NÃO é cancelada e a próxima execução
+            # do script tentará novamente (dentro da janela horária permitida).
             whatsapp_ok = False
             try:
                 await send_whatsapp(phone, message)
                 whatsapp_ok = True
+                print(f"  [payment_cancel] WhatsApp enviado para {phone}.")
             except Exception as e:
-                print(f"  [payment_cancel] WhatsApp failed for {phone} (non-fatal, cancelling anyway): {e}")
+                print(f"  [payment_cancel] WhatsApp FALHOU para {phone} — cancelamento adiado: {e}")
+
+            if not whatsapp_ok:
+                # Não cancelar sem confirmar que o paciente foi avisado.
+                # A próxima execução do script tentará de novo.
+                continue
 
             # Step 2: Checkpoint — non-fatal, must not block cancellation
-            if graph and whatsapp_ok:
+            if graph:
                 try:
                     await save_to_checkpoint(graph, phone, message, appt)
                 except Exception as e:
