@@ -4,7 +4,7 @@ Runs via GitHub Actions on a schedule (every hour).
 
 Processes appointments where:
   - status = 'scheduled'
-  - end_time < now() - 1h  (at least 1 hour has passed since the appointment ended)
+  - end_time < now() - 24h  (at least 24 hours have passed since the appointment ended)
 """
 import asyncio
 import os
@@ -40,7 +40,7 @@ async def main():
     key = os.environ["SUPABASE_KEY"]
     client = await acreate_client(url, key)
 
-    cutoff = (datetime.now(timezone.utc) - timedelta(hours=1)).isoformat()
+    cutoff = (datetime.now(timezone.utc) - timedelta(hours=24)).isoformat()
 
     result = await (
         client.from_("appointments")
