@@ -575,7 +575,7 @@ async def collect_info_node(state: ConversationState, config: RunnableConfig) ->
     update: dict = {"messages": [AIMessage(content=reply)]}
 
     for field in [
-        "user_name", "is_patient", "patient_name",
+        "user_name", "patient_name",
         "birth_date", "patient_cpf", "guardian_relationship", "guardian_name", "guardian_cpf",
         "is_returning_patient", "preferred_doctor", "patient_email",
         "consultation_reason", "referral_professional", "medication_note",
@@ -584,9 +584,43 @@ async def collect_info_node(state: ConversationState, config: RunnableConfig) ->
         if val is not None:
             update[field] = val
 
+    # is_patient must ONLY be set via programmatic steps (Step 4 for minors, Step 4d for adults).
+    # The LLM must not infer it from context — this avoids silently setting is_patient=False
+    # without asking the "Você é o(a) paciente?" question.
+    # Only apply the LLM-extracted value if the programmatic steps haven't set it yet AND the
+    # last AI message actually asked about it (meaning the programmatic step 4d ran and the
+    # user answered, but somehow the extraction loop above is handling it).
+    if result.is_patient is not None and state.get("is_patient") is None:
+        _last_ai_text = ""
+        for _m in reversed(state.get("messages", [])):
+            if getattr(_m, "type", None) == "ai":
+                _last_ai_text = (_m.content or "").lower()
+                break
+        _asked_is_patient = (
+            "agendando em nome" in _last_ai_text
+            or ("você é" in _last_ai_text and "paciente" in _last_ai_text)
+        )
+        if _asked_is_patient:
+            update["is_patient"] = result.is_patient
+
     # Merge any fields extracted programmatically this turn
     for k, v in _extracted.items():
         update[k] = v
+
+    # If the LLM just extracted preferred_doctor for the first time, persist it to DB
+    # immediately so it's not lost if is_complete=True is delayed or the conversation resets.
+    if (
+        update.get("preferred_doctor")
+        and not state.get("preferred_doctor")
+        and state.get("user_db_id")
+    ):
+        try:
+            await upsert_user(state["phone"], {
+                "doctor_id": DOCTOR_IDS.get(update["preferred_doctor"])
+            }, user_id=state["user_db_id"])
+        except Exception:
+            import logging as _log
+            _log.getLogger(__name__).exception("Failed to persist preferred_doctor early")
 
     # Calculate age automatically from birth_date
     birth_date_str = update.get("birth_date") or state.get("birth_date")
@@ -732,7 +766,7 @@ async def patient_agent_node(state: ConversationState, config: RunnableConfig) -
         if _last_msg and any(w in _last_msg for w in _PENDING_AFFIRMATIVE):
             _pa_logger.info("PENDING_APPT_CONFIRM slot=%s modality=%s", _pending_appt.get("slot_datetime"), _pending_appt.get("modality"))
             from app.graph.tools import confirm_appointment as _confirm_tool
-            from app.chatwoot import send_text as _send_text
+            from app.whatsapp import send_text as _send_text
             from app.database import save_message as _save_msg
             try:
                 _result = await _confirm_tool.coroutine(
@@ -867,6 +901,16 @@ async def patient_agent_node(state: ConversationState, config: RunnableConfig) -
             "do que está no contexto da conversa, passe-o em patient_name_override ao chamar "
             "confirm_appointment para garantir que o agendamento fique no nome correto."
         )
+        _pending = state.get("pending_appointment")
+        if _pending:
+            import json as _json
+            system_prompt += (
+                f"\n\nLEMBRETE (modo atendente): Há um agendamento pendente aguardando confirmação: "
+                f"{_json.dumps(_pending, ensure_ascii=False)}. "
+                "Se a instrução da atendente for confirmar o agendamento (ex: 'confirme', 'a paciente confirmou', "
+                "'seguir fluxo'), você DEVE chamar confirm_appointment IMEDIATAMENTE com os dados acima — "
+                "não chame get_available_slots nem peça mais informações."
+            )
 
     # One-time price adjustment notice injected into the system prompt
     needs_price_notice = False
@@ -1105,6 +1149,42 @@ async def patient_agent_node(state: ConversationState, config: RunnableConfig) -
                 "messages": [_AIMsg2(content=_summary)],
                 "pending_appointment": _pending_from_args,
             }
+
+    # ── Guard: catch promised-but-not-called transfer_to_human ──────────────
+    # If the LLM said "vou transferir" in its text but produced no tool calls,
+    # force-call transfer_to_human so the handoff actually happens.
+    # Skip in silent_mode (attendant instructions) — transfer is blocked there.
+    if (
+        not response.tool_calls
+        and not state.get("silent_mode")
+        and response.content
+    ):
+        _transfer_phrases = (
+            "vou transferir",
+            "vou te transferir",
+            "transferindo para",
+            "vou encaminhar",
+        )
+        _resp_lower = response.content.lower()
+        _promised_transfer = any(p in _resp_lower for p in _transfer_phrases)
+        if _promised_transfer:
+            _logger.info("GUARD_TRANSFER: LLM promised transfer but called no tool — forcing transfer_to_human")
+            # Send Eva's message to the patient first, then execute the transfer tool
+            await send_text(state["phone"], response.content)
+            await save_message(state["phone"], "assistant", response.content)
+            from langchain_core.messages import AIMessage as _AIMsg3, ToolMessage as _TMsg3
+            import uuid as _uuid3
+            _tc_id = str(_uuid3.uuid4())
+            _forced_tc = {"name": "transfer_to_human", "args": {"reason": "Eva prometeu transferir mas não chamou a tool — transferência forçada pelo guard."}, "id": _tc_id, "type": "tool_use"}
+            _forced_ai = _AIMsg3(content=response.content, tool_calls=[_forced_tc])
+            from app.graph.tools import transfer_to_human as _transfer_fn
+            _transfer_result = await _transfer_fn(
+                reason="Paciente aguarda atendimento. Eva prometeu transferir.",
+                state=state,
+                config=config,
+            )
+            _tool_msg = _TMsg3(content=str(_transfer_result), tool_call_id=_tc_id)
+            return {"messages": [_forced_ai, _tool_msg]}
 
     # Only send to WhatsApp when the LLM produces a final text (no tool calls)
     if not response.tool_calls and response.content:
