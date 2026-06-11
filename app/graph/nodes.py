@@ -1326,6 +1326,22 @@ async def patient_agent_node(state: ConversationState, config: RunnableConfig) -
             # LLM replied with something other than a new summary — clear stale pending
             update["pending_appointment"] = None
 
+    # Clear pending_reschedule when the LLM called reschedule_appointment (patient confirmed)
+    # or get_available_slots (patient declined, entering normal scheduling flow).
+    if state.get("pending_reschedule") and response.tool_calls:
+        _tool_names_called = [tc.get("name") for tc in response.tool_calls if tc.get("name")]
+        if "reschedule_appointment" in _tool_names_called or "get_available_slots" in _tool_names_called:
+            update["pending_reschedule"] = None
+            if state.get("user_db_id"):
+                try:
+                    await upsert_user(
+                        state["phone"],
+                        {"pending_reschedule": None},
+                        user_id=state["user_db_id"],
+                    )
+                except Exception:
+                    _logger.exception("Failed to clear pending_reschedule in Supabase")
+
     # If preferred_doctor is missing from state, check whether update_preferred_doctor
     # was just called (state may not reflect it yet because ToolNode only updates messages).
     if not state.get("preferred_doctor"):
