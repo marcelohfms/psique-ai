@@ -657,9 +657,14 @@ def _make_supabase_client_with_appointment():
 
     def _side_effect(*_a, **_kw):
         _side_effect.call_count += 1
+        # Call 1: appts_with_users (patient resolution — appointment + users join)
         if _side_effect.call_count == 1:
             return appts_with_users
+        # Call 2: future_canceled check → empty (no future canceled appointment)
         if _side_effect.call_count == 2:
+            return empty
+        # Call 3: apt_data (full appointment fetch for payment logic)
+        if _side_effect.call_count == 3:
             return apt_data
         return empty
     _side_effect.call_count = 0
@@ -667,7 +672,7 @@ def _make_supabase_client_with_appointment():
     execute = AsyncMock(side_effect=_side_effect)
     table = MagicMock()
     for m in ("select", "eq", "in_", "limit", "single", "maybe_single",
-              "gte", "order", "insert", "update", "upsert"):
+              "gte", "order", "insert", "update", "upsert", "is_"):
         getattr(table, m).return_value = table
     table.execute = execute
     client = MagicMock()
@@ -823,11 +828,17 @@ def _make_supabase_client_with_appointment_waived(booking_fee_waived=True, custo
 
     def _side_effect(*_a, **_kw):
         _side_effect.call_count += 1
+        # Call 1: appts_with_users (patient resolution)
         if _side_effect.call_count == 1:
             return appts_with_users
+        # Call 2: future_canceled check → empty
         if _side_effect.call_count == 2:
-            return apt_data
+            return empty
+        # Call 3: apt_data (full appointment fetch)
         if _side_effect.call_count == 3:
+            return apt_data
+        # Call 4: custom_price_data
+        if _side_effect.call_count == 4:
             return custom_price_data
         return empty
     _side_effect.call_count = 0
@@ -835,7 +846,7 @@ def _make_supabase_client_with_appointment_waived(booking_fee_waived=True, custo
     execute = AsyncMock(side_effect=_side_effect)
     table = MagicMock()
     for m in ("select", "eq", "in_", "limit", "single", "maybe_single",
-              "gte", "order", "insert", "update", "upsert"):
+              "gte", "order", "insert", "update", "upsert", "is_"):
         getattr(table, m).return_value = table
     table.execute = execute
     client = MagicMock()
