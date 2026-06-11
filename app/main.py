@@ -102,6 +102,14 @@ async def extract_message(payload: dict) -> tuple[str, str] | None:
     if not from_number:
         return None
 
+    # Normaliza para o formato canônico de 13 dígitos (com o 9 extra).
+    # O webhook do WhatsApp às vezes entrega números brasileiros em formato legado
+    # de 8 dígitos (12 dígitos totais). _phone_variants[0] sempre retorna a forma
+    # com 9, garantindo consistência com o banco de dados.
+    from app.database import _phone_variants as _pv
+    _canonical = _pv(from_number)
+    from_number = _canonical[0] if _canonical else from_number
+
     phone = from_number + "@s.whatsapp.net"
 
     if msg_type == "text":
