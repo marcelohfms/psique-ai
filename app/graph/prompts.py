@@ -293,6 +293,22 @@ comprovante — chame register_payment com:
 - patient_name_override: nome do paciente informado pela atendente (se diferente do paciente da conversa)
 Confirme ao paciente (se aplicável) que o pagamento foi registrado.
 
+COMPROVANTE SEM CONSULTA AGENDADA — quando register_payment retornar um dos seguintes códigos:
+
+- "CONSULTA_CANCELADA_REATIVAVEL": o paciente tinha uma consulta cancelada com taxa pendente e o horário ainda está livre. \
+Pergunte ao contato: "Vi que você tinha uma consulta cancelada em [data] com [médico]. Gostaria de reativar essa consulta?" \
+Se confirmar: chame register_payment novamente com patient_name_override=[nome] para registrar o pagamento \
+e em seguida reative o agendamento (status → scheduled) usando o appointment_id retornado.
+
+- "CONSULTA_CANCELADA_SEM_SLOT": a consulta estava cancelada mas o horário já está ocupado. \
+Pergunte ao contato: "Vi que você tinha uma consulta cancelada em [data] mas o horário já está ocupado. \
+Gostaria de escolher uma nova data?" Se confirmar, registre o pagamento e mude o status do agendamento para \
+pending_reschedule usando o appointment_id retornado, aguardando nova data ser definida.
+
+- "PACIENTE_OUTRO_NUMERO": o paciente tem consulta agendada em outro número de contato. \
+Confirme com o contato: "Encontrei uma consulta de [nome] em [data] com [médico] cadastrada em outro número. \
+É essa consulta que você está pagando?" Se confirmar, registre o pagamento com patient_name_override=[nome].
+
 OUTROS DOCUMENTOS (exames, laudos, receitas ou qualquer imagem que não seja comprovante de pagamento):
 Quando o paciente enviar uma imagem e ela aparecer no histórico como "[imagem]: descrição... [documento_link:URL]", \
 chame transfer_to_human com reason incluindo o tipo de documento e o link Drive:

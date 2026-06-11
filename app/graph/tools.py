@@ -1246,6 +1246,81 @@ async def register_payment(
                 seen_users[uid] = a
 
         if not seen_users:
+            # ── Caso 1: consulta cancelada recente com data futura e taxa pendente ──
+            now_iso = datetime.now(TZ).isoformat()
+            canceled_result = await client.from_("appointments").select(
+                "appointment_id, start_time, doctor_id, status, users(id, patient_name, name, birth_date)"
+            ).in_("user_id", user_ids).eq("status", "canceled").is_(
+                "booking_fee_paid_at", "null"
+            ).gt("start_time", now_iso).order("updated_at", desc=True).limit(3).execute()
+
+            if canceled_result.data:
+                a = canceled_result.data[0]
+                u = a.get("users") or {}
+                _pname = u.get("patient_name") or u.get("name", "Paciente")
+                _dt = datetime.fromisoformat(a["start_time"]).astimezone(TZ).strftime("%d/%m/%Y às %H:%M")
+                _doc = {"d5baa58b-a788-4f40-b8c0-512c189150be": "Dr. Júlio", "18b01f87-eacd-4905-bd4a-a8293991e6fd": "Dra. Bruna"}.get(a.get("doctor_id", ""), "médico(a)")
+
+                # Check if Calendar slot is still free
+                from app.google_calendar import get_available_slots as _get_slots
+                _cal_id_map = {"d5baa58b-a788-4f40-b8c0-512c189150be": "dr.juliogouveia@gmail.com", "18b01f87-eacd-4905-bd4a-a8293991e6fd": "brunalima.psiquiatra@gmail.com"}
+                _cal_id = _cal_id_map.get(a.get("doctor_id", ""), "")
+                _slot_dt = datetime.fromisoformat(a["start_time"]).astimezone(TZ)
+                _doctor_key = DOCTOR_NAMES.get(a.get("doctor_id", ""), "")
+                _free_slots = []
+                try:
+                    _free_slots = await _get_slots(_cal_id, _slot_dt.strftime("%d/%m"), "qualquer", 60, _doctor_key)
+                except Exception:
+                    pass
+                _slot_free = any(abs((s - _slot_dt).total_seconds()) < 60 for s, _ in _free_slots)
+
+                if _slot_free:
+                    return (
+                        f"CONSULTA_CANCELADA_REATIVAVEL: {_pname} tinha uma consulta cancelada em {_dt} com {_doc} "
+                        f"com taxa de reserva pendente. O horário ainda está livre no calendário. "
+                        f"appointment_id={a['appointment_id']} user_id={u.get('id')} "
+                        f"Confirme com o contato se deseja reativar esta consulta antes de registrar o pagamento."
+                    )
+                else:
+                    return (
+                        f"CONSULTA_CANCELADA_SEM_SLOT: {_pname} tinha uma consulta cancelada em {_dt} com {_doc} "
+                        f"com taxa de reserva pendente, mas o horário já está ocupado. "
+                        f"appointment_id={a['appointment_id']} user_id={u.get('id')} "
+                        f"Confirme com o contato se quer agendar uma nova data. "
+                        f"Se confirmar, mude o status para pending_reschedule."
+                    )
+
+            # ── Caso 2: verificar mesmo paciente em outro número ──────────────────
+            other_contact_info = []
+            for _u in all_users:
+                _pname = _u.get("patient_name") or _u.get("name", "")
+                _bdate = _u.get("birth_date") or ""
+                if not _pname:
+                    continue
+                # Search for same patient_name + birth_date on different numbers
+                _query = client.from_("users").select("id, number, patient_name, name").ilike("patient_name", f"%{_pname}%")
+                if _bdate:
+                    _query = _query.eq("birth_date", _bdate)
+                _others = (await _query.neq("number", phone.replace("@s.whatsapp.net", "")).execute()).data or []
+                for _o in _others:
+                    _o_uid = _o["id"]
+                    _o_appt = await client.from_("appointments").select(
+                        "appointment_id, start_time, status, doctor_id"
+                    ).eq("user_id", _o_uid).in_("status", ["scheduled", "canceled"]).order("start_time", desc=True).limit(1).execute()
+                    if _o_appt.data:
+                        _oa = _o_appt.data[0]
+                        _odt = datetime.fromisoformat(_oa["start_time"]).astimezone(TZ).strftime("%d/%m/%Y às %H:%M")
+                        _odoc = {"d5baa58b-a788-4f40-b8c0-512c189150be": "Dr. Júlio", "18b01f87-eacd-4905-bd4a-a8293991e6fd": "Dra. Bruna"}.get(_oa.get("doctor_id", ""), "médico(a)")
+                        other_contact_info.append(
+                            f"{_pname} — consulta {_oa['status']} em {_odt} com {_odoc} (cadastrado no número {_o['number']})"
+                        )
+            if other_contact_info:
+                return (
+                    f"PACIENTE_OUTRO_NUMERO: Não encontrei consulta agendada neste número, mas encontrei o(s) seguinte(s) "
+                    f"registro(s) com o mesmo paciente em outro contato: {'; '.join(other_contact_info)}. "
+                    f"Confirme com o contato se é a mesma consulta antes de registrar o pagamento."
+                )
+
             return "Para qual paciente é este comprovante? Por favor, informe o nome completo."
 
         if len(seen_users) > 1:
