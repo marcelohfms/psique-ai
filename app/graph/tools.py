@@ -1392,13 +1392,21 @@ async def register_payment(
                         f"está reagendada e sua vaga está garantida! 🎉"
                     )
                 else:
-                    # Slot taken — register payment but inform patient
-                    appointment_dt   = slot_start.strftime("%d/%m/%Y %H:%M")
-                    appt_id_to_pay   = canceled_appt["appointment_id"]
+                    # Slot taken — mark booking fee as paid, set pending_reschedule
+                    # so the patient can choose a new time without losing payment info.
+                    appointment_dt = slot_start.strftime("%d/%m/%Y %H:%M")
+                    await client.from_("appointments").update({
+                        "status": "pending_reschedule",
+                        "booking_fee_paid_at": datetime.now(TZ).isoformat(),
+                        "updated_at": datetime.now(TZ).isoformat(),
+                    }).eq("appointment_id", canceled_appt["appointment_id"]).execute()
+                    appt_id_to_pay = None  # booking fee already registered above
                     confirmation_msg = (
                         f"Comprovante recebido e registrado! ✅\n"
                         f"Infelizmente o horário original ({appointment_dt} com {canceled_doctor_label}) "
-                        f"não está mais disponível. Vou verificar os próximos horários disponíveis para você."
+                        f"não está mais disponível. Vou verificar os próximos horários disponíveis "
+                        f"para remarcar sua consulta — sua taxa de reserva já está registrada e "
+                        f"não precisará ser paga novamente. 🙏"
                     )
             except Exception:
                 _logger.exception("REACTIVATE_CANCELED_APPT FAILED patient=%s", patient_name)
