@@ -19,14 +19,15 @@ Quando um médico precisa cancelar ou reagendar uma consulta, a clínica precisa
 ```
 Olá, {{1}}! 👋
 
-A consulta com {{2}} que estava agendada para *{{3}}* precisou ser remarcada.
+A consulta com {{2}} que estava agendada para {{3}} às {{4}} precisou ser remarcada.
+Pedimos desculpas pelo transtorno e desde já agradecemos a sua compreensão.
 
 Gostaríamos de sugerir o seguinte novo horário:
-📅 *{{4}}*
+📅 *{{5}}* às *{{6}}*
 
-O que acha? Pode nos responder aqui mesmo. 😊
+Podemos fazer assim? Pode nos responder aqui mesmo. 😊
 
-— Clínica Psique
+— Clínica Psiquê
 ```
 
 **Variáveis:**
@@ -35,8 +36,10 @@ O que acha? Pode nos responder aqui mesmo. 😊
 |---|---|---|
 | `{{1}}` | Nome do paciente | Ana |
 | `{{2}}` | Nome do médico | Dr. Júlio |
-| `{{3}}` | Data/hora original | sexta, 13/06 às 10h |
-| `{{4}}` | Novo horário sugerido | segunda, 16/06 às 14h |
+| `{{3}}` | Data original | sexta, 13/06 |
+| `{{4}}` | Horário original | 10h |
+| `{{5}}` | Data sugerida | segunda, 16/06 |
+| `{{6}}` | Horário sugerido | 14h |
 
 ## Script de disparo (`scripts/reschedule_notify.py`)
 
