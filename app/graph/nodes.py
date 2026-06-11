@@ -750,6 +750,31 @@ async def patient_agent_node(state: ConversationState, config: RunnableConfig) -
     # is_patient == True). Sync them here so Eva never addresses the wrong person.
     _sync_updates: dict = {}
     _user_db_id = state.get("user_db_id")
+
+    # Fallback: if user_db_id is missing (e.g. checkpoint was reset), load from phone.
+    # This ensures is_patient and user_name are always correct even after a state reset.
+    if not _user_db_id and state.get("phone"):
+        try:
+            _fb_user = await get_user_by_phone(state["phone"])
+            if _fb_user:
+                _user_db_id = _fb_user["id"]
+                _sync_updates["user_db_id"] = _user_db_id
+                if not state.get("user_name") and _fb_user.get("name"):
+                    _sync_updates["user_name"] = _fb_user["name"]
+                if not state.get("patient_name") and _fb_user.get("patient_name"):
+                    _sync_updates["patient_name"] = _fb_user["patient_name"]
+                if state.get("is_patient") is None and _fb_user.get("is_patient") is not None:
+                    _sync_updates["is_patient"] = _fb_user["is_patient"]
+                if not state.get("preferred_doctor") and _fb_user.get("doctor_id"):
+                    _sync_updates["preferred_doctor"] = DOCTOR_NAMES.get(_fb_user["doctor_id"])
+                if not state.get("patient_email") and _fb_user.get("email"):
+                    _sync_updates["patient_email"] = _fb_user["email"]
+                if not state.get("is_returning_patient") and _fb_user.get("is_returning_patient") is not None:
+                    _sync_updates["is_returning_patient"] = _fb_user["is_returning_patient"]
+                _pa_logger.info("Fallback DB sync from phone for %s: %s", state["phone"], list(_sync_updates.keys()))
+        except Exception:
+            _pa_logger.exception("Fallback DB sync failed for %s", state.get("phone"))
+
     if _user_db_id:
         try:
             _db = await get_supabase()
