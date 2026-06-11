@@ -401,15 +401,17 @@ async def confirm_appointment(
             if not _day_wins:
                 formatted_blocked = start.strftime("%d/%m/%Y")
                 return (
+                    f"[INSTRUÇÃO INTERNA — NÃO ENVIE AO PACIENTE] "
                     f"{_doctor_label} não tem atendimento no dia {formatted_blocked}. "
-                    "Chame get_available_slots para buscar outro horário disponível."
+                    "Avise o paciente com empatia e chame get_available_slots para buscar outro horário disponível."
                 )
             # Exception overrides schedule but has windows — validate slot falls in one
             if not any((sh * 60 + sm) <= _slot_min < (eh * 60 + em) for sh, sm, eh, em, _ in _day_wins):
                 formatted_blocked = start.strftime("%d/%m/%Y")
                 return (
+                    f"[INSTRUÇÃO INTERNA — NÃO ENVIE AO PACIENTE] "
                     f"Este horário não está dentro da disponibilidade de {_doctor_label} no dia {formatted_blocked}. "
-                    "Chame get_available_slots para buscar outro horário disponível."
+                    "Avise o paciente com empatia e chame get_available_slots para buscar outro horário disponível."
                 )
         else:
             # Regular day: check weekday is in DOCTOR_SCHEDULES and slot falls in a window
@@ -420,14 +422,16 @@ async def confirm_appointment(
                 _day_name = {0: "segunda-feira", 1: "terça-feira", 2: "quarta-feira",
                              3: "quinta-feira", 4: "sexta-feira", 5: "sábado", 6: "domingo"}.get(_weekday, "neste dia")
                 return (
+                    f"[INSTRUÇÃO INTERNA — NÃO ENVIE AO PACIENTE] "
                     f"{_doctor_label} não atende {_day_name}. "
-                    "Chame get_available_slots para buscar outro horário disponível."
+                    "Avise o paciente com empatia e chame get_available_slots para buscar outro horário disponível."
                 )
             # Weekday exists — validate slot falls within one of the day's windows
             if not any((sh * 60 + sm) <= _slot_min < (eh * 60 + em) for sh, sm, eh, em, _ in _day_wins):
                 return (
+                    f"[INSTRUÇÃO INTERNA — NÃO ENVIE AO PACIENTE] "
                     f"Este horário ({start.strftime('%H:%M')}) está fora da grade de atendimento de {_doctor_label}. "
-                    "Chame get_available_slots para buscar outro horário disponível."
+                    "Avise o paciente com empatia e chame get_available_slots para buscar outro horário disponível."
                 )
 
     # Double-check slot is still free before booking — skipped for encaixe
@@ -463,8 +467,9 @@ async def confirm_appointment(
             busy = await loop.run_in_executor(None, _get_busy, _service, calendar_id, start, slot_end_check)
             if busy:
                 return (
+                    f"[INSTRUÇÃO INTERNA — NÃO ENVIE AO PACIENTE] "
                     f"Este horário ({start.strftime('%d/%m/%Y às %H:%M')}) acabou de ser ocupado. "
-                    "Chame get_available_slots novamente para buscar outro horário disponível."
+                    "Avise o paciente com empatia que o horário foi preenchido e chame get_available_slots novamente para buscar outro horário disponível."
                 )
         except Exception:
             pass  # If check fails, proceed anyway — better to double-book than block
@@ -645,21 +650,20 @@ async def confirm_appointment(
     if _custom_price_ret == 0:
         return (
             f"Consulta agendada com sucesso! ✅\n{doctor_label} — {formatted}{session_label}\nID: {event_id}\n\n"
-            f"INSTRUÇÃO: Esta consulta é cortesia. Envie a mensagem de cortesia conforme o bloco de exceção "
-            f"de preço no seu system prompt. NÃO solicite nenhum pagamento."
+            f"[sistema] Agendamento registrado como cortesia. Envie a mensagem de cortesia ao paciente "
+            f"conforme o bloco de exceção de preço no system prompt. NÃO solicite nenhum pagamento."
         )
     elif _bfw:
         return (
             f"Consulta agendada com sucesso! ✅\n{doctor_label} — {formatted}{session_label}\nID: {event_id}\n\n"
-            f"INSTRUÇÃO: A cobrança de reserva está DISPENSADA para este paciente. Envie a mensagem de confirmação "
-            f"conforme o bloco de exceção de preço no seu system prompt. NÃO solicite nenhum pagamento."
+            f"[sistema] Agendamento registrado com cobrança de reserva dispensada. Envie a mensagem de confirmação "
+            f"ao paciente conforme o bloco de exceção de preço no system prompt. NÃO solicite nenhum pagamento."
         )
     else:
         return (
             f"Consulta agendada com sucesso! ✅\n{doctor_label} — {formatted}{session_label}\nID: {event_id}\n\n"
-            f"INSTRUÇÃO OBRIGATÓRIA: informe agora ao paciente que a vaga só estará garantida após o pagamento "
-            f"da taxa de reserva de R$ 100,00 via PIX ({pix_key}) em até 2 horas. "
-            f"Peça que envie o comprovante aqui no chat."
+            f"[sistema] Agendamento registrado. Siga o passo 3 do fluxo de agendamento: "
+            f"envie ao paciente a mensagem de confirmação com as instruções de pagamento da taxa de reserva."
         )
 
 
@@ -762,14 +766,16 @@ async def reschedule_appointment(
         _day_wins_r = _exc_map_r[_date_key_r]
         if not _day_wins_r:
             return (
+                f"[INSTRUÇÃO INTERNA — NÃO ENVIE AO PACIENTE] "
                 f"O médico não tem atendimento no dia {new_start.strftime('%d/%m/%Y')}. "
-                "Chame get_available_slots para buscar outro horário disponível."
+                "Avise o paciente com empatia e chame get_available_slots para buscar outro horário disponível."
             )
         _slot_min_r = new_start.hour * 60 + new_start.minute
         if not any((sh * 60 + sm) <= _slot_min_r < (eh * 60 + em) for sh, sm, eh, em, _ in _day_wins_r):
             return (
+                f"[INSTRUÇÃO INTERNA — NÃO ENVIE AO PACIENTE] "
                 f"Este horário não está dentro da disponibilidade do médico no dia {new_start.strftime('%d/%m/%Y')}. "
-                "Chame get_available_slots para buscar outro horário disponível."
+                "Avise o paciente com empatia e chame get_available_slots para buscar outro horário disponível."
             )
 
     doctor_label = {"julio": "Dr. Júlio", "bruna": "Dra. Bruna"}.get(doctor, "médico(a)")
