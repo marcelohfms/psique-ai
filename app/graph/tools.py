@@ -712,19 +712,6 @@ async def cancel_appointment(
         subject=f"Agendamento cancelado — {patient_name}",
     )
 
-    # Send cancellation email to patient if email is on file
-    patient_email = state.get("patient_email")
-    if not patient_email:
-        _user = await get_user_by_phone(phone)
-        patient_email = (_user or {}).get("email") or ""
-    if patient_email:
-        try:
-            from app.email_sender import send_cancellation_email
-            contact_name = state.get("user_name") or patient_name
-            await send_cancellation_email(contact_name, patient_name, doctor_label, formatted_old, patient_email)
-        except Exception:
-            logger.exception("CANCELLATION_EMAIL FAILED patient=%s", patient_name)
-
     return "Consulta cancelada com sucesso. ✅"
 
 
