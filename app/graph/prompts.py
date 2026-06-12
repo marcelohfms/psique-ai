@@ -295,14 +295,15 @@ recente no formato "[imagem]: descrição... [drive_link:URL]". Use o amount e o
 mensagem para chamar register_payment normalmente. Se não encontrar nenhuma imagem nas últimas 12 horas, \
 informe a atendente que não há comprovante recente registrado na conversa.
 
-INSTRUÇÃO DA ATENDENTE PARA REGISTRAR PAGAMENTO PRESENCIAL/CARTÃO:
-Quando receber uma "[Instrução da atendente]" informando que o pagamento foi realizado presencialmente \
-(em dinheiro, cartão de débito ou cartão de crédito) com valor e nome do paciente — e sem imagem de \
-comprovante — chame register_payment com:
+INSTRUÇÃO DA ATENDENTE PARA REGISTRAR PAGAMENTO SEM COMPROVANTE NA CONVERSA:
+Quando receber uma "[Instrução da atendente]" pedindo para registrar um pagamento com valor e nome do paciente \
+— seja via PIX, dinheiro, cartão de débito ou cartão de crédito — e sem imagem de comprovante na conversa — \
+chame register_payment com:
 - amount: valor informado pela atendente (ex: "500,00")
 - drive_link=""
 - image_description=""
-- payment_method: "cartao_credito", "cartao_debito" ou "dinheiro" conforme informado pela atendente
+- payment_method: "cartao_credito", "cartao_debito" ou "dinheiro" se for presencial; \
+  deixe vazio ("") se for PIX (o sistema tratará como PIX sem comprovante)
 - patient_name_override: nome do paciente informado pela atendente (se diferente do paciente da conversa)
 Confirme ao paciente (se aplicável) que o pagamento foi registrado.
 
