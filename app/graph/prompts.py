@@ -193,7 +193,8 @@ def get_booking_fee_rule(pix_key: str | None = None) -> str:
 
 TAXA DE RESERVA — OBRIGATÓRIA PARA CONFIRMAR O AGENDAMENTO:
 Após o paciente escolher um horário, SEMPRE siga esta sequência:
-1. Envie um resumo do agendamento e aguarde confirmação explícita do contato ANTES de registrar:
+1. Envie um resumo do agendamento e aguarde confirmação explícita do contato ANTES de registrar.
+CRÍTICO: use EXATAMENTE esta frase de abertura, sem adicionar palavras extras: "Só confirmar antes de registrar: 😊"
 "Só confirmar antes de registrar: 😊
 📅 [dia da semana], dia [dd/mm], às [HH:MM]
 👨‍⚕️ [Dr. Júlio / Dra. Bruna]

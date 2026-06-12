@@ -682,7 +682,8 @@ def _extract_pending_appointment(text: str, state: dict) -> dict | None:
     """
     import re as _re
     _CONFIRM_SUMMARY_MARKER = "Só confirmar antes de registrar"
-    if _CONFIRM_SUMMARY_MARKER not in text:
+    import re as _re_csa
+    if not _re_csa.search(r'Só\s+(?:para\s+)?confirmar\s+antes\s+de\s+registrar', text):
         return None
 
     # Date + time
@@ -1118,7 +1119,8 @@ async def patient_agent_node(state: ConversationState, config: RunnableConfig) -
     # Without this guard, the NEW_PATIENT_SYSTEM step-1 instruction ("if the user
     # mentioned a day, call get_available_slots immediately") fires on the human's
     # confirmation reply and Eva re-queries slots instead of confirming.
-    _CONFIRM_SUMMARY_MARKER = "Só confirmar antes de registrar"
+    import re as _re_marker
+    _CONFIRM_SUMMARY_RE = _re_marker.compile(r'Só\s+(?:para\s+)?confirmar\s+antes\s+de\s+registrar')
     # 🙏 is a thank-you gesture, NOT a booking confirmation — keep it out of this set
     _AFFIRMATIVE = {"sim", "pode", "confirma", "confirmo", "ok", "isso", "pode ser",
                     "tá", "ta", "tá bom", "ta bom", "perfeito", "ótimo", "otimo",
@@ -1134,7 +1136,7 @@ async def patient_agent_node(state: ConversationState, config: RunnableConfig) -
     # from a previous booking would trigger the guard on an unrelated "Pode confirmar"
     # reply to a reminder message.
     _summary_in_recent_ai = any(
-        _CONFIRM_SUMMARY_MARKER in (getattr(_m, "content", "") or "")
+        bool(_CONFIRM_SUMMARY_RE.search(getattr(_m, "content", "") or ""))
         for _m in clean_messages[-6:]
         if getattr(_m, "type", "") == "ai"
     )
