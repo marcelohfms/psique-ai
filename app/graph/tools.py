@@ -973,15 +973,14 @@ async def request_document(
     if document_type == "receita" and not medication_note.strip():
         return "Qual medicação você precisa na receita?"
 
-    from app.google_sheets import append_document_request, get_controlled_medications
+    from app.google_sheets import append_document_request, CONTROLLED_MEDICATIONS
     from app.email_sender import send_document_request_email
 
     # Check if medication requires physical prescription
     is_controlled = False
     if document_type == "receita" and medication_note:
-        controlled = await get_controlled_medications()
         med_lower = medication_note.lower()
-        if any(med in med_lower for med in controlled):
+        if any(med in med_lower for med in CONTROLLED_MEDICATIONS):
             is_controlled = True
 
     phone = config["configurable"]["phone"]

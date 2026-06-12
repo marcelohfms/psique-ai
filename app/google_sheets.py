@@ -14,10 +14,7 @@ TZ = ZoneInfo("America/Recife")
 # Column order: Data, Nome completo, Idade, Telefone, E-mail, Tipo de solicitação, Observação
 _SHEET_RANGE = "Solicitações!A:G"
 
-# Controlled medications that always require a physical prescription (receita especial/azul/amarela).
-# Used as fallback when the "Receita" sheet tab is not configured or empty.
-# Brand names and generic names are both listed (lowercase).
-_CONTROLLED_FALLBACK: list[str] = [
+CONTROLLED_MEDICATIONS: list[str] = [
     # Benzodiazepínicos
     "rivotril", "clonazepam",
     "diazepam", "valium",
@@ -197,33 +194,6 @@ async def append_payment_receipt(
                 "range=%r drive_link=%r filename=%r",
                 updated_range, comprovante_formula_args[0], comprovante_formula_args[1],
             )
-
-
-async def get_controlled_medications() -> list[str]:
-    """Return list of controlled medication names (lowercase).
-    Merges the hardcoded fallback list with any entries in the 'Receita' sheet tab (column A).
-    The sheet can be used to extend or add clinic-specific medications.
-    """
-    sheet_meds: list[str] = []
-    spreadsheet_id = os.environ.get("GOOGLE_SHEETS_DOC_ID")
-    if spreadsheet_id:
-        def _read(service) -> list[str]:
-            result = service.spreadsheets().values().get(
-                spreadsheetId=spreadsheet_id,
-                range="Receita!A:A",
-            ).execute()
-            rows = result.get("values", [])
-            return [row[0].strip().lower() for row in rows if row and row[0].strip()]
-
-        creds = _credentials()
-        service = build("sheets", "v4", credentials=creds)
-        loop = asyncio.get_event_loop()
-        try:
-            sheet_meds = await loop.run_in_executor(None, _read, service)
-        except Exception:
-            pass
-
-    return list(set(_CONTROLLED_FALLBACK + sheet_meds))
 
 
 async def append_refund_request(
