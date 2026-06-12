@@ -1038,16 +1038,24 @@ async def patient_agent_node(state: ConversationState, config: RunnableConfig) -
         _standard_price = _expected_consultation_amount(_doctor_key, _p_age, None, now_dt)
         system_prompt += get_pricing_exception_rule(_custom_price, _fee_waived, _standard_price)
 
-    # Inject upcoming appointments so the LLM knows what already exists
+    # Inject upcoming/recent appointments so the LLM knows what already exists
     upcoming = await get_upcoming_appointments(state["phone"])
     if upcoming:
         from zoneinfo import ZoneInfo as _ZI
         _TZ = _ZI("America/Recife")
-        lines = ["Consultas agendadas para este paciente:"]
+        future_lines = []
+        recent_lines = []
         for apt in upcoming:
             dt = datetime.fromisoformat(apt["start_time"]).astimezone(_TZ)
-            lines.append(f"- {dt.strftime('%d/%m/%Y às %H:%M')} (ID: {apt['appointment_id']})")
-        system_prompt += "\n\n" + "\n".join(lines)
+            label = f"- {dt.strftime('%d/%m/%Y às %H:%M')} (ID: {apt['appointment_id']})"
+            if apt.get("recently_ended"):
+                recent_lines.append(label)
+            else:
+                future_lines.append(label)
+        if future_lines:
+            system_prompt += "\n\nConsultas agendadas para este paciente:\n" + "\n".join(future_lines)
+        if recent_lines:
+            system_prompt += "\n\nConsulta(s) recém-realizada(s) (nas últimas 48h):\n" + "\n".join(recent_lines)
 
     import logging as _log
     _logger = _log.getLogger(__name__)

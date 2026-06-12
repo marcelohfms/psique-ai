@@ -169,23 +169,48 @@ async def log_event(event_type: str, phone: str, metadata: dict | None = None) -
 # ── Appointment helpers ───────────────────────────────────────────────────────
 
 async def get_upcoming_appointments(phone: str) -> list[dict]:
-    """Return scheduled future appointments for a user, ordered by start_time."""
+    """Return scheduled/ongoing/recent appointments for a user, ordered by start_time.
+
+    Includes:
+    - Future appointments (end_time >= now)
+    - Appointments that ended in the last 48 h but are still marked 'scheduled'
+      (complete_appointments script hasn't run yet) — flagged with 'recently_ended'
+    """
     client = await get_supabase()
     user = await get_user_by_phone(phone)
     if not user:
         return []
-    from datetime import datetime, timezone
-    now_iso = datetime.now(timezone.utc).isoformat()
-    result = (
+    from datetime import datetime, timezone, timedelta
+    now = datetime.now(timezone.utc)
+    now_iso = now.isoformat()
+    cutoff_recent = (now - timedelta(hours=48)).isoformat()
+
+    # Future + ongoing (end_time has not yet passed)
+    future_result = (
         await client.from_("appointments")
         .select("appointment_id, start_time, end_time, status, reschedule_requested_at")
         .in_("status", ["scheduled", "pending_reschedule"])
         .eq("user_id", user["id"])
-        .gte("start_time", now_iso)
+        .gte("end_time", now_iso)
         .order("start_time")
         .execute()
     )
-    return result.data or []
+
+    # Recently ended but not yet marked as completed (end_time in last 48 h)
+    recent_result = (
+        await client.from_("appointments")
+        .select("appointment_id, start_time, end_time, status, reschedule_requested_at")
+        .in_("status", ["scheduled", "pending_reschedule"])
+        .eq("user_id", user["id"])
+        .lt("end_time", now_iso)
+        .gte("end_time", cutoff_recent)
+        .order("start_time")
+        .execute()
+    )
+
+    # Tag recently-ended rows so the caller can present them differently
+    recent = [dict(r, recently_ended=True) for r in (recent_result.data or [])]
+    return (future_result.data or []) + recent
 
 
 # ── Message persistence ───────────────────────────────────────────────────────

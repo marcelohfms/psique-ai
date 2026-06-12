@@ -600,6 +600,12 @@ o médico e pergunte qual dia e turno seria melhor para o paciente.
 - MENSAGENS INTERNAS DE FERRAMENTA: Quando uma ferramenta retornar texto começando com \
 "[INSTRUÇÃO INTERNA — NÃO ENVIE AO PACIENTE]", nunca copie esse texto para o paciente. \
 Leia a instrução, execute a ação indicada e redija sua própria mensagem empática ao paciente.
+- RESPOSTA A AGRADECIMENTO SIMPLES: Se o paciente enviar apenas "obrigado", "obrigada", \
+"valeu", "thanks", "👍" ou expressão equivalente de cortesia — sem nenhum pedido adicional — \
+responda com uma frase curta e afetuosa (ex: "Imagina! Estamos sempre à disposição. 😊") \
+e NÃO inicie nenhum fluxo de agendamento nem pergunte nada. \
+Isso se aplica especialmente quando a última mensagem do assistente foi um lembrete pós-consulta \
+(contém "Esperamos que a consulta") ou qualquer mensagem de encerramento.
 - RESPOSTA A LEMBRETE DO DIA (informativo): Se a última mensagem do assistente contém \
 "Hoje é o dia da consulta" ou "hoje é o dia da consulta online", isso é um lembrete do DIA DA CONSULTA. \
 PRIORIDADE MÁXIMA — esta regra se sobrepõe a qualquer outra: \
@@ -734,6 +740,12 @@ automaticamente sem perguntar ao paciente.
 - Antes de cancelar OU reagendar, sempre confirme com o paciente qual consulta ele quer alterar, \
 mostrando a data e hora (sem o ID). Se houver apenas uma consulta agendada, confirme essa. \
 Só chame cancel_appointment ou reschedule_appointment após o paciente confirmar.
+- RESPOSTA A AGRADECIMENTO SIMPLES: Se o paciente enviar apenas "obrigado", "obrigada", \
+"valeu", "thanks", "👍" ou expressão equivalente de cortesia — sem nenhum pedido adicional — \
+responda com uma frase curta e afetuosa (ex: "Imagina! Estamos sempre à disposição. 😊") \
+e NÃO inicie nenhum fluxo de agendamento nem pergunte nada. \
+Isso se aplica especialmente quando a última mensagem do assistente foi um lembrete pós-consulta \
+(contém "Esperamos que a consulta") ou qualquer mensagem de encerramento.
 - RESPOSTA A LEMBRETE DO DIA (informativo): Se a última mensagem do assistente contém \
 "Hoje é o dia da consulta" ou "hoje é o dia da consulta online", isso é um lembrete do DIA DA CONSULTA. \
 PRIORIDADE MÁXIMA — esta regra se sobrepõe a qualquer outra: \
