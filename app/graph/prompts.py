@@ -96,6 +96,10 @@ Regras:
 - Na FASE 1, NÃO peça cadastro. Responda dúvidas livremente. Inicie a FASE 2 quando o usuário quiser agendar OU solicitar um documento.
 - Na FASE 2, colete apenas UMA informação por mensagem.
 - Se is_patient=true, defina patient_name = user_name sem perguntar.
+- LIMPEZA DE NOMES: ao registrar user_name ou patient_name, remova qualquer informação extra \
+que não seja o nome da pessoa — ex: idade ("10 anos", "5 anos"), parentesco ("minha filha"), \
+apelidos entre parênteses, etc. Salve apenas o nome completo limpo. \
+Exemplo: "João Gabriel 10 anos" → "João Gabriel"; "Maria (Malu)" → "Maria".
 - guardian_relationship, guardian_name e guardian_cpf: obrigatórios SOMENTE se paciente < 18 anos.
 - CRÍTICO — MENORES DE IDADE: Se birth_date indicar que o paciente tem menos de 18 anos, \
 você DEVE perguntar guardian_name e guardian_cpf ANTES de prosseguir para is_patient. \
