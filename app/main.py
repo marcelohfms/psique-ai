@@ -389,12 +389,21 @@ async def process_message(phone: str, text: str) -> None:
                 state_update.update(db_sync)
         elif snapshot.values.get("stage") == "patient_agent" and existing:
             # For ongoing patient_agent conversations, sync critical fields that may be
-            # missing from older checkpoints (e.g. is_returning_patient, preferred_doctor).
+            # missing from older checkpoints or changed in the DB since last message.
             pa_sync: dict = {}
             if snapshot.values.get("is_returning_patient") is None and existing.get("is_returning_patient") is not None:
                 pa_sync["is_returning_patient"] = existing["is_returning_patient"]
             if snapshot.values.get("preferred_doctor") is None and existing.get("doctor_id"):
                 pa_sync["preferred_doctor"] = DOCTOR_NAMES.get(existing["doctor_id"])
+            # Always sync is_patient and user_name from DB — these may have been
+            # corrected by an attendant after the conversation started, and the
+            # patient_agent prompt relies on them to address the contact correctly.
+            if existing.get("is_patient") is not None:
+                pa_sync["is_patient"] = existing["is_patient"]
+            if existing.get("name"):
+                pa_sync["user_name"] = existing["name"]
+            if existing.get("patient_name"):
+                pa_sync["patient_name"] = existing["patient_name"]
             if pa_sync:
                 state_update.update(pa_sync)
     else:

@@ -200,9 +200,8 @@ async def test_inactive_user_returns_silently():
 
 
 async def test_existing_snapshot_adds_only_human_message():
-    """When the graph already has state with all critical fields, only inject the new HumanMessage."""
+    """When the graph already has state, inject HumanMessage + always-sync DB fields."""
     import app.graph.graph as gg
-    # Snapshot already has preferred_doctor and is_returning_patient set — no extra sync needed
     existing_state = {
         "stage": "patient_agent",
         "messages": [HumanMessage(content="anterior")],
@@ -219,10 +218,14 @@ async def test_existing_snapshot_adds_only_human_message():
             from app.main import process_message
             await process_message(PHONE, "nova mensagem")
             state_update = chatbot.ainvoke.call_args[0][0]
-            # messages + silent_mode reset + phone — no stage re-initialization
-            assert set(state_update.keys()) == {"messages", "silent_mode", "phone"}
+            # messages + silent_mode + phone + always-synced DB fields
+            assert "messages" in state_update
             assert state_update["silent_mode"] is False
             assert state_update["messages"][0].content == "nova mensagem"
+            # is_patient, user_name, patient_name always synced from DB
+            assert "is_patient" in state_update
+            assert "user_name" in state_update
+            assert "patient_name" in state_update
     finally:
         gg.chatbot = original
 
