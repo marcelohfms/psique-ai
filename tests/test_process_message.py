@@ -87,11 +87,12 @@ _KNOWN_USER = {
     "number": "5583999999999",
     "name": "Maria",
     "patient_name": "Maria",
-    "age": None,
+    "age": 30,
     "is_patient": True,
+    "is_returning_patient": True,
     "doctor_id": "d5baa58b-a788-4f40-b8c0-512c189150be",  # julio
-    "birth_date": None,
-    "email": None,
+    "birth_date": "01/01/1994",
+    "email": "maria@example.com",
     "active": True,
 }
 
@@ -159,8 +160,8 @@ async def test_known_user_goes_to_patient_agent():
         gg.chatbot = original
 
 
-async def test_known_user_missing_optional_fields_goes_to_patient_agent():
-    """A registered patient missing birth_date/email/age must go to patient_agent, not collect_info."""
+async def test_known_user_missing_required_fields_stays_in_collect_info():
+    """A patient missing required fields (email, birth_date) must stay in collect_info."""
     import app.graph.graph as gg
     chatbot = _make_chatbot()
     original = gg.chatbot
@@ -170,6 +171,7 @@ async def test_known_user_missing_optional_fields_goes_to_patient_agent():
         "birth_date": None,
         "email": None,
         "age": None,
+        "is_returning_patient": None,
     }
     try:
         with patch("app.main.get_user_by_phone", new_callable=AsyncMock, return_value=incomplete_user), \
@@ -178,7 +180,8 @@ async def test_known_user_missing_optional_fields_goes_to_patient_agent():
             from app.main import process_message
             await process_message(PHONE, "oi")
             state_update = chatbot.ainvoke.call_args[0][0]
-            assert state_update["stage"] == "patient_agent"
+            # Missing required fields → stay in collect_info, not patient_agent
+            assert state_update.get("stage") != "patient_agent"
     finally:
         gg.chatbot = original
 

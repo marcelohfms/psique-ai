@@ -18,7 +18,7 @@ from app.graph.tools import (
 )
 from app.graph.prompts import COLLECT_SYSTEM, MINOR_RULE, MINOR_RETURNING_RULE, ADULT_RULE, GUARDIAN_RULE, EXISTING_PATIENT_SYSTEM, NEW_PATIENT_SYSTEM, CANCELLATION_RULES, CLINIC_ADDRESS, DOCTORS_INFO, get_booking_fee_rule, MEDICAL_LIMITS_RULE, DOCTOR_CORRECTION_RULE, EMAIL_RULE, get_pricing_rules, ATTENDANT_INSTRUCTION_RULE, get_pricing_exception_rule
 from app.whatsapp import send_text
-from app.database import upsert_user, log_event, get_upcoming_appointments, get_user_by_phone, get_users_by_phone, DOCTOR_IDS, DOCTOR_NAMES, save_message, get_last_assistant_message_time
+from app.database import upsert_user, log_event, get_upcoming_appointments, get_user_by_phone, get_users_by_phone, DOCTOR_IDS, DOCTOR_NAMES, save_message, get_last_assistant_message_time, is_registration_complete
 from app.chatwoot import get_conversation_id, add_private_note
 
 # ── LLM setup (lazy — instantiated on first use after .env is loaded) ─────────
@@ -145,9 +145,8 @@ async def collect_info_node(state: ConversationState, config: RunnableConfig) ->
                         "modality_restriction": u.get("modality_restriction"),
                         "age_exception": u.get("age_exception"),
                     }
-                    # Only skip collect_info if the patient already has an email.
-                    # If email is missing, stay in collect_info so Eva can ask for it.
-                    if loaded.get("patient_email"):
+                    # Only skip collect_info when ALL required fields are present.
+                    if is_registration_complete(u):
                         return {**loaded, "stage": "patient_agent", "messages": []}
                     return loaded
             elif len(all_users) > 1:
@@ -549,8 +548,26 @@ async def collect_info_node(state: ConversationState, config: RunnableConfig) ->
 
         # All programmatic steps complete — _extracted will be merged into update below
 
+    _collect_system = COLLECT_SYSTEM.format(
+        collected=collected,
+        pricing_rules=get_pricing_rules(datetime.now()),
+        medical_limits_rule=MEDICAL_LIMITS_RULE,
+    )
+    # Inject contact-vs-patient rule when already known during collect phase
+    _ci_is_third_party = state.get("is_patient") is False
+    _ci_user_name = state.get("user_name")
+    _ci_patient_name = state.get("patient_name")
+    if _ci_is_third_party and _ci_user_name and _ci_patient_name and _ci_user_name != _ci_patient_name:
+        _ci_contact_first = _ci_user_name.split()[0]
+        _ci_patient_first = _ci_patient_name.split()[0]
+        _collect_system += (
+            f"\n\nIMPORTANTE — CONTATO ≠ PACIENTE: Quem está no WhatsApp é *{_ci_user_name}* "
+            f"(o contato/responsável), NÃO o paciente *{_ci_patient_first}*. "
+            f"Em TODAS as mensagens, dirija-se a {_ci_contact_first} pelo nome. "
+            f"Use o nome {_ci_patient_first} apenas quando falar SOBRE o paciente na terceira pessoa."
+        )
     messages = [
-        SystemMessage(content=COLLECT_SYSTEM.format(collected=collected, pricing_rules=get_pricing_rules(datetime.now()), medical_limits_rule=MEDICAL_LIMITS_RULE)),
+        SystemMessage(content=_collect_system),
         *state["messages"],
     ]
 

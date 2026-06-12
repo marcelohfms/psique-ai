@@ -166,6 +166,58 @@ async def log_event(event_type: str, phone: str, metadata: dict | None = None) -
         pass  # never let tracking break the main flow
 
 
+# ── Registration completeness check ──────────────────────────────────────────
+
+def is_registration_complete(user: dict) -> bool:
+    """Return True only when the user record has all fields required to proceed
+    to scheduling.
+
+    Required for ALL patients:
+    - name          (contact name — used to address the person in chat)
+    - email         (for documents and termo de compromisso)
+    - birth_date    (to determine age / consultation type)
+    - doctor_id     (preferred doctor)
+    - is_patient    (True/False, not None)
+    - is_returning_patient (True/False, not None)
+
+    Additional requirements for MINORS (age < 18):
+    - guardian_name
+    - guardian_cpf
+    - guardian_relationship
+
+    Note: when is_patient=False the contact is NOT the patient.
+    In that case `name` is the contact's name and `patient_name` is the patient's.
+    Both must be present and different.
+    """
+    if not user:
+        return False
+
+    # Universal required fields
+    required = ["name", "email", "birth_date", "doctor_id"]
+    for field in required:
+        if not user.get(field):
+            return False
+
+    if user.get("is_patient") is None:
+        return False
+    if user.get("is_returning_patient") is None:
+        return False
+
+    # When contact ≠ patient, patient_name must be explicitly set
+    if user.get("is_patient") is False:
+        if not user.get("patient_name"):
+            return False
+
+    # Minor-specific requirements
+    age = user.get("age")
+    if age is not None and age < 18:
+        for field in ("guardian_name", "guardian_cpf", "guardian_relationship"):
+            if not user.get(field):
+                return False
+
+    return True
+
+
 # ── Appointment helpers ───────────────────────────────────────────────────────
 
 async def get_upcoming_appointments(phone: str) -> list[dict]:

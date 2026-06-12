@@ -358,8 +358,9 @@ async def process_message(phone: str, text: str) -> None:
         # were filled in the DB since the conversation started (e.g. by an attendant).
         # If the patient is already fully registered, skip collect_info entirely.
         if snapshot.values.get("stage") == "collect_info" and existing:
-            if existing.get("name") and existing.get("is_patient") is not None:
-                # Patient is registered — no need to go through collect_info again
+            from app.database import is_registration_complete as _is_complete
+            if _is_complete(existing):
+                # All required fields present — skip collect_info
                 state_update["stage"] = "patient_agent"
             db_sync: dict = {}
             _syncable = {
@@ -408,11 +409,9 @@ async def process_message(phone: str, text: str) -> None:
                 state_update.update(pa_sync)
     else:
         await log_event("conversation_started", phone)
-        # Only name + is_patient are required to route to patient_agent.
-        # Missing birth_date, email, CPF etc. are collected in context when actually needed,
-        # not upfront — avoids interrogating registered patients at every conversation start.
-        _REQUIRED = ("name", "is_patient")
-        user_known = existing and all(existing.get(f) is not None for f in _REQUIRED)
+        # Route to patient_agent only when ALL required fields are present.
+        from app.database import is_registration_complete as _is_complete
+        user_known = existing and _is_complete(existing)
 
         if user_known:
             stage = "patient_agent"
