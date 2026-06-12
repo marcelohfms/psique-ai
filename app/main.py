@@ -769,7 +769,34 @@ async def _handle_attendant_note(payload: dict) -> None:
             elif "júlio" in text_lower or "julio" in text_lower:
                 state_update["preferred_doctor"] = "julio"
 
-        await graph_module.chatbot.ainvoke(state_update, config=config)
+        try:
+            await graph_module.chatbot.ainvoke(state_update, config=config)
+        except Exception as _exc:
+            logger.exception("ATTENDANT_NOTE ainvoke failed for %s: %s", p, _exc)
+            # If the graph left a dangling tool_call in the checkpoint (AIMessage with
+            # tool_calls but no ToolMessage), inject an error ToolMessage so the
+            # checkpoint is not permanently blocked.
+            try:
+                from langchain_core.messages import ToolMessage as _ToolMessage
+                _snap = await graph_module.chatbot.aget_state(config)
+                _msgs = (_snap.values or {}).get("messages", [])
+                if _msgs:
+                    _last = _msgs[-1]
+                    _pending_calls = getattr(_last, "tool_calls", [])
+                    if _pending_calls:
+                        _error_msgs = [
+                            _ToolMessage(
+                                content=f"Erro ao executar ferramenta: {_exc}",
+                                tool_call_id=_tc["id"],
+                            )
+                            for _tc in _pending_calls
+                        ]
+                        await graph_module.chatbot.aupdate_state(
+                            config, {"messages": _error_msgs}, as_node="patient_agent"
+                        )
+                        logger.warning("ATTENDANT_NOTE injected error ToolMessages to unblock checkpoint for %s", p)
+            except Exception as _unblock_exc:
+                logger.exception("ATTENDANT_NOTE failed to unblock checkpoint for %s: %s", p, _unblock_exc)
 
     instruction = f"[Instrução da atendente]: {content}"
     await buffer_push(phone, instruction, _run_silent)
