@@ -647,19 +647,20 @@ async def confirm_appointment(
 
     pix_key = os.environ.get("PIX_KEY", "42006848000178")
     _custom_price_ret = (user or {}).get("custom_price")
+    _prefix = "[INSTRUÇÃO INTERNA — NÃO ENVIE AO PACIENTE] "
     if _custom_price_ret == 0:
         return (
-            f"AGENDAMENTO_CORTESIA\n"
+            f"{_prefix}AGENDAMENTO_CORTESIA\n"
             f"{doctor_label} — {formatted}{session_label}\nID: {event_id}"
         )
     elif _bfw:
         return (
-            f"AGENDAMENTO_TAXA_DISPENSADA\n"
+            f"{_prefix}AGENDAMENTO_TAXA_DISPENSADA\n"
             f"{doctor_label} — {formatted}{session_label}\nID: {event_id}"
         )
     else:
         return (
-            f"AGENDAMENTO_OK\n"
+            f"{_prefix}AGENDAMENTO_OK\n"
             f"{doctor_label} — {formatted}{session_label}\nID: {event_id}"
         )
 
