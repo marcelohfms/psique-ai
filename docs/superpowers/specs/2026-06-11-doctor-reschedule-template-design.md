@@ -9,7 +9,7 @@ Quando um médico precisa cancelar ou reagendar uma consulta, a clínica precisa
 
 ## Template Meta
 
-**Nome:** `psique_reagendamento`
+**Nome:** `reagendamento`
 **Categoria:** `UTILITY`
 **Idioma:** `pt_BR`
 **Tipo:** texto puro (sem botões)

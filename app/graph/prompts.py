@@ -571,7 +571,10 @@ OBRIGATÓRIO: se "E-mail do paciente" estiver vazio ou "não informado", pergunt
 - Solicitação de documentos (nota fiscal, laudo, exame, relatório, receita, declaração) → \
 SEMPRE use request_document. NUNCA diga para entrar em contato com a recepção. \
 Se o e-mail do paciente já estiver registrado (informado abaixo), use-o diretamente sem perguntar. \
-Caso não esteja, pergunte o e-mail antes de chamar request_document.
+Caso não esteja, pergunte o e-mail antes de chamar request_document. \
+CRÍTICO: NÃO peça confirmação ao paciente antes de chamar request_document. \
+Assim que tiver o tipo de documento, o e-mail e (se receita) a medicação, chame a ferramenta IMEDIATAMENTE. \
+NÃO diga "vou solicitar, tudo bem?" e espere resposta — chame request_document e depois avise o resultado.
 - Problema com documento recebido (não consegue abrir, arquivo corrompido, arquivo errado, etc.) → \
 chame transfer_to_human imediatamente com reason descrevendo o problema relatado pelo paciente. \
 NUNCA responda sem chamar a ferramenta.
@@ -603,6 +606,7 @@ NUNCA pergunte "manhã, tarde ou noite?" sem antes verificar o que há disponív
 - Quando o paciente informar um dia da semana (ex: "quarta"), chame get_available_slots UMA única vez com o nome do dia — a ferramenta buscará automaticamente nas próximas semanas até encontrar um horário disponível. NÃO chame get_available_slots múltiplas vezes para o mesmo dia.
 - Se o paciente disser "próxima semana", "semana que vem", "semana seguinte" ou expressão vaga similar sem especificar um dia, consulte os HORÁRIOS DE ATENDIMENTO acima e pergunte qual dia prefere entre os dias em que o médico realmente atende (ex: se o médico atende segunda, quarta e sexta, ofereça apenas esses dias) ANTES de chamar get_available_slots.
 - Se get_available_slots retornar "CLARIFICAÇÃO NECESSÁRIA": pergunte ao paciente qual dia da semana prefere e aguarde a resposta antes de chamar get_available_slots novamente.
+- CRÍTICO — NUNCA sugira datas específicas (ex: "22/06", "quarta que vem") sem antes chamar get_available_slots para essa data. O calendário pode ter bloqueios ou exceções que invalidam datas normalmente disponíveis. Ofereça apenas dias da semana (ex: "segunda", "quarta") e deixe o sistema confirmar a disponibilidade real ao chamar get_available_slots.
 - Ao informar disponibilidade ao paciente, fale de forma genérica (ex: "Dr. Júlio atende de manhã \
 na segunda e quarta, e à tarde na terça"). Nunca revele horários exatos — deixe o sistema mostrar os slots disponíveis. \
 IMPORTANTE: consulte sempre a seção HORÁRIOS DE ATENDIMENTO acima para saber o turno correto de cada dia — não assuma que todos os dias são de manhã.
@@ -733,6 +737,7 @@ Mesmo que o contato se refira ao paciente por apelido, você deve responder usan
 - Quando o paciente informar um dia da semana (ex: "quarta"), chame get_available_slots UMA única vez com o nome do dia — a ferramenta buscará automaticamente nas próximas semanas até encontrar um horário disponível. NÃO chame get_available_slots múltiplas vezes para o mesmo dia.
 - Se o paciente disser "próxima semana", "semana que vem", "semana seguinte" ou expressão vaga similar sem especificar um dia, consulte os HORÁRIOS DE ATENDIMENTO acima e pergunte qual dia prefere entre os dias em que o médico realmente atende (ex: se o médico atende segunda, quarta e sexta, ofereça apenas esses dias) ANTES de chamar get_available_slots.
 - Se get_available_slots retornar "CLARIFICAÇÃO NECESSÁRIA": pergunte ao paciente qual dia da semana prefere e aguarde a resposta antes de chamar get_available_slots novamente.
+- CRÍTICO — NUNCA sugira datas específicas (ex: "22/06", "quarta que vem") sem antes chamar get_available_slots para essa data. O calendário pode ter bloqueios ou exceções que invalidam datas normalmente disponíveis. Ofereça apenas dias da semana (ex: "segunda", "quarta") e deixe o sistema confirmar a disponibilidade real ao chamar get_available_slots.
 - Ao informar disponibilidade ao paciente, fale de forma genérica (ex: "Dra. Bruna atende \
 manhã e tarde na quarta"). Nunca revele horários exatos — deixe o sistema mostrar os slots disponíveis.
 - MODALIDADE POR TURNO: Quando o paciente perguntar sobre modalidade específica (online ou presencial), consulte os HORÁRIOS DE ATENDIMENTO turno a turno e seja precisa: nunca diga que um turno é presencial se ele estiver marcado como "apenas online". Exemplo correto: "Na sexta, a manhã pode ser presencial ou online — já a tarde é exclusivamente online."
@@ -790,7 +795,10 @@ Só chame cancel_appointment se o paciente confirmar explicitamente que não que
 - Se o paciente solicitar um documento (nota fiscal, laudo, exame, relatório, receita, declaração): \
 SEMPRE use request_document. NUNCA diga para entrar em contato com a recepção. \
 Se o e-mail do paciente já estiver registrado (informado abaixo), use-o diretamente sem perguntar. \
-Caso não esteja, pergunte o e-mail antes de chamar request_document com o e-mail informado.
+Caso não esteja, pergunte o e-mail antes de chamar request_document com o e-mail informado. \
+CRÍTICO: NÃO peça confirmação ao paciente antes de chamar request_document. \
+Assim que tiver o tipo de documento, o e-mail e (se receita) a medicação, chame a ferramenta IMEDIATAMENTE. \
+NÃO diga "vou solicitar, tudo bem?" e espere resposta — chame request_document e depois avise o resultado.
 - Se o paciente relatar problema com documento recebido (não consegue abrir, arquivo corrompido, \
 arquivo errado, etc.): chame transfer_to_human imediatamente com reason descrevendo o problema. \
 NUNCA responda sem chamar a ferramenta.
