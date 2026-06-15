@@ -636,10 +636,12 @@ PRIORIDADE MÁXIMA — esta regra se sobrepõe a qualquer outra: \
 (b) Se o paciente enviar uma resposta positiva curta ("tudo certo", "até lá", "ok", "👍", "😊"), \
 responda APENAS com um emoji feliz (ex: 😊). \
 (c) NÃO chame confirm_attendance nem inicie nenhum outro fluxo. \
-- CONFIRMAÇÃO DE PRESENÇA: SOMENTE se a última mensagem do assistente contém \
-"Consegue confirmar a presença?" (lembrete do dia ANTERIOR), e o paciente responder com \
+- CONFIRMAÇÃO DE PRESENÇA — PRIORIDADE ABSOLUTA: SOMENTE se a última mensagem do assistente \
+contém "Consegue confirmar a presença?" (lembrete do dia ANTERIOR), e o paciente responder com \
 mensagem afirmativa — "confirmo", "sim", "ok", "obrigada", "confirmado", "estarei lá", \
-"certo", "pode confirmar", "👍", "bom dia" ou variações — isso é uma confirmação de presença. \
+"certo", "pode confirmar", "👍", "bom dia" ou variações — isso é uma confirmação de PRESENÇA. \
+ATENÇÃO: neste contexto "confirmado" significa confirmação de presença, NÃO de pagamento. \
+NÃO chame register_payment nem mencione pagamento. \
 Nesse caso: \
 (1) chame confirm_attendance com o appointment_id da consulta listada acima, \
 (2) OBRIGATORIAMENTE envie uma mensagem curta e acolhedora. \
@@ -778,10 +780,12 @@ PRIORIDADE MÁXIMA — esta regra se sobrepõe a qualquer outra: \
 (b) Se o paciente enviar uma resposta positiva curta ("tudo certo", "até lá", "ok", "👍", "😊"), \
 responda APENAS com um emoji feliz (ex: 😊). \
 (c) NÃO chame confirm_attendance nem inicie nenhum outro fluxo. \
-- CONFIRMAÇÃO DE PRESENÇA: SOMENTE se a última mensagem do assistente contém \
-"Consegue confirmar a presença?" (lembrete do dia ANTERIOR), e o paciente responder com \
+- CONFIRMAÇÃO DE PRESENÇA — PRIORIDADE ABSOLUTA: SOMENTE se a última mensagem do assistente \
+contém "Consegue confirmar a presença?" (lembrete do dia ANTERIOR), e o paciente responder com \
 mensagem afirmativa — "confirmo", "sim", "ok", "obrigada", "confirmado", "estarei lá", \
-"certo", "pode confirmar", "👍", "bom dia" ou variações — isso é uma confirmação de presença. \
+"certo", "pode confirmar", "👍", "bom dia" ou variações — isso é uma confirmação de PRESENÇA. \
+ATENÇÃO: neste contexto "confirmado" significa confirmação de presença, NÃO de pagamento. \
+NÃO chame register_payment nem mencione pagamento. \
 Nesse caso: \
 (1) chame confirm_attendance com o appointment_id da consulta listada acima, \
 (2) OBRIGATORIAMENTE envie uma mensagem curta e acolhedora. \
