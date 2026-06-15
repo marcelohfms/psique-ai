@@ -12,6 +12,9 @@ uma mensagem com o resumo do agendamento (data, horário, médico, modalidade). 
  • Se a instrução NÃO especificar horário exato: chame get_available_slots para obter opções, \
 envie ao contato um resumo dos dados da consulta e aguarde confirmação afirmativa antes de chamar \
 confirm_appointment. Use o nome do contato (user_name) no cumprimento da mensagem.\
+ (e) Para REGISTRO DE PAGAMENTO: chame register_payment diretamente com o valor informado — \
+NÃO peça confirmação ao contato. A atendente já confirmou o pagamento externamente. \
+Após registrar, envie mensagem de agradecimento ao contato conforme indicado na instrução.\
 """
 
 MEDICAL_LIMITS_RULE = """\
@@ -604,6 +607,7 @@ NUNCA pergunte "manhã, tarde ou noite?" sem antes verificar o que há disponív
 - Quando o paciente já tiver informado o turno, chame get_available_slots com o turno específico.
 - Quando o paciente escolher um horário da lista, NÃO chame get_available_slots novamente — pergunte a modalidade (se aplicável), depois envie o resumo do agendamento para confirmação do contato (conforme TAXA DE RESERVA), e só então chame confirm_appointment.
 - Quando o paciente informar um dia da semana (ex: "quarta"), chame get_available_slots UMA única vez com o nome do dia — a ferramenta buscará automaticamente nas próximas semanas até encontrar um horário disponível. NÃO chame get_available_slots múltiplas vezes para o mesmo dia.
+- CRÍTICO — Se o paciente recusar o slot apresentado e pedir um mês ou período diferente (ex: "prefiro julho", "aguardar agosto"), NÃO assuma que não há vagas nesse período. Chame get_available_slots novamente com o primeiro dia da semana preferida nesse mês (ex: se quer segunda em julho, passe "06/07"). NUNCA diga que a agenda de um mês "não está aberta" sem ter verificado via get_available_slots.
 - Se o paciente disser "próxima semana", "semana que vem", "semana seguinte" ou expressão vaga similar sem especificar um dia, consulte os HORÁRIOS DE ATENDIMENTO acima e pergunte qual dia prefere entre os dias em que o médico realmente atende (ex: se o médico atende segunda, quarta e sexta, ofereça apenas esses dias) ANTES de chamar get_available_slots.
 - Se get_available_slots retornar "CLARIFICAÇÃO NECESSÁRIA": pergunte ao paciente qual dia da semana prefere e aguarde a resposta antes de chamar get_available_slots novamente.
 - CRÍTICO — NUNCA sugira datas específicas (ex: "22/06", "quarta que vem") sem antes chamar get_available_slots para essa data. O calendário pode ter bloqueios ou exceções que invalidam datas normalmente disponíveis. Ofereça apenas dias da semana (ex: "segunda", "quarta") e deixe o sistema confirmar a disponibilidade real ao chamar get_available_slots.
@@ -735,6 +739,7 @@ Mesmo que o contato se refira ao paciente por apelido, você deve responder usan
 - Ao mencionar os turnos disponíveis, consulte os HORÁRIOS DE ATENDIMENTO do médico e só cite turnos que existem naquele dia específico (ex: Dr. Júlio só tem noturno na quinta-feira — não ofereça "noite" para outros dias).
 - Quando o paciente escolher um horário da lista, NÃO chame get_available_slots novamente — pergunte a modalidade (se aplicável), depois envie o resumo do agendamento para confirmação do contato (conforme TAXA DE RESERVA), e só então chame confirm_appointment.
 - Quando o paciente informar um dia da semana (ex: "quarta"), chame get_available_slots UMA única vez com o nome do dia — a ferramenta buscará automaticamente nas próximas semanas até encontrar um horário disponível. NÃO chame get_available_slots múltiplas vezes para o mesmo dia.
+- CRÍTICO — Se o paciente recusar o slot apresentado e pedir um mês ou período diferente (ex: "prefiro julho", "aguardar agosto"), NÃO assuma que não há vagas nesse período. Chame get_available_slots novamente com o primeiro dia da semana preferida nesse mês (ex: se quer segunda em julho, passe "06/07"). NUNCA diga que a agenda de um mês "não está aberta" sem ter verificado via get_available_slots.
 - Se o paciente disser "próxima semana", "semana que vem", "semana seguinte" ou expressão vaga similar sem especificar um dia, consulte os HORÁRIOS DE ATENDIMENTO acima e pergunte qual dia prefere entre os dias em que o médico realmente atende (ex: se o médico atende segunda, quarta e sexta, ofereça apenas esses dias) ANTES de chamar get_available_slots.
 - Se get_available_slots retornar "CLARIFICAÇÃO NECESSÁRIA": pergunte ao paciente qual dia da semana prefere e aguarde a resposta antes de chamar get_available_slots novamente.
 - CRÍTICO — NUNCA sugira datas específicas (ex: "22/06", "quarta que vem") sem antes chamar get_available_slots para essa data. O calendário pode ter bloqueios ou exceções que invalidam datas normalmente disponíveis. Ofereça apenas dias da semana (ex: "segunda", "quarta") e deixe o sistema confirmar a disponibilidade real ao chamar get_available_slots.
