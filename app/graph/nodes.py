@@ -905,9 +905,12 @@ async def patient_agent_node(state: ConversationState, config: RunnableConfig) -
                         f"A taxa de reserva foi dispensada. Até lá!"
                     )
                 else:
+                    _PIX_KEY = "42006848000178"
                     _patient_msg = (
-                        f"Perfeito, {_contact_name}! 😊 Consulta confirmada:\n{_appt_line}\n\n"
-                        f"Em breve enviaremos as instruções de pagamento da taxa de reserva. Até lá!"
+                        f"Consulta registrada! ✅\n{_appt_line}\n\n"
+                        f"Para garantir a vaga, é necessário o pagamento da taxa de reserva de R$ 100,00 em até 2 horas.\n"
+                        f"💳 PIX: {_PIX_KEY}\n\n"
+                        f"Esse valor será abatido do total da consulta. Em caso de cancelamento com menos de 24h de antecedência ou ausência sem justificativa, a taxa não é devolvida."
                     )
             elif _result.startswith("[INSTRUÇÃO INTERNA"):
                 # Error from confirm_appointment — relay gently
