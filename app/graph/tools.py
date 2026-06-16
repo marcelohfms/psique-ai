@@ -1053,6 +1053,73 @@ async def request_document(
 
 
 @tool
+async def nudge_doctor_document(
+    patient_message: str,
+    state: Annotated[dict, InjectedState],
+    config: RunnableConfig,
+) -> str:
+    """Notifica o médico por e-mail quando o paciente cobra sobre um documento pendente.
+    Chame quando o paciente perguntar sobre o status de um documento já solicitado
+    (ex: 'alguma novidade?', 'já enviaram?', 'preciso urgente').
+    patient_message: texto exato ou resumo do que o paciente disse.
+    """
+    from app.email_sender import send_document_nudge_email
+    from app.database import DOCTOR_IDS
+
+    phone = config["configurable"]["phone"]
+    patient_name = state.get("patient_name") or state.get("user_name") or "Paciente"
+    patient_age = state.get("patient_age")
+    patient_email = state.get("patient_email") or ""
+    doctor_key = state.get("preferred_doctor", "")
+    doctor_id = DOCTOR_IDS.get(doctor_key)
+
+    client = await get_supabase()
+
+    # Find most recent pending document for this patient
+    phone_clean = phone.replace("@s.whatsapp.net", "")
+    docs = await client.from_("documents").select("*").filter(
+        "metadata->>phone", "ilike", f"%{phone_clean[-9:]}%"
+    ).order("id", desc=True).limit(1).execute()
+
+    document_type = "declaracao"
+    requested_at = "data não registrada"
+    if docs.data:
+        doc = docs.data[0]
+        document_type = (doc.get("metadata") or {}).get("type", document_type)
+        # Use document id as proxy for creation order — no created_at column
+        requested_at = f"solicitação nº {doc['id']}"
+
+    # Fetch doctor email
+    doctor_email = ""
+    if doctor_id:
+        res = await client.from_("doctors").select("agenda_id").eq("doctor_id", doctor_id).single().execute()
+        doctor_email = res.data.get("agenda_id", "") if res.data else ""
+
+    try:
+        await send_document_nudge_email(
+            doctor_key=doctor_key,
+            doctor_email=doctor_email,
+            patient_name=patient_name,
+            patient_age=patient_age,
+            phone=phone_clean,
+            patient_email=patient_email,
+            document_type=document_type,
+            patient_message=patient_message,
+            requested_at=requested_at,
+        )
+    except Exception:
+        logger.exception("nudge_doctor_document: email failed phone=%s", phone)
+
+    await log_event("document_nudge_sent", phone_clean, {
+        "document_type": document_type,
+        "patient_name": patient_name,
+        "patient_message": patient_message,
+    })
+
+    return "NUDGE_OK"
+
+
+@tool
 async def confirm_attendance(
     appointment_id: str,
     state: Annotated[dict, InjectedState],

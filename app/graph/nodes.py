@@ -13,7 +13,7 @@ from app.graph.tools import (
     request_document, transfer_to_human, confirm_attendance,
     register_payment, update_preferred_doctor, save_patient_email,
     register_refund_request, confirm_refund_completed,
-    request_registration_update,
+    request_registration_update, nudge_doctor_document,
     _expected_consultation_amount,
 )
 from app.graph.prompts import COLLECT_SYSTEM, MINOR_RULE, MINOR_RETURNING_RULE, ADULT_RULE, GUARDIAN_RULE, EXISTING_PATIENT_SYSTEM, NEW_PATIENT_SYSTEM, CANCELLATION_RULES, CLINIC_ADDRESS, DOCTORS_INFO, get_booking_fee_rule, MEDICAL_LIMITS_RULE, DOCTOR_CORRECTION_RULE, EMAIL_RULE, get_pricing_rules, ATTENDANT_INSTRUCTION_RULE, get_pricing_exception_rule
@@ -29,7 +29,7 @@ TOOLS = [
     request_document, transfer_to_human, confirm_attendance,
     register_payment, update_preferred_doctor, save_patient_email,
     register_refund_request, confirm_refund_completed,
-    request_registration_update,
+    request_registration_update, nudge_doctor_document,
 ]
 
 _collect_llm = None
