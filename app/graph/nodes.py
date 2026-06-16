@@ -887,10 +887,42 @@ async def patient_agent_node(state: ConversationState, config: RunnableConfig) -
             except Exception:
                 _pa_logger.exception("PENDING_APPT_CONFIRM failed")
                 _result = "Erro ao confirmar o agendamento. Tente novamente."
-            await _send_text(state["phone"], _result)
-            await _save_msg(state["phone"], "assistant", _result)
-            from langchain_core.messages import AIMessage as _AI
-            return {"pending_appointment": None, "messages": [_AI(content=_result)], "silent_mode": False, **_sync_updates}
+
+            # Convert semantic codes to patient-friendly messages
+            _contact_name = (state.get("user_name") or "").split()[0] or "você"
+            if _result.startswith("AGENDAMENTO_OK\n") or _result.startswith("AGENDAMENTO_TAXA_DISPENSADA\n") or _result.startswith("AGENDAMENTO_CORTESIA\n"):
+                # Extract doctor/date/time line (2nd line)
+                _lines = _result.splitlines()
+                _appt_line = _lines[1] if len(_lines) > 1 else ""
+                if _result.startswith("AGENDAMENTO_CORTESIA\n"):
+                    _patient_msg = (
+                        f"Perfeito, {_contact_name}! 😊 Consulta confirmada:\n{_appt_line}\n\n"
+                        f"Como combinado, a taxa de reserva está isenta. Até lá!"
+                    )
+                elif _result.startswith("AGENDAMENTO_TAXA_DISPENSADA\n"):
+                    _patient_msg = (
+                        f"Perfeito, {_contact_name}! 😊 Consulta confirmada:\n{_appt_line}\n\n"
+                        f"A taxa de reserva foi dispensada. Até lá!"
+                    )
+                else:
+                    _patient_msg = (
+                        f"Perfeito, {_contact_name}! 😊 Consulta confirmada:\n{_appt_line}\n\n"
+                        f"Em breve enviaremos as instruções de pagamento da taxa de reserva. Até lá!"
+                    )
+            elif _result.startswith("[INSTRUÇÃO INTERNA"):
+                # Error from confirm_appointment — relay gently
+                _patient_msg = f"Ops, {_contact_name}! Tive um problema ao confirmar o agendamento. Nossa equipe já foi notificada. 😊"
+            else:
+                _patient_msg = _result
+
+            await _send_text(state["phone"], _patient_msg)
+            await _save_msg(state["phone"], "assistant", _patient_msg)
+            from langchain_core.messages import AIMessage as _AI, ToolMessage as _TM
+            import uuid as _uuid_pa
+            _tc_id_pa = str(_uuid_pa.uuid4())
+            _ai_with_tool = _AI(content="", tool_calls=[{"name": "confirm_appointment", "args": {}, "id": _tc_id_pa, "type": "tool_use"}])
+            _tool_msg = _TM(content=_result, tool_call_id=_tc_id_pa)
+            return {"pending_appointment": None, "messages": [_ai_with_tool, _tool_msg, _AI(content=_patient_msg)], "silent_mode": False, **_sync_updates}
 
     doctor_label = {"julio": "Dr. Júlio", "bruna": "Dra. Bruna"}.get(
         state.get("preferred_doctor", ""), "médico(a)"
