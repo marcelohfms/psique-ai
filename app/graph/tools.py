@@ -27,22 +27,19 @@ async def _notify_clinic(message: str, phone: str = "", subject: str = "Notifica
         pass
 
 
-def _build_registration_block(state: dict) -> str:
-    """Return a formatted registration summary for new patients, or empty string."""
-    if state.get("is_patient"):
-        return ""
-
-    phone_raw = ""  # phone is in config, not state — caller adds it if needed
+def _build_registration_block(state: dict, phone: str = "") -> str:
+    """Return a formatted registration summary for clinic notification emails."""
     lines = ["\n\n📋 CADASTRO DO PACIENTE:"]
 
     contact = state.get("user_name") or ""
-    patient = state.get("patient_name") or ""
+    patient = state.get("patient_name") or contact
     is_patient = state.get("is_patient")
 
     if is_patient is False and contact and contact != patient:
         lines.append(f"  Responsável: {contact}")
 
     lines.append(f"  Nome: {patient or '—'}")
+    lines.append(f"  Telefone: {phone.replace('@s.whatsapp.net', '') if phone else '—'}")
     lines.append(f"  Idade: {state.get('patient_age') or '—'}")
     lines.append(f"  Data de nascimento: {state.get('birth_date') or '—'}")
     lines.append(f"  CPF paciente: {state.get('patient_cpf') or '—'}")
@@ -632,7 +629,7 @@ async def confirm_appointment(
     if not patient_email:
         _user_for_email = await get_user_by_phone(phone)
         patient_email = (_user_for_email or {}).get("email") or "não informado"
-    registration_block = _build_registration_block(state)
+    registration_block = _build_registration_block(state, phone=phone)
     asyncio.create_task(_notify_clinic(
         f"Agendamento realizado! ✅\n"
         f"Paciente: {patient_name}{session_label}\n"
