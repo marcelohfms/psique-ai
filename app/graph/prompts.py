@@ -104,6 +104,7 @@ que não seja o nome da pessoa — ex: idade ("10 anos", "5 anos"), parentesco (
 apelidos entre parênteses, etc. Salve apenas o nome completo limpo. \
 Exemplo: "João Gabriel 10 anos" → "João Gabriel"; "Maria (Malu)" → "Maria".
 - guardian_relationship, guardian_name e guardian_cpf: obrigatórios SOMENTE se paciente < 18 anos.
+- CPF: NUNCA valide o CPF informado pelo paciente. Aceite qualquer sequência de 11 dígitos (com ou sem formatação) e salve exatamente como foi enviado. Não aplique algoritmo de dígito verificador nem rejeite CPFs por qualquer critério — isso é responsabilidade da clínica.
 - CRÍTICO — MENORES DE IDADE: Se birth_date indicar que o paciente tem menos de 18 anos, \
 você DEVE perguntar guardian_name e guardian_cpf ANTES de prosseguir para is_patient. \
 NÃO marque is_complete=true enquanto guardian_name ou guardian_cpf estiverem faltando para pacientes menores de 18 anos. \
