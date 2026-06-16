@@ -843,6 +843,23 @@ async def _handle_chatwoot_payload(payload: dict) -> None:
                         as_node="patient_agent",
                     )
                     logger.info("OUTGOING_SAVED phone=%s content=%.80s", _phone_out, _content_out)
+            elif not _is_human_agent and not _is_private:
+                # Outgoing bot message (e.g. appointment reminder sent by script) →
+                # save to checkpoint so Eva has context when patient replies
+                _phone_out = _extract_phone_from_payload(payload)
+                _content_out = (payload.get("content") or "").strip()
+                if _phone_out and _content_out:
+                    from langchain_core.messages import AIMessage
+                    _config_out = {"configurable": {"thread_id": _phone_out, "phone": _phone_out}}
+                    try:
+                        await graph_module.chatbot.aupdate_state(
+                            _config_out,
+                            {"messages": [AIMessage(content=_content_out)], "stage": "patient_agent"},
+                            as_node="patient_agent",
+                        )
+                        logger.info("BOT_MSG_SAVED phone=%s content=%.80s", _phone_out, _content_out)
+                    except Exception:
+                        logger.exception("BOT_MSG_SAVE_FAILED phone=%s", _phone_out)
             return
 
         # ── Label change: eva-inativa added/removed ───────────────────────────

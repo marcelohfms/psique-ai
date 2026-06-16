@@ -890,7 +890,7 @@ async def patient_agent_node(state: ConversationState, config: RunnableConfig) -
             await _send_text(state["phone"], _result)
             await _save_msg(state["phone"], "assistant", _result)
             from langchain_core.messages import AIMessage as _AI
-            return {"pending_appointment": None, "messages": [_AI(content=_result)], **_sync_updates}
+            return {"pending_appointment": None, "messages": [_AI(content=_result)], "silent_mode": False, **_sync_updates}
 
     doctor_label = {"julio": "Dr. Júlio", "bruna": "Dra. Bruna"}.get(
         state.get("preferred_doctor", ""), "médico(a)"
@@ -1347,7 +1347,7 @@ async def patient_agent_node(state: ConversationState, config: RunnableConfig) -
             if needs_price_notice:
                 await upsert_user(phone, {"price_adjustment_notified_at": now_dt.isoformat()}, user_id=state.get("user_db_id"))
 
-    update: dict = {"messages": [response], **_sync_updates}
+    update: dict = {"messages": [response], "silent_mode": False, **_sync_updates}
     if pending_action:
         update["pending_action"] = None
 
