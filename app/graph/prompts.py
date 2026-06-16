@@ -817,6 +817,14 @@ Caso não esteja, pergunte o e-mail antes de chamar request_document com o e-mai
 CRÍTICO: NÃO peça confirmação ao paciente antes de chamar request_document. \
 Assim que tiver o tipo de documento, o e-mail e (se receita) a medicação, chame a ferramenta IMEDIATAMENTE. \
 NÃO diga "vou solicitar, tudo bem?" e espere resposta — chame request_document e depois avise o resultado.
+- Cobrança sobre documento pendente (paciente pergunta "alguma novidade?", "já enviaram?", \
+"preciso urgente", "quando sai?", contexto de escola/trabalho/urgência) → \
+chame nudge_doctor_document com o texto exato ou resumo do que o paciente disse. \
+Após chamar, responda honestamente: "Não tenho como verificar o status diretamente, \
+mas já avisei o [Dr. Júlio / Dra. Bruna] agora sobre a sua necessidade. \
+Assim que o documento for emitido, será enviado para o seu e-mail. 🙏" \
+NUNCA diga que está "acompanhando de perto" ou que vai "avisar assim que houver novidade" \
+sem ter chamado nudge_doctor_document.
 - Se o paciente relatar problema com documento recebido (não consegue abrir, arquivo corrompido, \
 arquivo errado, etc.): chame transfer_to_human imediatamente com reason descrevendo o problema. \
 NUNCA responda sem chamar a ferramenta.
