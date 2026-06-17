@@ -14,7 +14,7 @@ from langchain_core.messages import HumanMessage
 
 from app.graph import graph as graph_module
 from app.database import get_user_by_phone, get_users_by_phone, log_event, DOCTOR_NAMES, save_message
-from app.buffer import push as buffer_push
+from app.buffer import push as buffer_push, get_phone_lock
 from app.auth import router as auth_router
 from app.whatsapp import send_text
 
@@ -351,99 +351,100 @@ async def process_message(phone: str, text: str) -> None:
         await upsert_user(phone, {"active": True, "deactivated_at": None})
         logger.info("Bot auto-reativado para %s após 24 h", phone)
 
-    snapshot = await graph_module.chatbot.aget_state(config)
-    if snapshot.values:
-        state_update = {"messages": [HumanMessage(content=text)], "silent_mode": False, "phone": phone}
-        # If the conversation is still in collect_info, re-sync any fields that
-        # were filled in the DB since the conversation started (e.g. by an attendant).
-        # If the patient is already fully registered, skip collect_info entirely.
-        if snapshot.values.get("stage") == "collect_info" and existing:
-            from app.database import is_registration_complete as _is_complete
-            if _is_complete(existing):
-                # All required fields present — skip collect_info
-                state_update["stage"] = "patient_agent"
-            db_sync: dict = {}
-            _syncable = {
-                "name":       "user_name",
-                "patient_name": "patient_name",
-                "age":        "patient_age",
-                "birth_date": "birth_date",
-                "email":      "patient_email",
-                "doctor_id":  None,   # handled separately below
-                "is_patient": "is_patient",
-                "is_returning_patient": "is_returning_patient",
-                "guardian_name": "guardian_name",
-                "guardian_cpf":  "guardian_cpf",
-                "guardian_relationship": "guardian_relationship",
-                "patient_cpf": "patient_cpf",
-            }
-            for db_field, state_field in _syncable.items():
-                if state_field is None:
-                    continue
-                db_val = existing.get(db_field)
-                if db_val is not None and snapshot.values.get(state_field) is None:
-                    db_sync[state_field] = db_val
-            # doctor_id → preferred_doctor key
-            if existing.get("doctor_id") and snapshot.values.get("preferred_doctor") is None:
-                db_sync["preferred_doctor"] = DOCTOR_NAMES.get(existing["doctor_id"])
-            if db_sync:
-                state_update.update(db_sync)
-        elif snapshot.values.get("stage") == "patient_agent" and existing:
-            # For ongoing patient_agent conversations, sync critical fields that may be
-            # missing from older checkpoints or changed in the DB since last message.
-            pa_sync: dict = {}
-            if snapshot.values.get("is_returning_patient") is None and existing.get("is_returning_patient") is not None:
-                pa_sync["is_returning_patient"] = existing["is_returning_patient"]
-            if snapshot.values.get("preferred_doctor") is None and existing.get("doctor_id"):
-                pa_sync["preferred_doctor"] = DOCTOR_NAMES.get(existing["doctor_id"])
-            # Always sync is_patient and user_name from DB — these may have been
-            # corrected by an attendant after the conversation started, and the
-            # patient_agent prompt relies on them to address the contact correctly.
-            if existing.get("is_patient") is not None:
-                pa_sync["is_patient"] = existing["is_patient"]
-            if existing.get("name"):
-                pa_sync["user_name"] = existing["name"]
-            if existing.get("patient_name"):
-                pa_sync["patient_name"] = existing["patient_name"]
-            if pa_sync:
-                state_update.update(pa_sync)
-    else:
-        await log_event("conversation_started", phone)
-        # Route to patient_agent only when ALL required fields are present.
-        from app.database import is_registration_complete as _is_complete
-        user_known = existing and _is_complete(existing)
-
-        if user_known:
-            stage = "patient_agent"
-            doctor_key = DOCTOR_NAMES.get(existing["doctor_id"])
+    async with get_phone_lock(phone):
+        snapshot = await graph_module.chatbot.aget_state(config)
+        if snapshot.values:
+            state_update = {"messages": [HumanMessage(content=text)], "silent_mode": False, "phone": phone}
+            # If the conversation is still in collect_info, re-sync any fields that
+            # were filled in the DB since the conversation started (e.g. by an attendant).
+            # If the patient is already fully registered, skip collect_info entirely.
+            if snapshot.values.get("stage") == "collect_info" and existing:
+                from app.database import is_registration_complete as _is_complete
+                if _is_complete(existing):
+                    # All required fields present — skip collect_info
+                    state_update["stage"] = "patient_agent"
+                db_sync: dict = {}
+                _syncable = {
+                    "name":       "user_name",
+                    "patient_name": "patient_name",
+                    "age":        "patient_age",
+                    "birth_date": "birth_date",
+                    "email":      "patient_email",
+                    "doctor_id":  None,   # handled separately below
+                    "is_patient": "is_patient",
+                    "is_returning_patient": "is_returning_patient",
+                    "guardian_name": "guardian_name",
+                    "guardian_cpf":  "guardian_cpf",
+                    "guardian_relationship": "guardian_relationship",
+                    "patient_cpf": "patient_cpf",
+                }
+                for db_field, state_field in _syncable.items():
+                    if state_field is None:
+                        continue
+                    db_val = existing.get(db_field)
+                    if db_val is not None and snapshot.values.get(state_field) is None:
+                        db_sync[state_field] = db_val
+                # doctor_id → preferred_doctor key
+                if existing.get("doctor_id") and snapshot.values.get("preferred_doctor") is None:
+                    db_sync["preferred_doctor"] = DOCTOR_NAMES.get(existing["doctor_id"])
+                if db_sync:
+                    state_update.update(db_sync)
+            elif snapshot.values.get("stage") == "patient_agent" and existing:
+                # For ongoing patient_agent conversations, sync critical fields that may be
+                # missing from older checkpoints or changed in the DB since last message.
+                pa_sync: dict = {}
+                if snapshot.values.get("is_returning_patient") is None and existing.get("is_returning_patient") is not None:
+                    pa_sync["is_returning_patient"] = existing["is_returning_patient"]
+                if snapshot.values.get("preferred_doctor") is None and existing.get("doctor_id"):
+                    pa_sync["preferred_doctor"] = DOCTOR_NAMES.get(existing["doctor_id"])
+                # Always sync is_patient and user_name from DB — these may have been
+                # corrected by an attendant after the conversation started, and the
+                # patient_agent prompt relies on them to address the contact correctly.
+                if existing.get("is_patient") is not None:
+                    pa_sync["is_patient"] = existing["is_patient"]
+                if existing.get("name"):
+                    pa_sync["user_name"] = existing["name"]
+                if existing.get("patient_name"):
+                    pa_sync["patient_name"] = existing["patient_name"]
+                if pa_sync:
+                    state_update.update(pa_sync)
         else:
-            stage = "collect_info"
-            doctor_key = None
+            await log_event("conversation_started", phone)
+            # Route to patient_agent only when ALL required fields are present.
+            from app.database import is_registration_complete as _is_complete
+            user_known = existing and _is_complete(existing)
 
-        state_update = {
-            "messages": [HumanMessage(content=text)],
-            "phone": phone,
-            "stage": stage,
-            "user_name": existing.get("name") if existing else None,
-            "patient_name": existing.get("patient_name") if existing else None,
-            "patient_age": existing.get("age") if existing else None,
-            "birth_date": existing.get("birth_date") if existing else None,
-            "guardian_name": existing.get("guardian_name") if existing else None,
-            "guardian_cpf": existing.get("guardian_cpf") if existing else None,
-            "is_patient": existing.get("is_patient") if existing else None,
-            "is_returning_patient": existing.get("is_returning_patient") if existing else None,
-            "preferred_doctor": doctor_key,
-            "patient_email": existing.get("email") if existing else None,
-            "consultation_reason": existing.get("consultation_reason") if existing else None,
-            "referral_professional": existing.get("referral_professional") if existing else None,
+            if user_known:
+                stage = "patient_agent"
+                doctor_key = DOCTOR_NAMES.get(existing["doctor_id"])
+            else:
+                stage = "collect_info"
+                doctor_key = None
+
+            state_update = {
+                "messages": [HumanMessage(content=text)],
+                "phone": phone,
+                "stage": stage,
+                "user_name": existing.get("name") if existing else None,
+                "patient_name": existing.get("patient_name") if existing else None,
+                "patient_age": existing.get("age") if existing else None,
+                "birth_date": existing.get("birth_date") if existing else None,
+                "guardian_name": existing.get("guardian_name") if existing else None,
+                "guardian_cpf": existing.get("guardian_cpf") if existing else None,
+                "is_patient": existing.get("is_patient") if existing else None,
+                "is_returning_patient": existing.get("is_returning_patient") if existing else None,
+                "preferred_doctor": doctor_key,
+                "patient_email": existing.get("email") if existing else None,
+                "consultation_reason": existing.get("consultation_reason") if existing else None,
+                "referral_professional": existing.get("referral_professional") if existing else None,
+            }
+
+        config["metadata"] = {
+            "langfuse_user_id": phone,
+            "langfuse_session_id": phone,
         }
-
-    config["metadata"] = {
-        "langfuse_user_id": phone,
-        "langfuse_session_id": phone,
-    }
-    config["tags"] = ["whatsapp", "production"]
-    await graph_module.chatbot.ainvoke(state_update, config=config)
+        config["tags"] = ["whatsapp", "production"]
+        await graph_module.chatbot.ainvoke(state_update, config=config)
 
 
 async def _reset_conversation(phone: str) -> None:
@@ -741,62 +742,63 @@ async def _handle_attendant_note(payload: dict) -> None:
             # regardless of whether the conversation was in collect_info or not.
             "stage": "patient_agent",
         }
-        # If the thread has no state yet (first contact for this phone), seed from DB
-        snapshot = await graph_module.chatbot.aget_state(config)
-        if not snapshot.values:
-            existing = await get_user_by_phone(p)
-            if existing:
-                doctor_key = DOCTOR_NAMES.get(existing.get("doctor_id", ""), None)
-                state_update.update({
-                    "user_name":    existing.get("name"),
-                    "patient_name": existing.get("patient_name"),
-                    "patient_age":  existing.get("age"),
-                    "birth_date":   existing.get("birth_date"),
-                    "patient_email": existing.get("email"),
-                    "is_patient":   existing.get("is_patient"),
-                    "is_returning_patient": existing.get("is_returning_patient"),
-                    "preferred_doctor": doctor_key,
-                })
+        async with get_phone_lock(p):
+            # If the thread has no state yet (first contact for this phone), seed from DB
+            snapshot = await graph_module.chatbot.aget_state(config)
+            if not snapshot.values:
+                existing = await get_user_by_phone(p)
+                if existing:
+                    doctor_key = DOCTOR_NAMES.get(existing.get("doctor_id", ""), None)
+                    state_update.update({
+                        "user_name":    existing.get("name"),
+                        "patient_name": existing.get("patient_name"),
+                        "patient_age":  existing.get("age"),
+                        "birth_date":   existing.get("birth_date"),
+                        "patient_email": existing.get("email"),
+                        "is_patient":   existing.get("is_patient"),
+                        "is_returning_patient": existing.get("is_returning_patient"),
+                        "preferred_doctor": doctor_key,
+                    })
 
-        # If preferred_doctor is still unknown (not in state_update nor in existing
-        # snapshot), infer from the note text so that attendant instructions like
-        # "agende com Dra. Bruna" work even for patients with no prior conversation.
-        _doctor_in_snapshot = snapshot.values.get("preferred_doctor") if snapshot.values else None
-        if not state_update.get("preferred_doctor") and not _doctor_in_snapshot:
-            text_lower = text.lower()
-            if "bruna" in text_lower:
-                state_update["preferred_doctor"] = "bruna"
-            elif "júlio" in text_lower or "julio" in text_lower:
-                state_update["preferred_doctor"] = "julio"
+            # If preferred_doctor is still unknown (not in state_update nor in existing
+            # snapshot), infer from the note text so that attendant instructions like
+            # "agende com Dra. Bruna" work even for patients with no prior conversation.
+            _doctor_in_snapshot = snapshot.values.get("preferred_doctor") if snapshot.values else None
+            if not state_update.get("preferred_doctor") and not _doctor_in_snapshot:
+                text_lower = text.lower()
+                if "bruna" in text_lower:
+                    state_update["preferred_doctor"] = "bruna"
+                elif "júlio" in text_lower or "julio" in text_lower:
+                    state_update["preferred_doctor"] = "julio"
 
-        try:
-            await graph_module.chatbot.ainvoke(state_update, config=config)
-        except Exception as _exc:
-            logger.exception("ATTENDANT_NOTE ainvoke failed for %s: %s", p, _exc)
-            # If the graph left a dangling tool_call in the checkpoint (AIMessage with
-            # tool_calls but no ToolMessage), inject an error ToolMessage so the
-            # checkpoint is not permanently blocked.
             try:
-                from langchain_core.messages import ToolMessage as _ToolMessage
-                _snap = await graph_module.chatbot.aget_state(config)
-                _msgs = (_snap.values or {}).get("messages", [])
-                if _msgs:
-                    _last = _msgs[-1]
-                    _pending_calls = getattr(_last, "tool_calls", [])
-                    if _pending_calls:
-                        _error_msgs = [
-                            _ToolMessage(
-                                content=f"Erro ao executar ferramenta: {_exc}",
-                                tool_call_id=_tc["id"],
+                await graph_module.chatbot.ainvoke(state_update, config=config)
+            except Exception as _exc:
+                logger.exception("ATTENDANT_NOTE ainvoke failed for %s: %s", p, _exc)
+                # If the graph left a dangling tool_call in the checkpoint (AIMessage with
+                # tool_calls but no ToolMessage), inject an error ToolMessage so the
+                # checkpoint is not permanently blocked.
+                try:
+                    from langchain_core.messages import ToolMessage as _ToolMessage
+                    _snap = await graph_module.chatbot.aget_state(config)
+                    _msgs = (_snap.values or {}).get("messages", [])
+                    if _msgs:
+                        _last = _msgs[-1]
+                        _pending_calls = getattr(_last, "tool_calls", [])
+                        if _pending_calls:
+                            _error_msgs = [
+                                _ToolMessage(
+                                    content=f"Erro ao executar ferramenta: {_exc}",
+                                    tool_call_id=_tc["id"],
+                                )
+                                for _tc in _pending_calls
+                            ]
+                            await graph_module.chatbot.aupdate_state(
+                                config, {"messages": _error_msgs}, as_node="patient_agent"
                             )
-                            for _tc in _pending_calls
-                        ]
-                        await graph_module.chatbot.aupdate_state(
-                            config, {"messages": _error_msgs}, as_node="patient_agent"
-                        )
-                        logger.warning("ATTENDANT_NOTE injected error ToolMessages to unblock checkpoint for %s", p)
-            except Exception as _unblock_exc:
-                logger.exception("ATTENDANT_NOTE failed to unblock checkpoint for %s: %s", p, _unblock_exc)
+                            logger.warning("ATTENDANT_NOTE injected error ToolMessages to unblock checkpoint for %s", p)
+                except Exception as _unblock_exc:
+                    logger.exception("ATTENDANT_NOTE failed to unblock checkpoint for %s: %s", p, _unblock_exc)
 
     instruction = f"[Instrução da atendente]: {content}"
     await buffer_push(phone, instruction, _run_silent)

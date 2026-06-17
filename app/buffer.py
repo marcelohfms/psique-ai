@@ -15,6 +15,15 @@ _RATE_LIMIT_RETRY_SECONDS = float(os.getenv("RATE_LIMIT_RETRY_SECONDS", "65"))
 
 DEBOUNCE_SECONDS = float(os.getenv("DEBOUNCE_SECONDS", "3"))
 
+# Per-phone lock: ensures only one graph.ainvoke() runs at a time per phone.
+# Prevents race conditions when an attendant note and patient reply are processed
+# concurrently (e.g. patient replies while silent-mode ainvoke is still running).
+_phone_locks: dict[str, asyncio.Lock] = defaultdict(asyncio.Lock)
+
+
+def get_phone_lock(phone: str) -> asyncio.Lock:
+    return _phone_locks[phone]
+
 
 @dataclass
 class _Entry:
