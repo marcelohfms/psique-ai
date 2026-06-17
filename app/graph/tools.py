@@ -1471,7 +1471,7 @@ async def register_payment(
     else:
         # No scheduled appointment — try to reactivate the most recent canceled one
         canceled_result = await client.from_("appointments").select(
-            "appointment_id, start_time, end_time, doctor_id"
+            "appointment_id, start_time, end_time, doctor_id, modality"
         ).eq("user_id", user_id).eq("status", "canceled").order("updated_at", desc=True).limit(1).execute()
 
         if canceled_result.data:
@@ -1501,6 +1501,7 @@ async def register_payment(
                     new_event_id = await create_event(
                         calendar_id, slot_start, slot_minutes, patient_name,
                         canceled_doctor_label.replace("Dr. ", "").replace("Dra. ", ""),
+                        modality=canceled_appt.get("modality") or "",
                         patient_email=state.get("patient_email") or "",
                         patient_number=patient_phone,
                     )
