@@ -1397,28 +1397,49 @@ async def register_payment(
     appt_id_to_pay: str | None = None
     appt_already_occurred = False  # True when the consultation has already happened
 
-    # PRIORITY 1: check for a future canceled appointment that can be reactivated.
-    # This must happen BEFORE looking at completed past appointments, otherwise
-    # register_payment finds the completed appointment (already paid), returns
-    # "já estava registrado" and never attempts to reactivate the canceled slot.
+    # Appointment resolution order (critical — must follow this exact priority):
+    #   1. An active SCHEDULED appointment always wins. It is the one awaiting the
+    #      booking fee, so the payment must land on it — never on a canceled slot.
+    #   2. If there is NO scheduled appointment, try to reactivate a future canceled
+    #      one (patient paid after the slot was auto-canceled).
+    #   3. Only then fall back to a completed past appointment (late full payment).
+    # Looking at canceled appointments before scheduled ones caused payments to be
+    # applied to the wrong (canceled) appointment, wrongly auto-canceling the active one.
     now_iso = datetime.now(TZ).isoformat()
-    future_canceled = await client.from_("appointments").select(
-        "appointment_id, start_time, end_time, doctor_id, booking_fee_paid_at, booking_fee_waived"
-    ).eq("user_id", user_id).eq("status", "canceled").eq("booking_fee_waived", False).is_(
-        "booking_fee_paid_at", "null"
-    ).gte("start_time", now_iso).order("start_time").limit(1).execute()
+    lookback_iso = (datetime.now(TZ) - timedelta(days=15)).isoformat()
+    _appt_fields = (
+        "appointment_id, start_time, end_time, doctor_id, paid_at, "
+        "booking_fee_paid_at, status, consultation_type, booking_fee_waived"
+    )
 
-    if future_canceled.data:
-        # Defer to the reactivation branch below by returning no active appointment.
-        appt_result_data = []
+    # PRIORITY 1: active scheduled appointment.
+    scheduled_raw = await client.from_("appointments").select(_appt_fields).eq(
+        "user_id", user_id
+    ).eq("status", "scheduled").gte("start_time", lookback_iso).order(
+        "start_time", desc=True
+    ).limit(1).execute()
+
+    if scheduled_raw.data:
+        appt_result_data = scheduled_raw.data
     else:
-        # Look back up to 15 days to capture completed or recently passed appointments
-        # (patients commonly delay payment by several days after the consultation).
-        lookback_iso = (datetime.now(TZ) - timedelta(days=15)).isoformat()
-        appt_result_raw = await client.from_("appointments").select(
-            "appointment_id, start_time, end_time, doctor_id, paid_at, booking_fee_paid_at, status, consultation_type, booking_fee_waived"
-        ).eq("user_id", user_id).in_("status", ["scheduled", "completed"]).gte("start_time", lookback_iso).order("start_time", desc=True).limit(1).execute()
-        appt_result_data = appt_result_raw.data
+        # PRIORITY 2: future canceled appointment that can be reactivated.
+        future_canceled = await client.from_("appointments").select(
+            "appointment_id, start_time, end_time, doctor_id, booking_fee_paid_at, booking_fee_waived"
+        ).eq("user_id", user_id).eq("status", "canceled").eq("booking_fee_waived", False).is_(
+            "booking_fee_paid_at", "null"
+        ).gte("start_time", now_iso).order("start_time").limit(1).execute()
+
+        if future_canceled.data:
+            # Defer to the reactivation branch below by returning no active appointment.
+            appt_result_data = []
+        else:
+            # PRIORITY 3: completed past appointment (late full payment).
+            completed_raw = await client.from_("appointments").select(_appt_fields).eq(
+                "user_id", user_id
+            ).eq("status", "completed").gte("start_time", lookback_iso).order(
+                "start_time", desc=True
+            ).limit(1).execute()
+            appt_result_data = completed_raw.data
 
     # Wrap in a simple object so the rest of the function works unchanged
     class _ApptResult:

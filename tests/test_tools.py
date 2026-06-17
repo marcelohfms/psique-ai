@@ -660,11 +660,8 @@ def _make_supabase_client_with_appointment():
         # Call 1: appts_with_users (patient resolution — appointment + users join)
         if _side_effect.call_count == 1:
             return appts_with_users
-        # Call 2: future_canceled check → empty (no future canceled appointment)
+        # Call 2: scheduled_raw (PRIORITY 1) → found scheduled appointment to pay
         if _side_effect.call_count == 2:
-            return empty
-        # Call 3: apt_data (full appointment fetch for payment logic)
-        if _side_effect.call_count == 3:
             return apt_data
         return empty
     _side_effect.call_count = 0
@@ -831,14 +828,11 @@ def _make_supabase_client_with_appointment_waived(booking_fee_waived=True, custo
         # Call 1: appts_with_users (patient resolution)
         if _side_effect.call_count == 1:
             return appts_with_users
-        # Call 2: future_canceled check → empty
+        # Call 2: scheduled_raw (PRIORITY 1) → found scheduled appointment
         if _side_effect.call_count == 2:
-            return empty
-        # Call 3: apt_data (full appointment fetch)
-        if _side_effect.call_count == 3:
             return apt_data
-        # Call 4: custom_price_data
-        if _side_effect.call_count == 4:
+        # Call 3: custom_price_data
+        if _side_effect.call_count == 3:
             return custom_price_data
         return empty
     _side_effect.call_count = 0
