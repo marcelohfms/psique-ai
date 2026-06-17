@@ -345,6 +345,53 @@ async def test_collect_info_asks_guardian_cpf_after_guardian_name():
     assert "cpf" in sent.lower()
 
 
+async def test_collect_info_persists_doctor_when_mentioned():
+    """Mentioning a doctor ('agendar com a Dra. Bruna') must persist preferred_doctor immediately."""
+    from app.graph.nodes import collect_info_node
+    from langchain_core.messages import HumanMessage
+    from app.database import DOCTOR_IDS
+
+    state = _base_minor_state(
+        user_name=None,
+        patient_name=None,
+        patient_cpf=None,
+        preferred_doctor=None,
+        messages=[HumanMessage(content="Quero agendar uma consulta com a Dra. Bruna")],
+    )
+    with patch("app.graph.nodes.send_text", new_callable=AsyncMock), \
+         patch("app.graph.nodes.save_message", new_callable=AsyncMock), \
+         patch("app.graph.nodes.get_users_by_phone", new_callable=AsyncMock, return_value=[]), \
+         patch("app.graph.nodes.upsert_user", new_callable=AsyncMock, return_value="user-xyz") as mock_upsert:
+        result = await collect_info_node(state, {})
+
+    assert result.get("preferred_doctor") == "bruna"
+    # doctor_id was persisted to the cadastro
+    mock_upsert.assert_awaited()
+    db_payload = mock_upsert.call_args[0][1]
+    assert db_payload.get("doctor_id") == DOCTOR_IDS["bruna"]
+
+
+async def test_collect_info_does_not_guess_doctor_when_both_mentioned():
+    """If both doctors are mentioned, do not auto-pick one."""
+    from app.graph.nodes import collect_info_node
+    from langchain_core.messages import HumanMessage
+
+    state = _base_minor_state(
+        user_name=None, patient_name=None, patient_cpf=None, preferred_doctor=None,
+        messages=[HumanMessage(content="Quero agendar — qual a diferença entre Dr. Júlio e Dra. Bruna?")],
+    )
+    with patch("app.graph.nodes.send_text", new_callable=AsyncMock), \
+         patch("app.graph.nodes.save_message", new_callable=AsyncMock), \
+         patch("app.graph.nodes.get_users_by_phone", new_callable=AsyncMock, return_value=[]), \
+         patch("app.graph.nodes.upsert_user", new_callable=AsyncMock) as mock_upsert:
+        result = await collect_info_node(state, {})
+
+    assert result.get("preferred_doctor") is None
+    # no doctor_id persisted from ambiguous mention
+    for call in mock_upsert.await_args_list:
+        assert "doctor_id" not in (call[0][1] if len(call[0]) > 1 else {})
+
+
 async def test_collect_info_proceeds_to_is_patient_after_guardian_cpf():
     """After guardian_cpf is collected for a minor, the next step must be is_patient."""
     from app.graph.nodes import collect_info_node

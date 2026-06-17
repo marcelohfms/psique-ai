@@ -268,10 +268,41 @@ async def collect_info_node(state: ConversationState, config: RunnableConfig) ->
     ]
     _has_request = any(kw in _messages_text for kw in _request_keywords)
 
+    # Fields that must be merged into EVERY return of this turn (so a doctor
+    # mentioned mid-conversation is never lost on subsequent early returns).
+    _persistent_updates: dict = {}
+
+    # Detect a doctor preference stated anywhere in the conversation and persist it
+    # IMMEDIATELY to the cadastro — e.g. "quero agendar com a Dra. Bruna".
+    # Only acts when exactly one doctor is mentioned (avoids ambiguity).
+    if not state.get("preferred_doctor"):
+        _mentions_bruna = "bruna" in _messages_text
+        _mentions_julio = "júlio" in _messages_text or "julio" in _messages_text
+        _doc_key = None
+        if _mentions_bruna and not _mentions_julio:
+            _doc_key = "bruna"
+        elif _mentions_julio and not _mentions_bruna:
+            _doc_key = "julio"
+        if _doc_key:
+            state["preferred_doctor"] = _doc_key
+            _persistent_updates["preferred_doctor"] = _doc_key
+            try:
+                returned_id = await upsert_user(
+                    state["phone"],
+                    {"doctor_id": DOCTOR_IDS.get(_doc_key)},
+                    user_id=state.get("user_db_id"),
+                )
+                if returned_id and not state.get("user_db_id"):
+                    state["user_db_id"] = returned_id
+                    _persistent_updates["user_db_id"] = returned_id
+            except Exception:
+                import logging as _log
+                _log.getLogger(__name__).exception("Failed to persist preferred_doctor")
+
     async def _ask(reply: str) -> dict:
         await send_text(state["phone"], reply)
         await save_message(state["phone"], "assistant", reply)
-        return {"messages": [AIMessage(content=reply)]}
+        return {**_persistent_updates, "messages": [AIMessage(content=reply)]}
 
     async def _extract_and_ask(extracted: dict, next_q: str) -> dict:
         """Persist extracted fields to Supabase and ask the next question in one turn."""
@@ -291,7 +322,7 @@ async def collect_info_node(state: ConversationState, config: RunnableConfig) ->
         db_payload = {_STATE_TO_DB[k]: v for k, v in extracted.items() if k in _STATE_TO_DB}
         if "preferred_doctor" in extracted:
             db_payload["doctor_id"] = DOCTOR_IDS.get(extracted["preferred_doctor"])
-        result_update: dict = {**extracted, "messages": [AIMessage(content=next_q)]}
+        result_update: dict = {**_persistent_updates, **extracted, "messages": [AIMessage(content=next_q)]}
         if db_payload:
             try:
                 returned_id = await upsert_user(state["phone"], db_payload, user_id=state.get("user_db_id"))
