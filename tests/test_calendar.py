@@ -284,9 +284,9 @@ def test_format_schedules_no_exceptions_clean():
     """After exceptions have expired, output shows plain regular schedules."""
     from app.google_calendar import format_doctor_schedules
 
-    # July 1 — all existing exceptions (June 1-4 and June 22-24) are outside the 14-day window
+    # July 15 — all existing exceptions (up to 08/07) are outside the 14-day window
     with patch("app.google_calendar.date") as mock_date:
-        mock_date.today.return_value = date(2026, 7, 1)
+        mock_date.today.return_value = date(2026, 7, 15)
         mock_date.fromisoformat = date.fromisoformat
         mock_date.side_effect = lambda *a, **kw: date(*a, **kw)
         text = format_doctor_schedules()
