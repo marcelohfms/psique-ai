@@ -729,6 +729,50 @@ async def test_patient_agent_injects_greeting_on_first_turn():
     assert "Carlos" in system_msg.content
 
 
+async def test_pending_appointment_success_with_internal_prefix():
+    """Regressão: confirm_appointment retorna o código AGENDAMENTO_OK prefixado com
+    '[INSTRUÇÃO INTERNA — NÃO ENVIE AO PACIENTE]'. O handler de pending_appointment
+    deve reconhecê-lo como SUCESSO (mensagem de taxa de reserva), não como erro."""
+    from app.graph.nodes import patient_agent_node
+    from app.graph.tools import confirm_appointment
+
+    state = _make_patient_agent_state(
+        messages=[
+            AIMessage(content="Só confirmar antes de registrar: ..."),
+            HumanMessage(content="pode"),
+        ],
+        pending_appointment={
+            "slot_datetime": "2026-06-25T19:00:00",
+            "slot_duration_minutes": 60,
+            "modality": "presencial",
+        },
+    )
+
+    prefixed_ok = (
+        "[INSTRUÇÃO INTERNA — NÃO ENVIE AO PACIENTE] AGENDAMENTO_OK\n"
+        "Dr. Júlio — quinta-feira, 25/06/2026 às 19:00\nID: abc123"
+    )
+    sent = []
+
+    async def fake_send_text(phone, text):
+        sent.append(text)
+
+    with patch.object(confirm_appointment, "coroutine", new_callable=AsyncMock, return_value=prefixed_ok), \
+         patch("app.whatsapp.send_text", side_effect=fake_send_text), \
+         patch("app.database.save_message", new_callable=AsyncMock), \
+         patch("app.graph.nodes.get_upcoming_appointments", new_callable=AsyncMock, return_value=[]), \
+         patch("app.graph.nodes.get_user_by_phone", new_callable=AsyncMock, return_value={"price_adjustment_notified_at": "2026-01-01"}), \
+         patch("app.graph.nodes.get_last_assistant_message_time", new_callable=AsyncMock, return_value=None):
+        result = await patient_agent_node(state, CONFIG)
+
+    assert sent, "nenhuma mensagem enviada ao paciente"
+    patient_msg = sent[0]
+    assert "Tive um problema" not in patient_msg
+    assert "taxa de reserva" in patient_msg.lower()
+    assert "25/06/2026 às 19:00" in patient_msg
+    assert result.get("pending_appointment") is None
+
+
 async def test_patient_agent_injects_greeting_on_new_day():
     """Prior AI messages exist but last assistant message was on a previous day → greeting injected."""
     from datetime import datetime, timezone, timedelta
