@@ -667,8 +667,13 @@ async def cancel_appointment(
     appointment_id: str,
     state: Annotated[dict, InjectedState],
     config: RunnableConfig,
+    preserve_fee: bool = False,
 ) -> str:
-    """Cancela uma consulta agendada. appointment_id é o Google Calendar event ID."""
+    """Cancela uma consulta agendada. appointment_id é o Google Calendar event ID.
+    preserve_fee=True: libera o slot mas mantém a taxa de reserva para uso em remarcação futura
+    (status → pending_reschedule). Use quando o cancelamento ocorre dentro do prazo permitido
+    e a taxa já foi paga. preserve_fee=False (padrão): cancelamento definitivo (status → canceled).
+    """
     from app.google_calendar import cancel_event
 
     doctor = await _resolve_doctor(state, config)
@@ -678,20 +683,22 @@ async def cancel_appointment(
 
     # Fetch appointment data before canceling for the notification
     client = await get_supabase()
-    appt_result = await client.from_("appointments").select("start_time").eq("appointment_id", appointment_id).maybe_single().execute()
-    old_start_time = appt_result.data.get("start_time") if appt_result.data else None
+    appt_result = await client.from_("appointments").select("start_time, booking_fee_paid_at").eq("appointment_id", appointment_id).maybe_single().execute()
+    old_start_time = (appt_result.data or {}).get("start_time")
+    fee_was_paid = bool((appt_result.data or {}).get("booking_fee_paid_at"))
 
-    # Cancel in Google Calendar
+    # Cancel in Google Calendar (frees the slot in both cases)
     await cancel_event(calendar_id, appointment_id)
 
     # Update status in DB
+    new_status = "pending_reschedule" if (preserve_fee and fee_was_paid) else "canceled"
     await client.from_("appointments").update({
-        "status": "canceled",
+        "status": new_status,
         "updated_at": datetime.now(TZ).isoformat(),
     }).eq("appointment_id", appointment_id).execute()
 
     phone = config["configurable"]["phone"]
-    await log_event("appointment_canceled", phone, {"appointment_id": appointment_id})
+    await log_event("appointment_canceled", phone, {"appointment_id": appointment_id, "preserve_fee": preserve_fee})
 
     doctor_label = {"julio": "Dr. Júlio", "bruna": "Dra. Bruna"}.get(doctor, "médico(a)")
     patient_name = state.get("patient_name") or state.get("user_name") or "Paciente"
@@ -701,16 +708,27 @@ async def cancel_appointment(
     else:
         formatted_old = "horário não disponível"
 
-    await _notify_clinic(
-        f"Agendamento cancelado! ❌\n"
-        f"Paciente: {patient_name}\n"
-        f"Data e horário: {formatted_old}\n"
-        f"Médico(a): {doctor_label}",
-        phone=phone,
-        subject=f"Agendamento cancelado — {patient_name}",
-    )
-
-    return "Consulta cancelada com sucesso. ✅"
+    if new_status == "pending_reschedule":
+        await _notify_clinic(
+            f"Consulta liberada para remarcação 🔄\n"
+            f"Paciente: {patient_name}\n"
+            f"Data e horário liberados: {formatted_old}\n"
+            f"Médico(a): {doctor_label}\n"
+            f"Taxa de reserva preservada para nova data.",
+            phone=phone,
+            subject=f"Consulta liberada para remarcação — {patient_name}",
+        )
+        return "FEE_PRESERVED\nSlot liberado e taxa de reserva preservada para remarcação futura. ✅"
+    else:
+        await _notify_clinic(
+            f"Agendamento cancelado! ❌\n"
+            f"Paciente: {patient_name}\n"
+            f"Data e horário: {formatted_old}\n"
+            f"Médico(a): {doctor_label}",
+            phone=phone,
+            subject=f"Agendamento cancelado — {patient_name}",
+        )
+        return "Consulta cancelada com sucesso. ✅"
 
 
 @tool
