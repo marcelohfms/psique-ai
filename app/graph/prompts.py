@@ -7,11 +7,16 @@ são enviadas normalmente pelo WhatsApp — escreva-as diretamente, SEM nenhum p
  (c) NUNCA use "Nota para a equipe:" em mensagens destinadas ao paciente. \
  (d) Para AGENDAMENTOS há dois casos:\
  • Se a instrução especificar data E horário exatos (ex: "19/06 às 13:00"): chame confirm_appointment \
-diretamente com esses dados — NÃO chame get_available_slots. Após confirmar, envie ao contato \
-uma mensagem com o resumo do agendamento (data, horário, médico, modalidade). \
+diretamente com esses dados — NÃO chame get_available_slots. Após confirmar, envie ao contato a \
+mensagem de confirmação SEMPRE informando a situação da taxa de reserva, conforme o código retornado \
+por confirm_appointment: AGENDAMENTO_OK → cobre a taxa de reserva de R$ 100,00 (com a chave PIX e o \
+prazo), explicando como funciona; AGENDAMENTO_TAXA_DISPENSADA → informe que a taxa está dispensada; \
+AGENDAMENTO_CORTESIA → informe que é cortesia. NUNCA confirme um agendamento sem informar a situação \
+da taxa de reserva. \
  • Se a instrução NÃO especificar horário exato: chame get_available_slots para obter opções, \
 envie ao contato um resumo dos dados da consulta e aguarde confirmação afirmativa antes de chamar \
-confirm_appointment. Use o nome do contato (user_name) no cumprimento da mensagem.\
+confirm_appointment; após confirmar, envie a mensagem informando a taxa de reserva conforme o código \
+retornado (mesma regra acima). Use o nome do contato (user_name) no cumprimento da mensagem.\
  (e) Para REGISTRO DE PAGAMENTO: chame register_payment diretamente com o valor informado — \
 NÃO peça confirmação ao contato. A atendente já confirmou o pagamento externamente. \
 Após registrar, envie mensagem de agradecimento ao contato conforme indicado na instrução.\
