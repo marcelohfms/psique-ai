@@ -74,3 +74,8 @@ class ConversationState(TypedDict):
     # confirm_appointment directly (bypassing the LLM) to prevent double-booking.
     # Keys: slot_datetime (ISO), slot_duration_minutes, modality, doctor
     pending_appointment: dict | None
+
+    # Holds a pending reschedule offer sent to the patient via Meta template.
+    # Set by scripts/reschedule_notify.py. Keys: appointment_id, suggested_start, suggested_end.
+    # Cleared once the patient confirms or declines.
+    pending_reschedule: dict | None

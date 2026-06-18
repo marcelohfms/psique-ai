@@ -144,6 +144,7 @@ async def collect_info_node(state: ConversationState, config: RunnableConfig) ->
                         "patient_cpf": u.get("patient_cpf"),
                         "modality_restriction": u.get("modality_restriction"),
                         "age_exception": u.get("age_exception"),
+                        "pending_reschedule": u.get("pending_reschedule"),
                     }
                     # Only skip collect_info when ALL required fields are present.
                     if is_registration_complete(u):
@@ -188,6 +189,7 @@ async def collect_info_node(state: ConversationState, config: RunnableConfig) ->
                     "patient_cpf": candidate.get("patient_cpf"),
                     "modality_restriction": candidate.get("modality_restriction"),
                     "age_exception": candidate.get("age_exception"),
+                    "pending_reschedule": candidate.get("pending_reschedule"),
                     "stage": "patient_agent",
                     "messages": [],
                 }
@@ -1087,6 +1089,20 @@ async def patient_agent_node(state: ConversationState, config: RunnableConfig) -
                 "não chame get_available_slots nem peça mais informações."
             )
 
+    _pending_reschedule = state.get("pending_reschedule")
+    if _pending_reschedule:
+        system_prompt += (
+            f"\n\nREAGENDAMENTO PENDENTE: A clínica enviou ao paciente uma mensagem sugerindo "
+            f"o horário {_pending_reschedule.get('suggested_start')} como nova data para a consulta "
+            f"(ID do agendamento original: {_pending_reschedule.get('appointment_id')}). "
+            "O paciente acabou de responder. Interprete livremente a intenção:\n"
+            "- Se o paciente confirmar (ex: 'sim', 'pode ser', 'tudo bem', 'combinado'): "
+            "chame reschedule_appointment com appointment_id e new_slot_datetime = suggested_start.\n"
+            "- Se o paciente recusar ou querer outro horário: responda acolhedoramente e entre no fluxo "
+            "normal de escolha de horário. O campo pending_reschedule será limpo automaticamente.\n"
+            "- Se o paciente tiver dúvidas: responda e mantenha o contexto de reagendamento."
+        )
+
     # One-time price adjustment notice injected into the system prompt
     needs_price_notice = False
     now_dt = datetime.now(ZoneInfo("America/Recife"))
@@ -1431,6 +1447,22 @@ async def patient_agent_node(state: ConversationState, config: RunnableConfig) -
         elif state.get("pending_appointment"):
             # LLM replied with something other than a new summary — clear stale pending
             update["pending_appointment"] = None
+
+    # Clear pending_reschedule when the LLM called reschedule_appointment (patient confirmed)
+    # or get_available_slots (patient declined, entering normal scheduling flow).
+    if state.get("pending_reschedule") and response.tool_calls:
+        _tool_names_called = [tc.get("name") for tc in response.tool_calls if tc.get("name")]
+        if "reschedule_appointment" in _tool_names_called or "get_available_slots" in _tool_names_called:
+            update["pending_reschedule"] = None
+            if state.get("user_db_id"):
+                try:
+                    await upsert_user(
+                        state["phone"],
+                        {"pending_reschedule": None},
+                        user_id=state["user_db_id"],
+                    )
+                except Exception:
+                    _logger.exception("Failed to clear pending_reschedule in Supabase")
 
     # If preferred_doctor is missing from state, check whether update_preferred_doctor
     # was just called (state may not reflect it yet because ToolNode only updates messages).
