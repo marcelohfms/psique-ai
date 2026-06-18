@@ -948,8 +948,33 @@ async def patient_agent_node(state: ConversationState, config: RunnableConfig) -
                         f"Esse valor será abatido do total da consulta. Em caso de cancelamento com menos de 24h de antecedência ou ausência sem justificativa, a taxa não é devolvida."
                     )
             elif _result.startswith("[INSTRUÇÃO INTERNA"):
-                # Error from confirm_appointment — relay gently
-                _patient_msg = f"Ops, {_contact_name}! Tive um problema ao confirmar o agendamento. Nossa equipe já foi notificada. 😊"
+                # Before flagging an error, check if patient already has this appointment
+                # scheduled (bypass fired twice — e.g. patient said "Ok" after PIX message).
+                _already_booked = False
+                try:
+                    from app.database import get_supabase as _get_sb
+                    _sb = await _get_sb()
+                    from app.database import get_users_by_phone as _get_users
+                    _users = await _get_users(state["phone"])
+                    _uids = [u["id"] for u in _users]
+                    if _uids:
+                        _slot_dt_check = _pending_appt.get("slot_datetime", "")
+                        _dup_check = await _sb.from_("appointments").select("appointment_id, start_time").in_("user_id", _uids).eq("status", "scheduled").execute()
+                        from datetime import datetime as _dtt
+                        from zoneinfo import ZoneInfo as _ZI
+                        _slot_parsed = _dtt.fromisoformat(_slot_dt_check).astimezone(_ZI("America/Recife")) if _slot_dt_check else None
+                        for _row in (_dup_check.data or []):
+                            _row_dt = _dtt.fromisoformat(_row["start_time"]).astimezone(_ZI("America/Recife"))
+                            if _slot_parsed and abs((_row_dt - _slot_parsed).total_seconds()) < 60:
+                                _already_booked = True
+                                break
+                except Exception:
+                    pass
+                if _already_booked:
+                    _doctor_lbl2 = {"julio": "Dr. Júlio", "bruna": "Dra. Bruna"}.get(_pending_appt.get("doctor", ""), "médico(a)")
+                    _patient_msg = f"Sua consulta já está confirmada com {_doctor_lbl2}! 😊 Qualquer dúvida, estou à disposição."
+                else:
+                    _patient_msg = f"Ops, {_contact_name}! Tive um problema ao confirmar o agendamento. Nossa equipe já foi notificada. 😊"
             else:
                 _patient_msg = _result
 
