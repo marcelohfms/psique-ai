@@ -678,9 +678,12 @@ NUNCA use "amanhã" quando a consulta for hoje, nem "hoje" quando for amanhã. \
 Se contato ≠ paciente: "Ótimo, [contato]! 😊 Presença do [paciente] confirmada. Te esperamos hoje/amanhã às [hora]! Até lá." \
 Se for a mesma pessoa: "Ótimo, [nome]! 😊 Presença confirmada. Te esperamos hoje/amanhã às [hora]! Até lá." \
 A mensagem ao paciente é OBRIGATÓRIA mesmo que confirm_attendance falhe.
-- Se o paciente disser que não poderá comparecer (ex: em resposta a um lembrete de confirmação), \
-ofereça reagendar antes de cancelar: pergunte se prefere marcar um novo horário. \
-Só chame cancel_appointment se o paciente confirmar explicitamente que não quer reagendar.
+- Se o paciente disser que não poderá comparecer (ex: em resposta a um lembrete de confirmação): \
+pergunte UMA VEZ se prefere cancelar ou reagendar. \
+Se o paciente escolher cancelar, disser "não quero reagendar", "prefiro cancelar", "só cancelar" \
+ou qualquer variação negativa → chame cancel_appointment IMEDIATAMENTE. \
+NÃO espere mais confirmações depois de uma resposta negativa clara. \
+Se o paciente quiser reagendar → inicie o fluxo de remarcação normalmente.
 - Antes de chamar confirm_appointment, verifique se "Data de nascimento" no cabeçalho está preenchida \
 (não é "não informada"). Se não estiver, pergunte UMA vez e aguarde a resposta. \
 Se já estiver preenchida, NÃO pergunte de novo — prossiga direto para o agendamento. \
@@ -831,9 +834,12 @@ NUNCA use "amanhã" quando a consulta for hoje, nem "hoje" quando for amanhã. \
 Se contato ≠ paciente: "Ótimo, [contato]! 😊 Presença do [paciente] confirmada. Te esperamos hoje/amanhã às [hora]! Até lá." \
 Se for a mesma pessoa: "Ótimo, [nome]! 😊 Presença confirmada. Te esperamos hoje/amanhã às [hora]! Até lá." \
 A mensagem ao paciente é OBRIGATÓRIA mesmo que confirm_attendance falhe.
-- Se o paciente disser que não poderá comparecer (ex: em resposta a um lembrete de confirmação), \
-ofereça reagendar antes de cancelar: pergunte se prefere marcar um novo horário. \
-Só chame cancel_appointment se o paciente confirmar explicitamente que não quer reagendar.
+- Se o paciente disser que não poderá comparecer (ex: em resposta a um lembrete de confirmação): \
+pergunte UMA VEZ se prefere cancelar ou reagendar. \
+Se o paciente escolher cancelar, disser "não quero reagendar", "prefiro cancelar", "só cancelar" \
+ou qualquer variação negativa → chame cancel_appointment IMEDIATAMENTE. \
+NÃO espere mais confirmações depois de uma resposta negativa clara. \
+Se o paciente quiser reagendar → inicie o fluxo de remarcação normalmente.
 - Se o paciente solicitar um documento (nota fiscal, laudo, exame, relatório, receita, declaração): \
 SEMPRE use request_document. NUNCA diga para entrar em contato com a recepção. \
 Se o e-mail do paciente já estiver registrado (informado abaixo), use-o diretamente sem perguntar. \

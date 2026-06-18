@@ -44,7 +44,7 @@ async def main():
 
     result = await (
         client.from_("appointments")
-        .select("id, appointment_id, end_time, user_id, consultation_type, users(number, patient_name, name)")
+        .select("id, appointment_id, end_time, user_id, consultation_type, confirmed_at, users(number, patient_name, name)")
         .eq("status", "scheduled")
         .is_("pos_consulta_sent_at", "null")
         .lt("end_time", cutoff)
@@ -92,6 +92,17 @@ async def main():
         first_name = patient_name.split()[0] if patient_name else "paciente"
 
         if phone:
+            # Skip pos_consulta if patient never confirmed attendance via WhatsApp.
+            # A null confirmed_at means the patient either cancelled or simply didn't
+            # respond to the day-before reminder — in either case, sending a
+            # post-consultation message is incorrect.
+            if not appt.get("confirmed_at"):
+                print(f"Skipping pos_consulta for {phone} — no confirmed_at (possible no-show or cancellation).")
+                await client.from_("appointments").update({
+                    "pos_consulta_sent_at": now_iso,
+                }).eq("id", appt["id"]).execute()
+                continue
+
             # Skip if patient already has a future/ongoing appointment scheduled
             # Use end_time (not start_time) to also catch appointments that have
             # already started but not yet finished (e.g. split first consultations).
