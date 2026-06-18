@@ -921,16 +921,20 @@ async def patient_agent_node(state: ConversationState, config: RunnableConfig) -
 
             # Convert semantic codes to patient-friendly messages
             _contact_name = (state.get("user_name") or "").split()[0] or "você"
-            if _result.startswith("AGENDAMENTO_OK\n") or _result.startswith("AGENDAMENTO_TAXA_DISPENSADA\n") or _result.startswith("AGENDAMENTO_CORTESIA\n"):
+            # confirm_appointment success codes may be prefixed with the internal-instruction tag.
+            # Strip it before matching, otherwise a successful booking is misread as an error.
+            _INT_PREFIX = "[INSTRUÇÃO INTERNA — NÃO ENVIE AO PACIENTE] "
+            _result_body = _result[len(_INT_PREFIX):] if _result.startswith(_INT_PREFIX) else _result
+            if _result_body.startswith("AGENDAMENTO_OK\n") or _result_body.startswith("AGENDAMENTO_TAXA_DISPENSADA\n") or _result_body.startswith("AGENDAMENTO_CORTESIA\n"):
                 # Extract doctor/date/time line (2nd line)
-                _lines = _result.splitlines()
+                _lines = _result_body.splitlines()
                 _appt_line = _lines[1] if len(_lines) > 1 else ""
-                if _result.startswith("AGENDAMENTO_CORTESIA\n"):
+                if _result_body.startswith("AGENDAMENTO_CORTESIA\n"):
                     _patient_msg = (
                         f"Perfeito, {_contact_name}! 😊 Consulta confirmada:\n{_appt_line}\n\n"
                         f"Como combinado, a taxa de reserva está isenta. Até lá!"
                     )
-                elif _result.startswith("AGENDAMENTO_TAXA_DISPENSADA\n"):
+                elif _result_body.startswith("AGENDAMENTO_TAXA_DISPENSADA\n"):
                     _patient_msg = (
                         f"Perfeito, {_contact_name}! 😊 Consulta confirmada:\n{_appt_line}\n\n"
                         f"A taxa de reserva foi dispensada. Até lá!"
