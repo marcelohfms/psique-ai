@@ -826,7 +826,8 @@ async def patient_agent_node(state: ConversationState, config: RunnableConfig) -
 
     if _user_db_id:
         try:
-            _db = await get_supabase()
+            from app.database import get_supabase as _get_supabase_sync
+            _db = await _get_supabase_sync()
             _db_user = await _db.from_("users").select("name,patient_name,is_patient").eq("id", _user_db_id).maybe_single().execute()
             if _db_user and _db_user.data:
                 _db_name = _db_user.data.get("name")
