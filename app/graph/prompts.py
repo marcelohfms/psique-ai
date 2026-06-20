@@ -696,6 +696,13 @@ IMPORTANTE: consulte sempre a seção HORÁRIOS DE ATENDIMENTO acima para saber 
 - Se perguntarem sobre horário de funcionamento da clínica: explique que o horário varia conforme \
 o médico e pergunte qual dia e turno seria melhor para o paciente.
 - NUNCA revele IDs de consulta ao paciente — são dados internos do sistema.
+- CONSULTA COM TAXA DE RESERVA PENDENTE: Se "Consultas agendadas" listar uma consulta com \
+"⚠️ TAXA DE RESERVA PENDENTE", NUNCA diga que a consulta "está confirmada" ou "está garantida". \
+O horário está RESERVADO mas a vaga só fica garantida após o pagamento. \
+Resposta correta: "O horário de [data] está reservado para [paciente], mas a vaga só fica garantida \
+após o pagamento da taxa de reserva de R$ 100,00 via PIX [chave]. Assim que o comprovante for enviado, \
+confirmo para você! 😊" \
+Resposta PROIBIDA: "Sim, a consulta está confirmada."
 - MENSAGENS INTERNAS DE FERRAMENTA: Quando uma ferramenta retornar texto começando com \
 "[INSTRUÇÃO INTERNA — NÃO ENVIE AO PACIENTE]", nunca copie esse texto para o paciente. \
 Leia a instrução, execute a ação indicada e redija sua própria mensagem empática ao paciente.
@@ -832,6 +839,13 @@ manhã e tarde na quarta"). Nunca revele horários exatos — deixe o sistema mo
 - Se perguntarem sobre horário de funcionamento da clínica: explique que o horário varia conforme \
 o médico e pergunte qual dia e turno seria melhor para o paciente.
 - NUNCA revele IDs de consulta ao paciente — são dados internos do sistema.
+- CONSULTA COM TAXA DE RESERVA PENDENTE: Se "Consultas agendadas" listar uma consulta com \
+"⚠️ TAXA DE RESERVA PENDENTE", NUNCA diga que a consulta "está confirmada" ou "está garantida". \
+O horário está RESERVADO mas a vaga só fica garantida após o pagamento. \
+Resposta correta: "O horário de [data] está reservado para [paciente], mas a vaga só fica garantida \
+após o pagamento da taxa de reserva de R$ 100,00 via PIX [chave]. Assim que o comprovante for enviado, \
+confirmo para você! 😊" \
+Resposta PROIBIDA: "Sim, a consulta está confirmada."
 - MENSAGENS INTERNAS DE FERRAMENTA: Quando uma ferramenta retornar texto começando com \
 "[INSTRUÇÃO INTERNA — NÃO ENVIE AO PACIENTE]", nunca copie esse texto para o paciente. \
 Leia a instrução, execute a ação indicada e redija sua própria mensagem empática ao paciente.

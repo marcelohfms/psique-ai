@@ -237,10 +237,12 @@ async def get_upcoming_appointments(phone: str) -> list[dict]:
     now_iso = now.isoformat()
     cutoff_recent = (now - timedelta(hours=48)).isoformat()
 
+    _appt_fields = "appointment_id, start_time, end_time, status, reschedule_requested_at, booking_fee_paid_at, booking_fee_waived"
+
     # Future + ongoing (end_time has not yet passed)
     future_result = (
         await client.from_("appointments")
-        .select("appointment_id, start_time, end_time, status, reschedule_requested_at")
+        .select(_appt_fields)
         .in_("status", ["scheduled", "pending_reschedule"])
         .eq("user_id", user["id"])
         .gte("end_time", now_iso)
@@ -251,7 +253,7 @@ async def get_upcoming_appointments(phone: str) -> list[dict]:
     # Recently ended but not yet marked as completed (end_time in last 48 h)
     recent_result = (
         await client.from_("appointments")
-        .select("appointment_id, start_time, end_time, status, reschedule_requested_at")
+        .select(_appt_fields)
         .in_("status", ["scheduled", "pending_reschedule"])
         .eq("user_id", user["id"])
         .lt("end_time", now_iso)

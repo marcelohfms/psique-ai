@@ -1161,7 +1161,9 @@ async def patient_agent_node(state: ConversationState, config: RunnableConfig) -
         recent_lines = []
         for apt in upcoming:
             dt = datetime.fromisoformat(apt["start_time"]).astimezone(_TZ)
-            label = f"- {dt.strftime('%d/%m/%Y às %H:%M')} (ID: {apt['appointment_id']})"
+            fee_ok = apt.get("booking_fee_paid_at") or apt.get("booking_fee_waived")
+            fee_tag = "" if fee_ok else " ⚠️ TAXA DE RESERVA PENDENTE"
+            label = f"- {dt.strftime('%d/%m/%Y às %H:%M')} (ID: {apt['appointment_id']}){fee_tag}"
             if apt.get("recently_ended"):
                 recent_lines.append(label)
             else:
