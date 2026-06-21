@@ -135,11 +135,15 @@ async def extract_message(payload: dict) -> tuple[str, str] | None:
 
     if msg_type == "image":
         media_id = msg.get("image", {}).get("id", "")
+        caption = msg.get("image", {}).get("caption", "").strip()
         if not media_id:
-            return None
+            return (phone, caption) if caption else None
         text = await process_media(media_id, "image", phone=phone)
         if not text:
-            return None
+            # Image processing failed — fall back to caption so the message isn't lost
+            return (phone, caption) if caption else None
+        if caption:
+            text = f"{caption}\n{text}"
         return phone, text
 
     if msg_type == "document":
