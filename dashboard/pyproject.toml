@@ -9,4 +9,8 @@ dependencies = [
     "python-dotenv>=1.0.1",
     "supabase>=2.10.0",
     "python-multipart>=0.0.18",
+    "psique-chatbot",
 ]
+
+[tool.uv.sources]
+psique-chatbot = { path = "..", editable = true }
