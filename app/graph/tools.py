@@ -996,6 +996,7 @@ async def request_document(
     """Registra uma solicitação de documento médico para o paciente.
     patient_email: e-mail informado pelo paciente para recebimento do documento.
     medication_note: obrigatório quando document_type='receita' — medicação(ões) solicitada(s).
+    Mapeamento de termos comuns: 'recibo', 'recibo de consulta', 'comprovante de consulta' → use 'nota_fiscal'.
     """
     import logging as _log
     _log.getLogger(__name__).warning("REQUEST_DOC_CALLED type=%s email=%s", document_type, patient_email)
