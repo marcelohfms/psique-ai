@@ -433,6 +433,37 @@ async def confirm_appointment(
 
     # Double-check slot is still free before booking — skipped for encaixe
     if not force_encaixe:
+        # Guard 0: block if patient already has a future scheduled appointment (different slot).
+        # Forces Eva to use mark_reschedule_in_progress → reschedule_appointment instead.
+        try:
+            _supabase = await get_supabase()
+            _phone = config["configurable"]["phone"]
+            _existing_user = await _supabase.from_("users").select("id").eq("number", _phone.replace("@s.whatsapp.net", "")).single().execute()
+            if _existing_user.data:
+                _uid = _existing_user.data["id"]
+                from datetime import timezone as _tz
+                _now_iso = datetime.now(_tz.utc).isoformat()
+                _future_appts = await _supabase.from_("appointments").select("appointment_id, start_time").eq("user_id", _uid).eq("status", "scheduled").gte("start_time", _now_iso).execute()
+                # Filter out the exact same slot (same-slot duplicate is handled by Guard 1 below)
+                _other_appts = [a for a in (_future_appts.data or []) if a["start_time"] != start.isoformat()]
+                if _other_appts:
+                    from zoneinfo import ZoneInfo as _ZI
+                    _TZ = _ZI("America/Recife")
+                    _existing_dates = ", ".join(
+                        datetime.fromisoformat(a["start_time"]).astimezone(_TZ).strftime("%d/%m/%Y às %H:%M")
+                        + f" (ID: {a['appointment_id']})"
+                        for a in _other_appts
+                    )
+                    _logger.warning("confirm_appointment: patient already has scheduled appt(s) — blocking new booking user=%s", _uid)
+                    return (
+                        f"[INSTRUÇÃO INTERNA — NÃO ENVIE AO PACIENTE] "
+                        f"O paciente já tem consulta(s) agendada(s): {_existing_dates}. "
+                        "NÃO crie um novo agendamento. Se o paciente quer mudar de data, "
+                        "use mark_reschedule_in_progress com o ID da consulta existente e depois reschedule_appointment."
+                    )
+        except Exception:
+            pass  # Non-fatal — proceed
+
         # Guard 1: check Supabase for an existing scheduled appointment for this patient
         # at the same time — catches race conditions where two messages trigger confirm_appointment
         # simultaneously before either Calendar event is visible.
@@ -1886,10 +1917,29 @@ _ATTENDANT_HOURS_MSG = (
     "e na *sexta*, das 8h às 12h e das 13h às 17h."
 )
 
+# Datas de recesso da atendente (formato: date(YYYY, MM, DD))
+_ATTENDANT_RECESS_DAYS: list[tuple[int, int, int]] = [
+    (2026, 6, 23),  # Recesso São João
+    (2026, 6, 24),  # Recesso São João
+]
+
+_ATTENDANT_RECESS_MSG: dict[tuple[int, int, int], str] = {
+    (2026, 6, 23): "em *recesso de São João* nos dias 23 e 24/06",
+    (2026, 6, 24): "em *recesso de São João* nos dias 23 e 24/06",
+}
+
+
+def _get_recess_message(now: datetime) -> str | None:
+    """Return a recess message if today is a recess day, otherwise None."""
+    key = (now.year, now.month, now.day)
+    return _ATTENDANT_RECESS_MSG.get(key)
+
 
 def _is_attendant_available() -> bool:
     """Return True if current time (Recife) is within attendant working hours."""
     now = datetime.now(TZ)
+    if (now.year, now.month, now.day) in _ATTENDANT_RECESS_DAYS:
+        return False
     ranges = _ATTENDANT_HOURS.get(now.weekday(), [])
     current_minutes = now.hour * 60 + now.minute
     return any(sh * 60 <= current_minutes < eh * 60 for sh, eh in ranges)
@@ -2092,6 +2142,14 @@ async def transfer_to_human(
     if _is_attendant_available():
         return "👤 Vou transferir você para um de nossos atendentes. Um momento, por favor!"
     else:
+        now = datetime.now(TZ)
+        recess_msg = _get_recess_message(now)
+        if recess_msg:
+            return (
+                f"👤 Vou encaminhar você para um de nossos atendentes, mas nossa equipe está {recess_msg}.\n\n"
+                "Retornaremos na *quarta-feira, 25/06*, no horário normal de atendimento.\n\n"
+                "Assim que voltarmos, sua mensagem será respondida. Pedimos desculpas pelo transtorno! 🙏"
+            )
         return (
             "👤 Vou encaminhar você para um de nossos atendentes, mas no momento estamos *fora do horário de atendimento*.\n\n"
             "Nossa equipe funciona " + _ATTENDANT_HOURS_MSG + "\n\n"
