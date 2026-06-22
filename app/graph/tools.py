@@ -987,7 +987,7 @@ async def reschedule_appointment(
 
 @tool
 async def request_document(
-    document_type: Literal["nota_fiscal", "laudo", "exame", "relatorio", "receita", "declaracao"],
+    document_type: Literal["nota_fiscal", "recibo", "laudo", "exame", "relatorio", "receita", "declaracao"],
     patient_email: str,
     state: Annotated[dict, InjectedState],
     config: RunnableConfig,
@@ -996,7 +996,8 @@ async def request_document(
     """Registra uma solicitação de documento médico para o paciente.
     patient_email: e-mail informado pelo paciente para recebimento do documento.
     medication_note: obrigatório quando document_type='receita' — medicação(ões) solicitada(s).
-    Mapeamento de termos comuns: 'recibo', 'recibo de consulta', 'comprovante de consulta' → use 'nota_fiscal'.
+    Mapeamento de termos: 'recibo saúde' ou 'recibo para plano de saúde' → nota_fiscal.
+    'recibo' simples (de consulta, de pagamento) → recibo.
     """
     import logging as _log
     _log.getLogger(__name__).warning("REQUEST_DOC_CALLED type=%s email=%s", document_type, patient_email)
@@ -1070,7 +1071,7 @@ async def request_document(
         pass
 
     doc_labels = {
-        "nota_fiscal": "Nota Fiscal", "laudo": "Laudo", "exame": "Exame",
+        "nota_fiscal": "Nota Fiscal", "recibo": "Recibo", "laudo": "Laudo", "exame": "Exame",
         "relatorio": "Relatório", "receita": "Receita", "declaracao": "Declaração",
     }
     doc_label = doc_labels.get(document_type, document_type)
