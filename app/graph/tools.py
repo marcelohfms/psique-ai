@@ -1076,9 +1076,13 @@ async def nudge_doctor_document(
     state: Annotated[dict, InjectedState],
     config: RunnableConfig,
 ) -> str:
-    """Notifica o médico por e-mail quando o paciente cobra sobre um documento pendente.
-    Chame quando o paciente perguntar sobre o status de um documento já solicitado
-    (ex: 'alguma novidade?', 'já enviaram?', 'preciso urgente').
+    """Notifica o médico por e-mail quando o paciente cobra sobre um DOCUMENTO pendente
+    (laudo, declaração, atestado, receita) que já foi solicitado anteriormente.
+    Chame SOMENTE quando o paciente perguntar sobre o status de um documento já solicitado
+    (ex: 'alguma novidade sobre o laudo?', 'já enviaram o atestado?', 'preciso urgente do documento').
+    NÃO use para questões clínicas, dúvidas sobre medicação, sintomas ou qualquer outro assunto
+    que não seja um documento físico pendente. Para esses casos, oriente o paciente a entrar em
+    contato diretamente com o médico pelo e-mail ou telefone da clínica.
     patient_message: texto exato ou resumo do que o paciente disse.
     """
     from app.email_sender import send_document_nudge_email
