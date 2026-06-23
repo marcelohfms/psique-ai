@@ -22,10 +22,7 @@ CREATE TABLE patients (
     age                         INT,
     doctor_id                   UUID        REFERENCES doctors(doctor_id),
     is_returning_patient        BOOL,
-    patient_cpf                 TEXT,  -- CPF do próprio paciente
-    guardian_name               TEXT,  -- responsável (menores)
-    guardian_cpf                TEXT,  -- responsável (menores)
-    guardian_relationship       TEXT,  -- relação do responsável (menores)
+    patient_cpf                 TEXT,  -- CPF do próprio paciente (documento do paciente)
     consultation_reason         TEXT,
     referral_professional       TEXT,
     modality_restriction        TEXT,
@@ -46,6 +43,7 @@ CREATE TABLE contacts (
     id                              UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
     phone                           TEXT        UNIQUE NOT NULL,
     name                            TEXT,
+    cpf                             TEXT,        -- CPF da pessoa (paciente quando is_self, ou responsável)
     active                          BOOL        DEFAULT TRUE,
     manual_hold                     BOOL        DEFAULT FALSE,
     deactivated_at                  TIMESTAMPTZ,
@@ -63,6 +61,7 @@ CREATE TABLE patient_contacts (
     contact_id  UUID        NOT NULL REFERENCES contacts(id) ON DELETE CASCADE,
     role        TEXT        NOT NULL CHECK (role IN ('agendamento', 'financeiro', 'consulta')),
     is_self     BOOL        NOT NULL DEFAULT FALSE,
+    relationship TEXT,       -- relação do contato com o paciente: 'self', 'mãe', 'pai', 'tutor', etc.
     created_at  TIMESTAMPTZ DEFAULT now()
 );
 
@@ -73,8 +72,15 @@ CREATE INDEX idx_pc_patient_role  ON patient_contacts(patient_id, role);
 **Semântica:**
 - Um contato pode ter múltiplos roles para o mesmo paciente (uma linha por role)
 - Um contato pode estar vinculado a múltiplos pacientes
-- `is_self = TRUE` indica que o contato é o próprio paciente (não um responsável)
+- `is_self = TRUE` indica que o contato é o próprio paciente (não um responsável); nesse caso `relationship = 'self'`
+- `relationship` descreve a relação do contato responsável com o paciente (mãe, pai, tutor...). É uma propriedade da relação, não do paciente — por isso pai e mãe podem coexistir, cada um com sua relação
 - Múltiplos contatos podem ter o mesmo role para o mesmo paciente (ex: pai e mãe ambos com `agendamento`)
+
+**Modelagem do responsável (guardião de menores):** O responsável de um paciente menor **é um contato** (linha em `contacts` com nome + `cpf`), vinculado via `patient_contacts` com `is_self = FALSE` e `relationship` preenchido. Não há colunas `guardian_*` em `patients` — isso permite múltiplos responsáveis (pai E mãe) sem duplicar dados. O CPF do responsável fica em `contacts.cpf`; o CPF do próprio paciente fica em `patients.patient_cpf`.
+
+**Regra para menores:** um paciente com idade < 18 deve ter **ao menos um** `patient_contact` com `is_self = FALSE` (um responsável). Validado no fluxo de cadastro (equivalente ao antigo `guardian_name`/`guardian_cpf` obrigatórios em `is_registration_complete`).
+
+**Distinção responsável vs. financeiro fiscal:** O responsável (guardião) é sempre um contato. Já o responsável financeiro *fiscal* (`patients.financial_name/cpf/email`) pode ser uma entidade puramente fiscal sem WhatsApp — por isso fica como dado plano em `patients`, não como contato.
 
 ### `appointments` — agendamentos
 
