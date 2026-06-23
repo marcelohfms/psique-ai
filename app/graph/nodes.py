@@ -86,13 +86,13 @@ async def collect_info_node(state: ConversationState, config: RunnableConfig) ->
                 _user_ids = [u["id"] for u in all_users]
                 _appt_result = await (
                     _client.from_("appointments")
-                    .select("user_id")
-                    .in_("user_id", _user_ids)
+                    .select("patient_id")
+                    .in_("patient_id", _user_ids)
                     .eq("status", "scheduled")
                     .gte("start_time", _now)
                     .execute()
                 )
-                _scheduled_user_ids = {r["user_id"] for r in (_appt_result.data or [])}
+                _scheduled_user_ids = {r["patient_id"] for r in (_appt_result.data or [])}
                 _with_appt = [u for u in all_users if u["id"] in _scheduled_user_ids]
                 if len(_with_appt) == 1:
                     # Only one patient has a scheduled appointment — auto-select
@@ -960,7 +960,7 @@ async def patient_agent_node(state: ConversationState, config: RunnableConfig) -
                     _uids = [u["id"] for u in _users]
                     if _uids:
                         _slot_dt_check = _pending_appt.get("slot_datetime", "")
-                        _dup_check = await _sb.from_("appointments").select("appointment_id, start_time").in_("user_id", _uids).eq("status", "scheduled").execute()
+                        _dup_check = await _sb.from_("appointments").select("appointment_id, start_time").in_("patient_id", _uids).eq("status", "scheduled").execute()
                         from datetime import datetime as _dtt
                         from zoneinfo import ZoneInfo as _ZI
                         _slot_parsed = _dtt.fromisoformat(_slot_dt_check).astimezone(_ZI("America/Recife")) if _slot_dt_check else None

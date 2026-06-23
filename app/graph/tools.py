@@ -440,12 +440,12 @@ async def confirm_appointment(
         try:
             _supabase = await get_supabase()
             _phone = config["configurable"]["phone"]
-            _existing_user = await _supabase.from_("users").select("id").eq("number", _phone.replace("@s.whatsapp.net", "")).single().execute()
-            if _existing_user.data:
-                _uid = _existing_user.data["id"]
+            _pids = [u["id"] for u in await get_users_by_phone(_phone)]
+            if _pids:
+                _uid = ",".join(_pids)  # apenas para log
                 from datetime import timezone as _tz
                 _now_iso = datetime.now(_tz.utc).isoformat()
-                _future_appts = await _supabase.from_("appointments").select("appointment_id, start_time").eq("user_id", _uid).eq("status", "scheduled").gte("start_time", _now_iso).execute()
+                _future_appts = await _supabase.from_("appointments").select("appointment_id, start_time").in_("patient_id", _pids).eq("status", "scheduled").gte("start_time", _now_iso).execute()
                 # Filter out the exact same slot (same-slot duplicate is handled by Guard 1 below)
                 _other_appts = [a for a in (_future_appts.data or []) if a["start_time"] != start.isoformat()]
                 if _other_appts:
@@ -472,11 +472,11 @@ async def confirm_appointment(
         try:
             _supabase = await get_supabase()
             _phone = config["configurable"]["phone"]
-            _existing_user = await _supabase.from_("users").select("id").eq("number", _phone.replace("@s.whatsapp.net", "")).single().execute()
-            if _existing_user.data:
-                _uid = _existing_user.data["id"]
+            _pids = [u["id"] for u in await get_users_by_phone(_phone)]
+            if _pids:
+                _uid = ",".join(_pids)  # apenas para log
                 _slot_end_check = start + timedelta(minutes=slot_duration_minutes)
-                _dup = await _supabase.from_("appointments").select("appointment_id").eq("user_id", _uid).eq("status", "scheduled").eq("start_time", start.isoformat()).execute()
+                _dup = await _supabase.from_("appointments").select("appointment_id").in_("patient_id", _pids).eq("status", "scheduled").eq("start_time", start.isoformat()).execute()
                 if _dup.data:
                     _logger.warning("confirm_appointment: duplicate guard fired for user=%s slot=%s", _uid, start.isoformat())
                     return (
@@ -599,7 +599,7 @@ async def confirm_appointment(
             try:
                 prior = await client.from_("appointments") \
                     .select("id") \
-                    .eq("user_id", user["id"]) \
+                    .eq("patient_id", user["id"]) \
                     .eq("status", "completed") \
                     .limit(1) \
                     .execute()
@@ -612,7 +612,8 @@ async def confirm_appointment(
     _bfp_at = datetime.now(TZ).isoformat() if _bfw else None
     try:
         await client.from_("appointments").insert({
-            "user_id": user["id"] if user else None,
+            "patient_id": user["id"] if user else None,
+            "contact_id": user.get("_contact_id") if user else None,
             "doctor_id": DOCTOR_IDS.get(doctor),
             "appointment_id": event_id,
             "start_time": start.isoformat(),
@@ -766,10 +767,10 @@ async def mark_reschedule_in_progress(
     # Valida que o appointment pertence a este paciente
     users = await get_users_by_phone(phone)
     user_ids = [u["id"] for u in users]
-    appt = await client.from_("appointments").select("appointment_id, status, user_id") \
+    appt = await client.from_("appointments").select("appointment_id, status, patient_id") \
         .eq("appointment_id", appointment_id).maybe_single().execute()
 
-    if not appt.data or appt.data.get("user_id") not in user_ids:
+    if not appt.data or appt.data.get("patient_id") not in user_ids:
         return "ID de agendamento inválido para este paciente."
 
     if appt.data.get("status") not in ("scheduled", "pending_reschedule"):
@@ -840,22 +841,22 @@ async def reschedule_appointment(
     # not the actual patient — e.g. when the phone has multiple patients like parent + child).
     client = await get_supabase()
     phone = config["configurable"]["phone"]
-    appt_result = await client.from_("appointments").select("start_time, users(id, patient_name, name, number)").eq("appointment_id", appointment_id).maybe_single().execute()
+    appt_result = await client.from_("appointments").select("start_time, patient_id, patients(name)").eq("appointment_id", appointment_id).maybe_single().execute()
 
     # Validate that this appointment actually belongs to this phone number
+    _phone_clean = phone.replace("@s.whatsapp.net", "")
+    _phone_pids = [u["id"] for u in await get_users_by_phone(_phone_clean)]
     if appt_result.data:
-        _appt_user = appt_result.data.get("users") or {}
-        _appt_user_number = (_appt_user.get("number") or "").replace("@s.whatsapp.net", "")
-        _phone_clean = phone.replace("@s.whatsapp.net", "")
-        if _appt_user.get("id") is None or _appt_user_number not in _phone_variants(_phone_clean):
+        _appt_patient_id = appt_result.data.get("patient_id")
+        if _appt_patient_id is None or _appt_patient_id not in _phone_pids:
             logger.error(
-                "RESCHEDULE_VALIDATION FAILED: appointment %s does not belong to phone %s (belongs to %s)",
-                appointment_id, _phone_clean, _appt_user_number or "unknown",
+                "RESCHEDULE_VALIDATION FAILED: appointment %s does not belong to phone %s (patient %s)",
+                appointment_id, _phone_clean, _appt_patient_id or "unknown",
             )
             # Fetch the correct appointment_id for this phone to help the LLM recover
             _correct = await client.from_("appointments").select(
                 "appointment_id, start_time"
-            ).in_("user_id", [u["id"] for u in await get_users_by_phone(_phone_clean)]).eq(
+            ).in_("patient_id", _phone_pids).eq(
                 "status", "scheduled"
             ).order("start_time").limit(1).execute()
             if _correct.data:
@@ -870,8 +871,8 @@ async def reschedule_appointment(
 
     old_start_time = appt_result.data.get("start_time") if appt_result.data else None
     if appt_result.data:
-        _appt_user = appt_result.data.get("users") or {}
-        patient_name = _appt_user.get("patient_name") or _appt_user.get("name") or state.get("patient_name") or state.get("user_name") or "Paciente"
+        _appt_patient = appt_result.data.get("patients") or {}
+        patient_name = _appt_patient.get("name") or state.get("patient_name") or state.get("user_name") or "Paciente"
     else:
         patient_name = state.get("patient_name") or state.get("user_name") or "Paciente"
 
@@ -1173,6 +1174,21 @@ async def confirm_attendance(
     (ex: em resposta a um lembrete). Não chame se o paciente não confirmou explicitamente.
     """
     client = await get_supabase()
+
+    # Idempotência: primeiro contato a confirmar vence. Quando vários responsáveis
+    # (ex.: pai e mãe) recebem o lembrete, o segundo a confirmar não regrava nem
+    # loga de novo — apenas recebe a mesma resposta amigável.
+    existing = (
+        await client.from_("appointments")
+        .select("confirmed_at")
+        .eq("appointment_id", appointment_id)
+        .limit(1)
+        .execute()
+    )
+    rows = existing.data or []
+    if rows and rows[0].get("confirmed_at"):
+        return "Presença confirmada! ✅"
+
     await client.from_("appointments").update({
         "confirmed_at": datetime.now(TZ).isoformat(),
     }).eq("appointment_id", appointment_id).execute()
@@ -1285,11 +1301,11 @@ async def register_payment(
     doctor_key = state.get("preferred_doctor", "")
 
     if patient_name_override.strip():
-        # Third-party sender: search user by patient_name
+        # Third-party sender: search patient by name
         search_name = patient_name_override.strip()
-        user_result = await client.from_("users").select(
-            "id, number, patient_name, name, doctor_id"
-        ).ilike("patient_name", f"%{search_name}%").limit(5).execute()
+        user_result = await client.from_("patients").select(
+            "id, name, doctor_id"
+        ).ilike("name", f"%{search_name}%").limit(5).execute()
 
         if not user_result.data:
             return (
@@ -1298,9 +1314,17 @@ async def register_payment(
             )
 
         matched = user_result.data[0]
-        patient_name = matched.get("patient_name") or matched.get("name", "Paciente")
-        patient_phone = matched["number"] + "@s.whatsapp.net"
+        patient_name = matched.get("name", "Paciente")
         user_id = matched["id"]
+        # Telefone do paciente vem dos contatos (consulta, ou agendamento como fallback).
+        from app.patients import get_contacts_for_patient as _gcfp
+        _pcontacts = await _gcfp(user_id, "consulta") or await _gcfp(user_id, "agendamento")
+        if not _pcontacts:
+            return (
+                f"Encontrei o paciente '{patient_name}', mas não há contato cadastrado para ele. "
+                "Pode confirmar o número de contato?"
+            )
+        patient_phone = _pcontacts[0]["phone"] + "@s.whatsapp.net"
         doctor_key = DOCTOR_NAMES.get(matched.get("doctor_id", ""), "")
         is_third_party = True
     else:
@@ -1323,17 +1347,17 @@ async def register_payment(
         _appt_lookback = (datetime.now(TZ) - timedelta(days=15)).isoformat()
 
         appts_result = await client.from_("appointments").select(
-            "appointment_id, start_time, doctor_id, status, users(id, patient_name, name)"
-        ).in_("user_id", user_ids).in_(
+            "appointment_id, start_time, doctor_id, status, patients(id, name)"
+        ).in_("patient_id", user_ids).in_(
             "status", ["scheduled", "completed"]
         ).gte("start_time", _appt_lookback).order("start_time", desc=True).execute()
 
         active_appts = appts_result.data or []
 
-        # Deduplicate by user (keep only most-recent appointment per patient)
+        # Deduplicate by patient (keep only most-recent appointment per patient)
         seen_users: dict[str, dict] = {}
         for a in active_appts:
-            u = a.get("users") or {}
+            u = a.get("patients") or {}
             uid = u.get("id")
             if uid and uid not in seen_users:
                 seen_users[uid] = a
@@ -1342,15 +1366,15 @@ async def register_payment(
             # ── Caso 1: consulta cancelada recente com data futura e taxa pendente ──
             now_iso = datetime.now(TZ).isoformat()
             canceled_result = await client.from_("appointments").select(
-                "appointment_id, start_time, doctor_id, status, users(id, patient_name, name, birth_date)"
-            ).in_("user_id", user_ids).eq("status", "canceled").is_(
+                "appointment_id, start_time, doctor_id, status, patients(id, name, birth_date)"
+            ).in_("patient_id", user_ids).eq("status", "canceled").is_(
                 "booking_fee_paid_at", "null"
             ).gt("start_time", now_iso).order("updated_at", desc=True).limit(3).execute()
 
             if canceled_result.data:
                 a = canceled_result.data[0]
-                u = a.get("users") or {}
-                _pname = u.get("patient_name") or u.get("name", "Paciente")
+                u = a.get("patients") or {}
+                _pname = u.get("name", "Paciente")
                 _dt = datetime.fromisoformat(a["start_time"]).astimezone(TZ).strftime("%d/%m/%Y às %H:%M")
                 _doc = {"d5baa58b-a788-4f40-b8c0-512c189150be": "Dr. Júlio", "18b01f87-eacd-4905-bd4a-a8293991e6fd": "Dra. Bruna"}.get(a.get("doctor_id", ""), "médico(a)")
 
@@ -1396,10 +1420,14 @@ async def register_payment(
                     _query = _query.eq("birth_date", _bdate)
                 _others = (await _query.neq("number", phone.replace("@s.whatsapp.net", "")).execute()).data or []
                 for _o in _others:
+                    # Obsoleto no novo modelo: o mesmo paciente em vários números é
+                    # um único patient_id (vários patient_contacts). Esta busca em
+                    # `users` devolve ids legados que não casam com appointments.patient_id,
+                    # então o ramo é efetivamente um no-op seguro (mantido por cautela).
                     _o_uid = _o["id"]
                     _o_appt = await client.from_("appointments").select(
                         "appointment_id, start_time, status, doctor_id"
-                    ).eq("user_id", _o_uid).in_("status", ["scheduled", "canceled"]).order("start_time", desc=True).limit(1).execute()
+                    ).eq("patient_id", _o_uid).in_("status", ["scheduled", "canceled"]).order("start_time", desc=True).limit(1).execute()
                     if _o_appt.data:
                         _oa = _o_appt.data[0]
                         _odt = datetime.fromisoformat(_oa["start_time"]).astimezone(TZ).strftime("%d/%m/%Y às %H:%M")
@@ -1418,15 +1446,14 @@ async def register_payment(
 
         if len(seen_users) > 1:
             names = ", ".join(
-                (a.get("users") or {}).get("patient_name")
-                or (a.get("users") or {}).get("name", "Paciente")
+                (a.get("patients") or {}).get("name", "Paciente")
                 for a in seen_users.values()
             )
             return f"Encontrei mais de um paciente com consulta agendada neste número: {names}. Para qual deles é o comprovante?"
 
         appt_ref = next(iter(seen_users.values()))
-        appt_user = appt_ref.get("users") or {}
-        patient_name = appt_user.get("patient_name") or appt_user.get("name", "Paciente")
+        appt_user = appt_ref.get("patients") or {}
+        patient_name = appt_user.get("name", "Paciente")
         user_id = appt_user.get("id")
         # doctor_key from appointment row (will be overridden again below once full appt is fetched)
         doctor_key = DOCTOR_NAMES.get(appt_ref.get("doctor_id", ""), "")
@@ -1456,7 +1483,7 @@ async def register_payment(
 
     # PRIORITY 1: active scheduled appointment.
     scheduled_raw = await client.from_("appointments").select(_appt_fields).eq(
-        "user_id", user_id
+        "patient_id", user_id
     ).eq("status", "scheduled").gte("start_time", lookback_iso).order(
         "start_time", desc=True
     ).limit(1).execute()
@@ -1467,7 +1494,7 @@ async def register_payment(
         # PRIORITY 2: future canceled appointment that can be reactivated.
         future_canceled = await client.from_("appointments").select(
             "appointment_id, start_time, end_time, doctor_id, booking_fee_paid_at, booking_fee_waived"
-        ).eq("user_id", user_id).eq("status", "canceled").eq("booking_fee_waived", False).is_(
+        ).eq("patient_id", user_id).eq("status", "canceled").eq("booking_fee_waived", False).is_(
             "booking_fee_paid_at", "null"
         ).gte("start_time", now_iso).order("start_time").limit(1).execute()
 
@@ -1477,7 +1504,7 @@ async def register_payment(
         else:
             # PRIORITY 3: completed past appointment (late full payment).
             completed_raw = await client.from_("appointments").select(_appt_fields).eq(
-                "user_id", user_id
+                "patient_id", user_id
             ).eq("status", "completed").gte("start_time", lookback_iso).order(
                 "start_time", desc=True
             ).limit(1).execute()
@@ -1519,7 +1546,7 @@ async def register_payment(
         if appt_result.data[0].get("consultation_type") == "primeira_consulta":
             linked_res = await client.from_("appointments").select(
                 "appointment_id, start_time"
-            ).eq("user_id", user_id).eq("consultation_type", "primeira_consulta").in_(
+            ).eq("patient_id", user_id).eq("consultation_type", "primeira_consulta").in_(
                 "status", ["scheduled", "completed"]
             ).execute()
             linked_appt_ids = [a["appointment_id"] for a in (linked_res.data or [])]
@@ -1535,7 +1562,7 @@ async def register_payment(
         # No scheduled appointment — try to reactivate the most recent canceled one
         canceled_result = await client.from_("appointments").select(
             "appointment_id, start_time, end_time, doctor_id, modality"
-        ).eq("user_id", user_id).eq("status", "canceled").order("updated_at", desc=True).limit(1).execute()
+        ).eq("patient_id", user_id).eq("status", "canceled").order("updated_at", desc=True).limit(1).execute()
 
         if canceled_result.data:
             canceled_appt = canceled_result.data[0]
@@ -1661,11 +1688,11 @@ async def register_payment(
         appt_result.data[0].get("booking_fee_waived", False)
     ) if appt_result and appt_result.data else False
 
-    # custom_price from user record (overrides standard formula in _expected_consultation_amount)
+    # custom_price from patient record (overrides standard formula in _expected_consultation_amount)
     custom_price: int | None = None
     if user_id:
         try:
-            _user_cp = await client.from_("users").select("custom_price").eq(
+            _user_cp = await client.from_("patients").select("custom_price").eq(
                 "id", user_id
             ).maybe_single().execute()
             custom_price = (_user_cp.data or {}).get("custom_price")

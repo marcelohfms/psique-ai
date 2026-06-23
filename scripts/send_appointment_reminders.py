@@ -20,6 +20,9 @@ from zoneinfo import ZoneInfo
 from dotenv import load_dotenv
 load_dotenv()
 
+import app.database  # noqa: F401 — carrega database antes de patients (evita import circular)
+from app.patients import get_contacts_for_patient
+
 TZ = ZoneInfo("America/Recife")
 
 DOCTOR_LABELS = {
@@ -96,8 +99,8 @@ async def save_to_checkpoint(graph, phone: str, message: str, appt: dict) -> Non
     thread_phone = f"{phone}@s.whatsapp.net"
     config = {"configurable": {"thread_id": thread_phone, "phone": thread_phone}}
 
-    user = appt.get("users") or {}
-    patient_name = user.get("patient_name") or user.get("name") or "paciente"
+    patient = appt.get("patients") or appt.get("users") or {}
+    patient_name = patient.get("name") or patient.get("patient_name") or "paciente"
     doctor_key = DOCTOR_KEYS.get(appt.get("doctor_id", ""), "")
 
     # Sempre garante que stage e campos do usuário estão corretos no checkpoint,
@@ -123,6 +126,56 @@ async def save_to_checkpoint(graph, phone: str, message: str, appt: dict) -> Non
     await save_message(thread_phone, "assistant", message)
 
 
+async def _send_reminder_to_contacts(client, appt, template_name, sent_col, now, graph):
+    """Envia o lembrete para TODOS os contatos com role 'agendamento' do paciente.
+
+    Marca `sent_col` UMA vez por agendamento, somente se ao menos um envio teve
+    sucesso (retries do cron permanecem seguros). Retorna a lista de telefones
+    para os quais o lembrete foi enviado com sucesso.
+    """
+    appointment_id = appt["appointment_id"]
+    start_dt = datetime.fromisoformat(appt["start_time"]).astimezone(TZ)
+    time_str = start_dt.strftime("%H:%M")
+    modality = appt.get("modality") or ""
+    patient = appt.get("patients") or appt.get("users") or {}
+    patient_name = patient.get("name") or patient.get("patient_name") or "paciente"
+    first_name = patient_name.split()[0] if patient_name else "paciente"
+    doctor_label = DOCTOR_LABELS.get(appt.get("doctor_id", ""), "médico(a)")
+    patient_id = appt.get("patient_id")
+
+    contacts = await get_contacts_for_patient(patient_id, "agendamento") if patient_id else []
+    if not contacts:
+        print(f"  [SKIP] appt {appointment_id} sem contato de agendamento (patient_id={patient_id})")
+        return []
+
+    # Use online-specific template name for online appointments
+    effective_template = template_name
+    if modality == "online":
+        effective_template = template_name.replace("lembrete_dia_consulta", "lembrete_dia_consulta_online")
+
+    sent_phones = []
+    for contact in contacts:
+        phone = contact.get("phone")
+        if not phone:
+            continue
+        try:
+            await send_reminder_template(phone, effective_template, first_name, doctor_label, time_str)
+            message = _plain_message(effective_template, first_name, doctor_label, time_str, modality)
+            if graph:
+                await save_to_checkpoint(graph, phone, message, appt)
+            print(f"  [{effective_template}] Sent to {phone} — {patient_name} @ {time_str} [{modality or 'sem modalidade'}]")
+            sent_phones.append(phone)
+        except Exception as e:
+            print(f"  Failed to send to {phone}: {e}")
+
+    # Marca sent_col uma vez por agendamento (se ao menos um envio funcionou).
+    if sent_phones:
+        await client.from_("appointments").update({
+            sent_col: now.isoformat(),
+        }).eq("appointment_id", appointment_id).execute()
+    return sent_phones
+
+
 async def main():
     from supabase import acreate_client
 
@@ -145,7 +198,7 @@ async def main():
         booked_before = (now - timedelta(hours=12)).isoformat()
         result = await (
             client.from_("appointments")
-            .select("appointment_id, start_time, doctor_id, modality, users(number, patient_name, name)")
+            .select("appointment_id, start_time, doctor_id, modality, patient_id, patients(name)")
             .eq("status", "scheduled")
             .is_("reminder_day_before_sent_at", "null")
             .gte("start_time", f"{tomorrow_start}T00:00:00")
@@ -211,36 +264,9 @@ async def main():
         ]
 
         for appt, template_name, sent_col in batch:
-            appointment_id = appt["appointment_id"]
-            start_dt = datetime.fromisoformat(appt["start_time"]).astimezone(TZ)
-            time_str = start_dt.strftime("%H:%M")
-            modality = appt.get("modality") or ""
-
-            user = appt.get("users") or {}
-            phone = user.get("number", "")
-            patient_name = user.get("patient_name") or user.get("name") or "paciente"
-            first_name = patient_name.split()[0] if patient_name else "paciente"
-            doctor_label = DOCTOR_LABELS.get(appt.get("doctor_id", ""), "médico(a)")
-
-            if not phone:
-                continue
-
-            # Use online-specific template name for online appointments
-            effective_template = template_name
-            if modality == "online":
-                effective_template = template_name.replace("lembrete_dia_consulta", "lembrete_dia_consulta_online")
-
-            try:
-                await send_reminder_template(phone, effective_template, first_name, doctor_label, time_str)
-                await client.from_("appointments").update({
-                    sent_col: now.isoformat(),
-                }).eq("appointment_id", appointment_id).execute()
-                message = _plain_message(effective_template, first_name, doctor_label, time_str, modality)
-                if graph:
-                    await save_to_checkpoint(graph, phone, message, appt)
-                print(f"  [{effective_template}] Sent to {phone} — {patient_name} @ {time_str} [{modality or 'sem modalidade'}]")
-            except Exception as e:
-                print(f"  Failed to send to {phone}: {e}")
+            # Envia para TODOS os contatos com role 'agendamento' do paciente
+            # (ex.: pai e mãe). Marca sent_col uma vez por agendamento.
+            await _send_reminder_to_contacts(client, appt, template_name, sent_col, now, graph)
     finally:
         if pg_conn:
             await pg_conn.close()
