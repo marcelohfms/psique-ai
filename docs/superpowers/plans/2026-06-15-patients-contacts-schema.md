@@ -1039,6 +1039,8 @@ git commit -m "refactor: upsert_user como shim roteando para patients/contacts"
 
 ## Phase 5 — Comportamento novo de roles
 
+> **⚠️ REVISÃO NECESSÁRIA (descoberta na implementação, 2026-06-23):** A Task 11 abaixo assume que o lembrete é disparado de `app/graph/tools.py`. Na verdade os lembretes são enviados pelo **cron** `scripts/send_appointment_reminders.py`, que hoje faz `join` com `users(number, patient_name, name)` e envia para um único `user.number`. A mudança "enviar para todos os contatos com role `agendamento`" deve ser feita NESSE script: trocar o join por `get_contacts_for_patient(patient_id, 'agendamento')` (de `app.patients`), iterando o envio por contato e mantendo a marcação `reminder_*_sent_at` uma vez por appointment. Pré-requisito: a migration aplicada e o backfill rodado no banco real (appointments precisam carregar `patient_id`). As Tasks 12-13 (confirmação idempotente, desambiguação) seguem válidas como escritas. Esta fase ficou PAUSADA aguardando os passos manuais de banco.
+
 ### Task 11: Lembretes/confirmações para todos os contatos com role `agendamento`
 
 O disparo de lembretes hoje envia para um único número. Localize a função de lembrete e troque o destinatário único por iteração sobre `get_contacts_for_patient(patient_id, 'agendamento')`.
