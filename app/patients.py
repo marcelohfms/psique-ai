@@ -58,3 +58,26 @@ async def get_patients_by_contact(contact_id: str, role: str | None = None) -> l
             seen.add(patient["id"])
             out.append(patient)
     return out
+
+
+async def get_contacts_for_patient(patient_id: str, role: str) -> list[dict]:
+    """Retorna os contatos ATIVOS com o papel `role` para um paciente.
+
+    Usado para disparar lembretes/confirmações a todos os responsáveis.
+    """
+    client = await get_supabase()
+    result = (
+        await client.from_("patient_contacts")
+        .select("contact_id, contacts(*)")
+        .eq("patient_id", patient_id)
+        .eq("role", role)
+        .execute()
+    )
+    seen: set[str] = set()
+    out: list[dict] = []
+    for row in (result.data or []):
+        contact = row.get("contacts")
+        if contact and contact.get("active") and contact["id"] not in seen:
+            seen.add(contact["id"])
+            out.append(contact)
+    return out

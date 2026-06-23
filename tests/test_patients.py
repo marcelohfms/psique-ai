@@ -60,3 +60,27 @@ async def test_get_patients_by_contact_without_role_returns_all():
     with patch("app.patients.get_supabase", new_callable=AsyncMock, return_value=client):
         result = await patients.get_patients_by_contact("c1")
     assert {p["id"] for p in result} == {"p1", "p2"}
+
+
+@pytest.mark.asyncio
+async def test_get_contacts_for_patient_returns_all_agendamento_contacts():
+    client, table, execute = _client_returning([
+        {"contact_id": "cpai", "contacts": {"id": "cpai", "phone": "5583111", "active": True}},
+        {"contact_id": "cmae", "contacts": {"id": "cmae", "phone": "5583222", "active": True}},
+    ])
+    with patch("app.patients.get_supabase", new_callable=AsyncMock, return_value=client):
+        result = await patients.get_contacts_for_patient("p1", role="agendamento")
+    assert {c["phone"] for c in result} == {"5583111", "5583222"}
+    table.eq.assert_any_call("patient_id", "p1")
+    table.eq.assert_any_call("role", "agendamento")
+
+
+@pytest.mark.asyncio
+async def test_get_contacts_for_patient_skips_inactive():
+    client, table, execute = _client_returning([
+        {"contact_id": "cpai", "contacts": {"id": "cpai", "phone": "5583111", "active": True}},
+        {"contact_id": "cold", "contacts": {"id": "cold", "phone": "5583999", "active": False}},
+    ])
+    with patch("app.patients.get_supabase", new_callable=AsyncMock, return_value=client):
+        result = await patients.get_contacts_for_patient("p1", role="agendamento")
+    assert {c["phone"] for c in result} == {"5583111"}
