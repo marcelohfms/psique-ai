@@ -290,6 +290,42 @@ async def test_confirm_appointment_no_restriction_uses_slot_logic():
     assert kwargs.get("modality") == "presencial"
 
 
+# ── confirm_attendance (idempotência: primeiro a confirmar vence) ──────────────
+
+async def test_confirm_attendance_marks_confirmed_when_not_yet_confirmed():
+    from app.graph.tools import confirm_attendance
+    client, table, execute = _make_supabase_client()
+    # select de confirmed_at retorna vazio → ainda não confirmado
+    execute.return_value = MagicMock(data=[{"confirmed_at": None}])
+    with patch("app.graph.tools.get_supabase", new_callable=AsyncMock, return_value=client), \
+         patch("app.graph.tools.log_event", new_callable=AsyncMock) as mock_log:
+        result = await confirm_attendance.coroutine(
+            appointment_id="evt-abc",
+            state=_make_state(),
+            config=CONFIG,
+        )
+    assert "confirmada" in result.lower()
+    table.update.assert_called()          # gravou confirmed_at
+    mock_log.assert_awaited()             # logou o evento
+
+
+async def test_confirm_attendance_is_idempotent_when_already_confirmed():
+    from app.graph.tools import confirm_attendance
+    client, table, execute = _make_supabase_client()
+    # já existe confirmed_at → segunda confirmação é no-op (primeiro a confirmar vence)
+    execute.return_value = MagicMock(data=[{"confirmed_at": "2026-06-19T10:00:00+00:00"}])
+    with patch("app.graph.tools.get_supabase", new_callable=AsyncMock, return_value=client), \
+         patch("app.graph.tools.log_event", new_callable=AsyncMock) as mock_log:
+        result = await confirm_attendance.coroutine(
+            appointment_id="evt-abc",
+            state=_make_state(),
+            config=CONFIG,
+        )
+    assert "confirmada" in result.lower()  # resposta amigável igual
+    table.update.assert_not_called()       # NÃO regravou confirmed_at
+    mock_log.assert_not_awaited()          # NÃO logou de novo
+
+
 # ── cancel_appointment ────────────────────────────────────────────────────────
 
 async def test_cancel_appointment_cancels_and_notifies():

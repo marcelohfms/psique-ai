@@ -1173,6 +1173,21 @@ async def confirm_attendance(
     (ex: em resposta a um lembrete). Não chame se o paciente não confirmou explicitamente.
     """
     client = await get_supabase()
+
+    # Idempotência: primeiro contato a confirmar vence. Quando vários responsáveis
+    # (ex.: pai e mãe) recebem o lembrete, o segundo a confirmar não regrava nem
+    # loga de novo — apenas recebe a mesma resposta amigável.
+    existing = (
+        await client.from_("appointments")
+        .select("confirmed_at")
+        .eq("appointment_id", appointment_id)
+        .limit(1)
+        .execute()
+    )
+    rows = existing.data or []
+    if rows and rows[0].get("confirmed_at"):
+        return "Presença confirmada! ✅"
+
     await client.from_("appointments").update({
         "confirmed_at": datetime.now(TZ).isoformat(),
     }).eq("appointment_id", appointment_id).execute()
