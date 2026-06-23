@@ -63,7 +63,7 @@ SCHEDULE_CHANGES: dict[str, list[tuple[date, dict[int, list[tuple[int, int, int,
             0: [(9, 0, 12, 0, "escolha"), (13, 0, 18, 0, "escolha")],  # Segunda: manhã + tarde (antes era só manhã)
             1: [],                                                        # Terça: sem atendimento (horários movidos para segunda)
             2: [(9, 0, 12, 0, "escolha")],                               # Quarta: inalterado
-            3: [(9, 0, 12, 0, "escolha"), (14, 0, 18, 0, "presencial_sob_consulta"), (18, 0, 20, 0, "escolha")],  # Quinta: inalterado
+            3: [(9, 0, 12, 0, "escolha"), (14, 0, 18, 0, "escolha"), (18, 0, 20, 0, "escolha")],  # Quinta: tarde liberada (sem confirmação presencial a partir de jul/26)
         }),
     ],
 }
