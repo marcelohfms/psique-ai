@@ -14,6 +14,9 @@ Uso:
 import asyncio
 import sys
 
+from dotenv import load_dotenv
+load_dotenv()
+
 from app.database import get_supabase
 from app.patients import normalize_phone, link_patient_contact
 
