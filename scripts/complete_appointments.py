@@ -13,6 +13,9 @@ from datetime import datetime, timezone, timedelta
 from dotenv import load_dotenv
 load_dotenv()
 
+import app.database  # noqa: F401 — carrega database antes de patients (evita import circular)
+from app.patients import get_contacts_for_patient
+
 
 async def send_pos_consulta(phone: str, first_name: str) -> None:
     from app.chatwoot import find_or_create_conversation, send_template_message
@@ -44,7 +47,7 @@ async def main():
 
     result = await (
         client.from_("appointments")
-        .select("id, appointment_id, end_time, user_id, consultation_type, confirmed_at, users(number, patient_name, name)")
+        .select("id, appointment_id, end_time, patient_id, consultation_type, confirmed_at, patients(name)")
         .eq("status", "scheduled")
         .is_("pos_consulta_sent_at", "null")
         .lt("end_time", cutoff)
@@ -68,68 +71,82 @@ async def main():
         # This handles split first consultations (two 1h slots): the flag should only
         # flip after the last slot is done, so a not-yet-booked second slot isn't
         # incorrectly priced as acompanhamento.
-        if appt.get("consultation_type") == "primeira_consulta":
+        patient_id = appt.get("patient_id")
+        if appt.get("consultation_type") == "primeira_consulta" and patient_id:
             remaining = await (
                 client.from_("appointments")
                 .select("id")
-                .eq("user_id", appt["user_id"])
+                .eq("patient_id", patient_id)
                 .eq("consultation_type", "primeira_consulta")
                 .eq("status", "scheduled")
                 .execute()
             )
             if not remaining.data:
                 await (
-                    client.from_("users")
+                    client.from_("patients")
                     .update({"is_returning_patient": True})
-                    .eq("id", appt["user_id"])
+                    .eq("id", patient_id)
                     .execute()
                 )
-                print(f"Marked user {appt['user_id']} as returning patient.")
+                print(f"Marked patient {patient_id} as returning patient.")
 
-        user = appt.get("users") or {}
-        phone = user.get("number", "")
-        patient_name = user.get("patient_name") or user.get("name") or "paciente"
+        patient = appt.get("patients") or {}
+        patient_name = patient.get("name") or "paciente"
         first_name = patient_name.split()[0] if patient_name else "paciente"
 
-        if phone:
-            # Skip pos_consulta if patient never confirmed attendance via WhatsApp.
-            # A null confirmed_at means the patient either cancelled or simply didn't
-            # respond to the day-before reminder — in either case, sending a
-            # post-consultation message is incorrect.
-            if not appt.get("confirmed_at"):
-                print(f"Skipping pos_consulta for {phone} — no confirmed_at (possible no-show or cancellation).")
-                await client.from_("appointments").update({
-                    "pos_consulta_sent_at": now_iso,
-                }).eq("id", appt["id"]).execute()
-                continue
+        async def _mark_sent():
+            await client.from_("appointments").update({
+                "pos_consulta_sent_at": now_iso,
+            }).eq("id", appt["id"]).execute()
 
-            # Skip if patient already has a future/ongoing appointment scheduled
-            # Use end_time (not start_time) to also catch appointments that have
-            # already started but not yet finished (e.g. split first consultations).
-            future = await (
-                client.from_("appointments")
-                .select("id")
-                .eq("user_id", appt["user_id"])
-                .eq("status", "scheduled")
-                .gt("end_time", now_iso)
-                .limit(1)
-                .execute()
-            )
-            if future.data:
-                print(f"Skipping pos_consulta for {phone} — already has a future appointment.")
-                await client.from_("appointments").update({
-                    "pos_consulta_sent_at": now_iso,
-                }).eq("id", appt["id"]).execute()
-                continue
+        # Skip pos_consulta if patient never confirmed attendance via WhatsApp.
+        # A null confirmed_at means the patient either cancelled or simply didn't
+        # respond to the day-before reminder — sending a post-consultation message
+        # would be incorrect.
+        if not appt.get("confirmed_at"):
+            print(f"Skipping pos_consulta for patient {patient_id} — no confirmed_at (no-show/cancel).")
+            await _mark_sent()
+            count += 1
+            continue
 
+        # Skip if patient already has a future/ongoing appointment scheduled
+        # (end_time > now catches split first consultations still in progress).
+        future = await (
+            client.from_("appointments")
+            .select("id")
+            .eq("patient_id", patient_id)
+            .eq("status", "scheduled")
+            .gt("end_time", now_iso)
+            .limit(1)
+            .execute()
+        ) if patient_id else None
+        if future and future.data:
+            print(f"Skipping pos_consulta for patient {patient_id} — already has a future appointment.")
+            await _mark_sent()
+            count += 1
+            continue
+
+        # Envia pós-consulta para TODOS os contatos com role 'consulta'.
+        contacts = await get_contacts_for_patient(patient_id, "consulta") if patient_id else []
+        if not contacts:
+            print(f"Skipping pos_consulta for patient {patient_id} — sem contato de consulta.")
+            await _mark_sent()
+            count += 1
+            continue
+
+        sent_any = False
+        for contact in contacts:
+            phone = contact.get("phone")
+            if not phone:
+                continue
             try:
                 await send_pos_consulta(phone, first_name)
-                await client.from_("appointments").update({
-                    "pos_consulta_sent_at": now_iso,
-                }).eq("id", appt["id"]).execute()
+                sent_any = True
                 print(f"Message sent to {phone} for appointment {appt['appointment_id']}")
             except Exception as e:
                 print(f"Failed to send message to {phone}: {e}")
+        if sent_any:
+            await _mark_sent()
 
         count += 1
 
