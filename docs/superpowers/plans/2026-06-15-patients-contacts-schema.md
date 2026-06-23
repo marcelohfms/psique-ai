@@ -4,6 +4,8 @@
 
 **Goal:** Separar a tabela `users` (que mistura paciente + contato) em três tabelas — `patients`, `contacts`, `patient_contacts` — com relacionamento flexível por roles, sem quebrar o fluxo de agendamento em produção.
 
+**Restrição importante:** a tabela `users` **nunca é apagada**. Ela é preservada como arquivo histórico de consulta. O plano apenas cria tabelas novas ao lado dela, lê dela no backfill e deixa de usá-la em código — sem `DROP`.
+
 **Architecture:** Estratégia *strangler* com shim de compatibilidade. Primeiro criamos as novas tabelas e a nova camada de dados; depois reimplementamos `get_user_by_phone`/`upsert_user`/`get_users_by_phone` por cima das novas tabelas (retornando um dict "estilo user" mesclado) para que os ~40 call sites existentes continuem funcionando; por fim adicionamos o comportamento novo de roles (lembretes para todos os contatos com role `agendamento`, responsável financeiro, `is_self`). A migração de dados é idempotente e roda uma vez. Os call sites podem migrar para a API nativa de forma incremental em fases posteriores.
 
 **Tech Stack:** Python 3 + Supabase (Postgres) async client, FastAPI, LangGraph, pytest com Supabase mockado via `tests/conftest.py` (`make_supabase_client`).
@@ -1264,7 +1266,7 @@ git commit -m "refactor: desambiguação multi-paciente via resolve_active_patie
 - [ ] **Step 1:** Listar call sites: `grep -rn "get_user_by_phone\|upsert_user\|get_users_by_phone" app/ | grep -v worktree`.
 - [ ] **Step 2:** Migrar um arquivo por vez para `resolve_active_patient`/`upsert_patient`/`upsert_contact`, rodando `uv run pytest --tb=short` após cada arquivo.
 - [ ] **Step 3:** Quando nenhum call site usar mais o shim, remover `get_user_by_phone`/`get_users_by_phone`/`upsert_user` de `app/database.py`.
-- [ ] **Step 4:** Após confirmar que nada lê `users`, planejar o `DROP TABLE users` numa migration final (fora deste plano).
+- [ ] **Step 4:** **Não apagar a tabela `users`.** Ela é preservada como arquivo histórico/de consulta. Após confirmar que nada mais lê `users` em código, ela apenas deixa de ser usada — permanece no banco intacta.
 
 ---
 
