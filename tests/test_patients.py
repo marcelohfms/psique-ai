@@ -137,3 +137,50 @@ async def test_link_patient_contact_upserts_on_conflict():
     assert args[0]["role"] == "agendamento"
     assert args[0]["is_self"] is True
     assert kwargs.get("on_conflict") == "patient_id,contact_id,role"
+
+
+@pytest.mark.asyncio
+async def test_resolve_active_patient_no_contact_returns_none():
+    with patch("app.patients.get_contact_by_phone", new_callable=AsyncMock, return_value=None):
+        result = await patients.resolve_active_patient("5583988887777")
+    assert result == {"contact": None, "patient": None, "candidates": [], "ambiguous": False}
+
+
+@pytest.mark.asyncio
+async def test_resolve_active_patient_single_patient():
+    contact = {"id": "c1", "phone": "5583988887777"}
+    with patch("app.patients.get_contact_by_phone", new_callable=AsyncMock, return_value=contact), \
+         patch("app.patients.get_patients_by_contact", new_callable=AsyncMock,
+               return_value=[{"id": "p1", "name": "João"}]):
+        result = await patients.resolve_active_patient("5583988887777")
+    assert result["contact"] == contact
+    assert result["patient"]["id"] == "p1"
+    assert result["ambiguous"] is False
+
+
+@pytest.mark.asyncio
+async def test_resolve_active_patient_multi_picks_upcoming():
+    contact = {"id": "c1"}
+    cands = [{"id": "p1", "name": "João"}, {"id": "p2", "name": "Maria"}]
+    async def fake_has_upcoming(pid):
+        return pid == "p2"
+    with patch("app.patients.get_contact_by_phone", new_callable=AsyncMock, return_value=contact), \
+         patch("app.patients.get_patients_by_contact", new_callable=AsyncMock, return_value=cands), \
+         patch("app.patients._patient_has_upcoming_appointment", side_effect=fake_has_upcoming):
+        result = await patients.resolve_active_patient("5583988887777")
+    assert result["patient"]["id"] == "p2"
+    assert result["ambiguous"] is False
+
+
+@pytest.mark.asyncio
+async def test_resolve_active_patient_multi_ambiguous_when_none_upcoming():
+    contact = {"id": "c1"}
+    cands = [{"id": "p1"}, {"id": "p2"}]
+    with patch("app.patients.get_contact_by_phone", new_callable=AsyncMock, return_value=contact), \
+         patch("app.patients.get_patients_by_contact", new_callable=AsyncMock, return_value=cands), \
+         patch("app.patients._patient_has_upcoming_appointment",
+               new_callable=AsyncMock, return_value=False):
+        result = await patients.resolve_active_patient("5583988887777")
+    assert result["patient"] is None
+    assert result["ambiguous"] is True
+    assert result["candidates"] == cands

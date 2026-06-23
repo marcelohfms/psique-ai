@@ -124,3 +124,42 @@ async def link_patient_contact(
         },
         on_conflict="patient_id,contact_id,role",
     ).execute()
+
+
+async def _patient_has_upcoming_appointment(patient_id: str) -> bool:
+    """True se o paciente tem agendamento futuro/ongoing (status scheduled)."""
+    client = await get_supabase()
+    now_iso = datetime.now(timezone.utc).isoformat()
+    result = (
+        await client.from_("appointments")
+        .select("id")
+        .eq("patient_id", patient_id)
+        .in_("status", ["scheduled", "pending_reschedule"])
+        .gte("end_time", now_iso)
+        .limit(1)
+        .execute()
+    )
+    return bool(result.data)
+
+
+async def resolve_active_patient(phone: str) -> dict:
+    """Resolve qual paciente está em contexto para um número.
+
+    Retorna dict com chaves: contact, patient, candidates, ambiguous.
+    Regras: 0 pacientes -> patient=None; 1 -> esse; 2+ -> se exatamente um tem
+    agendamento próximo assume-o, senão ambiguous=True.
+    """
+    contact = await get_contact_by_phone(phone)
+    if not contact:
+        return {"contact": None, "patient": None, "candidates": [], "ambiguous": False}
+
+    candidates = await get_patients_by_contact(contact["id"], role="agendamento")
+    if not candidates:
+        return {"contact": contact, "patient": None, "candidates": [], "ambiguous": False}
+    if len(candidates) == 1:
+        return {"contact": contact, "patient": candidates[0], "candidates": candidates, "ambiguous": False}
+
+    upcoming = [c for c in candidates if await _patient_has_upcoming_appointment(c["id"])]
+    if len(upcoming) == 1:
+        return {"contact": contact, "patient": upcoming[0], "candidates": candidates, "ambiguous": False}
+    return {"contact": contact, "patient": None, "candidates": candidates, "ambiguous": True}
