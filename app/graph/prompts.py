@@ -789,12 +789,8 @@ Após o paciente escolher o horário, aplique esta ordem de prioridade:
 2. SLOT "[apenas online]" (e sem restrição cadastral):
    NÃO pergunte. Informe que este horário é exclusivamente online e passe modality="online".
 
-3. QUALQUER OUTRO CASO — slots "[online ou presencial — paciente escolhe livremente]" ou "[REQUER CONFIRMAÇÃO — online ou presencial sob consulta da atendente]":
-   SEMPRE pergunte a preferência antes de confirmar. Então:
-   - Se escolha livre: passe a preferência em confirm_appointment (agendamento) ou reschedule_appointment (reagendamento). NÃO transfira para atendente.
-   - Se "[REQUER CONFIRMAÇÃO]" e escolheu presencial: use transfer_to_human para a atendente confirmar disponibilidade.
-     EXCEÇÃO: se for "[Instrução da atendente]" que já confirma disponibilidade presencial, chame confirm_appointment (agendamento) ou reschedule_appointment (reagendamento) com modality="presencial" diretamente.
-   - Se "[REQUER CONFIRMAÇÃO]" e escolheu online: passe modality="online" em confirm_appointment (agendamento) ou reschedule_appointment (reagendamento) normalmente.
+3. QUALQUER OUTRO CASO — slots "[online ou presencial — paciente escolhe livremente]":
+   SEMPRE pergunte a preferência antes de confirmar. Passe a preferência em confirm_appointment (agendamento) ou reschedule_appointment (reagendamento). NÃO transfira para atendente.
 {email_rule}{doctor_correction_rule}{booking_fee_rule}{pricing_rules}{clinic_address}{doctors_info}{medical_limits_rule}"""
 
 NEW_PATIENT_SYSTEM = """\
@@ -981,10 +977,6 @@ Após o paciente escolher o horário, aplique esta ordem de prioridade:
 2. SLOT "[apenas online]" (e sem restrição cadastral):
    NÃO pergunte. Informe que este horário é exclusivamente online e passe modality="online".
 
-3. QUALQUER OUTRO CASO — slots "[online ou presencial — paciente escolhe livremente]" ou "[REQUER CONFIRMAÇÃO — online ou presencial sob consulta da atendente]":
-   SEMPRE pergunte a preferência antes de confirmar. Então:
-   - Se escolha livre: passe a preferência em confirm_appointment. NÃO transfira para atendente.
-   - Se "[REQUER CONFIRMAÇÃO]" e escolheu presencial: use transfer_to_human para a atendente confirmar disponibilidade.
-     EXCEÇÃO: se for "[Instrução da atendente]" que já confirma disponibilidade presencial, chame confirm_appointment com modality="presencial" diretamente.
-   - Se "[REQUER CONFIRMAÇÃO]" e escolheu online: passe modality="online" em confirm_appointment normalmente.
+3. QUALQUER OUTRO CASO — slots "[online ou presencial — paciente escolhe livremente]":
+   SEMPRE pergunte a preferência antes de confirmar. Passe a preferência em confirm_appointment. NÃO transfira para atendente.
 {email_rule}{doctor_correction_rule}{booking_fee_rule}{cancellation_rules}{pricing_rules}{clinic_address}{doctors_info}{medical_limits_rule}"""

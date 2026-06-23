@@ -90,7 +90,7 @@ _WEEKDAY_LABELS_PT = {
 _MOD_LABELS = {
     "online": "apenas online",
     "escolha": "online ou presencial — paciente escolhe livremente",
-    "presencial_sob_consulta": "REQUER CONFIRMAÇÃO — online ou presencial sob consulta da atendente",
+    "presencial_sob_consulta": "online ou presencial",
 }
 
 
@@ -513,22 +513,6 @@ async def confirm_appointment(
         effective_modality = "online" if slot_constraint == "online" else restriction
     elif slot_constraint == "online":
         effective_modality = "online"
-    elif slot_constraint == "presencial_sob_consulta" and modality == "presencial":
-        if state.get("silent_mode"):
-            # Running under an attendant instruction — attendant has already confirmed availability
-            effective_modality = "presencial"
-        else:
-            patient_name_hint = patient_name_override.strip() or state.get("patient_name") or state.get("user_name", "paciente")
-            doctor_hint = {"julio": "Dr. Júlio", "bruna": "Dra. Bruna"}.get(doctor, "médico(a)")
-            slot_hint = start.strftime("%d/%m às %H:%M")
-            return (
-                "AÇÃO NECESSÁRIA: Este horário (quinta à tarde com o Dr. Júlio) pode ser presencial, "
-                "mas a disponibilidade precisa ser confirmada pela atendente antes de agendar. "
-                "Use transfer_to_human com o seguinte motivo exato: "
-                f"'Confirmar disponibilidade presencial para {patient_name_hint} em {slot_hint} com {doctor_hint}. "
-                f"Após confirmar, escreva nota privada: "
-                f"Eva, pode agendar {patient_name_hint} para {slot_hint} com {doctor_hint}, modalidade presencial.'"
-            )
     else:
         effective_modality = modality if modality in ("online", "presencial") else ""
 

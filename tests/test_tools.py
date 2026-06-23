@@ -218,53 +218,6 @@ async def test_confirm_appointment_rolls_back_calendar_on_db_failure():
     mock_cancel.assert_awaited_once_with("cal123", "evt-rollback")
 
 
-async def test_confirm_appointment_presencial_sob_consulta_blocked_without_silent_mode():
-    """confirm_appointment deve bloquear presencial em slot presencial_sob_consulta fora do silent mode."""
-    from app.graph.tools import confirm_appointment
-    # Patch schedule data so the new weekday/window validation passes for any date,
-    # letting us isolate the presencial_sob_consulta modality check.
-    _sched = {"julio": {4: [(8, 0, 18, 0, "presencial_sob_consulta")]}}  # Friday full-day
-    with patch("app.graph.tools._get_doctor_calendar_id", new_callable=AsyncMock, return_value="cal123"), \
-         patch("app.google_calendar.get_modality_for_slot", return_value="presencial_sob_consulta"), \
-         patch("app.google_calendar.DOCTOR_SCHEDULES", _sched), \
-         patch("app.google_calendar.SCHEDULE_EXCEPTIONS", {}), \
-         patch("app.google_calendar._credentials", side_effect=Exception("skip")):
-        result = await confirm_appointment.coroutine(
-            slot_datetime="2026-05-22T14:00:00",
-            slot_duration_minutes=60,
-            state=_make_state(),
-            config=CONFIG,
-            modality="presencial",
-        )
-    assert "transfer_to_human" in result or "AÇÃO NECESSÁRIA" in result
-
-
-async def test_confirm_appointment_presencial_sob_consulta_allowed_in_silent_mode():
-    """confirm_appointment deve permitir presencial em slot presencial_sob_consulta quando silent_mode=True."""
-    from app.graph.tools import confirm_appointment
-    client, _, _ = _make_supabase_client()
-    _sched = {"julio": {4: [(8, 0, 18, 0, "presencial_sob_consulta")]}}  # Friday full-day
-    with patch("app.graph.tools._get_doctor_calendar_id", new_callable=AsyncMock, return_value="cal123"), \
-         patch("app.google_calendar.get_modality_for_slot", return_value="presencial_sob_consulta"), \
-         patch("app.google_calendar.DOCTOR_SCHEDULES", _sched), \
-         patch("app.google_calendar.SCHEDULE_EXCEPTIONS", {}), \
-         patch("app.google_calendar._credentials", side_effect=Exception("skip")), \
-         patch("app.google_calendar.create_event", new_callable=AsyncMock, return_value="evt-silent"), \
-         patch("app.graph.tools.get_supabase", new_callable=AsyncMock, return_value=client), \
-         patch("app.graph.tools.get_users_by_phone", new_callable=AsyncMock, return_value=[{"id": "u1"}]), \
-         patch("app.graph.tools.get_user_by_phone", new_callable=AsyncMock, return_value={"id": "u1"}), \
-         patch("app.graph.tools.log_event", new_callable=AsyncMock), \
-         patch("app.graph.tools._notify_clinic", new_callable=AsyncMock):
-        result = await confirm_appointment.coroutine(
-            slot_datetime="2026-05-22T14:00:00",
-            slot_duration_minutes=60,
-            state=_make_state(silent_mode=True),
-            config=CONFIG,
-            modality="presencial",
-        )
-    assert "evt-silent" in result or "confirmad" in result.lower()
-
-
 async def test_confirm_appointment_respects_online_modality_restriction():
     """Se modality_restriction="online" no state, confirm_appointment ignora o modality arg."""
     from app.graph.tools import confirm_appointment

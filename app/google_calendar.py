@@ -14,7 +14,6 @@ TZ = ZoneInfo(TIMEZONE)
 # modality values:
 #   "online"                  — slot is exclusively online (no choice)
 #   "escolha"                 — patient chooses online or presencial
-#   "presencial_sob_consulta" — presencial possible but requires human confirmation
 # Edit here to change doctor availability — no other file needs to change.
 # Date-specific exceptions that override DOCTOR_SCHEDULES for a single day.
 # Key: "YYYY-MM-DD", Value: list of windows (same tuple format as DOCTOR_SCHEDULES).
@@ -49,7 +48,7 @@ DOCTOR_SCHEDULES: dict[str, dict[int, list[tuple[int, int, int, int, str]]]] = {
         0: [(9, 0, 12, 0, "escolha")],                                                                   # Segunda
         1: [(13, 0, 18, 0, "escolha")],                                                                  # Terça
         2: [(9, 0, 12, 0, "escolha")],                                                                   # Quarta
-        3: [(9, 0, 12, 0, "escolha"), (14, 0, 18, 0, "presencial_sob_consulta"), (18, 0, 20, 0, "escolha")],  # Quinta
+        3: [(9, 0, 12, 0, "escolha"), (14, 0, 18, 0, "escolha"), (18, 0, 20, 0, "escolha")],  # Quinta
     },
 }
 
@@ -101,7 +100,7 @@ def _shift_label(start_h: int, end_h: int) -> str:
 _MODALITY_LABELS = {
     "online": "apenas online",
     "escolha": "online ou presencial",
-    "presencial_sob_consulta": "online ou presencial sob consulta",
+    "presencial_sob_consulta": "online ou presencial",
 }
 
 
