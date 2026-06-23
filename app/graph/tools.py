@@ -346,7 +346,9 @@ async def confirm_appointment(
 ) -> str:
     """
     Confirma e cria o agendamento no Google Calendar.
-    slot_datetime deve estar no formato ISO 8601, ex: '2026-03-19T09:00:00'.
+    slot_datetime deve estar no formato ISO 8601 em HORÁRIO LOCAL DE RECIFE (UTC-3),
+    exatamente como exibido ao paciente — ex: se o slot é 08:00, passe '2026-03-19T08:00:00'.
+    NUNCA converta para UTC antes de passar — a conversão é feita internamente pela tool.
     session_note: use para identificar sessões separadas de menor de idade,
       ex: '1ª hora — responsáveis' ou '2ª hora — paciente'.
       Deixe vazio para consultas normais ou consultas de 2h em bloco único.
@@ -793,7 +795,8 @@ async def reschedule_appointment(
     """
     Remarca uma consulta existente para um novo horário.
     appointment_id é o Google Calendar event ID.
-    new_slot_datetime deve estar no formato ISO 8601, ex: '2026-03-19T09:00:00'.
+    new_slot_datetime deve estar no formato ISO 8601 em HORÁRIO LOCAL DE RECIFE (UTC-3),
+    exatamente como exibido ao paciente — NUNCA converta para UTC antes de passar.
     modality: modalidade do novo horário — "online" ou "presencial" (se aplicável).
     """
     from app.google_calendar import update_event
