@@ -2,7 +2,7 @@ import asyncio
 import logging
 import os
 from contextlib import asynccontextmanager
-from datetime import datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from secrets import compare_digest
 
 from dotenv import load_dotenv
@@ -110,11 +110,9 @@ def _calc_valor_consulta(
     consultation_type: str | None,
     custom_price: int | None,
 ) -> int:
-    """Retorna o valor sugerido da consulta (com desconto PIX de R$50)."""
+    """Retorna o valor sugerido da consulta (com desconto de R$50 para dinheiro/PIX)."""
     if custom_price is not None:
         return custom_price
-
-    from datetime import date
     age = None
     if birth_date:
         try:
@@ -166,7 +164,10 @@ async def _poll_new_messages() -> None:
         except Exception:
             logger.exception("Polling error")
             _supabase = None
-            await _init_supabase()
+            try:
+                await _init_supabase()
+            except Exception:
+                pass  # retry on next poll cycle
 
 
 # ── App lifecycle ─────────────────────────────────────────────────────────────
@@ -274,7 +275,6 @@ async def pagamentos_page(request: Request, username: str = Depends(verify_crede
         doctor_display = DOCTOR_DISPLAY.get(appt.get("doctor_id", ""), "Médico")
         start_time = appt.get("start_time", "")
         try:
-            from datetime import datetime, timezone, timedelta
             dt = datetime.fromisoformat(start_time.replace("Z", "+00:00"))
             dt_br = dt.astimezone(timezone(timedelta(hours=-3)))
             data_hora = dt_br.strftime("%d/%m/%Y %H:%M")
@@ -339,7 +339,6 @@ async def api_pagar(
     if body.tipo not in ("taxa", "consulta"):
         raise HTTPException(status_code=400, detail="tipo deve ser 'taxa' ou 'consulta'")
 
-    from datetime import datetime, timezone
     now = datetime.now(timezone.utc).isoformat()
 
     client = get_supabase()
