@@ -20,6 +20,7 @@ from app.patients import normalize_phone, link_patient_contact
 # Campos de users que pertencem ao paciente (clínicos).
 _PATIENT_FIELDS = [
     "email", "birth_date", "age", "doctor_id", "is_returning_patient",
+    "patient_cpf", "guardian_name", "guardian_cpf", "guardian_relationship",
     "consultation_reason", "referral_professional", "modality_restriction",
     "age_exception", "custom_price", "booking_fee_waived",
     "financial_name", "financial_cpf", "financial_email",

@@ -10,6 +10,10 @@ CREATE TABLE IF NOT EXISTS patients (
     age                     INT,
     doctor_id               UUID        REFERENCES doctors(doctor_id) ON DELETE SET NULL,
     is_returning_patient    BOOL,
+    patient_cpf             TEXT,       -- CPF do próprio paciente
+    guardian_name           TEXT,       -- nome do responsável (menores)
+    guardian_cpf            TEXT,       -- CPF do responsável (menores)
+    guardian_relationship   TEXT,       -- relação do responsável com o paciente (menores)
     consultation_reason     TEXT,
     referral_professional   TEXT,
     modality_restriction    TEXT        CHECK (modality_restriction IN ('online', 'presencial')),
