@@ -146,13 +146,37 @@ async def test_link_patient_contact_upserts_on_conflict():
     client, table, execute = _client_returning([{"id": "pc1"}])
     table.upsert.return_value = table
     with patch("app.patients.get_supabase", new_callable=AsyncMock, return_value=client):
-        await patients.link_patient_contact("p1", "c1", "agendamento", is_self=True)
+        await patients.link_patient_contact(
+            "p1", "c1", "agendamento", is_self=True, relationship="mãe"
+        )
     table.upsert.assert_called_once()
     args, kwargs = table.upsert.call_args
     assert args[0]["patient_id"] == "p1"
     assert args[0]["role"] == "agendamento"
     assert args[0]["is_self"] is True
+    assert args[0]["relationship"] == "mãe"
     assert kwargs.get("on_conflict") == "patient_id,contact_id,role"
+
+
+@pytest.mark.asyncio
+async def test_link_patient_contact_relationship_defaults_to_none():
+    client, table, execute = _client_returning([{"id": "pc1"}])
+    table.upsert.return_value = table
+    with patch("app.patients.get_supabase", new_callable=AsyncMock, return_value=client):
+        await patients.link_patient_contact("p1", "c1", "agendamento")
+    args, kwargs = table.upsert.call_args
+    assert args[0]["relationship"] is None
+
+
+@pytest.mark.asyncio
+async def test_upsert_contact_persists_cpf():
+    client, table, execute = _client_returning([{"id": "c1", "phone": "5583988887777"}])
+    with patch("app.patients.get_supabase", new_callable=AsyncMock, return_value=client):
+        cid = await patients.upsert_contact("5583988887777", {"name": "Maria", "cpf": "555"})
+    assert cid == "c1"
+    table.update.assert_called_once()
+    args, _ = table.update.call_args
+    assert args[0]["cpf"] == "555"
 
 
 @pytest.mark.asyncio

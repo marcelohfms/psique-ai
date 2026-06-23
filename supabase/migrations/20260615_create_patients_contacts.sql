@@ -11,9 +11,6 @@ CREATE TABLE IF NOT EXISTS patients (
     doctor_id               UUID        REFERENCES doctors(doctor_id) ON DELETE SET NULL,
     is_returning_patient    BOOL,
     patient_cpf             TEXT,       -- CPF do próprio paciente
-    guardian_name           TEXT,       -- nome do responsável (menores)
-    guardian_cpf            TEXT,       -- CPF do responsável (menores)
-    guardian_relationship   TEXT,       -- relação do responsável com o paciente (menores)
     consultation_reason     TEXT,
     referral_professional   TEXT,
     modality_restriction    TEXT        CHECK (modality_restriction IN ('online', 'presencial')),
@@ -31,6 +28,7 @@ CREATE TABLE IF NOT EXISTS contacts (
     id                              UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
     phone                           TEXT        UNIQUE NOT NULL,
     name                            TEXT,
+    cpf                             TEXT,
     active                          BOOL        DEFAULT TRUE,
     manual_hold                     BOOL        DEFAULT FALSE,
     deactivated_at                  TIMESTAMPTZ,
@@ -44,6 +42,7 @@ CREATE TABLE IF NOT EXISTS patient_contacts (
     contact_id  UUID        NOT NULL REFERENCES contacts(id) ON DELETE CASCADE,
     role        TEXT        NOT NULL CHECK (role IN ('agendamento', 'financeiro', 'consulta')),
     is_self     BOOL        NOT NULL DEFAULT FALSE,
+    relationship TEXT,
     created_at  TIMESTAMPTZ DEFAULT now(),
     UNIQUE (patient_id, contact_id, role)
 );

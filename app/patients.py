@@ -116,7 +116,8 @@ async def upsert_patient(data: dict, patient_id: str | None = None) -> str | Non
 
 
 async def link_patient_contact(
-    patient_id: str, contact_id: str, role: str, is_self: bool = False
+    patient_id: str, contact_id: str, role: str,
+    is_self: bool = False, relationship: str | None = None,
 ) -> None:
     """Vincula um contato a um paciente com um papel. Idempotente.
 
@@ -129,6 +130,7 @@ async def link_patient_contact(
             "contact_id": contact_id,
             "role": role,
             "is_self": is_self,
+            "relationship": relationship,
         },
         on_conflict="patient_id,contact_id,role",
     ).execute()

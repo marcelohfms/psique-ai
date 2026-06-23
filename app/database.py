@@ -90,8 +90,17 @@ _CONTACT_FIELDS = {
 
 async def upsert_user(phone: str, data: dict, user_id: str | None = None) -> str | None:
     """[shim] Roteia campos para patients/contacts e devolve o patient_id."""
+    # extrai campos de guardião antes de separar patient/contact
+    guardian_cpf = data.get("guardian_cpf")
+    guardian_name = data.get("guardian_name")
+    guardian_relationship = data.get("guardian_relationship")
+
     contact_data = {k: v for k, v in data.items() if k in _CONTACT_FIELDS}
-    patient_data = {k: v for k, v in data.items() if k not in _CONTACT_FIELDS}
+    patient_data = {
+        k: v for k, v in data.items()
+        if k not in _CONTACT_FIELDS
+        and k not in ("guardian_cpf", "guardian_name", "guardian_relationship")
+    }
 
     # 'name' é ambíguo: nome do contato; nome do paciente é patient_name.
     if "patient_name" in patient_data:
@@ -99,6 +108,12 @@ async def upsert_user(phone: str, data: dict, user_id: str | None = None) -> str
     elif "name" in data and user_id is None:
         patient_data.setdefault("name", data["name"])
     patient_data.pop("is_patient", None)
+
+    # roteia dados do responsável para o contato
+    if guardian_cpf is not None:
+        contact_data["cpf"] = guardian_cpf
+    if guardian_name is not None:
+        contact_data.setdefault("name", guardian_name)
 
     contact_id = await upsert_contact(phone, contact_data or {"name": data.get("name")})
 
@@ -109,10 +124,12 @@ async def upsert_user(phone: str, data: dict, user_id: str | None = None) -> str
 
     if patient_id and contact_id:
         is_self = data.get("is_patient")
+        rel = guardian_relationship or ("self" if is_self else None)
         for role in ("agendamento", "financeiro", "consulta"):
             await link_patient_contact(
                 patient_id, contact_id, role,
                 is_self=bool(is_self) if is_self is not None else False,
+                relationship=rel,
             )
     return patient_id
 

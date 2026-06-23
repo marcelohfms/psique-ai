@@ -20,7 +20,7 @@ from app.patients import normalize_phone, link_patient_contact
 # Campos de users que pertencem ao paciente (clínicos).
 _PATIENT_FIELDS = [
     "email", "birth_date", "age", "doctor_id", "is_returning_patient",
-    "patient_cpf", "guardian_name", "guardian_cpf", "guardian_relationship",
+    "patient_cpf",
     "consultation_reason", "referral_professional", "modality_restriction",
     "age_exception", "custom_price", "booking_fee_waived",
     "financial_name", "financial_cpf", "financial_email",
@@ -39,13 +39,36 @@ def _patient_name(user: dict) -> str:
     return user.get("patient_name") or user.get("name") or "(sem nome)"
 
 
-async def _get_or_create_contact(client, phone: str, name: str | None) -> str:
+async def _get_or_create_contact(
+    client, phone: str, name: str | None, cpf: str | None = None
+) -> str:
     canonical = normalize_phone(phone)
     existing = await client.from_("contacts").select("id").eq("phone", canonical).execute()
     if existing.data:
         return existing.data[0]["id"]
-    inserted = await client.from_("contacts").insert({"phone": canonical, "name": name}).execute()
+    inserted = await client.from_("contacts").insert(
+        {"phone": canonical, "name": name, "cpf": cpf}
+    ).execute()
     return inserted.data[0]["id"]
+
+
+def _contact_name_and_cpf(user: dict) -> tuple[str | None, str | None]:
+    """Resolve nome/CPF do CONTATO conforme ele seja responsável ou o paciente."""
+    if user.get("is_patient") is False:
+        # contato é o responsável (menores)
+        name = user.get("guardian_name") or user.get("name")
+        cpf = user.get("guardian_cpf")
+    else:
+        # contato é o próprio paciente
+        name = user.get("name")
+        cpf = user.get("patient_cpf")
+    return name, cpf
+
+
+def _contact_relationship(user: dict) -> str | None:
+    if user.get("is_patient") is False:
+        return user.get("guardian_relationship")
+    return "self"
 
 
 async def _get_or_create_patient(client, user: dict) -> str:
@@ -77,14 +100,23 @@ async def main(dry_run: bool) -> None:
                   f"+ patient({name}) is_self={is_self}")
             continue
 
-        contact_id = await _get_or_create_contact(client, phone, user.get("name"))
+        contact_name, contact_cpf = _contact_name_and_cpf(user)
+        relationship = _contact_relationship(user)
+        contact_id = await _get_or_create_contact(client, phone, contact_name, contact_cpf)
         contact_update = {f: user[f] for f in _CONTACT_FIELDS if user.get(f) is not None}
+        if contact_cpf is not None:
+            contact_update["cpf"] = contact_cpf
+        if contact_name is not None:
+            contact_update["name"] = contact_name
         if contact_update:
             await client.from_("contacts").update(contact_update).eq("id", contact_id).execute()
 
         patient_id = await _get_or_create_patient(client, user)
         for role in ROLES:
-            await link_patient_contact(patient_id, contact_id, role, is_self=is_self)
+            await link_patient_contact(
+                patient_id, contact_id, role,
+                is_self=is_self, relationship=relationship,
+            )
         print(f"  OK user {user['id']} -> patient {patient_id} / contact {contact_id}")
 
     if not dry_run:
