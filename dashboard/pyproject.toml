@@ -9,8 +9,6 @@ dependencies = [
     "python-dotenv>=1.0.1",
     "supabase>=2.10.0",
     "python-multipart>=0.0.18",
-    "psique-chatbot",
+    "google-api-python-client>=2.0.0",
+    "google-auth>=2.0.0",
 ]
-
-[tool.uv.sources]
-psique-chatbot = { path = "..", editable = true }

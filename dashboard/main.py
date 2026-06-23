@@ -1,9 +1,13 @@
 import asyncio
 import logging
 import os
+import smtplib
 from contextlib import asynccontextmanager
 from datetime import date, datetime, timedelta, timezone
+from email.mime.multipart import MIMEMultipart
+from email.mime.text import MIMEText
 from secrets import compare_digest
+from zoneinfo import ZoneInfo
 
 from dotenv import load_dotenv
 
@@ -12,10 +16,10 @@ load_dotenv()
 from fastapi import Depends, FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect, status
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from fastapi.templating import Jinja2Templates
+from google.oauth2.credentials import Credentials
+from googleapiclient.discovery import build
+from pydantic import BaseModel
 from supabase import AsyncClient, acreate_client
-
-from app.google_sheets import append_payment_receipt
-from app.email_sender import send_clinic_notification_email
 
 logger = logging.getLogger(__name__)
 
@@ -82,6 +86,72 @@ class ConnectionManager:
 
 
 manager = ConnectionManager()
+
+
+# ── Email / Sheets helpers ────────────────────────────────────────────────────
+
+_TZ = ZoneInfo("America/Recife")
+_PAYMENTS_SHEET_RANGE = "Pagamentos!A:J"
+
+
+async def _send_clinic_email(subject: str, body: str) -> None:
+    smtp_host = os.environ.get("SMTP_HOST")
+    smtp_port = int(os.environ.get("SMTP_PORT", "465"))
+    smtp_user = os.environ.get("SMTP_USER")
+    smtp_password = os.environ.get("SMTP_PASSWORD")
+    to_email = os.environ.get("CLINIC_NOTIFY_EMAIL")
+    if not all([smtp_host, smtp_user, smtp_password, to_email]):
+        return
+
+    def _send() -> None:
+        msg = MIMEMultipart("alternative")
+        msg["Subject"] = subject
+        msg["From"] = smtp_user
+        msg["To"] = to_email
+        msg.attach(MIMEText(body, "plain", "utf-8"))
+        with smtplib.SMTP_SSL(smtp_host, smtp_port) as server:
+            server.login(smtp_user, smtp_password)
+            server.sendmail(smtp_user, to_email, msg.as_string())
+
+    loop = asyncio.get_running_loop()
+    await loop.run_in_executor(None, _send)
+
+
+async def _append_payment_sheet(
+    patient_name: str,
+    phone: str,
+    doctor_name: str,
+    appointment_dt: str,
+    amount: str,
+    payment_type: str,
+    payment_method: str,
+) -> None:
+    spreadsheet_id = os.environ.get("GOOGLE_SHEETS_PAYMENTS_ID")
+    if not spreadsheet_id:
+        return
+
+    creds = Credentials(
+        token=None,
+        refresh_token=os.environ["GOOGLE_REFRESH_TOKEN"],
+        token_uri="https://oauth2.googleapis.com/token",
+        client_id=os.environ["GOOGLE_CLIENT_ID"],
+        client_secret=os.environ["GOOGLE_CLIENT_SECRET"],
+        scopes=["https://www.googleapis.com/auth/spreadsheets"],
+    )
+    now = datetime.now(_TZ).strftime("%d/%m/%Y %H:%M")
+    row = [now, patient_name, doctor_name, appointment_dt, amount, phone, payment_type, payment_method, "", ""]
+
+    def _write() -> None:
+        service = build("sheets", "v4", credentials=creds)
+        service.spreadsheets().values().append(
+            spreadsheetId=spreadsheet_id,
+            range=_PAYMENTS_SHEET_RANGE,
+            valueInputOption="USER_ENTERED",
+            body={"values": [row]},
+        ).execute()
+
+    loop = asyncio.get_running_loop()
+    await loop.run_in_executor(None, _write)
 
 
 # ── Pagamentos ────────────────────────────────────────────────────────────────
@@ -317,9 +387,6 @@ async def pagamentos_page(request: Request, username: str = Depends(verify_crede
     )
 
 
-from pydantic import BaseModel
-
-
 class PagarBody(BaseModel):
     tipo: str            # "taxa" ou "consulta"
     valor: int
@@ -353,22 +420,21 @@ async def api_pagar(
     amount_str = str(body.valor)
 
     try:
-        await append_payment_receipt(
+        await _append_payment_sheet(
             patient_name=body.paciente,
             phone=body.phone,
             doctor_name=body.medico,
             appointment_dt=body.data_hora,
             amount=amount_str,
-            drive_link="",
             payment_type=payment_type,
-            payment_method_override=body.forma_pagamento,
+            payment_method=body.forma_pagamento,
         )
     except Exception:
         logger.exception("SHEETS_APPEND FAILED patient=%s", body.paciente)
 
     try:
         tipo_label = "Taxa de reserva" if body.tipo == "taxa" else "Consulta"
-        await send_clinic_notification_email(
+        await _send_clinic_email(
             subject=f"Pagamento registrado — {body.paciente}",
             body=(
                 f"💰 Pagamento registrado pelo dashboard\n"
