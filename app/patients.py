@@ -81,3 +81,27 @@ async def get_contacts_for_patient(patient_id: str, role: str) -> list[dict]:
             seen.add(contact["id"])
             out.append(contact)
     return out
+
+
+async def upsert_contact(phone: str, data: dict) -> str | None:
+    """Insere ou atualiza um contato pelo número canônico. Retorna o id."""
+    client = await get_supabase()
+    canonical = normalize_phone(phone)
+    existing = await get_contact_by_phone(canonical)
+    if existing:
+        await client.from_("contacts").update(data).eq("id", existing["id"]).execute()
+        return existing["id"]
+    result = await client.from_("contacts").insert({"phone": canonical, **data}).execute()
+    inserted = (result.data or [{}])[0]
+    return inserted.get("id")
+
+
+async def upsert_patient(data: dict, patient_id: str | None = None) -> str | None:
+    """Insere um paciente novo ou atualiza um existente (por id). Retorna o id."""
+    client = await get_supabase()
+    if patient_id:
+        await client.from_("patients").update(data).eq("id", patient_id).execute()
+        return patient_id
+    result = await client.from_("patients").insert(data).execute()
+    inserted = (result.data or [{}])[0]
+    return inserted.get("id")

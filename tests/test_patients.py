@@ -84,3 +84,42 @@ async def test_get_contacts_for_patient_skips_inactive():
     with patch("app.patients.get_supabase", new_callable=AsyncMock, return_value=client):
         result = await patients.get_contacts_for_patient("p1", role="agendamento")
     assert {c["phone"] for c in result} == {"5583111"}
+
+
+@pytest.mark.asyncio
+async def test_upsert_contact_inserts_when_absent():
+    insert_exec = AsyncMock(return_value=MagicMock(data=[{"id": "c-new", "phone": "5583988887777"}]))
+    select_exec = AsyncMock(return_value=MagicMock(data=[]))
+    table = MagicMock()
+    for m in ("select", "eq", "insert", "update"):
+        getattr(table, m).return_value = table
+    table.execute = select_exec
+    table.insert.return_value.execute = insert_exec
+    client = MagicMock()
+    client.from_.return_value = table
+    with patch("app.patients.get_supabase", new_callable=AsyncMock, return_value=client):
+        cid = await patients.upsert_contact("5583988887777", {"name": "João"})
+    assert cid == "c-new"
+
+
+@pytest.mark.asyncio
+async def test_upsert_contact_updates_when_present():
+    client, table, execute = _client_returning([{"id": "c1", "phone": "5583988887777"}])
+    with patch("app.patients.get_supabase", new_callable=AsyncMock, return_value=client):
+        cid = await patients.upsert_contact("5583988887777", {"name": "João Silva"})
+    assert cid == "c1"
+    table.update.assert_called()
+
+
+@pytest.mark.asyncio
+async def test_upsert_patient_insert_returns_id():
+    insert_exec = AsyncMock(return_value=MagicMock(data=[{"id": "p-new"}]))
+    table = MagicMock()
+    for m in ("select", "eq", "insert", "update"):
+        getattr(table, m).return_value = table
+    table.insert.return_value.execute = insert_exec
+    client = MagicMock()
+    client.from_.return_value = table
+    with patch("app.patients.get_supabase", new_callable=AsyncMock, return_value=client):
+        pid = await patients.upsert_patient({"name": "João"})
+    assert pid == "p-new"
