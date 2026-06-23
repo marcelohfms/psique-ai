@@ -19,6 +19,13 @@ def test_normalize_phone_adds_ninth_digit():
     assert patients.normalize_phone("558388887777") == "5583988887777"
 
 
+def test_normalize_phone_passthrough_non_br_and_empty():
+    # Números que não casam o padrão BR (55 + DDD + 8/9 dígitos) passam cru.
+    assert patients.normalize_phone("") == ""
+    assert patients.normalize_phone("12345") == "12345"
+    assert patients.normalize_phone("447911123456") == "447911123456"  # UK, não-BR
+
+
 @pytest.mark.asyncio
 async def test_get_contact_by_phone_returns_row():
     client, table, execute = _client_returning([{"id": "c1", "phone": "5583988887777"}])
@@ -126,6 +133,15 @@ async def test_upsert_patient_insert_returns_id():
 
 
 @pytest.mark.asyncio
+async def test_upsert_patient_update_path_returns_same_id():
+    client, table, execute = _client_returning([])
+    with patch("app.patients.get_supabase", new_callable=AsyncMock, return_value=client):
+        pid = await patients.upsert_patient({"name": "Novo Nome"}, patient_id="p-existing")
+    assert pid == "p-existing"
+    table.update.assert_called()
+
+
+@pytest.mark.asyncio
 async def test_link_patient_contact_upserts_on_conflict():
     client, table, execute = _client_returning([{"id": "pc1"}])
     table.upsert.return_value = table
@@ -184,3 +200,16 @@ async def test_resolve_active_patient_multi_ambiguous_when_none_upcoming():
     assert result["patient"] is None
     assert result["ambiguous"] is True
     assert result["candidates"] == cands
+
+
+@pytest.mark.asyncio
+async def test_resolve_active_patient_ambiguous_when_multiple_upcoming():
+    contact = {"id": "c1"}
+    cands = [{"id": "p1"}, {"id": "p2"}]
+    # ambos têm agendamento próximo -> ainda ambíguo (não dá pra decidir)
+    with patch("app.patients.get_contact_by_phone", new_callable=AsyncMock, return_value=contact), \
+         patch("app.patients.get_patients_by_contact", new_callable=AsyncMock, return_value=cands), \
+         patch("app.patients._patient_has_upcoming_appointment", new_callable=AsyncMock, return_value=True):
+        result = await patients.resolve_active_patient("5583988887777")
+    assert result["patient"] is None
+    assert result["ambiguous"] is True

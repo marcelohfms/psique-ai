@@ -12,7 +12,15 @@ def _strip_phone(phone: str) -> str:
 
 
 def normalize_phone(phone: str) -> str:
-    """Retorna a forma canônica do número de celular brasileiro (com o 9)."""
+    """Retorna a forma canônica do número de celular brasileiro (com o 9).
+
+    INVARIANTE DE DESIGN: A tabela `contacts.phone` armazena SEMPRE a forma canônica
+    (com o 9º dígito). Todo caminho de escrita (upsert_contact, upsert_patient,
+    link_patient_contact) passa por normalize_phone antes de gravar. Toda busca
+    normaliza antes de consultar. Por isso, diferente do app/database.py legado
+    (que buscava as duas variantes com/sem 9), aqui basta buscar a forma canônica —
+    não há contatos gravados na forma de 12 dígitos.
+    """
     digits = _strip_phone(phone)
     if len(digits) == 13 and digits.startswith("55"):
         return digits
