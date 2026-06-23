@@ -17,7 +17,7 @@ HEADERS = {"Authorization": f"Basic {AUTH}"}
 @pytest.fixture
 def mock_supabase():
     with patch("main.get_supabase") as mock:
-        client = AsyncMock()
+        client = MagicMock()
         mock.return_value = client
         yield client
 
@@ -25,8 +25,13 @@ def mock_supabase():
 @pytest.mark.asyncio
 async def test_pagamentos_page_returns_html(mock_supabase):
     """GET /pagamentos deve retornar 200 com HTML."""
+    from fastapi.responses import HTMLResponse
     mock_supabase.from_.return_value.select.return_value.in_.return_value\
-        .execute = AsyncMock(return_value=AsyncMock(data=[]))
+        .execute = AsyncMock(return_value=MagicMock(data=[]))
+
+    html_content = "<html><body>Pagamentos Pendentes</body></html>"
+    import main as dashboard_main
+    dashboard_main.templates.TemplateResponse.return_value = HTMLResponse(content=html_content)
 
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
         resp = await ac.get("/pagamentos", headers=HEADERS)

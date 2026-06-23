@@ -1,0 +1,123 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="min-h-screen bg-gray-100 p-6">
+  <div class="max-w-6xl mx-auto">
+    <div class="flex items-center justify-between mb-6">
+      <h1 class="text-2xl font-semibold text-gray-800">Pagamentos Pendentes</h1>
+      <a href="/" class="text-sm text-gray-500 hover:text-gray-700">← Conversas</a>
+    </div>
+
+    {% if not pendencias %}
+    <div class="bg-white rounded-lg shadow p-8 text-center text-gray-500">
+      Nenhum pagamento pendente 🎉
+    </div>
+    {% else %}
+    <div class="bg-white rounded-lg shadow overflow-hidden">
+      <table class="w-full text-sm" id="tabela-pendencias">
+        <thead class="bg-gray-50 text-gray-500 uppercase text-xs">
+          <tr>
+            <th class="px-4 py-3 text-left">Paciente</th>
+            <th class="px-4 py-3 text-left">Médico</th>
+            <th class="px-4 py-3 text-left">Data e hora</th>
+            <th class="px-4 py-3 text-left">Tipo</th>
+            <th class="px-4 py-3 text-left">Valor (R$)</th>
+            <th class="px-4 py-3 text-left">Forma de pagamento</th>
+            <th class="px-4 py-3"></th>
+          </tr>
+        </thead>
+        <tbody class="divide-y divide-gray-100">
+          {% for p in pendencias %}
+          <tr id="row-{{ p.appointment_id }}-{{ p.tipo }}" class="hover:bg-gray-50"
+              data-paciente="{{ p.paciente }}"
+              data-phone="{{ p.phone }}"
+              data-medico="{{ p.medico }}"
+              data-data-hora="{{ p.data_hora }}">
+            <td class="px-4 py-3 font-medium text-gray-800">{{ p.paciente }}</td>
+            <td class="px-4 py-3 text-gray-600">{{ p.medico }}</td>
+            <td class="px-4 py-3 text-gray-600">{{ p.data_hora }}</td>
+            <td class="px-4 py-3">
+              {% if p.tipo == "taxa" %}
+              <span class="inline-block px-2 py-0.5 rounded-full text-xs font-medium bg-green-100 text-green-700">Taxa de reserva</span>
+              {% else %}
+              <span class="inline-block px-2 py-0.5 rounded-full text-xs font-medium bg-red-100 text-red-700">Consulta</span>
+              {% endif %}
+            </td>
+            <td class="px-4 py-3">
+              <input
+                type="number"
+                value="{{ p.valor }}"
+                min="0"
+                class="valor-input w-20 border border-gray-300 rounded px-2 py-1 text-sm focus:outline-none focus:ring-1 focus:ring-green-400"
+              />
+            </td>
+            <td class="px-4 py-3">
+              <select class="forma-input border border-gray-300 rounded px-2 py-1 text-sm focus:outline-none focus:ring-1 focus:ring-green-400">
+                <option value="PIX">PIX</option>
+                <option value="cartao_credito">Cartão de crédito</option>
+                <option value="cartao_debito">Cartão de débito</option>
+                <option value="dinheiro">Dinheiro</option>
+              </select>
+            </td>
+            <td class="px-4 py-3 text-right">
+              <button
+                onclick="marcarPago('{{ p.appointment_id }}', '{{ p.tipo }}', this)"
+                class="bg-green-600 hover:bg-green-700 text-white text-xs font-medium px-3 py-1.5 rounded transition-colors disabled:opacity-50"
+              >
+                Pago
+              </button>
+            </td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+      <div class="px-4 py-3 bg-gray-50 text-xs text-gray-400 text-right">
+        <span id="contagem">{{ pendencias|length }}</span> pendência(s)
+      </div>
+    </div>
+    {% endif %}
+  </div>
+</div>
+
+<script>
+async function marcarPago(appointmentId, tipo, btn) {
+  const row = document.getElementById(`row-${appointmentId}-${tipo}`);
+  const valor = parseInt(row.querySelector('.valor-input').value, 10);
+  const forma_pagamento = row.querySelector('.forma-input').value;
+
+  if (isNaN(valor) || valor < 0) {
+    alert('Valor inválido.');
+    return;
+  }
+
+  btn.disabled = true;
+  btn.textContent = '...';
+
+  try {
+    const resp = await fetch(`/api/pagamentos/${appointmentId}/pagar`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        tipo,
+        valor,
+        forma_pagamento,
+        paciente: row.dataset.paciente,
+        medico: row.dataset.medico,
+        data_hora: row.dataset.dataHora,
+        phone: row.dataset.phone,
+      }),
+    });
+
+    if (!resp.ok) throw new Error(await resp.text());
+
+    row.remove();
+    const contagem = document.getElementById('contagem');
+    contagem.textContent = parseInt(contagem.textContent, 10) - 1;
+  } catch (err) {
+    console.error(err);
+    alert('Erro ao registrar pagamento. Tente novamente.');
+    btn.disabled = false;
+    btn.textContent = 'Pago';
+  }
+}
+</script>
+{% endblock %}
