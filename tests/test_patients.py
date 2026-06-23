@@ -123,3 +123,17 @@ async def test_upsert_patient_insert_returns_id():
     with patch("app.patients.get_supabase", new_callable=AsyncMock, return_value=client):
         pid = await patients.upsert_patient({"name": "João"})
     assert pid == "p-new"
+
+
+@pytest.mark.asyncio
+async def test_link_patient_contact_upserts_on_conflict():
+    client, table, execute = _client_returning([{"id": "pc1"}])
+    table.upsert.return_value = table
+    with patch("app.patients.get_supabase", new_callable=AsyncMock, return_value=client):
+        await patients.link_patient_contact("p1", "c1", "agendamento", is_self=True)
+    table.upsert.assert_called_once()
+    args, kwargs = table.upsert.call_args
+    assert args[0]["patient_id"] == "p1"
+    assert args[0]["role"] == "agendamento"
+    assert args[0]["is_self"] is True
+    assert kwargs.get("on_conflict") == "patient_id,contact_id,role"

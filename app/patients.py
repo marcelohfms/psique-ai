@@ -105,3 +105,22 @@ async def upsert_patient(data: dict, patient_id: str | None = None) -> str | Non
     result = await client.from_("patients").insert(data).execute()
     inserted = (result.data or [{}])[0]
     return inserted.get("id")
+
+
+async def link_patient_contact(
+    patient_id: str, contact_id: str, role: str, is_self: bool = False
+) -> None:
+    """Vincula um contato a um paciente com um papel. Idempotente.
+
+    Usa a constraint UNIQUE(patient_id, contact_id, role).
+    """
+    client = await get_supabase()
+    await client.from_("patient_contacts").upsert(
+        {
+            "patient_id": patient_id,
+            "contact_id": contact_id,
+            "role": role,
+            "is_self": is_self,
+        },
+        on_conflict="patient_id,contact_id,role",
+    ).execute()
