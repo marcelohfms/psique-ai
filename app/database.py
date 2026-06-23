@@ -49,25 +49,86 @@ def _phone_variants(phone: str) -> list[str]:
     return [digits]
 
 
-async def get_users_by_phone(phone: str) -> list[dict]:
-    """[shim] Retorna um dict 'estilo user' por paciente vinculado a este número.
+# Campos copiados de `patients` para o dict legado (formato antigo de `users`).
+_PATIENT_COPY_FIELDS = (
+    "email", "birth_date", "age", "doctor_id", "is_returning_patient",
+    "patient_cpf", "consultation_reason", "referral_professional",
+    "modality_restriction", "age_exception", "custom_price",
+    "booking_fee_waived", "financial_name", "financial_cpf", "financial_email",
+)
 
-    Mescla a linha de `contacts` com cada `patients`. id = patient_id.
+# Campos copiados de `contacts` para o dict legado.
+_CONTACT_COPY_FIELDS = (
+    "active", "manual_hold", "deactivated_at", "price_adjustment_notified_at",
+)
+
+
+def _legacy_user_dict(contact: dict, patient: dict, is_self: bool,
+                      relationship: str | None) -> dict:
+    """Reconstrói o formato ANTIGO de `users` a partir de contact + patient.
+
+    `name` é o nome do CONTATO; `patient_name` é o nome do PACIENTE.
+    Quando is_self é False, o contato é o responsável (guardian_*).
+    """
+    u: dict = {
+        "id": patient["id"],
+        "_contact_id": contact["id"],
+        "number": contact.get("phone"),
+        "name": contact.get("name"),
+        "patient_name": patient.get("name"),
+        "is_patient": bool(is_self),
+    }
+    for f in _PATIENT_COPY_FIELDS:
+        u[f] = patient.get(f)
+    for f in _CONTACT_COPY_FIELDS:
+        u[f] = contact.get(f)
+    if is_self:
+        u["guardian_name"] = None
+        u["guardian_cpf"] = None
+        u["guardian_relationship"] = None
+    else:
+        u["guardian_name"] = contact.get("name")
+        u["guardian_cpf"] = contact.get("cpf")
+        u["guardian_relationship"] = relationship
+    return u
+
+
+async def get_users_by_phone(phone: str) -> list[dict]:
+    """[shim] Retorna um dict 'estilo user' (formato antigo de `users`) por
+    paciente vinculado a este número.
+
+    Reconstrói fielmente o formato legado a partir de `contacts` +
+    `patient_contacts` (is_self/relationship) + `patients`. id = patient_id.
     Mantido para compatibilidade; novo código deve usar
     app.patients.resolve_active_patient.
     """
     contact = await get_contact_by_phone(phone)
     if not contact:
         return []
-    pats = await get_patients_by_contact(contact["id"])
-    rows: list[dict] = []
-    for p in pats:
-        merged = {**contact, **p}
-        merged["id"] = p["id"]
-        merged["number"] = contact["phone"]
-        merged["_contact_id"] = contact["id"]
-        rows.append(merged)
-    return rows
+
+    client = await get_supabase()
+    resp = await (
+        client.from_("patient_contacts")
+        .select("is_self, relationship, role, patients(*)")
+        .eq("contact_id", contact["id"])
+        .execute()
+    )
+    pc_rows = resp.data or []
+
+    seen: dict[str, dict] = {}
+    for row in pc_rows:
+        patient = row.get("patients")
+        if not patient:
+            continue
+        pid = patient.get("id")
+        if pid in seen:
+            continue
+        seen[pid] = _legacy_user_dict(
+            contact, patient,
+            is_self=bool(row.get("is_self")),
+            relationship=row.get("relationship"),
+        )
+    return list(seen.values())
 
 
 async def get_user_by_phone(phone: str) -> dict | None:
