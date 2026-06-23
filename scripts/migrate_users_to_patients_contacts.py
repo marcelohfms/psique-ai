@@ -79,6 +79,7 @@ async def _get_or_create_patient(client, user: dict) -> str:
     if existing.data:
         return existing.data[0]["id"]
     payload = {"name": _patient_name(user), "legacy_user_id": user["id"]}
+    # birth_date é TEXT (mesmo padrão 'dd/mm/aaaa' da users) — copiado sem conversão
     for f in _PATIENT_FIELDS:
         if user.get(f) is not None:
             payload[f] = user[f]
@@ -91,6 +92,8 @@ async def main(dry_run: bool) -> None:
     users = (await client.from_("users").select("*").execute()).data or []
     print(f"{len(users)} users encontrados")
 
+    ok = 0
+    failures: list[tuple[str, str]] = []
     for user in users:
         phone = user.get("number")
         if not phone:
@@ -103,24 +106,29 @@ async def main(dry_run: bool) -> None:
                   f"+ patient({name}) is_self={is_self}")
             continue
 
-        contact_name, contact_cpf = _contact_name_and_cpf(user)
-        relationship = _contact_relationship(user)
-        contact_id = await _get_or_create_contact(client, phone, contact_name, contact_cpf)
-        contact_update = {f: user[f] for f in _CONTACT_FIELDS if user.get(f) is not None}
-        if contact_cpf is not None:
-            contact_update["cpf"] = contact_cpf
-        if contact_name is not None:
-            contact_update["name"] = contact_name
-        if contact_update:
-            await client.from_("contacts").update(contact_update).eq("id", contact_id).execute()
+        try:
+            contact_name, contact_cpf = _contact_name_and_cpf(user)
+            relationship = _contact_relationship(user)
+            contact_id = await _get_or_create_contact(client, phone, contact_name, contact_cpf)
+            contact_update = {f: user[f] for f in _CONTACT_FIELDS if user.get(f) is not None}
+            if contact_cpf is not None:
+                contact_update["cpf"] = contact_cpf
+            if contact_name is not None:
+                contact_update["name"] = contact_name
+            if contact_update:
+                await client.from_("contacts").update(contact_update).eq("id", contact_id).execute()
 
-        patient_id = await _get_or_create_patient(client, user)
-        for role in ROLES:
-            await link_patient_contact(
-                patient_id, contact_id, role,
-                is_self=is_self, relationship=relationship,
-            )
-        print(f"  OK user {user['id']} -> patient {patient_id} / contact {contact_id}")
+            patient_id = await _get_or_create_patient(client, user)
+            for role in ROLES:
+                await link_patient_contact(
+                    patient_id, contact_id, role,
+                    is_self=is_self, relationship=relationship,
+                )
+            ok += 1
+            print(f"  OK user {user['id']} -> patient {patient_id} / contact {contact_id}")
+        except Exception as e:  # noqa: BLE001 — registra e continua, não trava o lote
+            failures.append((user["id"], str(e)))
+            print(f"  FAIL user {user['id']} ({name}): {e}")
 
     if not dry_run:
         print("Atualizando appointments.patient_id...")
@@ -134,6 +142,11 @@ async def main(dry_run: bool) -> None:
                     {"patient_id": p.data[0]["id"]}
                 ).eq("id", appt["id"]).execute()
         print("appointments atualizados")
+
+    if not dry_run:
+        print(f"\n=== Resumo: {ok} OK, {len(failures)} falhas ===")
+        for uid, err in failures:
+            print(f"  FAIL {uid}: {err}")
 
 
 if __name__ == "__main__":

@@ -6,7 +6,7 @@ CREATE TABLE IF NOT EXISTS patients (
     id                      UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
     name                    TEXT        NOT NULL,
     email                   TEXT,
-    birth_date              DATE,
+    birth_date              TEXT,       -- formato brasileiro 'dd/mm/aaaa', igual à tabela users (não DATE)
     age                     INT,
     doctor_id               UUID        REFERENCES doctors(doctor_id) ON DELETE SET NULL,
     is_returning_patient    BOOL,
@@ -15,7 +15,7 @@ CREATE TABLE IF NOT EXISTS patients (
     referral_professional   TEXT,
     modality_restriction    TEXT        CHECK (modality_restriction IN ('online', 'presencial')),
     age_exception           BOOL        DEFAULT FALSE,
-    custom_price            NUMERIC,
+    custom_price            INTEGER,    -- valor em reais inteiros, igual à tabela users (não NUMERIC)
     booking_fee_waived      BOOL        DEFAULT FALSE,
     financial_name          TEXT,
     financial_cpf           TEXT,
