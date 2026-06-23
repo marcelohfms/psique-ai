@@ -7,7 +7,9 @@ CREATE TABLE IF NOT EXISTS patients (
     name                    TEXT        NOT NULL,
     email                   TEXT,
     birth_date              TEXT,       -- formato brasileiro 'dd/mm/aaaa', igual à tabela users (não DATE)
-    age                     INT,
+    age                     SMALLINT,   -- igual à tabela users
+    -- deactivated_at NÃO existe aqui (é de contacts); em contacts usamos TIMESTAMPTZ
+    -- de propósito (users usa DATE, que truncava a hora e quebrava a trava de 24h)
     doctor_id               UUID        REFERENCES doctors(doctor_id) ON DELETE SET NULL,
     is_returning_patient    BOOL,
     patient_cpf             TEXT,       -- CPF do próprio paciente
