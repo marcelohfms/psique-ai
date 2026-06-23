@@ -22,6 +22,10 @@ CREATE TABLE patients (
     age                         INT,
     doctor_id                   UUID        REFERENCES doctors(doctor_id),
     is_returning_patient        BOOL,
+    patient_cpf                 TEXT,  -- CPF do próprio paciente
+    guardian_name               TEXT,  -- responsável (menores)
+    guardian_cpf                TEXT,  -- responsável (menores)
+    guardian_relationship       TEXT,  -- relação do responsável (menores)
     consultation_reason         TEXT,
     referral_professional       TEXT,
     modality_restriction        TEXT,
