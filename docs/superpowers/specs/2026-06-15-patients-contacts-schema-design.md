@@ -18,16 +18,16 @@ CREATE TABLE patients (
     id                          UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
     name                        TEXT        NOT NULL,
     email                       TEXT,
-    birth_date                  DATE,
+    birth_date                  TEXT,  -- formato 'dd/mm/aaaa', idêntico à users (não DATE)
     age                         INT,
     doctor_id                   UUID        REFERENCES doctors(doctor_id),
     is_returning_patient        BOOL,
     patient_cpf                 TEXT,  -- CPF do próprio paciente (documento do paciente)
     consultation_reason         TEXT,
     referral_professional       TEXT,
-    modality_restriction        TEXT,
+    modality_restriction        TEXT        CHECK (modality_restriction IN ('online', 'presencial')),
     age_exception               BOOL,
-    custom_price                NUMERIC,
+    custom_price                INTEGER,  -- reais inteiros, idêntico à users (não NUMERIC)
     booking_fee_waived          BOOL        DEFAULT FALSE,
     financial_name              TEXT,
     financial_cpf               TEXT,
