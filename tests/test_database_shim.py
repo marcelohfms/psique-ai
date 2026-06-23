@@ -182,3 +182,22 @@ async def test_upsert_user_routes_guardian_to_contact():
     # (c) link_patient_contact chamado com relationship="mãe" e is_self=False
     assert all(link["relationship"] == "mãe" for link in captured["links"])
     assert all(link["is_self"] is False for link in captured["links"])
+
+
+@pytest.mark.asyncio
+async def test_get_upcoming_appointments_filters_by_patient_id():
+    """get_upcoming_appointments deve filtrar appointments por patient_id (não user_id)."""
+    table = MagicMock()
+    for m in ("select", "eq", "in_", "limit", "maybe_single", "order", "gte", "lt"):
+        getattr(table, m).return_value = table
+    table.execute = AsyncMock(return_value=MagicMock(data=[]))
+    client = MagicMock()
+    client.from_.return_value = table
+    with patch("app.database.get_supabase", new_callable=AsyncMock, return_value=client), \
+         patch("app.database.get_user_by_phone", new_callable=AsyncMock,
+               return_value={"id": "p-99"}):
+        await database.get_upcoming_appointments("5583999999999")
+    # o filtro foi por patient_id == id do paciente
+    table.eq.assert_any_call("patient_id", "p-99")
+    # nunca filtrou por user_id
+    assert all(c.args[0] != "user_id" for c in table.eq.call_args_list)

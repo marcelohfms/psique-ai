@@ -175,6 +175,30 @@ async def test_confirm_appointment_creates_event_and_notifies():
     mock_notify.assert_called()  # clinic notified
 
 
+async def test_confirm_appointment_insert_uses_patient_id_and_contact_id():
+    """O insert de novo agendamento grava patient_id + contact_id (não user_id)."""
+    from app.graph.tools import confirm_appointment
+    client, table, execute = _make_supabase_client()
+    _user = {"id": "p-1", "_contact_id": "c-1"}
+    with patch("app.graph.tools._get_doctor_calendar_id", new_callable=AsyncMock, return_value="cal123"), \
+         patch("app.google_calendar.create_event", new_callable=AsyncMock, return_value="evt-pid"), \
+         patch("app.graph.tools.get_supabase", new_callable=AsyncMock, return_value=client), \
+         patch("app.graph.tools.get_users_by_phone", new_callable=AsyncMock, return_value=[_user]), \
+         patch("app.graph.tools.get_user_by_phone", new_callable=AsyncMock, return_value=_user), \
+         patch("app.graph.tools.log_event", new_callable=AsyncMock), \
+         patch("app.graph.tools._notify_clinic", new_callable=AsyncMock):
+        await confirm_appointment.coroutine(
+            slot_datetime="2026-03-23T09:00:00",
+            slot_duration_minutes=60,
+            state=_make_state(),
+            config=CONFIG,
+        )
+    _insert_payload = table.insert.call_args[0][0]
+    assert _insert_payload.get("patient_id") == "p-1"
+    assert _insert_payload.get("contact_id") == "c-1"
+    assert "user_id" not in _insert_payload
+
+
 async def test_confirm_appointment_with_session_note():
     from app.graph.tools import confirm_appointment
     client, _, _ = _make_supabase_client()
@@ -354,10 +378,11 @@ async def test_cancel_appointment_cancels_and_notifies():
 async def test_reschedule_appointment_updates_event_and_notifies():
     from app.graph.tools import reschedule_appointment
     client, table, execute = _make_supabase_client()
-    execute.return_value = MagicMock(data={"start_time": "2026-03-23T09:00:00+00:00", "users": {"id": "user-1", "patient_name": "Maria", "name": "Maria", "number": "5583999999999"}})
+    execute.return_value = MagicMock(data={"start_time": "2026-03-23T09:00:00+00:00", "patient_id": "user-1", "patients": {"name": "Maria"}})
     with patch("app.graph.tools._get_doctor_calendar_id", new_callable=AsyncMock, return_value="cal123"), \
          patch("app.google_calendar.update_event", new_callable=AsyncMock) as mock_update, \
          patch("app.graph.tools.get_supabase", new_callable=AsyncMock, return_value=client), \
+         patch("app.graph.tools.get_users_by_phone", new_callable=AsyncMock, return_value=[{"id": "user-1"}]), \
          patch("app.graph.tools.log_event", new_callable=AsyncMock), \
          patch("app.graph.tools._notify_clinic", new_callable=AsyncMock) as mock_notify:
         result = await reschedule_appointment.coroutine(
@@ -376,10 +401,11 @@ async def test_reschedule_appointment_resets_reminder_fields():
     """Reagendar deve zerar reminder_day_before_sent_at e reminder_day_of_sent_at."""
     from app.graph.tools import reschedule_appointment
     client, table, execute = _make_supabase_client()
-    execute.return_value = MagicMock(data={"start_time": "2026-03-23T09:00:00+00:00", "users": {"id": "user-1", "patient_name": "Maria", "name": "Maria", "number": "5583999999999"}})
+    execute.return_value = MagicMock(data={"start_time": "2026-03-23T09:00:00+00:00", "patient_id": "user-1", "patients": {"name": "Maria"}})
     with patch("app.graph.tools._get_doctor_calendar_id", new_callable=AsyncMock, return_value="cal123"), \
          patch("app.google_calendar.update_event", new_callable=AsyncMock), \
          patch("app.graph.tools.get_supabase", new_callable=AsyncMock, return_value=client), \
+         patch("app.graph.tools.get_users_by_phone", new_callable=AsyncMock, return_value=[{"id": "user-1"}]), \
          patch("app.graph.tools.log_event", new_callable=AsyncMock), \
          patch("app.graph.tools._notify_clinic", new_callable=AsyncMock):
         await reschedule_appointment.coroutine(
@@ -404,12 +430,14 @@ async def test_reschedule_appointment_respects_modality_restriction():
     client, table, execute = _make_supabase_client()
     appt_data = {
         "start_time": "2026-03-20T09:00:00-03:00",
-        "users": {"id": "user-1", "patient_name": "Maria", "name": "Maria", "number": "5583999999999"},
+        "patient_id": "user-1",
+        "patients": {"name": "Maria"},
     }
     execute.return_value = MagicMock(data=appt_data)
     with patch("app.graph.tools._get_doctor_calendar_id", new_callable=AsyncMock, return_value="cal123"), \
          patch("app.google_calendar.update_event", new_callable=AsyncMock) as mock_update, \
          patch("app.graph.tools.get_supabase", new_callable=AsyncMock, return_value=client), \
+         patch("app.graph.tools.get_users_by_phone", new_callable=AsyncMock, return_value=[{"id": "user-1"}]), \
          patch("app.graph.tools.log_event", new_callable=AsyncMock), \
          patch("app.graph.tools._notify_clinic", new_callable=AsyncMock), \
          patch("app.graph.tools.send_text", new_callable=AsyncMock), \
@@ -629,7 +657,7 @@ def _make_supabase_client_with_appointment():
         "start_time": "2026-03-23T09:00:00+00:00",
         "doctor_id": "d5baa58b-a788-4f40-b8c0-512c189150be",
         "status": "scheduled",
-        "users": {"id": "user-123", "patient_name": "Maria", "name": "Maria"},
+        "patients": {"id": "user-123", "name": "Maria"},
     }])
     # Call 2: full appointment fetch for payment logic
     apt_data = MagicMock(data=[{
@@ -796,7 +824,7 @@ def _make_supabase_client_with_appointment_waived(booking_fee_waived=True, custo
         "start_time": "2026-06-15T10:00:00+00:00",
         "doctor_id": "d5baa58b-a788-4f40-b8c0-512c189150be",
         "status": "scheduled",
-        "users": {"id": "user-123", "patient_name": "Maria", "name": "Maria"},
+        "patients": {"id": "user-123", "name": "Maria"},
     }])
     apt_data = MagicMock(data=[{
         "appointment_id": "apt-wv",
@@ -1063,12 +1091,14 @@ async def test_reschedule_appointment_presencial_restriction_on_online_only_slot
     client, table, execute = _make_supabase_client()
     appt_data = {
         "start_time": "2026-03-20T09:00:00-03:00",
-        "users": {"id": "user-1", "patient_name": "Maria", "name": "Maria", "number": "5583999999999"},
+        "patient_id": "user-1",
+        "patients": {"name": "Maria"},
     }
     execute.return_value = MagicMock(data=appt_data)
     with patch("app.graph.tools._get_doctor_calendar_id", new_callable=AsyncMock, return_value="cal123"), \
          patch("app.google_calendar.update_event", new_callable=AsyncMock) as mock_update, \
          patch("app.graph.tools.get_supabase", new_callable=AsyncMock, return_value=client), \
+         patch("app.graph.tools.get_users_by_phone", new_callable=AsyncMock, return_value=[{"id": "user-1"}]), \
          patch("app.graph.tools.log_event", new_callable=AsyncMock), \
          patch("app.graph.tools._notify_clinic", new_callable=AsyncMock), \
          patch("app.graph.tools.send_text", new_callable=AsyncMock), \
