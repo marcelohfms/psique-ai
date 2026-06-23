@@ -87,9 +87,29 @@ async def _get_or_create_patient(client, user: dict) -> str:
     return inserted.data[0]["id"]
 
 
+async def _fetch_all(client, table: str, columns: str = "*") -> list[dict]:
+    """Lê TODAS as linhas paginando — o PostgREST limita cada select a 1000 linhas.
+
+    Sem isso, tabelas com mais de 1000 registros seriam truncadas silenciosamente.
+    """
+    rows: list[dict] = []
+    batch = 1000
+    start = 0
+    while True:
+        chunk = (
+            await client.from_(table).select(columns)
+            .range(start, start + batch - 1).execute()
+        ).data or []
+        rows.extend(chunk)
+        if len(chunk) < batch:
+            break
+        start += batch
+    return rows
+
+
 async def main(dry_run: bool) -> None:
     client = await get_supabase()
-    users = (await client.from_("users").select("*").execute()).data or []
+    users = await _fetch_all(client, "users")
     print(f"{len(users)} users encontrados")
 
     ok = 0
@@ -132,7 +152,7 @@ async def main(dry_run: bool) -> None:
 
     if not dry_run:
         print("Atualizando appointments.patient_id...")
-        appts = (await client.from_("appointments").select("id, user_id").execute()).data or []
+        appts = await _fetch_all(client, "appointments", "id, user_id")
         for appt in appts:
             if not appt.get("user_id"):
                 continue
