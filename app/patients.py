@@ -33,3 +33,28 @@ async def get_contact_by_phone(phone: str) -> dict | None:
     )
     rows = result.data or []
     return rows[0] if rows else None
+
+
+async def get_patients_by_contact(contact_id: str, role: str | None = None) -> list[dict]:
+    """Retorna os pacientes (dicts da tabela patients) vinculados a um contato.
+
+    Quando `role` é informado, filtra pelo papel. Deduplica por id.
+    """
+    client = await get_supabase()
+    query = (
+        client.from_("patient_contacts")
+        .select("patient_id, role, is_self, patients(*)")
+        .eq("contact_id", contact_id)
+    )
+    if role is not None:
+        query = query.eq("role", role)
+    result = await query.execute()
+
+    seen: set[str] = set()
+    out: list[dict] = []
+    for row in (result.data or []):
+        patient = row.get("patients")
+        if patient and patient["id"] not in seen:
+            seen.add(patient["id"])
+            out.append(patient)
+    return out
