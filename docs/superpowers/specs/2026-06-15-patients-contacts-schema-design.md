@@ -19,7 +19,7 @@ CREATE TABLE patients (
     name                        TEXT        NOT NULL,
     email                       TEXT,
     birth_date                  TEXT,  -- formato 'dd/mm/aaaa', idêntico à users (não DATE)
-    age                         INT,
+    age                         SMALLINT,  -- idêntico à users
     doctor_id                   UUID        REFERENCES doctors(doctor_id),
     is_returning_patient        BOOL,
     patient_cpf                 TEXT,  -- CPF do próprio paciente (documento do paciente)
