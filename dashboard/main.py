@@ -358,6 +358,7 @@ async def pagamentos_page(request: Request, username: str = Depends(verify_crede
                 "phone": phone,
                 "medico": doctor_display,
                 "data_hora": data_hora,
+                "start_time": start_time,
                 "tipo": "taxa",
                 "tipo_label": "Taxa de reserva",
                 "valor": 100,
@@ -376,12 +377,13 @@ async def pagamentos_page(request: Request, username: str = Depends(verify_crede
                 "phone": phone,
                 "medico": doctor_display,
                 "data_hora": data_hora,
+                "start_time": start_time,
                 "tipo": "consulta",
                 "tipo_label": "Consulta",
                 "valor": valor,
             })
 
-    pendencias.sort(key=lambda x: x["data_hora"])
+    pendencias.sort(key=lambda x: x["start_time"])
     return templates.TemplateResponse(
         request, "pagamentos.html", {"username": username, "pendencias": pendencias}
     )
