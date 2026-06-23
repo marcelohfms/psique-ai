@@ -49,23 +49,86 @@ def _phone_variants(phone: str) -> list[str]:
     return [digits]
 
 
+# Campos copiados de `patients` para o dict legado (formato antigo de `users`).
+_PATIENT_COPY_FIELDS = (
+    "email", "birth_date", "age", "doctor_id", "is_returning_patient",
+    "patient_cpf", "consultation_reason", "referral_professional",
+    "modality_restriction", "age_exception", "custom_price",
+    "booking_fee_waived", "financial_name", "financial_cpf", "financial_email",
+)
+
+# Campos copiados de `contacts` para o dict legado.
+_CONTACT_COPY_FIELDS = (
+    "active", "manual_hold", "deactivated_at", "price_adjustment_notified_at",
+)
+
+
+def _legacy_user_dict(contact: dict, patient: dict, is_self: bool,
+                      relationship: str | None) -> dict:
+    """Reconstrói o formato ANTIGO de `users` a partir de contact + patient.
+
+    `name` é o nome do CONTATO; `patient_name` é o nome do PACIENTE.
+    Quando is_self é False, o contato é o responsável (guardian_*).
+    """
+    u: dict = {
+        "id": patient["id"],
+        "_contact_id": contact["id"],
+        "number": contact.get("phone"),
+        "name": contact.get("name"),
+        "patient_name": patient.get("name"),
+        "is_patient": bool(is_self),
+    }
+    for f in _PATIENT_COPY_FIELDS:
+        u[f] = patient.get(f)
+    for f in _CONTACT_COPY_FIELDS:
+        u[f] = contact.get(f)
+    if is_self:
+        u["guardian_name"] = None
+        u["guardian_cpf"] = None
+        u["guardian_relationship"] = None
+    else:
+        u["guardian_name"] = contact.get("name")
+        u["guardian_cpf"] = contact.get("cpf")
+        u["guardian_relationship"] = relationship
+    return u
+
+
 async def get_users_by_phone(phone: str) -> list[dict]:
-    """Return ALL users rows for this phone number (both digit variants)."""
+    """[shim] Retorna um dict 'estilo user' (formato antigo de `users`) por
+    paciente vinculado a este número.
+
+    Reconstrói fielmente o formato legado a partir de `contacts` +
+    `patient_contacts` (is_self/relationship) + `patients`. id = patient_id.
+    Mantido para compatibilidade; novo código deve usar
+    app.patients.resolve_active_patient.
+    """
+    contact = await get_contact_by_phone(phone)
+    if not contact:
+        return []
+
     client = await get_supabase()
-    seen_ids: set[str] = set()
-    rows: list[dict] = []
-    for variant in _phone_variants(phone):
-        result = (
-            await client.from_("users")
-            .select("*")
-            .eq("number", variant)
-            .execute()
+    resp = await (
+        client.from_("patient_contacts")
+        .select("is_self, relationship, role, patients(*)")
+        .eq("contact_id", contact["id"])
+        .execute()
+    )
+    pc_rows = resp.data or []
+
+    seen: dict[str, dict] = {}
+    for row in pc_rows:
+        patient = row.get("patients")
+        if not patient:
+            continue
+        pid = patient.get("id")
+        if pid in seen:
+            continue
+        seen[pid] = _legacy_user_dict(
+            contact, patient,
+            is_self=bool(row.get("is_self")),
+            relationship=row.get("relationship"),
         )
-        for row in (result.data or []):
-            if row["id"] not in seen_ids:
-                seen_ids.add(row["id"])
-                rows.append(row)
-    return rows
+    return list(seen.values())
 
 
 async def get_user_by_phone(phone: str) -> dict | None:
@@ -79,76 +142,57 @@ async def get_user_by_phone(phone: str) -> dict | None:
     return active or rows[0]
 
 
+# Campos que pertencem ao CONTATO (o resto vai para o paciente).
+_CONTACT_FIELDS = {
+    "active", "manual_hold", "deactivated_at",
+    "price_adjustment_notified_at", "name",
+}
+
+
 async def upsert_user(phone: str, data: dict, user_id: str | None = None) -> str | None:
-    """Insert or update a user record. Returns the user's ID.
+    """[shim] Roteia campos para patients/contacts e devolve o patient_id."""
+    # extrai campos de guardião antes de separar patient/contact
+    guardian_cpf = data.get("guardian_cpf")
+    guardian_name = data.get("guardian_name")
+    guardian_relationship = data.get("guardian_relationship")
 
-    Resolution order:
-    1. If user_id is given → update that specific row.
-    2. If data contains patient_name → look for an existing row with the same
-       (phone, patient_name). If found → update it (never create a duplicate).
-    3. If no rows exist → insert a new row.
-    4. Fallback → update the single row, or the active one among multiple rows.
+    contact_data = {k: v for k, v in data.items() if k in _CONTACT_FIELDS}
+    patient_data = {
+        k: v for k, v in data.items()
+        if k not in _CONTACT_FIELDS
+        and k not in ("guardian_cpf", "guardian_name", "guardian_relationship")
+    }
 
-    Shared fields (active, deactivated_at, price_adjustment_notified_at, manual_hold)
-    are always propagated to ALL rows with the same phone number when a contact
-    has multiple patients linked.
-    """
-    # Fields that must stay in sync across all records for the same phone number
-    _SHARED_FIELDS = {"active", "deactivated_at", "price_adjustment_notified_at", "manual_hold"}
+    # 'name' é ambíguo: nome do contato; nome do paciente é patient_name.
+    if "patient_name" in patient_data:
+        patient_data["name"] = patient_data.pop("patient_name")
+    elif "name" in data and user_id is None:
+        patient_data.setdefault("name", data["name"])
+    patient_data.pop("is_patient", None)
 
-    client = await get_supabase()
-    if user_id:
-        await client.from_("users").update(data).eq("id", user_id).execute()
-        shared = {k: v for k, v in data.items() if k in _SHARED_FIELDS}
-        if shared:
-            # Propagate shared fields to all other rows with the same phone
-            rows = await get_users_by_phone(phone)
-            other_ids = [r["id"] for r in rows if r["id"] != user_id]
-            for oid in other_ids:
-                await client.from_("users").update(shared).eq("id", oid).execute()
-        return user_id
+    # roteia dados do responsável para o contato
+    if guardian_cpf is not None:
+        contact_data["cpf"] = guardian_cpf
+    if guardian_name is not None:
+        contact_data.setdefault("name", guardian_name)
 
-    rows = await get_users_by_phone(phone)
+    contact_id = await upsert_contact(phone, contact_data or {"name": data.get("name")})
 
-    # Try to match an existing row by patient_name or name to avoid duplicates.
-    # Covers both cases: when patient_name is already known, and when only the
-    # contact name (name) is available (e.g. early in the collect_info flow).
-    target: dict | None = None
-    name_to_match = (
-        (data.get("patient_name") or "").strip()
-        or (data.get("name") or "").strip()
-    ).lower()
-    if rows and name_to_match:
-        target = next(
-            (r for r in rows
-             if (r.get("patient_name") or r.get("name") or "").lower().strip() == name_to_match),
-            None,
-        )
+    patient_id = (
+        await upsert_patient(patient_data, patient_id=user_id)
+        if (patient_data or not user_id) else user_id
+    )
 
-    if target:
-        await client.from_("users").update(data).eq("id", target["id"]).execute()
-        shared = {k: v for k, v in data.items() if k in _SHARED_FIELDS}
-        if shared:
-            other_ids = [r["id"] for r in rows if r["id"] != target["id"]]
-            for oid in other_ids:
-                await client.from_("users").update(shared).eq("id", oid).execute()
-        return target["id"]
-
-    if not rows:
-        canonical = _phone_variants(phone)[0]
-        result = await client.from_("users").insert({"number": canonical, **data}).execute()
-        inserted = (result.data or [{}])[0]
-        return inserted.get("id")
-
-    # No name match — update single row or active one (safe fallback)
-    fallback = rows[0] if len(rows) == 1 else next((r for r in rows if r.get("active")), rows[0])
-    await client.from_("users").update(data).eq("id", fallback["id"]).execute()
-    shared = {k: v for k, v in data.items() if k in _SHARED_FIELDS}
-    if shared:
-        other_ids = [r["id"] for r in rows if r["id"] != fallback["id"]]
-        for oid in other_ids:
-            await client.from_("users").update(shared).eq("id", oid).execute()
-    return fallback["id"]
+    if patient_id and contact_id:
+        is_self = data.get("is_patient")
+        rel = guardian_relationship or ("self" if is_self else None)
+        for role in ("agendamento", "financeiro", "consulta"):
+            await link_patient_contact(
+                patient_id, contact_id, role,
+                is_self=bool(is_self) if is_self is not None else False,
+                relationship=rel,
+            )
+    return patient_id
 
 
 # ── Event tracking ────────────────────────────────────────────────────────────
@@ -309,3 +353,16 @@ async def get_last_assistant_message_time(phone: str):
 # ── LangGraph checkpointer ────────────────────────────────────────────────────
 # AsyncPostgresSaver.from_conn_string is an async context manager in v3.x
 # Use it directly in the FastAPI lifespan (see main.py)
+
+
+# ── Shim bindings (Tasks 9-10) ────────────────────────────────────────────────
+# Importado no FINAL do módulo para evitar import circular: app/patients.py faz
+# `from app.database import get_supabase`, então database.py precisa estar
+# totalmente inicializado antes de importar de app.patients.
+from app.patients import (  # noqa: E402
+    get_contact_by_phone,
+    get_patients_by_contact,
+    upsert_contact,
+    upsert_patient,
+    link_patient_contact,
+)
