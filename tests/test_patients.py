@@ -1,0 +1,239 @@
+import pytest
+from unittest.mock import AsyncMock, MagicMock, patch
+from app import patients
+
+
+def _client_returning(rows):
+    execute = AsyncMock(return_value=MagicMock(data=rows))
+    table = MagicMock()
+    for m in ("select", "eq", "insert", "update", "in_", "limit", "maybe_single", "order"):
+        getattr(table, m).return_value = table
+    table.execute = execute
+    client = MagicMock()
+    client.from_.return_value = table
+    return client, table, execute
+
+
+def test_normalize_phone_adds_ninth_digit():
+    assert patients.normalize_phone("5583988887777@s.whatsapp.net") == "5583988887777"
+    assert patients.normalize_phone("558388887777") == "5583988887777"
+
+
+def test_normalize_phone_passthrough_non_br_and_empty():
+    # Números que não casam o padrão BR (55 + DDD + 8/9 dígitos) passam cru.
+    assert patients.normalize_phone("") == ""
+    assert patients.normalize_phone("12345") == "12345"
+    assert patients.normalize_phone("447911123456") == "447911123456"  # UK, não-BR
+
+
+@pytest.mark.asyncio
+async def test_get_contact_by_phone_returns_row():
+    client, table, execute = _client_returning([{"id": "c1", "phone": "5583988887777"}])
+    with patch("app.patients.get_supabase", new_callable=AsyncMock, return_value=client):
+        contact = await patients.get_contact_by_phone("5583988887777@s.whatsapp.net")
+    assert contact["id"] == "c1"
+    table.eq.assert_called_with("phone", "5583988887777")
+
+
+@pytest.mark.asyncio
+async def test_get_contact_by_phone_returns_none_when_absent():
+    client, table, execute = _client_returning([])
+    with patch("app.patients.get_supabase", new_callable=AsyncMock, return_value=client):
+        contact = await patients.get_contact_by_phone("5583988887777")
+    assert contact is None
+
+
+@pytest.mark.asyncio
+async def test_get_patients_by_contact_filters_by_role():
+    client, table, execute = _client_returning([
+        {"patient_id": "p1", "role": "agendamento", "is_self": True,
+         "patients": {"id": "p1", "name": "João"}},
+    ])
+    with patch("app.patients.get_supabase", new_callable=AsyncMock, return_value=client):
+        result = await patients.get_patients_by_contact("c1", role="agendamento")
+    assert result == [{"id": "p1", "name": "João"}]
+    table.eq.assert_any_call("contact_id", "c1")
+    table.eq.assert_any_call("role", "agendamento")
+
+
+@pytest.mark.asyncio
+async def test_get_patients_by_contact_without_role_returns_all():
+    client, table, execute = _client_returning([
+        {"patient_id": "p1", "role": "agendamento", "is_self": False,
+         "patients": {"id": "p1", "name": "João"}},
+        {"patient_id": "p2", "role": "financeiro", "is_self": False,
+         "patients": {"id": "p2", "name": "Maria"}},
+    ])
+    with patch("app.patients.get_supabase", new_callable=AsyncMock, return_value=client):
+        result = await patients.get_patients_by_contact("c1")
+    assert {p["id"] for p in result} == {"p1", "p2"}
+
+
+@pytest.mark.asyncio
+async def test_get_contacts_for_patient_returns_all_agendamento_contacts():
+    client, table, execute = _client_returning([
+        {"contact_id": "cpai", "contacts": {"id": "cpai", "phone": "5583111", "active": True}},
+        {"contact_id": "cmae", "contacts": {"id": "cmae", "phone": "5583222", "active": True}},
+    ])
+    with patch("app.patients.get_supabase", new_callable=AsyncMock, return_value=client):
+        result = await patients.get_contacts_for_patient("p1", role="agendamento")
+    assert {c["phone"] for c in result} == {"5583111", "5583222"}
+    table.eq.assert_any_call("patient_id", "p1")
+    table.eq.assert_any_call("role", "agendamento")
+
+
+@pytest.mark.asyncio
+async def test_get_contacts_for_patient_skips_inactive():
+    client, table, execute = _client_returning([
+        {"contact_id": "cpai", "contacts": {"id": "cpai", "phone": "5583111", "active": True}},
+        {"contact_id": "cold", "contacts": {"id": "cold", "phone": "5583999", "active": False}},
+    ])
+    with patch("app.patients.get_supabase", new_callable=AsyncMock, return_value=client):
+        result = await patients.get_contacts_for_patient("p1", role="agendamento")
+    assert {c["phone"] for c in result} == {"5583111"}
+
+
+@pytest.mark.asyncio
+async def test_upsert_contact_inserts_when_absent():
+    insert_exec = AsyncMock(return_value=MagicMock(data=[{"id": "c-new", "phone": "5583988887777"}]))
+    select_exec = AsyncMock(return_value=MagicMock(data=[]))
+    table = MagicMock()
+    for m in ("select", "eq", "insert", "update"):
+        getattr(table, m).return_value = table
+    table.execute = select_exec
+    table.insert.return_value.execute = insert_exec
+    client = MagicMock()
+    client.from_.return_value = table
+    with patch("app.patients.get_supabase", new_callable=AsyncMock, return_value=client):
+        cid = await patients.upsert_contact("5583988887777", {"name": "João"})
+    assert cid == "c-new"
+
+
+@pytest.mark.asyncio
+async def test_upsert_contact_updates_when_present():
+    client, table, execute = _client_returning([{"id": "c1", "phone": "5583988887777"}])
+    with patch("app.patients.get_supabase", new_callable=AsyncMock, return_value=client):
+        cid = await patients.upsert_contact("5583988887777", {"name": "João Silva"})
+    assert cid == "c1"
+    table.update.assert_called()
+
+
+@pytest.mark.asyncio
+async def test_upsert_patient_insert_returns_id():
+    insert_exec = AsyncMock(return_value=MagicMock(data=[{"id": "p-new"}]))
+    table = MagicMock()
+    for m in ("select", "eq", "insert", "update"):
+        getattr(table, m).return_value = table
+    table.insert.return_value.execute = insert_exec
+    client = MagicMock()
+    client.from_.return_value = table
+    with patch("app.patients.get_supabase", new_callable=AsyncMock, return_value=client):
+        pid = await patients.upsert_patient({"name": "João"})
+    assert pid == "p-new"
+
+
+@pytest.mark.asyncio
+async def test_upsert_patient_update_path_returns_same_id():
+    client, table, execute = _client_returning([])
+    with patch("app.patients.get_supabase", new_callable=AsyncMock, return_value=client):
+        pid = await patients.upsert_patient({"name": "Novo Nome"}, patient_id="p-existing")
+    assert pid == "p-existing"
+    table.update.assert_called()
+
+
+@pytest.mark.asyncio
+async def test_link_patient_contact_upserts_on_conflict():
+    client, table, execute = _client_returning([{"id": "pc1"}])
+    table.upsert.return_value = table
+    with patch("app.patients.get_supabase", new_callable=AsyncMock, return_value=client):
+        await patients.link_patient_contact(
+            "p1", "c1", "agendamento", is_self=True, relationship="mãe"
+        )
+    table.upsert.assert_called_once()
+    args, kwargs = table.upsert.call_args
+    assert args[0]["patient_id"] == "p1"
+    assert args[0]["role"] == "agendamento"
+    assert args[0]["is_self"] is True
+    assert args[0]["relationship"] == "mãe"
+    assert kwargs.get("on_conflict") == "patient_id,contact_id,role"
+
+
+@pytest.mark.asyncio
+async def test_link_patient_contact_relationship_defaults_to_none():
+    client, table, execute = _client_returning([{"id": "pc1"}])
+    table.upsert.return_value = table
+    with patch("app.patients.get_supabase", new_callable=AsyncMock, return_value=client):
+        await patients.link_patient_contact("p1", "c1", "agendamento")
+    args, kwargs = table.upsert.call_args
+    assert args[0]["relationship"] is None
+
+
+@pytest.mark.asyncio
+async def test_upsert_contact_persists_cpf():
+    client, table, execute = _client_returning([{"id": "c1", "phone": "5583988887777"}])
+    with patch("app.patients.get_supabase", new_callable=AsyncMock, return_value=client):
+        cid = await patients.upsert_contact("5583988887777", {"name": "Maria", "cpf": "555"})
+    assert cid == "c1"
+    table.update.assert_called_once()
+    args, _ = table.update.call_args
+    assert args[0]["cpf"] == "555"
+
+
+@pytest.mark.asyncio
+async def test_resolve_active_patient_no_contact_returns_none():
+    with patch("app.patients.get_contact_by_phone", new_callable=AsyncMock, return_value=None):
+        result = await patients.resolve_active_patient("5583988887777")
+    assert result == {"contact": None, "patient": None, "candidates": [], "ambiguous": False}
+
+
+@pytest.mark.asyncio
+async def test_resolve_active_patient_single_patient():
+    contact = {"id": "c1", "phone": "5583988887777"}
+    with patch("app.patients.get_contact_by_phone", new_callable=AsyncMock, return_value=contact), \
+         patch("app.patients.get_patients_by_contact", new_callable=AsyncMock,
+               return_value=[{"id": "p1", "name": "João"}]):
+        result = await patients.resolve_active_patient("5583988887777")
+    assert result["contact"] == contact
+    assert result["patient"]["id"] == "p1"
+    assert result["ambiguous"] is False
+
+
+@pytest.mark.asyncio
+async def test_resolve_active_patient_multi_picks_upcoming():
+    contact = {"id": "c1"}
+    cands = [{"id": "p1", "name": "João"}, {"id": "p2", "name": "Maria"}]
+    async def fake_has_upcoming(pid):
+        return pid == "p2"
+    with patch("app.patients.get_contact_by_phone", new_callable=AsyncMock, return_value=contact), \
+         patch("app.patients.get_patients_by_contact", new_callable=AsyncMock, return_value=cands), \
+         patch("app.patients._patient_has_upcoming_appointment", side_effect=fake_has_upcoming):
+        result = await patients.resolve_active_patient("5583988887777")
+    assert result["patient"]["id"] == "p2"
+    assert result["ambiguous"] is False
+
+
+@pytest.mark.asyncio
+async def test_resolve_active_patient_multi_ambiguous_when_none_upcoming():
+    contact = {"id": "c1"}
+    cands = [{"id": "p1"}, {"id": "p2"}]
+    with patch("app.patients.get_contact_by_phone", new_callable=AsyncMock, return_value=contact), \
+         patch("app.patients.get_patients_by_contact", new_callable=AsyncMock, return_value=cands), \
+         patch("app.patients._patient_has_upcoming_appointment",
+               new_callable=AsyncMock, return_value=False):
+        result = await patients.resolve_active_patient("5583988887777")
+    assert result["patient"] is None
+    assert result["ambiguous"] is True
+    assert result["candidates"] == cands
+
+
+@pytest.mark.asyncio
+async def test_resolve_active_patient_ambiguous_when_multiple_upcoming():
+    contact = {"id": "c1"}
+    cands = [{"id": "p1"}, {"id": "p2"}]
+    # ambos têm agendamento próximo -> ainda ambíguo (não dá pra decidir)
+    with patch("app.patients.get_contact_by_phone", new_callable=AsyncMock, return_value=contact), \
+         patch("app.patients.get_patients_by_contact", new_callable=AsyncMock, return_value=cands), \
+         patch("app.patients._patient_has_upcoming_appointment", new_callable=AsyncMock, return_value=True):
+        result = await patients.resolve_active_patient("5583988887777")
+    assert result["patient"] is None
+    assert result["ambiguous"] is True
