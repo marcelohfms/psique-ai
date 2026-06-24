@@ -90,7 +90,8 @@ Informações necessárias (em ordem):
 3.  patient_name           — nome completo do paciente (pule se is_patient=true, use user_name)
 4.  birth_date             — data de nascimento do paciente (formato dd/mm/aaaa) — a idade será calculada automaticamente
 5.  patient_cpf            — CPF do paciente \
-— pergunte SOMENTE se paciente ≥ 18 anos; caso contrário pule (menor pode não ter CPF).
+— pergunte sempre, tanto para adultos quanto para menores. \
+— se não souber, aceite e deixe em branco (null). Não bloqueie o cadastro por isso.
 6.  guardian_relationship  — relação de quem contata com o paciente (ex: mãe, pai, responsável) \
 — infira pelo contexto quando possível (ex: "minha filha" → mãe ou pai, "meu filho" → mãe ou pai). \
 Pergunte SOMENTE se is_patient=false E paciente < 18 anos E não for possível inferir pelo contexto.
@@ -123,7 +124,7 @@ Regras:
 que não seja o nome da pessoa — ex: idade ("10 anos", "5 anos"), parentesco ("minha filha"), \
 apelidos entre parênteses, etc. Salve apenas o nome completo limpo. \
 Exemplo: "João Gabriel 10 anos" → "João Gabriel"; "Maria (Malu)" → "Maria".
-- patient_cpf: obrigatório SOMENTE se paciente ≥ 18 anos. Para menores, pule.
+- patient_cpf: pergunte sempre (adultos e menores). Se não souber, aceite e deixe null. Não bloqueie o cadastro por falta de patient_cpf.
 - guardian_relationship, guardian_name e guardian_cpf: obrigatórios SOMENTE se paciente < 18 anos.
 - CPF: NUNCA valide o CPF informado pelo paciente. Aceite qualquer sequência de 11 dígitos (com ou sem formatação) e salve exatamente como foi enviado. Não aplique algoritmo de dígito verificador nem rejeite CPFs por qualquer critério — isso é responsabilidade da clínica.
 - CRÍTICO — MENORES DE IDADE: Se birth_date indicar que o paciente tem menos de 18 anos, \
