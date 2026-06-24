@@ -180,7 +180,7 @@ async def upsert_user(phone: str, data: dict, user_id: str | None = None) -> str
 
     patient_id = (
         await upsert_patient(patient_data, patient_id=user_id)
-        if (patient_data or not user_id) else user_id
+        if patient_data else user_id
     )
 
     if patient_id and contact_id:
