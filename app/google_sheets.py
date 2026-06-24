@@ -234,10 +234,14 @@ async def append_document_request(
     medication_note: str = "",
     doctor_name: str = "",
     patient_cpf: str = "",
+    financial_name: str = "",
+    financial_cpf: str = "",
+    financial_email: str = "",
 ) -> None:
     """Append a document request row to the Google Sheets spreadsheet.
     Does nothing if GOOGLE_SHEETS_DOC_ID is not configured.
     Columns: Data | Nome | Idade | Telefone | E-mail | Tipo | Observação | Médico | CPF | Status
+    Para nota_fiscal, substitui nome/cpf/e-mail pelos dados do responsável financeiro se informados.
     """
     spreadsheet_id = os.environ.get("GOOGLE_SHEETS_DOC_ID")
     if not spreadsheet_id:
@@ -247,7 +251,18 @@ async def append_document_request(
     now = datetime.now(TZ).strftime("%d/%m/%Y %H:%M")
     age_str = str(patient_age) if patient_age else "—"
     phone_clean = phone.replace("@s.whatsapp.net", "")
-    row = [now, patient_name, age_str, phone_clean, patient_email, document_type, medication_note, doctor_name, patient_cpf, ""]
+
+    # Para nota fiscal, usa dados financeiros no lugar dos dados do paciente
+    if document_type == "nota_fiscal":
+        name_row = financial_name or patient_name
+        cpf_row = financial_cpf or patient_cpf
+        email_row = financial_email or patient_email
+    else:
+        name_row = patient_name
+        cpf_row = patient_cpf
+        email_row = patient_email
+
+    row = [now, name_row, age_str, phone_clean, email_row, document_type, medication_note, doctor_name, cpf_row, ""]
 
     creds = _credentials()
     service = build("sheets", "v4", credentials=creds)

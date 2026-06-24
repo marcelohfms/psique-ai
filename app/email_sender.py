@@ -175,6 +175,9 @@ async def send_document_request_email(
     phone: str,
     patient_email: str,
     document_type: str,
+    financial_name: str = "",
+    financial_cpf: str = "",
+    financial_email: str = "",
 ) -> None:
     """Send an email to the responsible doctor notifying a document request.
     Does nothing if SMTP credentials or doctor email are not configured.
@@ -195,7 +198,18 @@ async def send_document_request_email(
     age_str = f"{patient_age} anos" if patient_age else "não informada"
     now = datetime.now(TZ).strftime("%d/%m/%Y às %H:%M")
 
+    # Para nota fiscal, usa dados do responsável financeiro no lugar dos dados do paciente
+    if document_type == "nota_fiscal":
+        billing_name = financial_name or patient_name
+        billing_email = financial_email or patient_email
+        billing_cpf = financial_cpf or ""
+    else:
+        billing_name = patient_name
+        billing_email = patient_email
+        billing_cpf = ""
+
     subject = f"Solicitação de {doc_label} — {patient_name}"
+    cpf_line = f"  CPF: {billing_cpf}\n" if billing_cpf else ""
     body = (
         f"{doctor_label},\n\n"
         f"Um paciente solicitou a emissão de {doc_label} via WhatsApp.\n\n"
@@ -203,10 +217,13 @@ async def send_document_request_email(
         f"  Nome: {patient_name}\n"
         f"  Idade: {age_str}\n"
         f"  Telefone: {phone_clean}\n"
-        f"  E-mail para envio: {patient_email}\n"
         f"  Tipo de documento: {doc_label}\n"
         f"  Data da solicitação: {now}\n\n"
-        f"Por favor, providencie a emissão e envie ao paciente no e-mail acima.\n\n"
+        f"Dados para emissão:\n"
+        f"  Nome: {billing_name}\n"
+        f"{cpf_line}"
+        f"  E-mail para envio: {billing_email}\n\n"
+        f"Por favor, providencie a emissão e envie no e-mail acima.\n\n"
         f"— Eva, assistente virtual Psique"
     )
 
