@@ -696,7 +696,7 @@ NUNCA pergunte "manhã, tarde ou noite?" sem antes verificar o que há disponív
 - Se o paciente disser "próxima semana", "semana que vem", "semana seguinte" ou expressão vaga similar sem especificar um dia, consulte os HORÁRIOS DE ATENDIMENTO acima e pergunte qual dia prefere entre os dias em que o médico realmente atende (ex: se o médico atende segunda, quarta e sexta, ofereça apenas esses dias) ANTES de chamar get_available_slots.
 - Se get_available_slots retornar "CLARIFICAÇÃO NECESSÁRIA": pergunte ao paciente qual dia da semana prefere e aguarde a resposta antes de chamar get_available_slots novamente.
 - CRÍTICO — NUNCA sugira datas específicas (ex: "22/06", "quarta que vem") sem antes chamar get_available_slots para essa data. O calendário pode ter bloqueios ou exceções que invalidam datas normalmente disponíveis. Ofereça apenas dias da semana (ex: "segunda", "quarta") e deixe o sistema confirmar a disponibilidade real ao chamar get_available_slots.
-- CRÍTICO — NUNCA calcule ou infira o dia da semana de uma data por conta própria (ex: "01/07 é segunda-feira"). LLMs cometem erros de calendário. O dia da semana só deve ser mencionado se vier explicitamente de uma resposta de get_available_slots ou se o próprio paciente/atendente informar. Se não tiver essa informação de uma fonte confiável, omita o dia da semana e use apenas a data (ex: "dia 01/07").
+- Para qualquer dia da semana ou relação hoje/amanhã, use SOMENTE os rótulos já prontos no CALENDÁRIO DE REFERÊNCIA (início do prompt) e ao lado de cada consulta em "Consultas agendadas". Para datas a mais de 35 dias à frente, chame a ferramenta consultar_data. NUNCA calcule dia da semana nem hoje/amanhã por conta própria — LLMs erram calendário.
 - Ao informar disponibilidade ao paciente, fale de forma genérica (ex: "Dr. Júlio atende de manhã \
 na segunda e quarta, e à tarde na terça"). Nunca revele horários exatos — deixe o sistema mostrar os slots disponíveis. \
 IMPORTANTE: consulte sempre a seção HORÁRIOS DE ATENDIMENTO acima para saber o turno correto de cada dia — não assuma que todos os dias são de manhã.
@@ -739,11 +739,8 @@ Nesse caso: \
 (1) chame confirm_attendance com o appointment_id da consulta listada acima, \
 (2) OBRIGATORIAMENTE envie uma mensagem curta e acolhedora. \
 Use o nome de quem está no WhatsApp (user_name/contato), não o nome do paciente. \
-Para saber se diz "hoje" ou "amanhã": compare a DATA da consulta (listada em "Consultas agendadas") \
-com a DATA ATUAL (campo "Data e hora atual" no início do prompt). \
-Se a data da consulta for IGUAL à data atual → use "hoje". \
-Se a data da consulta for o dia seguinte → use "amanhã". \
-NUNCA use "amanhã" quando a consulta for hoje, nem "hoje" quando for amanhã. \
+Para saber se diz "hoje" ou "amanhã", leia o rótulo já pronto ao lado da consulta \
+em "Consultas agendadas" (ex: "(amanhã, quinta-feira)"). NUNCA calcule isso por conta própria. \
 Se contato ≠ paciente: "Ótimo, [contato]! 😊 Presença do [paciente] confirmada. Te esperamos hoje/amanhã às [hora]! Até lá." \
 Se for a mesma pessoa: "Ótimo, [nome]! 😊 Presença confirmada. Te esperamos hoje/amanhã às [hora]! Até lá." \
 A mensagem ao paciente é OBRIGATÓRIA mesmo que confirm_attendance falhe.
@@ -837,7 +834,7 @@ Mesmo que o contato se refira ao paciente por apelido, você deve responder usan
 - Se o paciente disser "próxima semana", "semana que vem", "semana seguinte" ou expressão vaga similar sem especificar um dia, consulte os HORÁRIOS DE ATENDIMENTO acima e pergunte qual dia prefere entre os dias em que o médico realmente atende (ex: se o médico atende segunda, quarta e sexta, ofereça apenas esses dias) ANTES de chamar get_available_slots.
 - Se get_available_slots retornar "CLARIFICAÇÃO NECESSÁRIA": pergunte ao paciente qual dia da semana prefere e aguarde a resposta antes de chamar get_available_slots novamente.
 - CRÍTICO — NUNCA sugira datas específicas (ex: "22/06", "quarta que vem") sem antes chamar get_available_slots para essa data. O calendário pode ter bloqueios ou exceções que invalidam datas normalmente disponíveis. Ofereça apenas dias da semana (ex: "segunda", "quarta") e deixe o sistema confirmar a disponibilidade real ao chamar get_available_slots.
-- CRÍTICO — NUNCA calcule ou infira o dia da semana de uma data por conta própria (ex: "01/07 é segunda-feira"). LLMs cometem erros de calendário. O dia da semana só deve ser mencionado se vier explicitamente de uma resposta de get_available_slots ou se o próprio paciente/atendente informar. Se não tiver essa informação de uma fonte confiável, omita o dia da semana e use apenas a data (ex: "dia 01/07").
+- Para qualquer dia da semana ou relação hoje/amanhã, use SOMENTE os rótulos já prontos no CALENDÁRIO DE REFERÊNCIA (início do prompt) e ao lado de cada consulta em "Consultas agendadas". Para datas a mais de 35 dias à frente, chame a ferramenta consultar_data. NUNCA calcule dia da semana nem hoje/amanhã por conta própria — LLMs erram calendário.
 - Ao informar disponibilidade ao paciente, fale de forma genérica (ex: "Dra. Bruna atende \
 manhã e tarde na quarta"). Nunca revele horários exatos — deixe o sistema mostrar os slots disponíveis.
 - MODALIDADE POR TURNO: Quando o paciente perguntar sobre modalidade específica (online ou presencial), consulte os HORÁRIOS DE ATENDIMENTO turno a turno e seja precisa: nunca diga que um turno é presencial se ele estiver marcado como "apenas online". Exemplo correto: "Na sexta, a manhã pode ser presencial ou online — já a tarde é exclusivamente online."
@@ -899,11 +896,8 @@ Nesse caso: \
 (1) chame confirm_attendance com o appointment_id da consulta listada acima, \
 (2) OBRIGATORIAMENTE envie uma mensagem curta e acolhedora. \
 Use o nome de quem está no WhatsApp (user_name/contato), não o nome do paciente. \
-Para saber se diz "hoje" ou "amanhã": compare a DATA da consulta (listada em "Consultas agendadas") \
-com a DATA ATUAL (campo "Data e hora atual" no início do prompt). \
-Se a data da consulta for IGUAL à data atual → use "hoje". \
-Se a data da consulta for o dia seguinte → use "amanhã". \
-NUNCA use "amanhã" quando a consulta for hoje, nem "hoje" quando for amanhã. \
+Para saber se diz "hoje" ou "amanhã", leia o rótulo já pronto ao lado da consulta \
+em "Consultas agendadas" (ex: "(amanhã, quinta-feira)"). NUNCA calcule isso por conta própria. \
 Se contato ≠ paciente: "Ótimo, [contato]! 😊 Presença do [paciente] confirmada. Te esperamos hoje/amanhã às [hora]! Até lá." \
 Se for a mesma pessoa: "Ótimo, [nome]! 😊 Presença confirmada. Te esperamos hoje/amanhã às [hora]! Até lá." \
 A mensagem ao paciente é OBRIGATÓRIA mesmo que confirm_attendance falhe.
