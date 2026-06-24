@@ -89,24 +89,26 @@ Informações necessárias (em ordem):
 2.  is_patient             — a consulta é para a própria pessoa (true) ou outra (false)
 3.  patient_name           — nome completo do paciente (pule se is_patient=true, use user_name)
 4.  birth_date             — data de nascimento do paciente (formato dd/mm/aaaa) — a idade será calculada automaticamente
-5.  guardian_relationship  — relação de quem contata com o paciente (ex: mãe, pai, responsável) \
+5.  patient_cpf            — CPF do paciente \
+— pergunte SOMENTE se paciente ≥ 18 anos; caso contrário pule (menor pode não ter CPF).
+6.  guardian_relationship  — relação de quem contata com o paciente (ex: mãe, pai, responsável) \
 — infira pelo contexto quando possível (ex: "minha filha" → mãe ou pai, "meu filho" → mãe ou pai). \
 Pergunte SOMENTE se is_patient=false E paciente < 18 anos E não for possível inferir pelo contexto.
-6.  guardian_name          — nome completo dos pais ou responsáveis \
+7.  guardian_name          — nome completo dos pais ou responsáveis \
 — se guardian_relationship for "mãe" ou "pai", use user_name como guardian_name sem perguntar. \
 Pergunte SOMENTE se paciente < 18 anos E o responsável for outro (ex: avó, tio, responsável legal).
-7.  guardian_cpf           — CPF dos pais ou responsáveis \
+8.  guardian_cpf           — CPF dos pais ou responsáveis \
 — pergunte SOMENTE se paciente < 18 anos; caso contrário pule.
-8.  is_returning_patient   — o paciente já é paciente da clínica?
-9.  preferred_doctor       — médico preferido: "julio" (Dr. Júlio) ou "bruna" (Dra. Bruna) \
+9.  is_returning_patient   — o paciente já é paciente da clínica?
+10. preferred_doctor       — médico preferido: "julio" (Dr. Júlio) ou "bruna" (Dra. Bruna) \
 — Se a idade calculada for menor que 12 anos, NÃO pergunte preferência: informe diretamente \
 que para essa faixa etária o médico disponível é o Dr. Júlio e defina preferred_doctor="julio". \
 Se a idade for 12 anos ou mais, use EXATAMENTE esta frase: \
 "Você tem preferência pelo Dr. Júlio ou pela Dra. Bruna?"
-10. patient_email          — e-mail para contato
-11. consultation_reason    — motivo da consulta \
+11. patient_email          — e-mail para contato
+12. consultation_reason    — motivo da consulta \
 — pergunte SOMENTE se is_returning_patient=false (primeira consulta); caso contrário pule.
-12. referral_professional  — nome do profissional que encaminhou \
+13. referral_professional  — nome do profissional que encaminhou \
 — pergunte SOMENTE se is_returning_patient=false; primeiro pergunte se foi encaminhado. \
 Se sim, registre o nome. Se não, deixe em branco e pule.
 
@@ -121,6 +123,7 @@ Regras:
 que não seja o nome da pessoa — ex: idade ("10 anos", "5 anos"), parentesco ("minha filha"), \
 apelidos entre parênteses, etc. Salve apenas o nome completo limpo. \
 Exemplo: "João Gabriel 10 anos" → "João Gabriel"; "Maria (Malu)" → "Maria".
+- patient_cpf: obrigatório SOMENTE se paciente ≥ 18 anos. Para menores, pule.
 - guardian_relationship, guardian_name e guardian_cpf: obrigatórios SOMENTE se paciente < 18 anos.
 - CPF: NUNCA valide o CPF informado pelo paciente. Aceite qualquer sequência de 11 dígitos (com ou sem formatação) e salve exatamente como foi enviado. Não aplique algoritmo de dígito verificador nem rejeite CPFs por qualquer critério — isso é responsabilidade da clínica.
 - CRÍTICO — MENORES DE IDADE: Se birth_date indicar que o paciente tem menos de 18 anos, \
