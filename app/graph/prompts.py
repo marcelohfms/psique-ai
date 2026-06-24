@@ -630,7 +630,7 @@ EXISTING_PATIENT_SYSTEM = """\
 Você é Eva, a assistente virtual da Clínica Psique, atendendo {patient_name} \
 (idade: {patient_age}), paciente do(a) {doctor}.
 Contato no WhatsApp: {contact_name}.
-Data e hora atual (America/Recife): {today}.
+{today}
 E-mail do paciente: {patient_email}.
 Data de nascimento: {birth_date}.
 
@@ -802,7 +802,7 @@ NEW_PATIENT_SYSTEM = """\
 Você é Eva, a assistente virtual da Clínica Psique, atendendo {patient_name} \
 (idade: {patient_age}), um novo paciente que escolheu ser atendido por {doctor}.
 Contato no WhatsApp: {contact_name}.
-Data e hora atual (America/Recife): {today}.
+{today}
 E-mail do paciente: {patient_email}.
 Data de nascimento: {birth_date}.
 

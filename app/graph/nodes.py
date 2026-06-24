@@ -1066,9 +1066,9 @@ async def patient_agent_node(state: ConversationState, config: RunnableConfig) -
 
     from app.google_calendar import format_doctor_schedules
     template = EXISTING_PATIENT_SYSTEM if state.get("is_returning_patient") else NEW_PATIENT_SYSTEM
+    from app.dates import build_date_reference, date_suffix_pt
     _now_recife = datetime.now(ZoneInfo("America/Recife"))
-    _weekday_pt = ["segunda-feira", "terça-feira", "quarta-feira", "quinta-feira", "sexta-feira", "sábado", "domingo"][_now_recife.weekday()]
-    today = f"{_now_recife.strftime('%d/%m/%Y %H:%M')} ({_weekday_pt})"
+    today = build_date_reference(_now_recife)
     system_prompt = template.format(
         patient_name=first_name,
         contact_name=contact_name,
@@ -1181,7 +1181,8 @@ async def patient_agent_node(state: ConversationState, config: RunnableConfig) -
             dt = datetime.fromisoformat(apt["start_time"]).astimezone(_TZ)
             fee_ok = apt.get("booking_fee_paid_at") or apt.get("booking_fee_waived")
             fee_tag = "" if fee_ok else " ⚠️ TAXA DE RESERVA PENDENTE"
-            label = f"- {dt.strftime('%d/%m/%Y às %H:%M')} (ID: {apt['appointment_id']}){fee_tag}"
+            _suffix = date_suffix_pt(dt.date(), _now_recife.date())
+            label = f"- {dt.strftime('%d/%m/%Y às %H:%M')} ({_suffix}) (ID: {apt['appointment_id']}){fee_tag}"
             if apt.get("recently_ended"):
                 recent_lines.append(label)
             else:
