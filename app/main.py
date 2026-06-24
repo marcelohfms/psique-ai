@@ -13,7 +13,7 @@ from fastapi import FastAPI, Request, Response, Header, HTTPException
 from langchain_core.messages import HumanMessage
 
 from app.graph import graph as graph_module
-from app.database import get_user_by_phone, get_users_by_phone, log_event, DOCTOR_NAMES, save_message
+from app.database import get_user_by_phone, get_users_by_phone, get_contact_by_phone, log_event, DOCTOR_NAMES, save_message
 from app.buffer import push as buffer_push, get_phone_lock
 from app.auth import router as auth_router
 from app.whatsapp import send_text
@@ -328,6 +328,15 @@ async def process_message(phone: str, text: str) -> None:
 
     if any(r.get("manual_hold") for r in all_users):
         return  # permanent hold — never reactivates
+
+    # Contato solto (não-paciente, ex.: representante) também é silenciado.
+    # O check acima itera sobre pacientes; um contato sem paciente não apareceria.
+    try:
+        _contact = await get_contact_by_phone(phone)
+    except Exception:
+        _contact = None  # degradação graciosa — segue o fluxo normal
+    if _contact and _contact.get("manual_hold"):
+        return
 
     inactive = [r for r in all_users if r.get("active") is False]
     if inactive:
