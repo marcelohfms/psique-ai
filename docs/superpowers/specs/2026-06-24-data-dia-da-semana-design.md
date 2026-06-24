@@ -42,7 +42,7 @@ Funções puras, fáceis de testar isoladamente:
 - `format_date_pt(target: date, today: date) -> str` — combina relativo + dia da
   semana: `"25/06 (amanhã, quarta-feira)"`; sem relativo: `"15/09 (terça-feira)"`.
 - `build_date_reference(now: datetime) -> str` — monta o bloco de referência dos
-  próximos 14 dias (ver abaixo).
+  próximos 35 dias (ver abaixo).
 
 Timezone de referência: `America/Recife` (consistente com o resto do código).
 
@@ -62,10 +62,10 @@ dia da semana nem hoje/amanhã por conta própria:
   amanhã  = 25/06 (quarta-feira)
             26/06 (quinta-feira)
             27/06 (sexta-feira)
-            ... (até 14 dias à frente)
+            ... (até 35 dias à frente)
 ```
 
-Janela: **14 dias** a partir de hoje (inclusive).
+Janela: **35 dias** a partir de hoje (inclusive).
 
 ### 3. Rótulos nas consultas agendadas
 
@@ -89,7 +89,7 @@ registrada em `TOOLS` (`nodes.py:26-33`):
 async def consultar_data(data: str) -> str:
     """Retorna o dia da semana e a relação com hoje (hoje/amanhã/em N dias)
     de uma data. Use SEMPRE que precisar mencionar o dia da semana de uma
-    data fora do calendário de referência (mais de 14 dias à frente)."""
+    data fora do calendário de referência (mais de 35 dias à frente)."""
 ```
 
 - Entrada aceita `"dd/mm"` (ano inferido: próximo ano em que a data ocorre a
@@ -113,7 +113,7 @@ e a ferramenta `consultar_data`:
 
 Regra substituta (uma vez por template):
 > "Para qualquer dia da semana ou hoje/amanhã, use os rótulos já prontos no
-> CALENDÁRIO DE REFERÊNCIA e nas consultas agendadas. Para datas além de 14 dias,
+> CALENDÁRIO DE REFERÊNCIA e nas consultas agendadas. Para datas além de 35 dias,
 > chame `consultar_data`. NUNCA calcule por conta própria."
 
 As regras de *uso* dos rótulos nas respostas de confirmação de presença
@@ -129,7 +129,7 @@ process_message node (nodes.py)
   → consultas agendadas          ├─→ system_prompt (com fatos prontos)
      enriquecidas via dates.py ──┘
   → LLM responde lendo rótulos (não calcula)
-  → se data > 14 dias: LLM chama consultar_data → app/dates.py (determinístico)
+  → se data > 35 dias: LLM chama consultar_data → app/dates.py (determinístico)
 ```
 
 ## Tratamento de erros
@@ -144,7 +144,7 @@ process_message node (nodes.py)
 
 - **Novo `tests/test_dates.py`** (módulo novo justifica arquivo novo): testes
   unitários puros — dia da semana correto em múltiplos casos; hoje/amanhã/depois
-  de amanhã; virada de mês e de ano; janela de 14 dias do `build_date_reference`;
+  de amanhã; virada de mês e de ano; janela de 35 dias do `build_date_reference`;
   timezone America/Recife.
 - **`tests/test_tools.py`**: testes da `consultar_data` — formatos `dd/mm` e
   `dd/mm/aaaa`, inferência de ano, data inválida, rótulo relativo correto.
