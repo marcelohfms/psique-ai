@@ -858,9 +858,12 @@ async def _handle_chatwoot_payload(payload: dict) -> None:
                         as_node="patient_agent",
                     )
                     logger.info("OUTGOING_SAVED phone=%s content=%.80s", _phone_out, _content_out)
-            elif not _is_human_agent and not _is_private:
+            elif not _is_human_agent and not _is_private and payload.get("event") == "message_created":
                 # Outgoing bot message (e.g. appointment reminder sent by script) →
-                # save to checkpoint so Eva has context when patient replies
+                # save to checkpoint so Eva has context when patient replies.
+                # Only on message_created — Chatwoot fires multiple message_updated
+                # events for the same message (delivered, read, etc.) which would
+                # duplicate the checkpoint entry.
                 _phone_out = _extract_phone_from_payload(payload)
                 _content_out = (payload.get("content") or "").strip()
                 if _phone_out and _content_out:
