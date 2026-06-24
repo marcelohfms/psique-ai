@@ -980,10 +980,14 @@ async def request_document(
     state: Annotated[dict, InjectedState],
     config: RunnableConfig,
     medication_note: str = "",
+    financial_name: str = "",
+    financial_cpf: str = "",
+    financial_email: str = "",
 ) -> str:
     """Registra uma solicitação de documento médico para o paciente.
     patient_email: e-mail informado pelo paciente para recebimento do documento.
     medication_note: obrigatório quando document_type='receita' — medicação(ões) solicitada(s).
+    financial_name/financial_cpf/financial_email: obrigatórios quando document_type='nota_fiscal' e o responsável financeiro for diferente do paciente.
     Mapeamento de termos: 'recibo saúde' ou 'recibo para plano de saúde' → nota_fiscal.
     'recibo' simples (de consulta, de pagamento) → recibo.
     """
@@ -1016,6 +1020,30 @@ async def request_document(
     doctor_key = state.get("preferred_doctor", "")
     doctor_id = DOCTOR_IDS.get(doctor_key)
 
+    # Fallback: use state values if not passed explicitly
+    if not financial_name:
+        financial_name = state.get("financial_name") or ""
+    if not financial_cpf:
+        financial_cpf = state.get("financial_cpf") or ""
+    if not financial_email:
+        financial_email = state.get("financial_email") or ""
+
+    # Persist financial data to DB so future requests don't need to ask again
+    if document_type == "nota_fiscal" and (financial_name or financial_cpf or financial_email):
+        from app.database import upsert_user
+        _fin_data: dict = {}
+        if financial_name:
+            _fin_data["financial_name"] = financial_name
+        if financial_cpf:
+            _fin_data["financial_cpf"] = financial_cpf
+        if financial_email:
+            _fin_data["financial_email"] = financial_email
+        try:
+            await upsert_user(phone, _fin_data, user_id=state.get("user_db_id"))
+        except Exception:
+            import logging as _log
+            _log.getLogger(__name__).exception("Failed to persist financial data for %s", phone)
+
     client = await get_supabase()
 
     # Fetch doctor email from doctors table (agenda_id = email)
@@ -1032,6 +1060,9 @@ async def request_document(
             "patient_email": patient_email,
             "doctor_id": doctor_id,
             "phone": phone,
+            "financial_name": financial_name or None,
+            "financial_cpf": financial_cpf or None,
+            "financial_email": financial_email or None,
         },
     }).execute()
 

@@ -41,6 +41,11 @@ class ConversationState(TypedDict):
     referral_professional: str | None  # profissional que encaminhou (apenas novos pacientes)
     medication_note: str | None      # medicação solicitada (apenas para receitas)
 
+    # Dados do responsável financeiro (para nota fiscal — pode ser diferente do paciente)
+    financial_name: str | None
+    financial_cpf: str | None
+    financial_email: str | None
+
     # When True, Eva executes silently (attendant instruction via private note):
     # posts result as a Chatwoot private note instead of sending a WhatsApp message.
     silent_mode: bool | None
