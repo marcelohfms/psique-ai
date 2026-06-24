@@ -26,6 +26,24 @@ def test_normalize_phone_passthrough_non_br_and_empty():
     assert patients.normalize_phone("447911123456") == "447911123456"  # UK, não-BR
 
 
+def test_normalize_phone_preserves_international_numbers():
+    """Números internacionais reais NÃO podem ganhar o 9 nem o 55 — passam intactos.
+
+    Casos reais de pacientes da clínica (não inserir o 9 de celular brasileiro
+    nem prefixar 55). O JID do WhatsApp já entrega o número com o código do país.
+    """
+    intl = {
+        "351968021825": "351968021825",   # Portugal (+351)
+        "34637036406": "34637036406",     # Espanha (+34)
+        "12033646976": "12033646976",     # EUA (+1)
+        "44759333090": "44759333090",     # Reino Unido (+44)
+        "61411598693": "61411598693",     # Austrália (+61)
+        "351968021825@s.whatsapp.net": "351968021825",  # JID é limpo
+    }
+    for raw, expected in intl.items():
+        assert patients.normalize_phone(raw) == expected, raw
+
+
 @pytest.mark.asyncio
 async def test_get_contact_by_phone_returns_row():
     client, table, execute = _client_returning([{"id": "c1", "phone": "5583988887777"}])
