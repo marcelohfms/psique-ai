@@ -2193,7 +2193,12 @@ async def consultar_data(data: str) -> str:
         try:
             dm = datetime.strptime(raw, "%d/%m")
         except ValueError:
-            dm = None
+            # Retry with a known leap year so '29/02' parses; only day & month
+            # are used below (the real year is chosen by the offset loop).
+            try:
+                dm = datetime.strptime(f"{raw}/2024", "%d/%m/%Y")
+            except ValueError:
+                dm = None
         if dm is not None:
             # Find the next year (starting at the current year) in which dd/mm is
             # a valid date on/after today — handles 29/02 and past dates.

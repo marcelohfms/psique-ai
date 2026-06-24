@@ -1155,6 +1155,14 @@ async def test_reschedule_appointment_presencial_restriction_on_online_only_slot
 
 # ── send_pending_payments_reminder filter logic ───────────────────────────────
 
+async def test_consultar_data_leap_day_dd_mm():
+    from app.graph.tools import consultar_data
+    result = await consultar_data.coroutine(data="29/02")
+    # Must resolve to a real Feb 29 (next leap year), not the invalid-input message.
+    assert "29/02" in result
+    assert "Não consegui entender" not in result
+
+
 def test_pending_payments_courtesy_filter():
     """Courtesy appointments (users.custom_price == 0) must be excluded from consulta_pendente."""
     appts = [
