@@ -14,6 +14,7 @@ from app.graph.tools import (
     register_payment, update_preferred_doctor, save_patient_email,
     register_refund_request, confirm_refund_completed,
     request_registration_update, nudge_doctor_document,
+    consultar_data,
     _expected_consultation_amount,
 )
 from app.graph.prompts import COLLECT_SYSTEM, MINOR_RULE, MINOR_RETURNING_RULE, ADULT_RULE, GUARDIAN_RULE, EXISTING_PATIENT_SYSTEM, NEW_PATIENT_SYSTEM, CANCELLATION_RULES, CLINIC_ADDRESS, DOCTORS_INFO, get_booking_fee_rule, MEDICAL_LIMITS_RULE, DOCTOR_CORRECTION_RULE, EMAIL_RULE, get_pricing_rules, ATTENDANT_INSTRUCTION_RULE, get_pricing_exception_rule
@@ -30,6 +31,7 @@ TOOLS = [
     register_payment, update_preferred_doctor, save_patient_email,
     register_refund_request, confirm_refund_completed,
     request_registration_update, nudge_doctor_document,
+    consultar_data,
 ]
 
 _collect_llm = None
@@ -681,13 +683,29 @@ async def collect_info_node(state: ConversationState, config: RunnableConfig) ->
         except ValueError:
             pass
 
-    if result.is_complete and not birth_date_invalid:
+    # Merge collected fields with existing state for the upsert (used both for
+    # is_complete check and for the actual upsert below).
+    merged = {**state, **{k: v for k, v in update.items() if k not in ("messages", "stage")}}
+
+    # Map merged state to the dict shape expected by is_registration_complete.
+    _reg_check = {
+        "name": merged.get("user_name"),
+        "email": merged.get("patient_email"),
+        "birth_date": merged.get("birth_date"),
+        "doctor_id": DOCTOR_IDS.get(merged.get("preferred_doctor", ""), None),
+        "is_patient": merged.get("is_patient"),
+        "is_returning_patient": merged.get("is_returning_patient"),
+        "patient_name": merged.get("patient_name"),
+        "age": merged.get("patient_age"),
+        "guardian_name": merged.get("guardian_name"),
+        "guardian_cpf": merged.get("guardian_cpf"),
+        "guardian_relationship": merged.get("guardian_relationship"),
+    }
+
+    if result.is_complete and not birth_date_invalid and is_registration_complete(_reg_check):
         update["stage"] = "patient_agent"
         if _is_document:
             update["pending_action"] = "request_document"
-
-        # Merge collected fields with existing state for the upsert
-        merged = {**state, **{k: v for k, v in update.items() if k not in ("messages", "stage")}}
         try:
             await upsert_user(state["phone"], {
                 "name": merged.get("user_name"),
