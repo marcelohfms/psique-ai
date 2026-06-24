@@ -210,6 +210,11 @@ async def send_document_request_email(
 
     subject = f"Solicitação de {doc_label} — {patient_name}"
     cpf_line = f"  CPF: {billing_cpf}\n" if billing_cpf else ""
+    referencia_line = (
+        f"  Observação: Referente à consulta do paciente {patient_name}\n"
+        if document_type == "nota_fiscal" and financial_name and financial_name != patient_name
+        else ""
+    )
     body = (
         f"{doctor_label},\n\n"
         f"Um paciente solicitou a emissão de {doc_label} via WhatsApp.\n\n"
@@ -222,7 +227,8 @@ async def send_document_request_email(
         f"Dados para emissão:\n"
         f"  Nome: {billing_name}\n"
         f"{cpf_line}"
-        f"  E-mail para envio: {billing_email}\n\n"
+        f"  E-mail para envio: {billing_email}\n"
+        f"{referencia_line}\n"
         f"Por favor, providencie a emissão e envie no e-mail acima.\n\n"
         f"— Eva, assistente virtual Psique"
     )

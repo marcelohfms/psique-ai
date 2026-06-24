@@ -257,12 +257,20 @@ async def append_document_request(
         name_row = financial_name or patient_name
         cpf_row = financial_cpf or patient_cpf
         email_row = financial_email or patient_email
+        # Se responsável financeiro é diferente do paciente, anota referência na observação
+        if financial_name and financial_name != patient_name:
+            obs = f"Referente à consulta do paciente {patient_name}"
+            if medication_note:
+                obs = f"{obs}. {medication_note}"
+        else:
+            obs = medication_note
     else:
         name_row = patient_name
         cpf_row = patient_cpf
         email_row = patient_email
+        obs = medication_note
 
-    row = [now, name_row, age_str, phone_clean, email_row, document_type, medication_note, doctor_name, cpf_row, ""]
+    row = [now, name_row, age_str, phone_clean, email_row, document_type, obs, doctor_name, cpf_row, ""]
 
     creds = _credentials()
     service = build("sheets", "v4", credentials=creds)
