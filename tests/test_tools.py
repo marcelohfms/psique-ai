@@ -1,7 +1,7 @@
 """Tests for each tool in app/graph/tools.py."""
 import os
 import pytest
-from datetime import datetime
+from datetime import datetime, timedelta
 from unittest.mock import AsyncMock, MagicMock, patch
 from zoneinfo import ZoneInfo
 
@@ -830,7 +830,7 @@ async def test_consultar_data_today_and_tomorrow():
     from app.graph.tools import consultar_data
     now = datetime.now(TZ)
     today_str = now.strftime("%d/%m/%Y")
-    tomorrow_str = (now + __import__("datetime").timedelta(days=1)).strftime("%d/%m/%Y")
+    tomorrow_str = (now + timedelta(days=1)).strftime("%d/%m/%Y")
     assert "(hoje)" in await consultar_data.coroutine(data=today_str)
     assert "(amanhã)" in await consultar_data.coroutine(data=tomorrow_str)
 
@@ -850,6 +850,31 @@ async def test_consultar_data_invalid_input():
     from app.graph.tools import consultar_data
     result = await consultar_data.coroutine(data="banana")
     assert "dd/mm" in result
+
+
+async def test_consultar_data_leap_day_dd_mm():
+    from app.graph.tools import consultar_data
+    result = await consultar_data.coroutine(data="29/02")
+    # Must resolve to a real Feb 29 (next leap year), not the invalid-input message.
+    assert "29/02" in result
+    assert "Não consegui entender" not in result
+
+
+async def test_consultar_data_future_relative_em_n_dias():
+    from app.graph.tools import consultar_data
+    now = datetime.now(TZ)
+    future = (now + timedelta(days=10)).strftime("%d/%m/%Y")
+    result = await consultar_data.coroutine(data=future)
+    assert "em 10 dias" in result
+
+
+async def test_consultar_data_past_explicit_date_ha_n_dias():
+    from app.graph.tools import consultar_data
+    now = datetime.now(TZ)
+    past = (now - timedelta(days=5)).strftime("%d/%m/%Y")
+    result = await consultar_data.coroutine(data=past)
+    assert "há 5 dias" in result
+    assert "atrás" not in result
 
 
 def _make_supabase_client_with_appointment_waived(booking_fee_waived=True, custom_price=None):
@@ -1154,14 +1179,6 @@ async def test_reschedule_appointment_presencial_restriction_on_online_only_slot
 
 
 # ── send_pending_payments_reminder filter logic ───────────────────────────────
-
-async def test_consultar_data_leap_day_dd_mm():
-    from app.graph.tools import consultar_data
-    result = await consultar_data.coroutine(data="29/02")
-    # Must resolve to a real Feb 29 (next leap year), not the invalid-input message.
-    assert "29/02" in result
-    assert "Não consegui entender" not in result
-
 
 def test_pending_payments_courtesy_filter():
     """Courtesy appointments (users.custom_price == 0) must be excluded from consulta_pendente."""

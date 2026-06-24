@@ -2180,7 +2180,7 @@ async def consultar_data(data: str) -> str:
     esteja no CALENDÁRIO DE REFERÊNCIA do prompt (ou seja, mais de 35 dias à
     frente). Aceita 'dd/mm' ou 'dd/mm/aaaa'. Nunca calcule o dia da semana você
     mesmo — chame esta ferramenta."""
-    from app.dates import TZ, weekday_pt
+    from app.dates import weekday_pt, relative_label
 
     today = datetime.now(TZ).date()
     raw = (data or "").strip()
@@ -2220,13 +2220,12 @@ async def consultar_data(data: str) -> str:
     wd = weekday_pt(parsed)
     article = "um" if wd in ("sábado", "domingo") else "uma"
     delta = (parsed - today).days
-    if delta == 0:
-        rel = "hoje"
-    elif delta == 1:
-        rel = "amanhã"
+    rel_near = relative_label(parsed, today)
+    if rel_near:
+        rel = rel_near
     elif delta > 0:
         rel = f"em {delta} dias"
     else:
-        rel = f"há {abs(delta)} dias atrás"
+        rel = f"há {abs(delta)} dias"
 
     return f"{parsed.strftime('%d/%m/%Y')} é {article} {wd} ({rel})."
