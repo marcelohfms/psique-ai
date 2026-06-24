@@ -47,7 +47,10 @@ def clean_phone(raw):
     digits = re.sub(r"\D", "", str(raw))
     if len(digits) < 8:
         return None
-    if not digits.startswith("55"):
+    # Só prefixa o 55 quando parece um BR sem código de país (DDD + 8/9 dígitos
+    # = 10 ou 11 dígitos). NÃO prefixar cegamente: internacionais já trazem o
+    # código do país e virariam "55<intl>" (bug do import original).
+    if not digits.startswith("55") and len(digits) in (10, 11):
         digits = "55" + digits
     # 12 digits = missing the 9th digit → insert 9 after country code + DDD (position 4)
     if len(digits) == 12:
