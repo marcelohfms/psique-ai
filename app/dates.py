@@ -56,6 +56,8 @@ def format_date_pt(target: date, today: date) -> str:
 def build_date_reference(now: datetime) -> str:
     """Reference block: current datetime header + a row per day for the next
     REFERENCE_WINDOW_DAYS days, each pre-labelled with its weekday."""
+    if now.tzinfo is None:
+        raise ValueError("build_date_reference requires a timezone-aware datetime")
     today = now.date()
     lines = [
         f"Data e hora atual (America/Recife): "

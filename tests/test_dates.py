@@ -2,6 +2,8 @@
 from datetime import date, datetime
 from zoneinfo import ZoneInfo
 
+import pytest
+
 from app.dates import (
     weekday_pt,
     relative_label,
@@ -62,3 +64,8 @@ def test_build_date_reference_month_rollover():
     now = datetime(2026, 6, 24, 9, 0, tzinfo=TZ)
     block = build_date_reference(now)
     assert "29/07 (quarta-feira)" in block
+
+
+def test_build_date_reference_rejects_naive_datetime():
+    with pytest.raises(ValueError):
+        build_date_reference(datetime(2026, 6, 24, 9, 0))  # naive, no tzinfo
