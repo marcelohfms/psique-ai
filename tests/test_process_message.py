@@ -160,6 +160,44 @@ async def test_known_user_goes_to_patient_agent():
         gg.chatbot = original
 
 
+async def test_standalone_contact_with_manual_hold_is_silenced():
+    """Contato solto (sem paciente) com manual_hold=true → bot não processa."""
+    import app.graph.graph as gg
+    chatbot = _make_chatbot()
+    original = gg.chatbot
+    gg.chatbot = chatbot
+    try:
+        with patch("app.main.get_user_by_phone", new_callable=AsyncMock, return_value=None), \
+             patch("app.main.get_users_by_phone", new_callable=AsyncMock, return_value=[]), \
+             patch("app.main.get_contact_by_phone", new_callable=AsyncMock,
+                   return_value={"id": "c-rep", "phone": "5581997556159", "manual_hold": True}), \
+             patch("app.main.log_event", new_callable=AsyncMock):
+            from app.main import process_message
+            await process_message(PHONE, "oi, sou representante")
+            chatbot.ainvoke.assert_not_called()   # silêncio: nada foi processado
+    finally:
+        gg.chatbot = original
+
+
+async def test_contact_without_manual_hold_proceeds_normally():
+    """Contato solto SEM manual_hold → fluxo normal (regressão)."""
+    import app.graph.graph as gg
+    chatbot = _make_chatbot()
+    original = gg.chatbot
+    gg.chatbot = chatbot
+    try:
+        with patch("app.main.get_user_by_phone", new_callable=AsyncMock, return_value=None), \
+             patch("app.main.get_users_by_phone", new_callable=AsyncMock, return_value=[]), \
+             patch("app.main.get_contact_by_phone", new_callable=AsyncMock,
+                   return_value={"id": "c1", "phone": "5583999999999", "manual_hold": False}), \
+             patch("app.main.log_event", new_callable=AsyncMock):
+            from app.main import process_message
+            await process_message(PHONE, "oi")
+            chatbot.ainvoke.assert_called()   # seguiu o fluxo
+    finally:
+        gg.chatbot = original
+
+
 async def test_known_user_missing_required_fields_stays_in_collect_info():
     """A patient missing required fields (email, birth_date) must stay in collect_info."""
     import app.graph.graph as gg
