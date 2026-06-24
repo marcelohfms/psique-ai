@@ -816,6 +816,42 @@ async def test_register_payment_full_amount_sets_paid_at():
     assert "QUITADA" in result
 
 
+# ── consultar_data ────────────────────────────────────────────────────────────
+
+async def test_consultar_data_full_date():
+    from app.graph.tools import consultar_data
+    # 2026-09-15 is a Tuesday
+    result = await consultar_data.coroutine(data="15/09/2026")
+    assert "15/09/2026" in result
+    assert "terça-feira" in result
+
+
+async def test_consultar_data_today_and_tomorrow():
+    from app.graph.tools import consultar_data
+    now = datetime.now(TZ)
+    today_str = now.strftime("%d/%m/%Y")
+    tomorrow_str = (now + __import__("datetime").timedelta(days=1)).strftime("%d/%m/%Y")
+    assert "(hoje)" in await consultar_data.coroutine(data=today_str)
+    assert "(amanhã)" in await consultar_data.coroutine(data=tomorrow_str)
+
+
+async def test_consultar_data_dd_mm_infers_future_year():
+    from app.graph.tools import consultar_data
+    now = datetime.now(TZ)
+    # A date far behind in the year should resolve to a future occurrence,
+    # never to a past date.
+    result = await consultar_data.coroutine(data="01/01")
+    # The output year is today's year or next year, and the relative part is
+    # a future "(em N dias)" or "(hoje)" — never "atrás".
+    assert "atrás" not in result
+
+
+async def test_consultar_data_invalid_input():
+    from app.graph.tools import consultar_data
+    result = await consultar_data.coroutine(data="banana")
+    assert "dd/mm" in result
+
+
 def _make_supabase_client_with_appointment_waived(booking_fee_waived=True, custom_price=None):
     """Like _make_supabase_client_with_appointment but with booking_fee_waived in the appointment row.
     Call 3 returns custom_price data instead of empty."""

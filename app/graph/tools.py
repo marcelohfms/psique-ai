@@ -2171,3 +2171,57 @@ async def transfer_to_human(
             "Nossa equipe funciona " + _ATTENDANT_HOURS_MSG + "\n\n"
             "Assim que retornarmos, sua mensagem será respondida. Pedimos desculpas pelo transtorno! 🙏"
         )
+
+
+@tool
+async def consultar_data(data: str) -> str:
+    """Retorna o dia da semana e a relação com hoje (hoje/amanhã/em N dias) de uma
+    data. Use SEMPRE que precisar mencionar o dia da semana de uma data que NÃO
+    esteja no CALENDÁRIO DE REFERÊNCIA do prompt (ou seja, mais de 35 dias à
+    frente). Aceita 'dd/mm' ou 'dd/mm/aaaa'. Nunca calcule o dia da semana você
+    mesmo — chame esta ferramenta."""
+    from app.dates import TZ, weekday_pt
+
+    today = datetime.now(TZ).date()
+    raw = (data or "").strip()
+
+    parsed = None
+    # Full date first; then dd/mm with year inference.
+    try:
+        parsed = datetime.strptime(raw, "%d/%m/%Y").date()
+    except ValueError:
+        try:
+            dm = datetime.strptime(raw, "%d/%m")
+        except ValueError:
+            dm = None
+        if dm is not None:
+            # Find the next year (starting at the current year) in which dd/mm is
+            # a valid date on/after today — handles 29/02 and past dates.
+            for offset in range(0, 8):
+                try:
+                    cand = dm.replace(year=today.year + offset).date()
+                except ValueError:
+                    continue  # e.g. 29/02 on a non-leap year
+                if cand >= today:
+                    parsed = cand
+                    break
+
+    if parsed is None:
+        return (
+            "Não consegui entender a data. Envie no formato dd/mm ou dd/mm/aaaa "
+            "(ex: 15/09 ou 15/09/2026)."
+        )
+
+    wd = weekday_pt(parsed)
+    article = "um" if wd in ("sábado", "domingo") else "uma"
+    delta = (parsed - today).days
+    if delta == 0:
+        rel = "hoje"
+    elif delta == 1:
+        rel = "amanhã"
+    elif delta > 0:
+        rel = f"em {delta} dias"
+    else:
+        rel = f"há {abs(delta)} dias atrás"
+
+    return f"{parsed.strftime('%d/%m/%Y')} é {article} {wd} ({rel})."
