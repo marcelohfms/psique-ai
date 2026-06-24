@@ -1079,13 +1079,13 @@ async def request_document(
         doctor_key = state.get("preferred_doctor", "")
         doctor_label_doc = {"julio": "Dr. Júlio", "bruna": "Dra. Bruna"}.get(doctor_key, "")
         patient_cpf_doc = state.get("patient_cpf") or ""
-        await append_document_request(patient_name, patient_age, phone, patient_email, document_type, medication_note, doctor_name=doctor_label_doc, patient_cpf=patient_cpf_doc)
+        await append_document_request(patient_name, patient_age, phone, patient_email, document_type, medication_note, doctor_name=doctor_label_doc, patient_cpf=patient_cpf_doc, financial_name=financial_name, financial_cpf=financial_cpf, financial_email=financial_email)
         _doc_logger.warning("DOC_SHEETS_OK patient=%s", patient_name)
     except Exception:
         _doc_logger.exception("DOC_SHEETS_FAILED patient=%s type=%s", patient_name, document_type)
 
     try:
-        await send_document_request_email(doctor_key, doctor_email, patient_name, patient_age, phone, patient_email, document_type)
+        await send_document_request_email(doctor_key, doctor_email, patient_name, patient_age, phone, patient_email, document_type, financial_name=financial_name, financial_cpf=financial_cpf, financial_email=financial_email)
     except Exception:
         pass
 
