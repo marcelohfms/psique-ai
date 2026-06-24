@@ -27,19 +27,27 @@ Qualquer um dos dois silencia o bot. Reutilizamos a coluna **`contacts.manual_ho
 
 ## Parte 1 — Silêncio em runtime
 
-**Onde:** em `app/main.py`, no início do processamento de uma mensagem recebida, **antes** de qualquer resolução de paciente/onboarding (antes do `get_user_by_phone`).
+### 1a. Label `eva-inativa` — JÁ IMPLEMENTADO (nenhum trabalho)
 
-**Fluxo:**
-1. Extrai as labels da conversa: do payload do webhook (`conversation.labels`) se presente; senão, chama `chatwoot.get_labels(conversation_id)`.
-2. Se `eva-inativa` ∈ labels → **return** (silêncio).
-3. Busca o contato: `get_contact_by_phone(phone)`. Se `contact.manual_hold` for `true` → **return** (silêncio).
-4. Caso contrário → segue o fluxo normal.
+O silenciamento por label **já existe** em `app/main.py` e é mais completo do que o desenho original previa:
+- Constantes `_EVA_INACTIVE_LABEL = "eva-inativa"` e `_EVA_ACTIVE_LABEL = "eva-ativa"`.
+- No webhook, lê `payload["conversation"]["labels"]` e faz `return` (silêncio) quando `eva-inativa` está presente.
+- `_handle_label_change(payload)` trata eventos de adição/remoção de label.
+- `_resume_bot_for_patient(phone)` reativa quando `eva-ativa` é adicionada ou `eva-inativa` removida.
 
-**Componentes:**
-- `app/chatwoot.py`: novo helper `get_labels(conversation_id) -> set[str]` (extrair o GET que o `set_labels` já faz internamente, expondo de forma reutilizável).
-- `app/main.py`: adicionar os dois checks (label + manual_hold-do-contato) logo no início, retornando cedo — espelhando o padrão atual do `manual_hold`.
+Nada a fazer aqui — apenas registrado para contexto.
 
-**Detalhe crítico — manual_hold em contato solto:** o check atual de `manual_hold` (`app/main.py`) itera sobre os **pacientes** retornados por `get_users_by_phone`. Um contato solto **não tem paciente** → a lista vem vazia → o `manual_hold` do contato não seria visto. Por isso o novo check precisa ler o `manual_hold` **direto do contato** (`get_contact_by_phone`), e não apenas via os pacientes. O check legado (via pacientes) permanece para os casos de paciente com manual_hold.
+### 1b. `manual_hold` em contato solto — A IMPLEMENTAR
+
+**Problema:** o check atual de `manual_hold` em `process_message` (`app/main.py`) itera sobre os **pacientes** retornados por `get_users_by_phone`:
+```python
+all_users = await get_users_by_phone(phone)
+if any(r.get("manual_hold") for r in all_users):
+    return
+```
+Um **contato solto não tem paciente** → `all_users` vem vazio → o `manual_hold` do contato **não é visto**. Ou seja, setar `manual_hold=true` num contato solto hoje não silencia nada.
+
+**Correção:** em `process_message`, além do check via pacientes, ler o `manual_hold` **direto do contato** via `get_contact_by_phone(phone)` e retornar cedo se for `true`. O check legado (via pacientes) permanece para pacientes com manual_hold.
 
 ## Parte 2 — Reconciliação dos dados (script único)
 
@@ -68,15 +76,13 @@ O script roda em modo dry-run primeiro (imprime o que faria), com aval antes da 
 
 ## Tratamento de erros
 
-- `get_labels`: se a chamada ao Chatwoot falhar, não bloquear o fluxo — tratar como "sem label" e seguir (o `manual_hold` ainda protege os contatos reconciliados). Erro é logado, não propagado.
-- `get_contact_by_phone`: se falhar, seguir o fluxo normal (degradação graciosa); a label ainda pode silenciar.
+- `get_contact_by_phone`: se falhar, seguir o fluxo normal (degradação graciosa); a label `eva-inativa` ainda silencia.
 
 ## Testes
 
-- `tests/test_webhook.py` (ou `test_process_message.py`): mensagem de conversa com label `eva-inativa` → bot não processa (mock de `get_labels`/payload), nenhuma resposta enviada, nenhum onboarding.
-- Mensagem de contato solto com `manual_hold=true` → bot silencia (mock de `get_contact_by_phone`).
-- Mensagem sem label e sem manual_hold → fluxo normal segue (regressão).
-- `tests/test_chatwoot.py`: `get_labels` parseia corretamente a resposta da API.
+- `tests/test_process_message.py`: mensagem de **contato solto com `manual_hold=true`** → `process_message` retorna cedo, nenhuma resposta/onboarding (mock de `get_contact_by_phone`).
+- Mensagem de contato/paciente **sem** manual_hold → fluxo normal segue (regressão).
+- O silêncio por label `eva-inativa` já tem cobertura no fluxo do webhook existente — não é alterado.
 
 ## Fora de escopo
 
