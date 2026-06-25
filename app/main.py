@@ -973,6 +973,10 @@ async def _handle_chatwoot_payload(payload: dict) -> None:
         # If eva-ativa label is present, force-reactivate Eva (handles missed activation events)
         elif _EVA_ACTIVE_LABEL in conv_labels:
             await _resume_bot_for_patient(phone)
+
+        if text and text.strip().lower() == "/reset":
+            await _reset_conversation(phone)
+            return
     except Exception:
         logger.exception("Error handling Chatwoot webhook payload")
 
