@@ -110,6 +110,9 @@ async def upsert_patient(data: dict, patient_id: str | None = None) -> str | Non
     if patient_id:
         await client.from_("patients").update(data).eq("id", patient_id).execute()
         return patient_id
+    if not data.get("name"):
+        # Sem nome não é possível criar um paciente válido — ignora silenciosamente.
+        return None
     result = await client.from_("patients").insert(data).execute()
     inserted = (result.data or [{}])[0]
     return inserted.get("id")
