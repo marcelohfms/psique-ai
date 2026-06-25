@@ -280,18 +280,19 @@ async def collect_info_node(state: ConversationState, config: RunnableConfig) ->
         if _doc_key:
             state["preferred_doctor"] = _doc_key
             _persistent_updates["preferred_doctor"] = _doc_key
-            try:
-                returned_id = await upsert_user(
-                    state["phone"],
-                    {"doctor_id": DOCTOR_IDS.get(_doc_key)},
-                    user_id=state.get("user_db_id"),
-                )
-                if returned_id and not state.get("user_db_id"):
-                    state["user_db_id"] = returned_id
-                    _persistent_updates["user_db_id"] = returned_id
-            except Exception:
-                import logging as _log
-                _log.getLogger(__name__).exception("Failed to persist preferred_doctor")
+            # Only persist to DB when the patient already exists (user_db_id known).
+            # Calling upsert_user before registration creates a contact with name=null
+            # and a patient without a patient_contacts link, breaking future lookups.
+            if state.get("user_db_id"):
+                try:
+                    await upsert_user(
+                        state["phone"],
+                        {"doctor_id": DOCTOR_IDS.get(_doc_key)},
+                        user_id=state.get("user_db_id"),
+                    )
+                except Exception:
+                    import logging as _log
+                    _log.getLogger(__name__).exception("Failed to persist preferred_doctor")
 
     async def _ask(reply: str) -> dict:
         await send_text(state["phone"], reply)
@@ -422,7 +423,10 @@ async def collect_info_node(state: ConversationState, config: RunnableConfig) ->
         # Step 2: contact name — saved to contacts.name only
         if not state.get("user_name"):
             if last_ai and _NAME_Q in last_ai and last_human:
-                return await _extract_and_ask({"user_name": last_human}, _nq(user_name=last_human))
+                _s2_extracted: dict = {"user_name": last_human}
+                if state.get("preferred_doctor"):
+                    _s2_extracted["preferred_doctor"] = state["preferred_doctor"]
+                return await _extract_and_ask(_s2_extracted, _nq(user_name=last_human))
             return await _ask(_NAME_Q)
 
         # Step 2b: is the contact the patient or scheduling for someone else?

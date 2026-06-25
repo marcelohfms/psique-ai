@@ -393,11 +393,16 @@ async def test_collect_info_asks_guardian_cpf_after_guardian_name():
 
 
 async def test_collect_info_persists_doctor_when_mentioned():
-    """Mentioning a doctor ('agendar com a Dra. Bruna') must persist preferred_doctor immediately."""
+    """Mentioning a doctor sets preferred_doctor in state.
+
+    DB persist only happens when user_db_id is already known (to avoid creating a
+    contact with name=null before registration is complete).
+    """
     from app.graph.nodes import collect_info_node
     from langchain_core.messages import HumanMessage
     from app.database import DOCTOR_IDS
 
+    # Case 1: new user (no user_db_id) — preferred_doctor saved to state, NOT to DB
     state = _base_minor_state(
         user_name=None,
         patient_name=None,
@@ -408,13 +413,31 @@ async def test_collect_info_persists_doctor_when_mentioned():
     with patch("app.graph.nodes.send_text", new_callable=AsyncMock), \
          patch("app.graph.nodes.save_message", new_callable=AsyncMock), \
          patch("app.graph.nodes.get_users_by_phone", new_callable=AsyncMock, return_value=[]), \
-         patch("app.graph.nodes.upsert_user", new_callable=AsyncMock, return_value="user-xyz") as mock_upsert:
+         patch("app.graph.nodes.upsert_user", new_callable=AsyncMock) as mock_upsert:
         result = await collect_info_node(state, {})
 
     assert result.get("preferred_doctor") == "bruna"
-    # doctor_id was persisted to the cadastro
-    mock_upsert.assert_awaited()
-    db_payload = mock_upsert.call_args[0][1]
+    # Must NOT call upsert_user before the patient record exists (avoids null-name contact)
+    mock_upsert.assert_not_awaited()
+
+    # Case 2: existing user (user_db_id known) — doctor_id IS persisted to DB
+    state2 = _base_minor_state(
+        user_name=None,
+        patient_name=None,
+        patient_cpf=None,
+        preferred_doctor=None,
+        messages=[HumanMessage(content="Quero agendar uma consulta com a Dra. Bruna")],
+    )
+    state2["user_db_id"] = "existing-patient-uuid"
+    with patch("app.graph.nodes.send_text", new_callable=AsyncMock), \
+         patch("app.graph.nodes.save_message", new_callable=AsyncMock), \
+         patch("app.graph.nodes.get_users_by_phone", new_callable=AsyncMock, return_value=[]), \
+         patch("app.graph.nodes.upsert_user", new_callable=AsyncMock, return_value="existing-patient-uuid") as mock_upsert2:
+        result2 = await collect_info_node(state2, {})
+
+    assert result2.get("preferred_doctor") == "bruna"
+    mock_upsert2.assert_awaited()
+    db_payload = mock_upsert2.call_args[0][1]
     assert db_payload.get("doctor_id") == DOCTOR_IDS["bruna"]
 
 
