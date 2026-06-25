@@ -47,9 +47,8 @@ DOCTOR_SCHEDULES: dict[str, dict[int, list[tuple[int, int, int, int, str]]]] = {
         4: [(8, 0, 12, 0, "escolha"), (13, 0, 16, 0, "online")],     # Sexta — manhã escolha, tarde online
     },
     "julio": {
-        0: [(9, 0, 12, 0, "escolha")],                                                                   # Segunda
-        1: [(13, 0, 18, 0, "escolha")],                                                                  # Terça
-        2: [(9, 0, 12, 0, "escolha")],                                                                   # Quarta
+        0: [(9, 0, 12, 0, "escolha"), (13, 0, 18, 0, "escolha")],                             # Segunda
+        2: [(9, 0, 12, 0, "escolha")],                                                         # Quarta
         3: [(9, 0, 12, 0, "escolha"), (14, 0, 18, 0, "escolha"), (18, 0, 20, 0, "escolha")],  # Quinta
     },
 }
@@ -58,16 +57,7 @@ DOCTOR_SCHEDULES: dict[str, dict[int, list[tuple[int, int, int, int, str]]]] = {
 # Format: { doctor_key: [ (date_from, new_schedule_dict) ] }
 # new_schedule_dict has the same format as DOCTOR_SCHEDULES (weekday → windows).
 # The first entry whose date_from <= target_date applies (list is checked in reverse order).
-SCHEDULE_CHANGES: dict[str, list[tuple[date, dict[int, list[tuple[int, int, int, int, str]]]]]] = {
-    "julio": [
-        (date(2026, 7, 1), {
-            0: [(9, 0, 12, 0, "escolha"), (13, 0, 18, 0, "escolha")],  # Segunda: manhã + tarde (antes era só manhã)
-            1: [],                                                        # Terça: sem atendimento (horários movidos para segunda)
-            2: [(9, 0, 12, 0, "escolha")],                               # Quarta: inalterado
-            3: [(9, 0, 12, 0, "escolha"), (14, 0, 18, 0, "escolha"), (18, 0, 20, 0, "escolha")],  # Quinta: tarde liberada (sem confirmação presencial a partir de jul/26)
-        }),
-    ],
-}
+SCHEDULE_CHANGES: dict[str, list[tuple[date, dict[int, list[tuple[int, int, int, int, str]]]]]] = {}
 
 
 def _get_doctor_schedule(doctor_key: str, target_date: date) -> dict[int, list[tuple[int, int, int, int, str]]]:
@@ -243,9 +233,12 @@ def _parse_day(preferred_day: str) -> date | None:
         return date.fromisoformat(s)
     except ValueError:
         pass
-    # Handle dd/mm format (e.g. "25/05", "25-05")
+    # Handle dd/mm/yyyy or dd/mm format (e.g. "27/07/2026", "25/05", "25-05")
     try:
         parts = s.replace("-", "/").split("/")
+        if len(parts) == 3:
+            day, month, year = int(parts[0]), int(parts[1]), int(parts[2])
+            return date(year, month, day)
         if len(parts) == 2:
             day, month = int(parts[0]), int(parts[1])
             year = today.year
@@ -426,6 +419,7 @@ async def get_available_slots(
 
     # Safety net: discard any slot that falls outside the doctor's defined schedule
     # windows (catches edge-cases where doctor_key was missing or mismatched).
+    # Uses _get_doctor_schedule so that SCHEDULE_CHANGES are respected.
     if doctor_key and doctor_key in DOCTOR_SCHEDULES:
         validated: list[tuple[datetime, str]] = []
         exc_map = SCHEDULE_EXCEPTIONS.get(doctor_key, {})

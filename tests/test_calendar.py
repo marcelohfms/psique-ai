@@ -248,11 +248,7 @@ def test_format_schedules_shows_regular_when_exception_blocks_day():
     assert "EXCETO 04/06" in quinta_line, f"Exception note missing: {quinta_line!r}"
     assert "sem atendimento nesta data" in quinta_line
 
-    # Terça and Quarta similarly should show regular schedule + exception note
-    terca_line = next(l for l in julio_lines if "Terça" in l)
-    assert "tarde" in terca_line, f"Regular Tuesday schedule missing: {terca_line!r}"
-    assert "EXCETO 02/06" in terca_line
-
+    # Quarta should show regular schedule + exception note
     quarta_line = next(l for l in julio_lines if "Quarta" in l)
     assert "manhã" in quarta_line, f"Regular Wednesday schedule missing: {quarta_line!r}"
     assert "EXCETO 03/06" in quarta_line
