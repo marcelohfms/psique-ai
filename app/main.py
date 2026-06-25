@@ -566,7 +566,12 @@ def _extract_chatwoot_message(payload: dict) -> tuple[str, str | None, int] | No
     ).strip()
     if not phone_raw:
         return None
-    phone = phone_raw.lstrip("+") + "@s.whatsapp.net"
+    # Normalize to canonical 13-digit form (same as /webhook handler) so that
+    # both webhooks use the same buffer key and phone lock, preventing duplicates.
+    from app.database import _phone_variants as _pv
+    _raw = phone_raw.lstrip("+")
+    _variants = _pv(_raw)
+    phone = (_variants[0] if _variants else _raw) + "@s.whatsapp.net"
     return phone, content, conversation_id
 
 
