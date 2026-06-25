@@ -70,6 +70,35 @@ async def collect_info_node(state: ConversationState, config: RunnableConfig) ->
         "referral_professional": state.get("referral_professional"),
     }
 
+    # ── Re-check DB when user_name is cached but registration still incomplete ──
+    # Handles the case where the DB was updated after a partial collect_info pass
+    # already wrote user_name to the checkpoint. Without this, the DB-load block
+    # below is skipped and collect_info re-asks questions using stale state.
+    if state.get("user_name") and state.get("stage") != "patient_agent" and not state.get("pending_patients"):
+        _refresh = await get_users_by_phone(state["phone"])
+        if len(_refresh) == 1 and is_registration_complete(_refresh[0]):
+            _ru = _refresh[0]
+            _doc_key = DOCTOR_NAMES.get(_ru.get("doctor_id", ""), None)
+            return {
+                "user_db_id": _ru["id"],
+                "user_name": _ru.get("name"),
+                "patient_name": _ru.get("patient_name") or _ru.get("name"),
+                "patient_age": _ru.get("age"),
+                "birth_date": _ru.get("birth_date"),
+                "is_patient": _ru.get("is_patient"),
+                "is_returning_patient": _ru.get("is_returning_patient"),
+                "preferred_doctor": _doc_key,
+                "patient_email": _ru.get("email"),
+                "guardian_name": _ru.get("guardian_name"),
+                "guardian_cpf": _ru.get("guardian_cpf"),
+                "guardian_relationship": _ru.get("guardian_relationship"),
+                "patient_cpf": _ru.get("patient_cpf"),
+                "modality_restriction": _ru.get("modality_restriction"),
+                "age_exception": _ru.get("age_exception"),
+                "stage": "patient_agent",
+                "messages": [],
+            }
+
     # ── Multi-patient disambiguation ─────────────────────────────────────────────
     # Runs only when the phone has multiple registered patients and no patient has
     # been selected yet for this conversation.
