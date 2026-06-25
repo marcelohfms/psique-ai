@@ -977,6 +977,16 @@ async def _handle_chatwoot_payload(payload: dict) -> None:
         if text and text.strip().lower() == "/reset":
             await _reset_conversation(phone)
             return
+
+        if text is None:
+            text = await _process_chatwoot_attachments(payload.get("attachments", []))
+            if not text:
+                return
+
+        logger.info("Chatwoot message from %s (conv=%s): %.80s", phone, conversation_id, text)
+
+        await save_message(phone, "user", text)
+        await buffer_push(phone, text, process_message)
     except Exception:
         logger.exception("Error handling Chatwoot webhook payload")
 
