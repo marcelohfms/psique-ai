@@ -403,6 +403,13 @@ async def process_message(phone: str, text: str) -> None:
                 if db_sync:
                     state_update.update(db_sync)
             elif snapshot.values.get("stage") == "patient_agent" and existing:
+                # If registration is incomplete, drop back to collect_info so Eva can
+                # ask for the missing fields instead of looping in patient_agent.
+                from app.database import is_registration_complete as _is_complete
+                if not _is_complete(existing):
+                    state_update["stage"] = "collect_info"
+                    logger.info("INCOMPLETE_REGISTRATION phone=%s — reverting to collect_info", phone)
+
                 # For ongoing patient_agent conversations, sync critical fields that may be
                 # missing from older checkpoints or changed in the DB since last message.
                 pa_sync: dict = {}
