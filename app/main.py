@@ -20,6 +20,23 @@ from app.whatsapp import send_text
 
 logger = logging.getLogger(__name__)
 
+# Deduplication cache: message_id → timestamp. Prevents double-processing when
+# the same WhatsApp message arrives via both /webhook and /chatwoot-webhook.
+_seen_msg_ids: dict[str, float] = {}
+_SEEN_TTL = 30.0  # seconds
+
+def _is_duplicate(msg_id: str) -> bool:
+    import time
+    now = time.monotonic()
+    # Evict stale entries
+    stale = [k for k, t in _seen_msg_ids.items() if now - t > _SEEN_TTL]
+    for k in stale:
+        del _seen_msg_ids[k]
+    if msg_id in _seen_msg_ids:
+        return True
+    _seen_msg_ids[msg_id] = now
+    return False
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -491,6 +508,15 @@ async def _handle_payload(payload: dict) -> None:
             return
         phone, text = result
 
+        # Deduplicate: same message may arrive via /webhook AND /chatwoot-webhook
+        try:
+            msg_id = payload["entry"][0]["changes"][0]["value"]["messages"][0]["id"]
+            if _is_duplicate(msg_id):
+                logger.info("Duplicate msg_id %s from /webhook — skipping", msg_id)
+                return
+        except (KeyError, IndexError):
+            pass
+
         logger.info("Incoming message from %s: %.80s", phone, text)
 
         # /reset command
@@ -926,6 +952,13 @@ async def _handle_chatwoot_payload(payload: dict) -> None:
 
         if text.strip().lower() == "/reset":
             await _reset_conversation(phone)
+            return
+
+        # Deduplicate: same message may arrive via /webhook AND /chatwoot-webhook.
+        # source_id is the original WhatsApp wamid — same key used in /webhook dedup.
+        dedup_key = str(payload.get("source_id") or payload.get("id") or "")
+        if dedup_key and _is_duplicate(dedup_key):
+            logger.info("Duplicate Chatwoot msg (key=%s) — skipping", dedup_key)
             return
 
         await save_message(phone, "user", text)

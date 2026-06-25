@@ -5,6 +5,15 @@ from unittest.mock import AsyncMock, patch
 
 from tests.conftest import PHONE
 
+
+@pytest.fixture(autouse=True)
+def clear_dedup_cache():
+    """Reset the global deduplication cache between tests."""
+    import app.main as _main
+    _main._seen_msg_ids.clear()
+    yield
+    _main._seen_msg_ids.clear()
+
 # Strip @s.whatsapp.net to get the raw number Meta sends
 _NUMBER = PHONE.replace("@s.whatsapp.net", "")
 
