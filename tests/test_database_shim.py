@@ -184,6 +184,56 @@ async def test_upsert_user_routes_guardian_to_contact():
     assert all(link["is_self"] is False for link in captured["links"])
 
 
+def _complete_minor(**overrides) -> dict:
+    """Base de um cadastro de MENOR completo (estilo dict legado de users)."""
+    u = {
+        "name": "Maria Silva",
+        "email": "maria@x.com",
+        "birth_date": "2016-03-10",
+        "doctor_id": "dr-julio",
+        "is_patient": False,
+        "patient_name": "João Silva",
+        "age": 10,
+        "guardian_name": "Maria Silva",
+        "guardian_relationship": "mãe",
+        "guardian_cpf": "555",
+        "is_returning_patient": True,
+    }
+    u.update(overrides)
+    return u
+
+
+def test_minor_returning_without_guardian_cpf_is_complete():
+    # Paciente menor que JÁ é da clínica não precisa de guardian_cpf.
+    u = _complete_minor(is_returning_patient=True, guardian_cpf=None)
+    assert is_registration_complete(u) is True
+
+
+def test_minor_new_without_guardian_cpf_is_incomplete():
+    # Paciente menor NOVO ainda exige guardian_cpf (regressão preservada).
+    u = _complete_minor(is_returning_patient=False, guardian_cpf=None)
+    assert is_registration_complete(u) is False
+
+
+def test_minor_returning_still_requires_guardian_name_and_relationship():
+    assert is_registration_complete(_complete_minor(guardian_name=None)) is False
+    assert is_registration_complete(_complete_minor(guardian_relationship=None)) is False
+
+
+def test_minor_undetermined_returning_status_is_incomplete():
+    # is_returning_patient ainda não respondido (None) → cadastro incompleto.
+    assert is_registration_complete(_complete_minor(is_returning_patient=None)) is False
+
+
+def test_adult_returning_without_patient_cpf_is_complete():
+    u = {
+        "name": "Ana Souza", "email": "ana@x.com", "birth_date": "1990-08-22",
+        "doctor_id": "dra-bruna", "is_patient": True, "age": 35,
+        "is_returning_patient": True,
+    }
+    assert is_registration_complete(u) is True
+
+
 @pytest.mark.asyncio
 async def test_get_upcoming_appointments_filters_by_patient_id():
     """get_upcoming_appointments deve filtrar appointments por patient_id (não user_id)."""

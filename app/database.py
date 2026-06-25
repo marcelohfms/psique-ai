@@ -245,9 +245,10 @@ def is_registration_complete(user: dict) -> bool:
     - is_returning_patient (True/False, not None)
 
     Additional requirements for MINORS (age < 18):
-    - guardian_name
-    - guardian_cpf
-    - guardian_relationship
+    - guardian_name         (required for ALL minors)
+    - guardian_relationship (required for ALL minors)
+    - guardian_cpf          (required ONLY for new patients, is_returning_patient is False;
+                             returning patients already have the guardian's CPF on file)
 
     Note: when is_patient=False the contact is NOT the patient.
     In that case `name` is the contact's name and `patient_name` is the patient's.
@@ -275,7 +276,13 @@ def is_registration_complete(user: dict) -> bool:
     # Minor-specific requirements
     age = user.get("age")
     if age is not None and age < 18:
-        for field in ("guardian_name", "guardian_cpf", "guardian_relationship"):
+        # guardian_name e guardian_relationship são obrigatórios para todo menor.
+        # guardian_cpf é obrigatório apenas para pacientes NOVOS — pacientes que
+        # já são da clínica já têm o CPF do responsável no cadastro.
+        required_minor = ["guardian_name", "guardian_relationship"]
+        if user.get("is_returning_patient") is False:
+            required_minor.append("guardian_cpf")
+        for field in required_minor:
             if not user.get(field):
                 return False
 

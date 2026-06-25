@@ -364,32 +364,55 @@ async def collect_info_node(state: ConversationState, config: RunnableConfig) ->
     _EMAIL_Q_CADASTRO = "Qual o seu e-mail? Precisamos para incluir no seu cadastro. 📋"
     _MED_Q = "Qual medicação você precisa na receita?"
 
+    # ── Ordem canônica das perguntas do cadastro ─────────────────────────────
+    # Retorna a próxima pergunta a fazer, ou None quando todos os campos
+    # obrigatórios da ramificação atual já estão preenchidos.
+    # Pacientes que JÁ são da clínica (is_returning_patient=True) pulam
+    # patient_cpf e, para menores, guardian_cpf — esses dados já existem no
+    # cadastro da clínica. A idade (patient_age) define a ramificação menor/adulto.
+    # _NQ_KEYS é apenas a lista de campos lidos do state por _nq — NÃO é a ordem
+    # das perguntas (a ordem canônica é a sequência de checagens em _next_question).
+    _NQ_KEYS = (
+        "user_name", "is_patient", "patient_name", "birth_date",
+        "is_returning_patient", "patient_cpf", "patient_age",
+        "guardian_name", "guardian_cpf", "preferred_doctor", "patient_email",
+    )
+
+    def _next_question(s: dict) -> str | None:
+        age = s.get("patient_age") or 99
+        minor = age < 18
+        returning = s.get("is_returning_patient")
+        is_new = returning is False
+        if not s.get("user_name"):
+            return _NAME_Q
+        if s.get("is_patient") is None:
+            return _IS_PATIENT_Q
+        if s.get("is_patient") is False and not s.get("patient_name"):
+            return _PATIENT_NAME_Q
+        if not s.get("birth_date"):
+            return _BIRTH_Q
+        if returning is None:
+            return _PATIENT_Q
+        if is_new and not s.get("patient_cpf"):
+            return _CPF_Q
+        if minor and not s.get("guardian_name"):
+            return _GUARDIAN_NAME_Q
+        if minor and is_new and not s.get("guardian_cpf"):
+            return _GUARDIAN_CPF_Q
+        if not s.get("preferred_doctor"):
+            return _DOCTOR_Q
+        if not s.get("patient_email"):
+            return _EMAIL_Q if _is_document else _EMAIL_Q_CADASTRO
+        return None
+
+    def _nq(**extra) -> str | None:
+        merged = {k: state.get(k) for k in _NQ_KEYS}
+        merged.update(extra)
+        return _next_question(merged)
+
     # Step 1: greeting + first MISSING question (skip fields already in state)
     if not _has_greeted and _has_request:
-        _pat_age_for_greeting = state.get("patient_age") or 99
-        _has_patient_name = bool(state.get("patient_name") and state.get("patient_name") != state.get("user_name") or state.get("is_patient") is True)
-        if not state.get("user_name"):
-            first_q = _NAME_Q
-        elif state.get("is_patient") is None:
-            first_q = _IS_PATIENT_Q
-        elif state.get("is_patient") is False and not state.get("patient_name"):
-            first_q = _PATIENT_NAME_Q
-        elif not state.get("patient_cpf"):
-            first_q = _CPF_Q
-        elif not state.get("birth_date"):
-            first_q = _BIRTH_Q
-        elif _pat_age_for_greeting < 18 and not state.get("guardian_name"):
-            first_q = _GUARDIAN_NAME_Q
-        elif _pat_age_for_greeting < 18 and not state.get("guardian_cpf"):
-            first_q = _GUARDIAN_CPF_Q
-        elif state.get("is_returning_patient") is None:
-            first_q = _PATIENT_Q
-        elif not state.get("preferred_doctor"):
-            first_q = _DOCTOR_Q
-        elif not state.get("patient_email"):
-            first_q = _EMAIL_Q if _is_document else _EMAIL_Q_CADASTRO
-        else:
-            first_q = None  # all fields present — fall through to LLM
+        first_q = _nq()
         if first_q:
             greeting = (
                 "Olá! 😊 Sou a Eva, assistente virtual da Clínica Psique.\n\n"
@@ -407,7 +430,7 @@ async def collect_info_node(state: ConversationState, config: RunnableConfig) ->
         # Step 2: contact name — saved to contacts.name only
         if not state.get("user_name"):
             if last_ai and _NAME_Q in last_ai and last_human:
-                return await _extract_and_ask({"user_name": last_human}, _IS_PATIENT_Q)
+                return await _extract_and_ask({"user_name": last_human}, _nq(user_name=last_human))
             return await _ask(_NAME_Q)
 
         # Step 2b: is the contact the patient or scheduling for someone else?
@@ -426,43 +449,26 @@ async def collect_info_node(state: ConversationState, config: RunnableConfig) ->
                 ]
                 is_pat = not any(kw in h for kw in _not_patient_kws)
                 if is_pat:
-                    # Contact IS the patient — reuse contact name as patient name
                     _uname = state.get("user_name", "")
                     return await _extract_and_ask(
-                        {"is_patient": True, "patient_name": _uname}, _CPF_Q
+                        {"is_patient": True, "patient_name": _uname},
+                        _nq(is_patient=True, patient_name=_uname),
                     )
                 else:
-                    return await _extract_and_ask({"is_patient": False}, _PATIENT_NAME_Q)
+                    return await _extract_and_ask(
+                        {"is_patient": False}, _nq(is_patient=False)
+                    )
             return await _ask(_IS_PATIENT_Q)
 
         # Step 2c: patient name (only when contact is scheduling for someone else)
         if state.get("is_patient") is False and not state.get("patient_name"):
             if last_ai and _PATIENT_NAME_Q in last_ai and last_human:
-                return await _extract_and_ask({"patient_name": last_human}, _CPF_Q)
+                return await _extract_and_ask(
+                    {"patient_name": last_human}, _nq(patient_name=last_human)
+                )
             return await _ask(_PATIENT_NAME_Q)
 
-        # Step 3: CPF — optional for foreign patients
-        if not state.get("patient_cpf"):
-            if last_ai and _CPF_Q in last_ai and last_human:
-                import re as _re
-                _foreign_kws = [
-                    "não tenho", "nao tenho", "estrangeiro", "estrangeira",
-                    "não possuo", "nao possuo", "passport", "passaporte",
-                    "sem cpf", "não tem cpf", "nao tem cpf",
-                ]
-                if any(kw in last_human.lower() for kw in _foreign_kws):
-                    # Foreign patient — skip CPF
-                    return await _extract_and_ask({"patient_cpf": "N/A"}, _BIRTH_Q)
-                elif _re.search(r'\d', last_human):
-                    return await _extract_and_ask({"patient_cpf": last_human}, _BIRTH_Q)
-                else:
-                    return await _ask(
-                        "CPF inválido. Por favor, informe o CPF do paciente com os números (ex: 123.456.789-10).\n"
-                        "Caso o paciente não tenha CPF (estrangeiro), responda \"não tenho CPF\"."
-                    )
-            return await _ask(_CPF_Q)
-
-        # Step 4: birth date
+        # Step 3: birth date — calcula a idade
         if not state.get("birth_date"):
             asked_birth = "nascimento" in last_ai.lower()
             if asked_birth and last_human:
@@ -471,22 +477,75 @@ async def collect_info_node(state: ConversationState, config: RunnableConfig) ->
                     bd = datetime.strptime(parsed, "%d/%m/%Y")
                     today = datetime.now()
                     age = today.year - bd.year - ((today.month, today.day) < (bd.month, bd.day))
-                    if age < 18:
-                        # Minor: guardian is always the contact
-                        return await _extract_and_ask(
-                            {"birth_date": parsed, "patient_age": age, "is_patient": False},
-                            _GUARDIAN_NAME_Q,
-                        )
-                    else:
-                        return await _extract_and_ask(
-                            {"birth_date": parsed, "patient_age": age},
-                            _PATIENT_Q,
-                        )
+                    return await _extract_and_ask(
+                        {"birth_date": parsed, "patient_age": age},
+                        _nq(birth_date=parsed, patient_age=age),
+                    )
                 else:
                     return await _ask("Não consegui identificar a data. Pode informar no formato dd/mm/aaaa? Ex: 15/01/1990.")
             return await _ask(_BIRTH_Q)
 
-        # Step 4b: guardian name (only for minors)
+        # Step 4: is_returning_patient
+        # "já é paciente da clínica?" → True = retornante, False = novo.
+        # is_patient (contato é o paciente vs. agenda para outro) é separado e
+        # NÃO deve ser setado aqui.
+        if state.get("is_returning_patient") is None:
+            if last_ai and _PATIENT_Q in last_ai and last_human:
+                h = last_human.lower()
+                # Frases inequívocas primeiro — incluindo negações que INVERTEM o
+                # sentido ("não é a primeira" = já é paciente). Só depois caímos na
+                # polaridade simples (não/sim), evitando classificar errado quem
+                # responde com uma negação ("não, não é a primeira vez").
+                _returning_phrases = [
+                    "acompanhamento", "já sou", "ja sou", "já estou", "ja estou",
+                    "já faço", "ja faco", "sou paciente", "já é paciente", "ja e paciente",
+                    "já fui", "ja fui", "já tenho", "ja tenho", "retorno",
+                    "não é a primeira", "nao e a primeira", "não é primeira", "nao e primeira",
+                    "não primeira", "nao primeira",
+                ]
+                _new_phrases = [
+                    "primeira vez", "primeira consulta", "é a primeira", "e a primeira",
+                    "nunca", "novo", "nova", "não sou paciente", "nao sou paciente",
+                    "ainda não", "ainda nao",
+                ]
+                if any(p in h for p in _returning_phrases):
+                    is_returning_patient = True
+                elif any(p in h for p in _new_phrases):
+                    is_returning_patient = False
+                elif any(kw in h for kw in ["não", "nao", "primeira"]):
+                    is_returning_patient = False
+                elif any(kw in h for kw in ["sim", "já", "ja", "sou", "é", "paciente"]):
+                    is_returning_patient = True
+                else:
+                    is_returning_patient = None
+                if is_returning_patient is not None:
+                    return await _extract_and_ask(
+                        {"is_returning_patient": is_returning_patient},
+                        _nq(is_returning_patient=is_returning_patient),
+                    )
+            return await _ask(_PATIENT_Q)
+
+        # Step 5: CPF do paciente — apenas para pacientes NOVOS; opcional p/ estrangeiros
+        if state.get("is_returning_patient") is False and not state.get("patient_cpf"):
+            if last_ai and _CPF_Q in last_ai and last_human:
+                import re as _re
+                _foreign_kws = [
+                    "não tenho", "nao tenho", "estrangeiro", "estrangeira",
+                    "não possuo", "nao possuo", "passport", "passaporte",
+                    "sem cpf", "não tem cpf", "nao tem cpf",
+                ]
+                if any(kw in last_human.lower() for kw in _foreign_kws):
+                    return await _extract_and_ask({"patient_cpf": "N/A"}, _nq(patient_cpf="N/A"))
+                elif _re.search(r'\d', last_human):
+                    return await _extract_and_ask({"patient_cpf": last_human}, _nq(patient_cpf=last_human))
+                else:
+                    return await _ask(
+                        "CPF inválido. Por favor, informe o CPF do paciente com os números (ex: 123.456.789-10).\n"
+                        "Caso o paciente não tenha CPF (estrangeiro), responda \"não tenho CPF\"."
+                    )
+            return await _ask(_CPF_Q)
+
+        # Step 6: guardian name (todos os menores)
         if (state.get("patient_age") or 99) < 18 and not state.get("guardian_name"):
             _last_ai_asked_guardian_name = last_ai and (
                 _GUARDIAN_NAME_Q in last_ai
@@ -495,12 +554,15 @@ async def collect_info_node(state: ConversationState, config: RunnableConfig) ->
             )
             if _last_ai_asked_guardian_name and last_human:
                 return await _extract_and_ask(
-                    {"guardian_name": last_human, "user_name": last_human}, _GUARDIAN_CPF_Q
+                    {"guardian_name": last_human, "user_name": last_human},
+                    _nq(guardian_name=last_human),
                 )
             return await _ask(_GUARDIAN_NAME_Q)
 
-        # Step 4c: guardian CPF (only for minors) — optional for foreigners
-        if (state.get("patient_age") or 99) < 18 and not state.get("guardian_cpf"):
+        # Step 7: guardian CPF (menores) — apenas para pacientes NOVOS; opcional p/ estrangeiros
+        if (state.get("patient_age") or 99) < 18 \
+                and state.get("is_returning_patient") is False \
+                and not state.get("guardian_cpf"):
             _last_ai_asked_guardian_cpf = last_ai and (
                 _GUARDIAN_CPF_Q in last_ai
                 or ("cpf" in last_ai.lower() and "responsável" in last_ai.lower())
@@ -513,30 +575,11 @@ async def collect_info_node(state: ConversationState, config: RunnableConfig) ->
                     "sem cpf", "não tem cpf", "nao tem cpf",
                 ]
                 if any(kw in last_human.lower() for kw in _foreign_kws):
-                    return await _extract_and_ask({"guardian_cpf": "N/A"}, _PATIENT_Q)
-                return await _extract_and_ask({"guardian_cpf": last_human}, _PATIENT_Q)
+                    return await _extract_and_ask({"guardian_cpf": "N/A"}, _nq(guardian_cpf="N/A"))
+                return await _extract_and_ask({"guardian_cpf": last_human}, _nq(guardian_cpf=last_human))
             return await _ask(_GUARDIAN_CPF_Q)
 
-        # Step 5: is_returning_patient
-        # "O paciente já é paciente da clínica?" → True = returning patient, False = new patient
-        # is_patient (contact IS the patient vs scheduling for someone else) is a separate concept
-        # and must NOT be set here.
-        if state.get("is_returning_patient") is None:
-            if last_ai and _PATIENT_Q in last_ai and last_human:
-                h = last_human.lower()
-                if any(kw in h for kw in ["sim", "já", "ja", "sou", "é", "e paciente", "paciente"]):
-                    is_returning_patient = True
-                elif any(kw in h for kw in ["não", "nao", "nunca", "primeira", "novo", "nova"]):
-                    is_returning_patient = False
-                else:
-                    is_returning_patient = None
-                if is_returning_patient is not None:
-                    return await _extract_and_ask(
-                        {"is_returning_patient": is_returning_patient}, _DOCTOR_Q
-                    )
-            return await _ask(_PATIENT_Q)
-
-        # Step 6: preferred doctor
+        # Step 9: preferred doctor
         if not state.get("preferred_doctor"):
             _last_ai_asked_doctor = last_ai and (
                 _DOCTOR_Q in last_ai
@@ -559,7 +602,7 @@ async def collect_info_node(state: ConversationState, config: RunnableConfig) ->
                     return await _extract_and_ask({"preferred_doctor": doctor}, next_email_q)
             return await _ask(_DOCTOR_Q)
 
-        # Step 7: email — ALWAYS required, whether scheduling or requesting a document
+        # Step 10: email — ALWAYS required, whether scheduling or requesting a document
         if not state.get("patient_email"):
             _last_ai_asked_email = last_ai and (
                 _EMAIL_Q in last_ai
@@ -579,7 +622,7 @@ async def collect_info_node(state: ConversationState, config: RunnableConfig) ->
             else:
                 return await _ask(_EMAIL_Q if _is_document else _EMAIL_Q_CADASTRO)
 
-        # Step 8: medication — only for receita (last step)
+        # Step 11: medication — only for receita (last step)
         if _is_receita and not state.get("medication_note"):
             if last_ai and _MED_Q in last_ai and last_human:
                 # Last step — save and fall through to LLM to confirm
