@@ -49,7 +49,10 @@ async def push(
     the 'ContextVar created in a different Context' error from LangGraph.
     """
     entry = _pending[phone]
-    entry.messages.append(text)
+    # Deduplicate: same text may arrive from both Meta and Chatwoot webhooks
+    # for the same message. Don't add it twice within the same debounce window.
+    if text not in entry.messages:
+        entry.messages.append(text)
 
     if entry.handle is not None:
         entry.handle.cancel()
