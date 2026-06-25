@@ -1,7 +1,7 @@
 import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
 from app import database
-from app.database import is_registration_complete
+from app.database import is_registration_complete, DOCTOR_IDS
 
 
 def _mock_client(pc_rows):
@@ -185,12 +185,12 @@ async def test_upsert_user_routes_guardian_to_contact():
 
 
 def _complete_minor(**overrides) -> dict:
-    """Base de um cadastro de MENOR completo (estilo dict legado de users)."""
+    """Base de um cadastro de MENOR (do Dr. Júlio) completo, estilo dict legado."""
     u = {
         "name": "Maria Silva",
         "email": "maria@x.com",
         "birth_date": "2016-03-10",
-        "doctor_id": "dr-julio",
+        "doctor_id": DOCTOR_IDS["julio"],
         "is_patient": False,
         "patient_name": "João Silva",
         "age": 10,
@@ -220,16 +220,32 @@ def test_minor_returning_still_requires_guardian_name_and_relationship():
     assert is_registration_complete(_complete_minor(guardian_relationship=None)) is False
 
 
-def test_minor_undetermined_returning_status_is_incomplete():
-    # is_returning_patient ainda não respondido (None) → cadastro incompleto.
+def test_julio_minor_undetermined_returning_status_is_incomplete():
+    # Menor do Dr. Júlio sem is_returning_patient → incompleto (define preço/2 momentos).
     assert is_registration_complete(_complete_minor(is_returning_patient=None)) is False
+
+
+def test_bruna_minor_undetermined_returning_status_is_complete():
+    # Menor da Dra. Bruna sem is_returning_patient → completo (campo é irrelevante).
+    u = _complete_minor(doctor_id=DOCTOR_IDS["bruna"], is_returning_patient=None)
+    assert is_registration_complete(u) is True
 
 
 def test_adult_returning_without_patient_cpf_is_complete():
     u = {
         "name": "Ana Souza", "email": "ana@x.com", "birth_date": "1990-08-22",
-        "doctor_id": "dra-bruna", "is_patient": True, "age": 35,
+        "doctor_id": DOCTOR_IDS["bruna"], "is_patient": True, "age": 35,
         "is_returning_patient": True,
+    }
+    assert is_registration_complete(u) is True
+
+
+def test_adult_undetermined_returning_status_is_complete():
+    # Adulto sem is_returning_patient → completo (campo não é obrigatório).
+    u = {
+        "name": "Ana Souza", "email": "ana@x.com", "birth_date": "1990-08-22",
+        "doctor_id": DOCTOR_IDS["julio"], "is_patient": True, "age": 35,
+        "is_returning_patient": None,
     }
     assert is_registration_complete(u) is True
 
