@@ -359,8 +359,8 @@ async def test_collect_info_asks_guardian_name_after_minor_birth_date():
     assert result.get("birth_date") == "15/03/2015"
     assert result.get("patient_age") == expected_age
     assert expected_age < 18, "Test pre-condition: patient must be a minor"
-    sent = mock_send.call_args[0][1]
-    assert "responsável" in sent.lower()
+    sent = mock_send.call_args[0][1].lower()
+    assert "primeira consulta" in sent or "já está em acompanhamento" in sent
 
 
 async def test_collect_info_asks_guardian_cpf_after_guardian_name():
@@ -373,6 +373,7 @@ async def test_collect_info_asks_guardian_cpf_after_guardian_name():
         patient_name="Pedro Lima",
         patient_cpf="111.222.333-44",
         is_patient=False,  # already answered (new flow: step 2b)
+        is_returning_patient=False,
         patient_age=10,
         birth_date="15/03/2015",
         messages=[
@@ -438,16 +439,17 @@ async def test_collect_info_does_not_guess_doctor_when_both_mentioned():
         assert "doctor_id" not in (call[0][1] if len(call[0]) > 1 else {})
 
 
-async def test_collect_info_proceeds_to_is_returning_after_guardian_cpf():
-    """After guardian_cpf is collected for a minor, the next step must be is_returning_patient."""
+async def test_collect_info_new_minor_after_guardian_cpf_goes_to_doctor():
+    """Menor NOVO: após CPF do responsável, a próxima pergunta é o médico."""
     from app.graph.nodes import collect_info_node
     from langchain_core.messages import HumanMessage, AIMessage
 
     state = _base_minor_state(
-        user_name="Maria Souza",  # contact name already collected (new flow: step 1)
+        user_name="Maria Souza",
         patient_name="Pedro Lima",
         patient_cpf="111.222.333-44",
-        is_patient=False,  # already answered (new flow: step 2b)
+        is_patient=False,
+        is_returning_patient=False,
         patient_age=10,
         birth_date="15/03/2015",
         guardian_name="Maria Souza",
@@ -463,9 +465,8 @@ async def test_collect_info_proceeds_to_is_returning_after_guardian_cpf():
         result = await collect_info_node(state, {})
 
     assert result.get("guardian_cpf") == "123.456.789-00"
-    sent = mock_send.call_args[0][1]
-    # After guardian_cpf, next question is is_returning_patient
-    assert "paciente" in sent.lower() or "clínica" in sent.lower()
+    sent = mock_send.call_args[0][1].lower()
+    assert "júlio" in sent or "bruna" in sent
 
 
 async def test_collect_info_no_to_is_patient_sets_returning_patient_false():
@@ -554,11 +555,11 @@ async def test_collect_info_adult_birth_date_asks_is_returning_patient():
     assert result.get("is_returning_patient") is None  # not yet answered
 
 
-async def test_collect_info_is_patient_yes_proceeds_to_cpf():
-    """'sou eu' to the is_patient question must set is_patient=True and proceed to CPF.
+async def test_collect_info_is_patient_yes_proceeds_to_birth_date():
+    """'sou eu' to the is_patient question must set is_patient=True and proceed to birth date.
 
     In the new flow, is_patient is asked right after user_name (step 2b),
-    before CPF and birth_date are collected.
+    before birth_date and CPF are collected.
     """
     from app.graph.nodes import collect_info_node
     from langchain_core.messages import HumanMessage, AIMessage
@@ -584,7 +585,7 @@ async def test_collect_info_is_patient_yes_proceeds_to_cpf():
     assert result.get("is_patient") is True
     assert result.get("patient_name") == "João Silva"  # copied from user_name
     sent = mock_send.call_args[0][1]
-    assert "cpf" in sent.lower()
+    assert "nascimento" in sent.lower()
 
 
 async def test_collect_info_is_patient_no_asks_patient_name():
@@ -653,7 +654,7 @@ async def test_collect_info_patient_name_step_saves_patient_name():
     assert result.get("patient_name") == "João Silva"
     assert result.get("user_name") is None  # contact name must NOT be changed
     sent = mock_send.call_args[0][1]
-    assert "cpf" in sent.lower()
+    assert "nascimento" in sent.lower()
 
 
 async def test_collect_info_guardian_name_also_sets_user_name():
@@ -668,6 +669,7 @@ async def test_collect_info_guardian_name_also_sets_user_name():
         patient_age=10,
         birth_date="15/03/2015",
         is_patient=False,
+        is_returning_patient=False,
         messages=[
             HumanMessage(content="quero agendar uma consulta"),
             AIMessage(content="Qual é o nome completo do responsável pelo paciente?"),
