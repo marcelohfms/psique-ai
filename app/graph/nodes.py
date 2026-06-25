@@ -846,11 +846,14 @@ async def patient_agent_node(state: ConversationState, config: RunnableConfig) -
         try:
             from app.database import get_supabase as _get_supabase_sync
             _db = await _get_supabase_sync()
-            _db_user = await _db.from_("users").select("name,patient_name,is_patient").eq("id", _user_db_id).maybe_single().execute()
-            if _db_user and _db_user.data:
-                _db_name = _db_user.data.get("name")
-                _db_is_patient = _db_user.data.get("is_patient")
-                _db_patient_name = _db_user.data.get("patient_name")
+            # Query patients table (new architecture) — user_db_id = patient_id
+            _db_patient = await _db.from_("patients").select("name,is_patient").eq("id", _user_db_id).maybe_single().execute()
+            if _db_patient and _db_patient.data:
+                _db_patient_name = _db_patient.data.get("name")
+                _db_is_patient = _db_patient.data.get("is_patient")
+                # Derive contact name via get_user_by_phone shim (contact.name)
+                _fb = await get_user_by_phone(state["phone"])
+                _db_name = (_fb or {}).get("name")
                 # Auto-correct is_patient if DB has True but names clearly differ
                 if (
                     _db_is_patient is True
@@ -863,7 +866,7 @@ async def patient_agent_node(state: ConversationState, config: RunnableConfig) -
                         state["phone"], _db_name, _db_patient_name,
                     )
                     try:
-                        await _db.from_("users").update({"is_patient": False}).eq("id", _user_db_id).execute()
+                        await _db.from_("patients").update({"is_patient": False}).eq("id", _user_db_id).execute()
                     except Exception:
                         _pa_logger.exception("Failed to auto-correct is_patient in DB for %s", state["phone"])
                 if _db_name and _db_name != state.get("user_name"):

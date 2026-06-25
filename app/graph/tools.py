@@ -1438,41 +1438,6 @@ async def register_payment(
                         f"Se confirmar, mude o status para pending_reschedule."
                     )
 
-            # ── Caso 2: verificar mesmo paciente em outro número ──────────────────
-            other_contact_info = []
-            for _u in all_users:
-                _pname = _u.get("patient_name") or _u.get("name", "")
-                _bdate = _u.get("birth_date") or ""
-                if not _pname:
-                    continue
-                # Search for same patient_name + birth_date on different numbers
-                _query = client.from_("users").select("id, number, patient_name, name").ilike("patient_name", f"%{_pname}%")
-                if _bdate:
-                    _query = _query.eq("birth_date", _bdate)
-                _others = (await _query.neq("number", phone.replace("@s.whatsapp.net", "")).execute()).data or []
-                for _o in _others:
-                    # Obsoleto no novo modelo: o mesmo paciente em vários números é
-                    # um único patient_id (vários patient_contacts). Esta busca em
-                    # `users` devolve ids legados que não casam com appointments.patient_id,
-                    # então o ramo é efetivamente um no-op seguro (mantido por cautela).
-                    _o_uid = _o["id"]
-                    _o_appt = await client.from_("appointments").select(
-                        "appointment_id, start_time, status, doctor_id"
-                    ).eq("patient_id", _o_uid).in_("status", ["scheduled", "canceled"]).order("start_time", desc=True).limit(1).execute()
-                    if _o_appt.data:
-                        _oa = _o_appt.data[0]
-                        _odt = datetime.fromisoformat(_oa["start_time"]).astimezone(TZ).strftime("%d/%m/%Y às %H:%M")
-                        _odoc = {"d5baa58b-a788-4f40-b8c0-512c189150be": "Dr. Júlio", "18b01f87-eacd-4905-bd4a-a8293991e6fd": "Dra. Bruna"}.get(_oa.get("doctor_id", ""), "médico(a)")
-                        other_contact_info.append(
-                            f"{_pname} — consulta {_oa['status']} em {_odt} com {_odoc} (cadastrado no número {_o['number']})"
-                        )
-            if other_contact_info:
-                return (
-                    f"PACIENTE_OUTRO_NUMERO: Não encontrei consulta agendada neste número, mas encontrei o(s) seguinte(s) "
-                    f"registro(s) com o mesmo paciente em outro contato: {'; '.join(other_contact_info)}. "
-                    f"Confirme com o contato se é a mesma consulta antes de registrar o pagamento."
-                )
-
             return "Para qual paciente é este comprovante? Por favor, informe o nome completo."
 
         if len(seen_users) > 1:
@@ -2138,17 +2103,11 @@ async def transfer_to_human(
         # Always prefer the DB record over state.patient_name, which may contain
         # raw conversation text (e.g. "Ainda não é paciente, mas o nome dele é...").
         patient_name = state.get("patient_name") or state.get("user_name") or "Não informado"
-        user_db_id = state.get("user_db_id")
         try:
-            _db_client = await get_supabase()
-            if user_db_id:
-                _user_res = await _db_client.from_("users").select("patient_name, name").eq("id", user_db_id).maybe_single().execute()
-            else:
-                # user_db_id missing — look up by phone number as fallback
-                from app.database import _strip_phone
-                _user_res = await _db_client.from_("users").select("patient_name, name").eq("number", _strip_phone(phone)).maybe_single().execute()
-            if _user_res and _user_res.data:
-                patient_name = _user_res.data.get("patient_name") or _user_res.data.get("name") or patient_name
+            from app.database import get_user_by_phone as _get_user_by_phone
+            _fb = await _get_user_by_phone(phone)
+            if _fb:
+                patient_name = _fb.get("patient_name") or _fb.get("name") or patient_name
         except Exception:
             pass
         doctor = state.get("preferred_doctor", "")
