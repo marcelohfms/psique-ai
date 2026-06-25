@@ -5,10 +5,31 @@ from langgraph.prebuilt import ToolNode
 
 from app.graph.state import ConversationState
 from app.graph.nodes import collect_info_node, patient_agent_node, TOOLS
+from app.database import is_registration_complete, DOCTOR_IDS
 
 
 def _route_entry(state: ConversationState) -> str:
-    return state.get("stage", "collect_info")
+    stage = state.get("stage", "collect_info")
+    if stage == "patient_agent":
+        # Safety guard: if registration is incomplete, always go through collect_info.
+        # Prevents scheduling before all required fields are collected, even if stage
+        # was prematurely set to patient_agent in a previous turn.
+        _reg_check = {
+            "name": state.get("user_name"),
+            "email": state.get("patient_email"),
+            "birth_date": state.get("birth_date"),
+            "doctor_id": DOCTOR_IDS.get(state.get("preferred_doctor", ""), None),
+            "is_patient": state.get("is_patient"),
+            "is_returning_patient": state.get("is_returning_patient"),
+            "patient_name": state.get("patient_name"),
+            "age": state.get("patient_age"),
+            "guardian_name": state.get("guardian_name"),
+            "guardian_cpf": state.get("guardian_cpf"),
+            "guardian_relationship": state.get("guardian_relationship"),
+        }
+        if not is_registration_complete(_reg_check):
+            return "collect_info"
+    return stage
 
 
 def _route_after_collect(state: ConversationState) -> str:
