@@ -1239,3 +1239,109 @@ async def test_patient_agent_prompt_has_reference_block_and_appointment_labels()
     assert "(amanhã," in system_prompt
 
 
+
+
+async def test_collect_info_birth_date_leads_to_is_returning_question():
+    """Após a data de nascimento, a próxima pergunta é 'já é paciente?'."""
+    from app.graph.nodes import collect_info_node
+    from langchain_core.messages import HumanMessage, AIMessage
+
+    state = _base_minor_state(
+        user_name="Ana", patient_name="Ana", patient_cpf=None,
+        is_patient=True, birth_date=None, patient_age=None,
+        messages=[
+            HumanMessage(content="quero agendar uma consulta"),
+            AIMessage(content="Qual a data de nascimento do paciente? (formato dd/mm/aaaa)"),
+            HumanMessage(content="22/08/1990"),
+        ],
+    )
+    with patch("app.graph.nodes.send_text", new_callable=AsyncMock) as mock_send, \
+         patch("app.graph.nodes.save_message", new_callable=AsyncMock), \
+         patch("app.graph.nodes.get_users_by_phone", new_callable=AsyncMock, return_value=[]):
+        result = await collect_info_node(state, {})
+
+    assert result.get("birth_date") == "22/08/1990"
+    sent = mock_send.call_args[0][1].lower()
+    assert "primeira consulta" in sent or "já está em acompanhamento" in sent
+
+
+async def test_collect_info_returning_adult_skips_cpf_goes_to_doctor():
+    """Adulto que JÁ é paciente: após 'já é paciente?'=sim, pula CPF e vai ao médico."""
+    from app.graph.nodes import collect_info_node
+    from langchain_core.messages import HumanMessage, AIMessage
+
+    _Q = "É a primeira consulta ou o paciente já está em acompanhamento na clínica?"
+    state = _base_minor_state(
+        user_name="Ana", patient_name="Ana", patient_cpf=None,
+        is_patient=True, patient_age=35, birth_date="22/08/1990",
+        is_returning_patient=None,
+        messages=[
+            HumanMessage(content="quero agendar"),
+            AIMessage(content=_Q),
+            HumanMessage(content="já sou paciente"),
+        ],
+    )
+    with patch("app.graph.nodes.send_text", new_callable=AsyncMock) as mock_send, \
+         patch("app.graph.nodes.save_message", new_callable=AsyncMock), \
+         patch("app.graph.nodes.get_users_by_phone", new_callable=AsyncMock, return_value=[]), \
+         patch("app.graph.nodes.upsert_user", new_callable=AsyncMock, return_value="id"):
+        result = await collect_info_node(state, {})
+
+    assert result.get("is_returning_patient") is True
+    sent = mock_send.call_args[0][1].lower()
+    assert "cpf" not in sent
+    assert "júlio" in sent or "bruna" in sent
+
+
+async def test_collect_info_new_adult_asks_cpf_after_is_returning():
+    """Adulto NOVO: após 'já é paciente?'=não, a próxima pergunta é o CPF."""
+    from app.graph.nodes import collect_info_node
+    from langchain_core.messages import HumanMessage, AIMessage
+
+    _Q = "É a primeira consulta ou o paciente já está em acompanhamento na clínica?"
+    state = _base_minor_state(
+        user_name="Ana", patient_name="Ana", patient_cpf=None,
+        is_patient=True, patient_age=35, birth_date="22/08/1990",
+        is_returning_patient=None,
+        messages=[
+            HumanMessage(content="quero agendar"),
+            AIMessage(content=_Q),
+            HumanMessage(content="é a primeira vez"),
+        ],
+    )
+    with patch("app.graph.nodes.send_text", new_callable=AsyncMock) as mock_send, \
+         patch("app.graph.nodes.save_message", new_callable=AsyncMock), \
+         patch("app.graph.nodes.get_users_by_phone", new_callable=AsyncMock, return_value=[]), \
+         patch("app.graph.nodes.upsert_user", new_callable=AsyncMock, return_value="id"):
+        result = await collect_info_node(state, {})
+
+    assert result.get("is_returning_patient") is False
+    sent = mock_send.call_args[0][1].lower()
+    assert "cpf" in sent
+
+
+async def test_collect_info_returning_minor_guardian_name_skips_guardian_cpf():
+    """Menor que JÁ é paciente: após nome do responsável, pula CPF do responsável e vai ao médico."""
+    from app.graph.nodes import collect_info_node
+    from langchain_core.messages import HumanMessage, AIMessage
+
+    state = _base_minor_state(
+        user_name="Maria Souza", patient_name="Pedro Lima", patient_cpf=None,
+        is_patient=False, patient_age=10, birth_date="15/03/2015",
+        is_returning_patient=True, guardian_name=None, guardian_cpf=None,
+        messages=[
+            HumanMessage(content="quero agendar"),
+            AIMessage(content="Qual é o nome completo do responsável pelo paciente?"),
+            HumanMessage(content="Maria Souza"),
+        ],
+    )
+    with patch("app.graph.nodes.send_text", new_callable=AsyncMock) as mock_send, \
+         patch("app.graph.nodes.save_message", new_callable=AsyncMock), \
+         patch("app.graph.nodes.get_users_by_phone", new_callable=AsyncMock, return_value=[]), \
+         patch("app.graph.nodes.upsert_user", new_callable=AsyncMock, return_value="id"):
+        result = await collect_info_node(state, {})
+
+    assert result.get("guardian_name") == "Maria Souza"
+    sent = mock_send.call_args[0][1].lower()
+    assert "cpf" not in sent
+    assert "júlio" in sent or "bruna" in sent
