@@ -492,9 +492,29 @@ async def collect_info_node(state: ConversationState, config: RunnableConfig) ->
         if state.get("is_returning_patient") is None:
             if last_ai and _PATIENT_Q in last_ai and last_human:
                 h = last_human.lower()
-                if any(kw in h for kw in ["não", "nao", "nunca", "primeira", "novo", "nova"]):
+                # Frases inequívocas primeiro — incluindo negações que INVERTEM o
+                # sentido ("não é a primeira" = já é paciente). Só depois caímos na
+                # polaridade simples (não/sim), evitando classificar errado quem
+                # responde com uma negação ("não, não é a primeira vez").
+                _returning_phrases = [
+                    "acompanhamento", "já sou", "ja sou", "já estou", "ja estou",
+                    "já faço", "ja faco", "sou paciente", "já é paciente", "ja e paciente",
+                    "já fui", "ja fui", "já tenho", "ja tenho", "retorno",
+                    "não é a primeira", "nao e a primeira", "não é primeira", "nao e primeira",
+                    "não primeira", "nao primeira",
+                ]
+                _new_phrases = [
+                    "primeira vez", "primeira consulta", "é a primeira", "e a primeira",
+                    "nunca", "novo", "nova", "não sou paciente", "nao sou paciente",
+                    "ainda não", "ainda nao",
+                ]
+                if any(p in h for p in _returning_phrases):
+                    is_returning_patient = True
+                elif any(p in h for p in _new_phrases):
                     is_returning_patient = False
-                elif any(kw in h for kw in ["sim", "já", "ja", "sou", "é", "e paciente", "paciente"]):
+                elif any(kw in h for kw in ["não", "nao", "primeira"]):
+                    is_returning_patient = False
+                elif any(kw in h for kw in ["sim", "já", "ja", "sou", "é", "paciente"]):
                     is_returning_patient = True
                 else:
                     is_returning_patient = None
@@ -559,7 +579,7 @@ async def collect_info_node(state: ConversationState, config: RunnableConfig) ->
                 return await _extract_and_ask({"guardian_cpf": last_human}, _nq(guardian_cpf=last_human))
             return await _ask(_GUARDIAN_CPF_Q)
 
-        # Step 8: preferred doctor
+        # Step 9: preferred doctor
         if not state.get("preferred_doctor"):
             _last_ai_asked_doctor = last_ai and (
                 _DOCTOR_Q in last_ai
@@ -582,7 +602,7 @@ async def collect_info_node(state: ConversationState, config: RunnableConfig) ->
                     return await _extract_and_ask({"preferred_doctor": doctor}, next_email_q)
             return await _ask(_DOCTOR_Q)
 
-        # Step 7: email — ALWAYS required, whether scheduling or requesting a document
+        # Step 10: email — ALWAYS required, whether scheduling or requesting a document
         if not state.get("patient_email"):
             _last_ai_asked_email = last_ai and (
                 _EMAIL_Q in last_ai
@@ -602,7 +622,7 @@ async def collect_info_node(state: ConversationState, config: RunnableConfig) ->
             else:
                 return await _ask(_EMAIL_Q if _is_document else _EMAIL_Q_CADASTRO)
 
-        # Step 8: medication — only for receita (last step)
+        # Step 11: medication — only for receita (last step)
         if _is_receita and not state.get("medication_note"):
             if last_ai and _MED_Q in last_ai and last_human:
                 # Last step — save and fall through to LLM to confirm

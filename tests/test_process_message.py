@@ -496,6 +496,42 @@ async def test_collect_info_no_to_is_patient_sets_returning_patient_false():
     assert result.get("is_patient") is None, "is_patient must NOT be set by the 'já é paciente?' question"
 
 
+@pytest.mark.parametrize("answer,expected", [
+    ("já sou paciente", True),
+    ("já estou em acompanhamento", True),
+    ("não, não é a primeira vez", True),   # negação que INVERTE o sentido = retornante
+    ("é a primeira vez", False),
+    ("primeira consulta", False),
+    ("não", False),
+    ("sim", True),
+])
+async def test_collect_info_is_returning_classifier_phrases(answer, expected):
+    """O classificador de 'já é paciente?' entende frases inequívocas, inclusive
+    negações que invertem o sentido ('não é a primeira' = já é paciente)."""
+    from app.graph.nodes import collect_info_node
+    from langchain_core.messages import HumanMessage, AIMessage
+
+    _Q = "É a primeira consulta ou o paciente já está em acompanhamento na clínica?"
+    state = _base_minor_state(
+        patient_age=30,
+        birth_date="15/03/1994",
+        patient_cpf="123.456.789-00",
+        is_patient=True,
+        messages=[
+            HumanMessage(content="quero agendar uma consulta"),
+            AIMessage(content=_Q),
+            HumanMessage(content=answer),
+        ],
+    )
+    with patch("app.graph.nodes.send_text", new_callable=AsyncMock), \
+         patch("app.graph.nodes.save_message", new_callable=AsyncMock), \
+         patch("app.graph.nodes.get_users_by_phone", new_callable=AsyncMock, return_value=[]), \
+         patch("app.graph.nodes.upsert_user", new_callable=AsyncMock, return_value="new-id"):
+        result = await collect_info_node(state, {})
+
+    assert result.get("is_returning_patient") is expected
+
+
 async def test_collect_info_yes_to_is_patient_sets_returning_patient_true():
     """'sim' to 'já é paciente da clínica?' must set is_returning_patient=True, NOT touch is_patient."""
     from app.graph.nodes import collect_info_node
