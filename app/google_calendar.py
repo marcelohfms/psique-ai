@@ -28,6 +28,7 @@ SCHEDULE_EXCEPTIONS: dict[str, dict[str, list[tuple[int, int, int, int, str]]]] 
         "2026-06-17": [(9, 0, 13, 0, "escolha")],                              # Quarta: manhã estendida até 13h (inclui slot 12:00)
         "2026-06-23": [],                                                       # Segunda: sem atendimento (bloqueado)
         "2026-06-24": [],                                                       # Quarta: sem atendimento
+        "2026-06-29": [],                                                       # Segunda: sem atendimento (bloqueado)
         "2026-07-06": [],                                                       # Segunda: sem atendimento (bloqueado)
     },
     "bruna": {
