@@ -178,9 +178,16 @@ async def upsert_user(phone: str, data: dict, user_id: str | None = None) -> str
 
     contact_id = await upsert_contact(phone, contact_data or {"name": data.get("name")})
 
+    # Resolve patient_id via phone lookup when not supplied, to avoid blind INSERT
+    resolved_id = user_id
+    if patient_data and not resolved_id:
+        existing = await get_user_by_phone(phone)
+        if existing:
+            resolved_id = existing.get("id")
+
     patient_id = (
-        await upsert_patient(patient_data, patient_id=user_id)
-        if patient_data else user_id
+        await upsert_patient(patient_data, patient_id=resolved_id)
+        if patient_data else resolved_id
     )
 
     if patient_id and contact_id:
