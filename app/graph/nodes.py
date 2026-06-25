@@ -70,212 +70,175 @@ async def collect_info_node(state: ConversationState, config: RunnableConfig) ->
         "referral_professional": state.get("referral_professional"),
     }
 
-    # ── Re-check DB when user_name is cached but registration still incomplete ──
-    # Handles the case where the DB was updated after a partial collect_info pass
-    # already wrote user_name to the checkpoint. Without this, the DB-load block
-    # below is skipped and collect_info re-asks questions using stale state.
-    if state.get("user_name") and state.get("stage") != "patient_agent" and not state.get("pending_patients"):
-        _refresh = await get_users_by_phone(state["phone"])
-        if len(_refresh) == 1 and is_registration_complete(_refresh[0]):
-            _ru = _refresh[0]
-            _doc_key = DOCTOR_NAMES.get(_ru.get("doctor_id", ""), None)
+    # ── Disambiguation: confirmação de paciente selecionado ──────────────────────
+    if state.get("pending_confirmation_patient") is not None:
+        candidate = state["pending_confirmation_patient"]
+        last_human = ""
+        for msg in reversed(state["messages"]):
+            if getattr(msg, "type", None) == "human":
+                last_human = (msg.content or "").strip().lower()
+                break
+
+        _affirmative = {"sim", "s", "yes", "y", "isso", "correto", "certo", "exato", "confirmado", "confirmo", "ok"}
+        _negative    = {"não", "nao", "no", "n", "errado", "incorreto", "outro", "outra"}
+
+        if any(w in last_human for w in _affirmative):
+            doc_key = DOCTOR_NAMES.get(candidate.get("doctor_id", ""), None)
             return {
-                "user_db_id": _ru["id"],
-                "user_name": _ru.get("name"),
-                "patient_name": _ru.get("patient_name") or _ru.get("name"),
-                "patient_age": _ru.get("age"),
-                "birth_date": _ru.get("birth_date"),
-                "is_patient": _ru.get("is_patient"),
-                "is_returning_patient": _ru.get("is_returning_patient"),
-                "preferred_doctor": _doc_key,
-                "patient_email": _ru.get("email"),
-                "guardian_name": _ru.get("guardian_name"),
-                "guardian_cpf": _ru.get("guardian_cpf"),
-                "guardian_relationship": _ru.get("guardian_relationship"),
-                "patient_cpf": _ru.get("patient_cpf"),
-                "modality_restriction": _ru.get("modality_restriction"),
-                "age_exception": _ru.get("age_exception"),
+                "pending_confirmation_patient": None,
+                "pending_patients": None,
+                "user_db_id": candidate["id"],
+                "user_name": candidate.get("name"),
+                "patient_name": candidate.get("patient_name") or candidate.get("name"),
+                "patient_age": candidate.get("age"),
+                "birth_date": candidate.get("birth_date"),
+                "is_patient": candidate.get("is_patient"),
+                "is_returning_patient": candidate.get("is_returning_patient"),
+                "preferred_doctor": doc_key,
+                "patient_email": candidate.get("email"),
+                "guardian_name": candidate.get("guardian_name"),
+                "guardian_cpf": candidate.get("guardian_cpf"),
+                "guardian_relationship": candidate.get("guardian_relationship"),
+                "patient_cpf": candidate.get("patient_cpf"),
+                "modality_restriction": candidate.get("modality_restriction"),
+                "age_exception": candidate.get("age_exception"),
                 "stage": "patient_agent",
                 "messages": [],
             }
+        elif any(w in last_human for w in _negative):
+            all_pending = state.get("pending_patients") or []
+            names = [u.get("patient_name") or u.get("name") or "Paciente" for u in all_pending]
+            options = "\n".join(f"{i + 1}. {n}" for i, n in enumerate(names))
+            reply = f"Sem problema! Para qual paciente você está entrando em contato?\n\n{options}"
+            await send_text(state["phone"], reply)
+            await save_message(state["phone"], "assistant", reply)
+            return {
+                "pending_confirmation_patient": None,
+                "pending_patients": all_pending,
+                "messages": [AIMessage(content=reply)],
+            }
+        else:
+            patient_name = candidate.get("patient_name") or candidate.get("name") or "o paciente"
+            reply = f"Desculpe, não entendi. Você está entrando em contato para *{patient_name}*? (sim/não)"
+            await send_text(state["phone"], reply)
+            await save_message(state["phone"], "assistant", reply)
+            return {"messages": [AIMessage(content=reply)]}
 
-    # ── Multi-patient disambiguation ─────────────────────────────────────────────
-    # Runs only when the phone has multiple registered patients and no patient has
-    # been selected yet for this conversation.
-    if not state.get("user_name"):
-        pending = state.get("pending_patients")
+    # ── Disambiguation: seleção de paciente da lista ──────────────────────────────
+    if state.get("pending_patients"):
+        pending = state["pending_patients"]
+        last_human = ""
+        for msg in reversed(state["messages"]):
+            if getattr(msg, "type", None) == "human":
+                last_human = (msg.content or "").strip().lower()
+                break
 
-        if pending is None:
-            all_users = await get_users_by_phone(state["phone"])
+        selected = None
+        for i, u in enumerate(pending):
+            name = (u.get("patient_name") or u.get("name") or "").lower()
+            name_parts = name.split()
+            if str(i + 1) == last_human or any(part in last_human for part in name_parts if len(part) > 2):
+                selected = u
+                break
 
-            if len(all_users) > 1:
-                # Auto-select the patient with a scheduled appointment — no disambiguation needed.
-                from app.database import get_supabase as _get_supabase
-                import datetime as _dt
-                _client = await _get_supabase()
-                _now = _dt.datetime.now(_dt.timezone.utc).isoformat()
-                _user_ids = [u["id"] for u in all_users]
-                _appt_result = await (
-                    _client.from_("appointments")
-                    .select("patient_id")
-                    .in_("patient_id", _user_ids)
-                    .eq("status", "scheduled")
-                    .gte("start_time", _now)
-                    .execute()
-                )
-                _scheduled_user_ids = {r["patient_id"] for r in (_appt_result.data or [])}
-                _with_appt = [u for u in all_users if u["id"] in _scheduled_user_ids]
-                if len(_with_appt) == 1:
-                    # Only one patient has a scheduled appointment — auto-select
-                    all_users = _with_appt
-                # else: multiple or none with appointments — show all for disambiguation
+        if selected:
+            patient_name = selected.get("patient_name") or selected.get("name") or "o paciente"
+            reply = f"Só confirmar: você está entrando em contato para *{patient_name}*, certo? (sim/não)"
+            await send_text(state["phone"], reply)
+            await save_message(state["phone"], "assistant", reply)
+            return {
+                "pending_confirmation_patient": selected,
+                "pending_patients": pending,
+                "messages": [AIMessage(content=reply)],
+            }
+        else:
+            names = [u.get("patient_name") or u.get("name") or "Paciente" for u in pending]
+            options = "\n".join(f"{i + 1}. {n}" for i, n in enumerate(names))
+            reply = f"Não consegui identificar. Pode digitar o número ou o nome do paciente?\n\n{options}"
+            await send_text(state["phone"], reply)
+            await save_message(state["phone"], "assistant", reply)
+            return {"messages": [AIMessage(content=reply)]}
 
-            if len(all_users) == 1:
-                u = all_users[0]
+    # ── DB load — sempre recarrega do banco, valores do DB sempre prevalecem ──────
+    # Garante que campos atualizados externamente (ex: is_returning_patient após
+    # consulta concluída) reflitam no estado, independente do checkpoint.
+    all_users = await get_users_by_phone(state["phone"])
 
-                # If the existing record is for someone else (is_patient=False) and the
-                # contact is now booking for themselves ("para mim"), start a fresh
-                # registration instead of loading the third-party record. This creates
-                # a new user entry linked to this phone number with is_patient=True.
-                _self_keywords = [
-                    "para mim", "pra mim", "para eu", "sou eu", "sou a paciente",
-                    "sou o paciente", "é para mim", "e para mim", "é pra mim",
-                    "e pra mim", "para mim mesmo", "pra mim mesmo",
-                ]
-                _last_human_msg = ""
-                for _m in reversed(state.get("messages", [])):
-                    if getattr(_m, "type", "") == "human":
-                        _last_human_msg = (getattr(_m, "content", "") or "").lower()
-                        break
-                _contact_booking_for_self = (
-                    u.get("is_patient") is False
-                    and any(kw in _last_human_msg for kw in _self_keywords)
-                )
-                if _contact_booking_for_self:
-                    # Don't load the existing third-party record — let collect_info
-                    # gather fresh data and create a new user with is_patient=True.
-                    # Pre-fill only the contact name so Eva doesn't ask again.
-                    pass  # fall through to normal collect_info flow below
+    if len(all_users) > 1:
+        # Auto-select the patient with a scheduled appointment — no disambiguation needed.
+        from app.database import get_supabase as _get_supabase
+        import datetime as _dt
+        _client = await _get_supabase()
+        _now = _dt.datetime.now(_dt.timezone.utc).isoformat()
+        _user_ids = [u["id"] for u in all_users]
+        _appt_result = await (
+            _client.from_("appointments")
+            .select("patient_id")
+            .in_("patient_id", _user_ids)
+            .eq("status", "scheduled")
+            .gte("start_time", _now)
+            .execute()
+        )
+        _scheduled_user_ids = {r["patient_id"] for r in (_appt_result.data or [])}
+        _with_appt = [u for u in all_users if u["id"] in _scheduled_user_ids]
+        if len(_with_appt) == 1:
+            all_users = _with_appt
 
-                else:
-                    doc_key = DOCTOR_NAMES.get(u.get("doctor_id", ""), None)
-                    loaded = {
-                        "user_db_id": u["id"],
-                        "user_name": u.get("name"),
-                        "patient_name": u.get("patient_name") or u.get("name"),
-                        "patient_age": u.get("age"),
-                        "birth_date": u.get("birth_date"),
-                        "is_patient": u.get("is_patient"),
-                        "is_returning_patient": u.get("is_returning_patient"),
-                        "preferred_doctor": doc_key,
-                        "patient_email": u.get("email"),
-                        "guardian_name": u.get("guardian_name"),
-                        "guardian_cpf": u.get("guardian_cpf"),
-                        "guardian_relationship": u.get("guardian_relationship"),
-                        "patient_cpf": u.get("patient_cpf"),
-                        "modality_restriction": u.get("modality_restriction"),
-                        "age_exception": u.get("age_exception"),
-                    }
-                    # Only skip collect_info when ALL required fields are present.
-                    if is_registration_complete(u):
-                        return {**loaded, "stage": "patient_agent", "messages": []}
-                    return loaded
-            elif len(all_users) > 1:
-                names = [u.get("patient_name") or u.get("name") or "Paciente" for u in all_users]
-                options = "\n".join(f"{i + 1}. {n}" for i, n in enumerate(names))
-                reply = f"Olá! Para qual paciente você está entrando em contato?\n\n{options}"
-                await send_text(state["phone"], reply)
-                await save_message(state["phone"], "assistant", reply)
-                return {"pending_patients": all_users, "messages": [AIMessage(content=reply)]}
+    if len(all_users) == 1:
+        u = all_users[0]
 
-        elif state.get("pending_confirmation_patient"):
-            candidate = state["pending_confirmation_patient"]
-            last_human = ""
-            for msg in reversed(state["messages"]):
-                if getattr(msg, "type", None) == "human":
-                    last_human = (msg.content or "").strip().lower()
-                    break
+        # If the existing record is for someone else (is_patient=False) and the
+        # contact is now booking for themselves ("para mim"), start a fresh
+        # registration instead of loading the third-party record.
+        _self_keywords = [
+            "para mim", "pra mim", "para eu", "sou eu", "sou a paciente",
+            "sou o paciente", "é para mim", "e para mim", "é pra mim",
+            "e pra mim", "para mim mesmo", "pra mim mesmo",
+        ]
+        _last_human_msg = ""
+        for _m in reversed(state.get("messages", [])):
+            if getattr(_m, "type", "") == "human":
+                _last_human_msg = (getattr(_m, "content", "") or "").lower()
+                break
+        _contact_booking_for_self = (
+            u.get("is_patient") is False
+            and any(kw in _last_human_msg for kw in _self_keywords)
+        )
 
-            _affirmative = {"sim", "s", "yes", "y", "isso", "correto", "certo", "exato", "confirmado", "confirmo", "ok"}
-            _negative    = {"não", "nao", "no", "n", "errado", "incorreto", "outro", "outra"}
+        if not _contact_booking_for_self:
+            doc_key = DOCTOR_NAMES.get(u.get("doctor_id", ""), None)
+            loaded = {
+                "user_db_id": u["id"],
+                "user_name": u.get("name"),
+                "patient_name": u.get("patient_name") or u.get("name"),
+                "patient_age": u.get("age"),
+                "birth_date": u.get("birth_date"),
+                "is_patient": u.get("is_patient"),
+                "is_returning_patient": u.get("is_returning_patient"),
+                "preferred_doctor": doc_key,
+                "patient_email": u.get("email"),
+                "guardian_name": u.get("guardian_name"),
+                "guardian_cpf": u.get("guardian_cpf"),
+                "guardian_relationship": u.get("guardian_relationship"),
+                "patient_cpf": u.get("patient_cpf"),
+                "modality_restriction": u.get("modality_restriction"),
+                "age_exception": u.get("age_exception"),
+            }
+            if is_registration_complete(u):
+                return {**loaded, "stage": "patient_agent", "messages": []}
+            # Incomplete: merge DB values into state so systematic questions use
+            # fresh data. DB wins over any stale checkpoint values.
+            for k, v in loaded.items():
+                if v is not None:
+                    state[k] = v  # type: ignore[literal-required]
 
-            if any(w in last_human for w in _affirmative):
-                doc_key = DOCTOR_NAMES.get(candidate.get("doctor_id", ""), None)
-                return {
-                    "pending_confirmation_patient": None,
-                    "pending_patients": None,
-                    "user_db_id": candidate["id"],
-                    "user_name": candidate.get("name"),
-                    "patient_name": candidate.get("patient_name") or candidate.get("name"),
-                    "patient_age": candidate.get("age"),
-                    "birth_date": candidate.get("birth_date"),
-                    "is_patient": candidate.get("is_patient"),
-                    "is_returning_patient": candidate.get("is_returning_patient"),
-                    "preferred_doctor": doc_key,
-                    "patient_email": candidate.get("email"),
-                    "guardian_name": candidate.get("guardian_name"),
-                    "guardian_cpf": candidate.get("guardian_cpf"),
-                    "guardian_relationship": candidate.get("guardian_relationship"),
-                    "patient_cpf": candidate.get("patient_cpf"),
-                    "modality_restriction": candidate.get("modality_restriction"),
-                    "age_exception": candidate.get("age_exception"),
-                    "stage": "patient_agent",
-                    "messages": [],
-                }
-            elif any(w in last_human for w in _negative):
-                # Guardian rejected — re-show full list
-                all_pending = state.get("pending_patients") or []
-                names = [u.get("patient_name") or u.get("name") or "Paciente" for u in all_pending]
-                options = "\n".join(f"{i + 1}. {n}" for i, n in enumerate(names))
-                reply = f"Sem problema! Para qual paciente você está entrando em contato?\n\n{options}"
-                await send_text(state["phone"], reply)
-                await save_message(state["phone"], "assistant", reply)
-                return {
-                    "pending_confirmation_patient": None,
-                    "pending_patients": all_pending,
-                    "messages": [AIMessage(content=reply)],
-                }
-            else:
-                # Ambiguous — ask again
-                patient_name = candidate.get("patient_name") or candidate.get("name") or "o paciente"
-                reply = f"Desculpe, não entendi. Você está entrando em contato para *{patient_name}*? (sim/não)"
-                await send_text(state["phone"], reply)
-                await save_message(state["phone"], "assistant", reply)
-                return {"messages": [AIMessage(content=reply)]}
-
-        elif pending:
-            last_human = ""
-            for msg in reversed(state["messages"]):
-                if getattr(msg, "type", None) == "human":
-                    last_human = (msg.content or "").strip().lower()
-                    break
-
-            selected = None
-            for i, u in enumerate(pending):
-                name = (u.get("patient_name") or u.get("name") or "").lower()
-                name_parts = name.split()
-                if str(i + 1) == last_human or any(part in last_human for part in name_parts if len(part) > 2):
-                    selected = u
-                    break
-
-            if selected:
-                patient_name = selected.get("patient_name") or selected.get("name") or "o paciente"
-                reply = f"Só confirmar: você está entrando em contato para *{patient_name}*, certo? (sim/não)"
-                await send_text(state["phone"], reply)
-                await save_message(state["phone"], "assistant", reply)
-                return {
-                    "pending_confirmation_patient": selected,
-                    "pending_patients": pending,
-                    "messages": [AIMessage(content=reply)],
-                }
-            else:
-                # Could not parse — ask again
-                names = [u.get("patient_name") or u.get("name") or "Paciente" for u in pending]
-                options = "\n".join(f"{i + 1}. {n}" for i, n in enumerate(names))
-                reply = f"Não consegui identificar. Pode digitar o número ou o nome do paciente?\n\n{options}"
-                await send_text(state["phone"], reply)
-                await save_message(state["phone"], "assistant", reply)
-                return {"messages": [AIMessage(content=reply)]}
+    elif len(all_users) > 1:
+        names = [u.get("patient_name") or u.get("name") or "Paciente" for u in all_users]
+        options = "\n".join(f"{i + 1}. {n}" for i, n in enumerate(names))
+        reply = f"Olá! Para qual paciente você está entrando em contato?\n\n{options}"
+        await send_text(state["phone"], reply)
+        await save_message(state["phone"], "assistant", reply)
+        return {"pending_patients": all_users, "messages": [AIMessage(content=reply)]}
 
     # Detect receita request from any user message
     _messages_text = " ".join(
