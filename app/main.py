@@ -946,6 +946,9 @@ async def _handle_chatwoot_payload(payload: dict) -> None:
             return
 
         # ── Incoming patient message ──────────────────────────────────────────
+        # Receiving is handled exclusively by the Meta /webhook endpoint.
+        # Here we only register the conversation ID and reopen pending conversations
+        # so Chatwoot metadata stays in sync — Eva is NOT triggered from this path.
         result = _extract_chatwoot_message(payload)
         if result is None:
             return
@@ -970,27 +973,6 @@ async def _handle_chatwoot_payload(payload: dict) -> None:
         # If eva-ativa label is present, force-reactivate Eva (handles missed activation events)
         elif _EVA_ACTIVE_LABEL in conv_labels:
             await _resume_bot_for_patient(phone)
-
-        if text is None:
-            text = await _process_chatwoot_attachments(payload.get("attachments", []))
-            if not text:
-                return
-
-        logger.info("Chatwoot message from %s (conv=%s): %.80s", phone, conversation_id, text)
-
-        if text.strip().lower() == "/reset":
-            await _reset_conversation(phone)
-            return
-
-        # Deduplicate: same message may arrive via /webhook AND /chatwoot-webhook.
-        # source_id is the original WhatsApp wamid — same key used in /webhook dedup.
-        dedup_key = str(payload.get("source_id") or payload.get("id") or "")
-        if dedup_key and _is_duplicate(dedup_key):
-            logger.info("Duplicate Chatwoot msg (key=%s) — skipping", dedup_key)
-            return
-
-        await save_message(phone, "user", text)
-        await buffer_push(phone, text, process_message)
     except Exception:
         logger.exception("Error handling Chatwoot webhook payload")
 

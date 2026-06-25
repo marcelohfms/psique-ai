@@ -218,7 +218,10 @@ def _chatwoot_payload(
     }
 
 
-async def test_chatwoot_webhook_processes_incoming_message(async_client):
+async def test_chatwoot_webhook_registers_conversation_but_does_not_trigger_eva(async_client):
+    """Incoming patient messages via Chatwoot must NOT trigger Eva.
+    Receiving is handled exclusively by the Meta /webhook endpoint.
+    The Chatwoot webhook still registers the conversation ID for metadata."""
     with patch("app.main.buffer_push") as mock_push, \
          patch("app.main.save_message") as mock_save, \
          patch("app.chatwoot.register_conversation") as mock_register:
@@ -233,6 +236,7 @@ async def test_chatwoot_webhook_processes_incoming_message(async_client):
         assert response.status_code == 200
         await asyncio.sleep(0.05)
         mock_register.assert_called_once_with("5511999999999@s.whatsapp.net", 42)
+        mock_push.assert_not_called()
 
 
 async def test_chatwoot_webhook_ignores_outgoing_messages(async_client):
@@ -270,21 +274,20 @@ async def test_chatwoot_webhook_ignores_missing_content(async_client):
         mock_push.assert_not_called()
 
 
-async def test_chatwoot_webhook_processes_audio_attachment(async_client):
+async def test_chatwoot_webhook_audio_attachment_does_not_trigger_eva(async_client):
+    """Audio attachments in Chatwoot incoming messages must NOT trigger Eva either."""
     payload = _chatwoot_payload(content="")
     payload["attachments"] = [
         {"file_type": "audio", "data_url": "https://storage.example.com/audio.ogg"}
     ]
     with patch("app.main.buffer_push") as mock_push, \
-         patch("app.main.save_message") as mock_save, \
-         patch("app.main._process_chatwoot_attachments", new_callable=AsyncMock, return_value="[áudio transcrito]: consulta amanhã") as mock_att:
+         patch("app.main.save_message") as mock_save:
         mock_push.return_value = None
         mock_save.return_value = None
         response = await async_client.post("/chatwoot-webhook", json=payload)
         assert response.status_code == 200
         await asyncio.sleep(0.05)
-        mock_att.assert_called_once()
-        mock_push.assert_called_once()
+        mock_push.assert_not_called()
 
 
 async def test_chatwoot_webhook_ignores_empty_attachment(async_client):
