@@ -406,6 +406,19 @@ async def process_message(phone: str, text: str) -> None:
 
     async with get_phone_lock(phone):
         snapshot = await graph_module.chatbot.aget_state(config)
+
+        # Cross-process dedup: if the most recent message in the checkpoint is
+        # already this exact HumanMessage, another worker already processed it.
+        # This works across multiple uvicorn workers since the checkpoint is in Postgres.
+        if snapshot and snapshot.values:
+            _cp_msgs = snapshot.values.get("messages") or []
+            for _m in reversed(_cp_msgs):
+                if getattr(_m, "type", None) == "human":
+                    if _m.content == text:
+                        logger.info("Cross-process dedup: message already in checkpoint for %s — skipping", phone)
+                        return
+                    break  # only check the most recent human message
+
         if snapshot.values:
             state_update = {"messages": [HumanMessage(content=text)], "silent_mode": False, "phone": phone}
             # If the conversation is still in collect_info, re-sync any fields that
