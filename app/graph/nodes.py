@@ -441,14 +441,25 @@ async def collect_info_node(state: ConversationState, config: RunnableConfig) ->
                 return await _extract_and_ask({"patient_name": last_human}, _CPF_Q)
             return await _ask(_PATIENT_NAME_Q)
 
-        # Step 3: CPF
+        # Step 3: CPF — optional for foreign patients
         if not state.get("patient_cpf"):
             if last_ai and _CPF_Q in last_ai and last_human:
                 import re as _re
-                if _re.search(r'\d', last_human):
+                _foreign_kws = [
+                    "não tenho", "nao tenho", "estrangeiro", "estrangeira",
+                    "não possuo", "nao possuo", "passport", "passaporte",
+                    "sem cpf", "não tem cpf", "nao tem cpf",
+                ]
+                if any(kw in last_human.lower() for kw in _foreign_kws):
+                    # Foreign patient — skip CPF
+                    return await _extract_and_ask({"patient_cpf": "N/A"}, _BIRTH_Q)
+                elif _re.search(r'\d', last_human):
                     return await _extract_and_ask({"patient_cpf": last_human}, _BIRTH_Q)
                 else:
-                    return await _ask("CPF inválido. Por favor, informe o CPF do paciente com os números (ex: 123.456.789-10).")
+                    return await _ask(
+                        "CPF inválido. Por favor, informe o CPF do paciente com os números (ex: 123.456.789-10).\n"
+                        "Caso o paciente não tenha CPF (estrangeiro), responda \"não tenho CPF\"."
+                    )
             return await _ask(_CPF_Q)
 
         # Step 4: birth date
@@ -488,7 +499,7 @@ async def collect_info_node(state: ConversationState, config: RunnableConfig) ->
                 )
             return await _ask(_GUARDIAN_NAME_Q)
 
-        # Step 4c: guardian CPF (only for minors)
+        # Step 4c: guardian CPF (only for minors) — optional for foreigners
         if (state.get("patient_age") or 99) < 18 and not state.get("guardian_cpf"):
             _last_ai_asked_guardian_cpf = last_ai and (
                 _GUARDIAN_CPF_Q in last_ai
@@ -496,6 +507,13 @@ async def collect_info_node(state: ConversationState, config: RunnableConfig) ->
                 or ("cpf" in last_ai.lower() and (state.get("guardian_name") or "").split()[0].lower() in last_ai.lower())
             )
             if _last_ai_asked_guardian_cpf and last_human:
+                _foreign_kws = [
+                    "não tenho", "nao tenho", "estrangeiro", "estrangeira",
+                    "não possuo", "nao possuo", "passport", "passaporte",
+                    "sem cpf", "não tem cpf", "nao tem cpf",
+                ]
+                if any(kw in last_human.lower() for kw in _foreign_kws):
+                    return await _extract_and_ask({"guardian_cpf": "N/A"}, _PATIENT_Q)
                 return await _extract_and_ask({"guardian_cpf": last_human}, _PATIENT_Q)
             return await _ask(_GUARDIAN_CPF_Q)
 
