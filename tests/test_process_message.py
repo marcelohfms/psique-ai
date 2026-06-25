@@ -6,6 +6,16 @@ from langchain_core.messages import HumanMessage, AIMessage
 from tests.conftest import PHONE, CONFIG
 
 
+@pytest.fixture(autouse=True)
+def clear_dedup_caches():
+    import app.main as _main
+    _main._seen_msg_ids.clear()
+    _main._seen_phone_text.clear()
+    yield
+    _main._seen_msg_ids.clear()
+    _main._seen_phone_text.clear()
+
+
 # ── CollectInfoOutput schema validation ───────────────────────────────────────
 
 def test_collect_info_output_accepts_valid_birth_date():

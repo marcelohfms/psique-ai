@@ -38,6 +38,25 @@ def _is_duplicate(msg_id: str) -> bool:
     return False
 
 
+# Second dedup layer: keyed by (phone, text) to catch cases where two webhooks
+# use different message IDs but carry the same user message. TTL is short (10s)
+# so legitimate rapid identical messages (e.g. "ok" sent twice) still go through.
+_seen_phone_text: dict[str, float] = {}
+_PHONE_TEXT_TTL = 10.0
+
+def _is_duplicate_phone_text(phone: str, text: str) -> bool:
+    import time
+    now = time.monotonic()
+    stale = [k for k, t in _seen_phone_text.items() if now - t > _PHONE_TEXT_TTL]
+    for k in stale:
+        del _seen_phone_text[k]
+    key = f"{phone}:{text}"
+    if key in _seen_phone_text:
+        return True
+    _seen_phone_text[key] = now
+    return False
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Initialize Supabase checkpointer on startup if connection string is set."""
@@ -333,6 +352,10 @@ async def admin_patch_state(request: Request, x_admin_secret: str | None = Heade
 
 async def process_message(phone: str, text: str) -> None:
     """Route a (possibly debounced) message through the LangGraph chatbot."""
+    if _is_duplicate_phone_text(phone, text):
+        logger.info("Duplicate process_message suppressed for %s: %.40s", phone, text)
+        return
+
     config = {"configurable": {"thread_id": phone, "phone": phone}, "recursion_limit": 15}
 
     existing = await get_user_by_phone(phone)
