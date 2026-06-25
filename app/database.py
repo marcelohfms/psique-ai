@@ -242,7 +242,12 @@ def is_registration_complete(user: dict) -> bool:
     - birth_date    (to determine age / consultation type)
     - doctor_id     (preferred doctor)
     - is_patient    (True/False, not None)
-    - is_returning_patient (True/False, not None)
+
+    Required ONLY for minors (age < 18) of Dr. Júlio:
+    - is_returning_patient (True/False, not None) — only here does it change the
+      consultation (first visit split into 2 moments + differentiated price). For
+      everyone else it does not matter whether it is the first visit, so it is
+      not required.
 
     Additional requirements for MINORS (age < 18):
     - guardian_name         (required for ALL minors)
@@ -265,7 +270,16 @@ def is_registration_complete(user: dict) -> bool:
 
     if user.get("is_patient") is None:
         return False
-    if user.get("is_returning_patient") is None:
+
+    # is_returning_patient só é obrigatório para menores do Dr. Júlio — é o único
+    # caso em que muda o atendimento (1ª consulta em 2 momentos + preço). Para os
+    # demais (adultos, e menores da Dra. Bruna) o campo é irrelevante.
+    age = user.get("age")
+    _is_julio_minor = (
+        age is not None and age < 18
+        and user.get("doctor_id") == DOCTOR_IDS.get("julio")
+    )
+    if _is_julio_minor and user.get("is_returning_patient") is None:
         return False
 
     # When contact ≠ patient, patient_name must be explicitly set
@@ -274,7 +288,6 @@ def is_registration_complete(user: dict) -> bool:
             return False
 
     # Minor-specific requirements
-    age = user.get("age")
     if age is not None and age < 18:
         # guardian_name e guardian_relationship são obrigatórios para todo menor.
         # guardian_cpf é obrigatório apenas para pacientes NOVOS — pacientes que
