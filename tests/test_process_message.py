@@ -327,7 +327,11 @@ def _base_minor_state(**kwargs) -> dict:
 
 
 async def test_collect_info_asks_guardian_name_after_minor_birth_date():
-    """After birth_date reveals patient < 18, the next question must be guardian name."""
+    """After birth_date reveals patient < 18, the next question must be guardian name.
+
+    In the new flow, is_patient is asked BEFORE birth_date (right after user_name),
+    so the state must already have is_patient set when birth_date is collected.
+    """
     from app.graph.nodes import collect_info_node
     from langchain_core.messages import HumanMessage, AIMessage
     from datetime import date
@@ -340,6 +344,7 @@ async def test_collect_info_asks_guardian_name_after_minor_birth_date():
         user_name="Ana",
         patient_name="Ana",
         patient_cpf="111.222.333-00",
+        is_patient=True,  # already answered — new flow asks this before birth_date
         messages=[
             HumanMessage(content="quero agendar uma consulta"),
             AIMessage(content="Qual a data de nascimento do paciente? (formato dd/mm/aaaa)"),
@@ -364,10 +369,13 @@ async def test_collect_info_asks_guardian_cpf_after_guardian_name():
     from langchain_core.messages import HumanMessage, AIMessage
 
     state = _base_minor_state(
+        user_name="Maria Souza",  # contact name already collected (new flow: step 1)
+        patient_name="Pedro Lima",
+        patient_cpf="111.222.333-44",
+        is_patient=False,  # already answered (new flow: step 2b)
         patient_age=10,
         birth_date="15/03/2015",
         messages=[
-            # request keyword so _has_request=True; AIMessage so _has_greeted=True
             HumanMessage(content="quero agendar uma consulta"),
             AIMessage(content="Qual é o nome completo do responsável pelo paciente?"),
             HumanMessage(content="Maria Souza"),
@@ -430,17 +438,20 @@ async def test_collect_info_does_not_guess_doctor_when_both_mentioned():
         assert "doctor_id" not in (call[0][1] if len(call[0]) > 1 else {})
 
 
-async def test_collect_info_proceeds_to_is_patient_after_guardian_cpf():
-    """After guardian_cpf is collected for a minor, the next step must be is_patient."""
+async def test_collect_info_proceeds_to_is_returning_after_guardian_cpf():
+    """After guardian_cpf is collected for a minor, the next step must be is_returning_patient."""
     from app.graph.nodes import collect_info_node
     from langchain_core.messages import HumanMessage, AIMessage
 
     state = _base_minor_state(
+        user_name="Maria Souza",  # contact name already collected (new flow: step 1)
+        patient_name="Pedro Lima",
+        patient_cpf="111.222.333-44",
+        is_patient=False,  # already answered (new flow: step 2b)
         patient_age=10,
         birth_date="15/03/2015",
         guardian_name="Maria Souza",
         messages=[
-            # request keyword so _has_request=True; AIMessage so _has_greeted=True
             HumanMessage(content="quero agendar uma consulta"),
             AIMessage(content="Qual é o CPF do responsável?"),
             HumanMessage(content="123.456.789-00"),
@@ -453,7 +464,7 @@ async def test_collect_info_proceeds_to_is_patient_after_guardian_cpf():
 
     assert result.get("guardian_cpf") == "123.456.789-00"
     sent = mock_send.call_args[0][1]
-    # After guardian_cpf, next question is is_patient
+    # After guardian_cpf, next question is is_returning_patient
     assert "paciente" in sent.lower() or "clínica" in sent.lower()
 
 
@@ -511,8 +522,13 @@ async def test_collect_info_yes_to_is_patient_sets_returning_patient_true():
     assert result.get("is_patient") is None, "is_patient must NOT be set by the 'já é paciente?' question"
 
 
-async def test_collect_info_adult_birth_date_asks_is_patient():
-    """After birth date for an adult, the next question must ask if the contact is the patient."""
+async def test_collect_info_adult_birth_date_asks_is_returning_patient():
+    """After birth date for an adult (with is_patient already answered), ask is_returning_patient.
+
+    In the new flow, is_patient is collected BEFORE birth_date (right after user_name).
+    So when birth_date is collected, is_patient is already known and the next step is
+    is_returning_patient.
+    """
     from app.graph.nodes import collect_info_node
     from langchain_core.messages import HumanMessage, AIMessage
 
@@ -520,6 +536,7 @@ async def test_collect_info_adult_birth_date_asks_is_patient():
         user_name="João Silva",
         patient_name="João Silva",
         patient_cpf="123.456.789-00",
+        is_patient=True,  # already answered before birth_date in the new flow
         messages=[
             HumanMessage(content="quero agendar uma consulta"),
             AIMessage(content="Qual a data de nascimento do paciente? (formato dd/mm/aaaa)"),
@@ -533,24 +550,28 @@ async def test_collect_info_adult_birth_date_asks_is_patient():
         result = await collect_info_node(state, {})
 
     sent = mock_send.call_args[0][1]
-    assert "agendando em nome" in sent.lower() or "você é" in sent.lower()
-    assert result.get("is_patient") is None  # not yet answered
+    assert "acompanhamento" in sent.lower() or "primeira consulta" in sent.lower()
+    assert result.get("is_returning_patient") is None  # not yet answered
 
 
-async def test_collect_info_is_patient_yes_proceeds_to_clinic_question():
-    """'sou eu' to the is_patient question must set is_patient=True and proceed."""
+async def test_collect_info_is_patient_yes_proceeds_to_cpf():
+    """'sou eu' to the is_patient question must set is_patient=True and proceed to CPF.
+
+    In the new flow, is_patient is asked right after user_name (step 2b),
+    before CPF and birth_date are collected.
+    """
     from app.graph.nodes import collect_info_node
     from langchain_core.messages import HumanMessage, AIMessage
 
     state = _base_minor_state(
         user_name="João Silva",
-        patient_name="João Silva",
-        patient_cpf="123.456.789-00",
-        patient_age=34,
-        birth_date="15/03/1990",
+        patient_name=None,  # not yet set — will be set when is_patient=True is answered
+        patient_cpf=None,
+        patient_age=None,
+        birth_date=None,
         messages=[
             HumanMessage(content="quero agendar uma consulta"),
-            AIMessage(content="Você é o(a) paciente João ou está agendando em nome dele(a)?"),
+            AIMessage(content="A consulta é para você ou para outra pessoa?"),
             HumanMessage(content="sou eu mesmo"),
         ],
     )
@@ -561,24 +582,29 @@ async def test_collect_info_is_patient_yes_proceeds_to_clinic_question():
         result = await collect_info_node(state, {})
 
     assert result.get("is_patient") is True
+    assert result.get("patient_name") == "João Silva"  # copied from user_name
     sent = mock_send.call_args[0][1]
-    assert "acompanhamento" in sent.lower() or "primeira consulta" in sent.lower()
+    assert "cpf" in sent.lower()
 
 
-async def test_collect_info_is_patient_no_asks_contact_name():
-    """'sou a mãe' to the is_patient question must set is_patient=False and ask contact name."""
+async def test_collect_info_is_patient_no_asks_patient_name():
+    """'sou a mãe' to the is_patient question must set is_patient=False and ask for patient name.
+
+    In the new flow, the contact name is already known (step 1: user_name).
+    When is_patient=False, the next step is to ask for the PATIENT's name (step 2c).
+    """
     from app.graph.nodes import collect_info_node
     from langchain_core.messages import HumanMessage, AIMessage
 
     state = _base_minor_state(
-        user_name="João Silva",
-        patient_name="João Silva",
-        patient_cpf="123.456.789-00",
-        patient_age=34,
-        birth_date="15/03/1990",
+        user_name="Maria Souza",  # contact name already collected in step 1
+        patient_name=None,
+        patient_cpf=None,
+        patient_age=None,
+        birth_date=None,
         messages=[
             HumanMessage(content="quero agendar uma consulta"),
-            AIMessage(content="Você é o(a) paciente João ou está agendando em nome dele(a)?"),
+            AIMessage(content="A consulta é para você ou para outra pessoa?"),
             HumanMessage(content="não, sou a mãe"),
         ],
     )
@@ -590,26 +616,32 @@ async def test_collect_info_is_patient_no_asks_contact_name():
 
     assert result.get("is_patient") is False
     sent = mock_send.call_args[0][1]
-    assert "nome completo" in sent.lower() and "contato" in sent.lower()
+    # Next step asks for the PATIENT's name, not the contact's name
+    assert "paciente" in sent.lower() and "nome" in sent.lower()
 
 
-async def test_collect_info_contact_name_updates_user_name():
-    """Contact name answer must update user_name (not patient_name) and proceed to clinic question."""
+async def test_collect_info_patient_name_step_saves_patient_name():
+    """Patient name answer (step 2c) must save patient_name and proceed to CPF.
+
+    In the new flow: user_name (contact) is collected first, then is_patient=False is
+    determined, then the patient's name is asked separately (step 2c). The contact name
+    (user_name) must NOT be changed; only patient_name is set.
+    """
     from app.graph.nodes import collect_info_node
     from langchain_core.messages import HumanMessage, AIMessage
 
-    _CONTACT_Q = "Qual o seu nome completo para contato?"
+    _PATIENT_NAME_Q = "Qual o nome completo do paciente?"
     state = _base_minor_state(
-        user_name="João Silva",
-        patient_name="João Silva",
-        patient_cpf="123.456.789-00",
-        patient_age=34,
-        birth_date="15/03/1990",
+        user_name="Maria Silva",  # contact name already collected in step 1
+        patient_name=None,
+        patient_cpf=None,
+        patient_age=None,
+        birth_date=None,
         is_patient=False,
         messages=[
             HumanMessage(content="quero agendar uma consulta"),
-            AIMessage(content=_CONTACT_Q),
-            HumanMessage(content="Maria Silva"),
+            AIMessage(content=_PATIENT_NAME_Q),
+            HumanMessage(content="João Silva"),
         ],
     )
     with patch("app.graph.nodes.send_text", new_callable=AsyncMock) as mock_send, \
@@ -618,10 +650,10 @@ async def test_collect_info_contact_name_updates_user_name():
          patch("app.graph.nodes.upsert_user", new_callable=AsyncMock, return_value="new-id"):
         result = await collect_info_node(state, {})
 
-    assert result.get("user_name") == "Maria Silva"
-    assert result.get("patient_name") is None  # patient_name must NOT be changed
+    assert result.get("patient_name") == "João Silva"
+    assert result.get("user_name") is None  # contact name must NOT be changed
     sent = mock_send.call_args[0][1]
-    assert "acompanhamento" in sent.lower()
+    assert "cpf" in sent.lower()
 
 
 async def test_collect_info_guardian_name_also_sets_user_name():

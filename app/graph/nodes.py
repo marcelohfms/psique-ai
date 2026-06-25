@@ -351,13 +351,14 @@ async def collect_info_node(state: ConversationState, config: RunnableConfig) ->
 
     _extracted: dict = {}  # fields extracted programmatically this turn
 
-    _NAME_Q = "Pode me informar o nome completo do paciente?"
+    _NAME_Q = "Pode me informar o seu nome completo?"
+    _IS_PATIENT_Q = "A consulta é para você ou para outra pessoa?"
+    _PATIENT_NAME_Q = "Qual o nome completo do paciente?"
     _CPF_Q = "Qual o CPF do paciente?"
     _BIRTH_Q = "Qual a data de nascimento do paciente? (formato dd/mm/aaaa)"
     _GUARDIAN_NAME_Q = "Qual é o nome completo do responsável pelo paciente?"
     _GUARDIAN_CPF_Q = "Qual é o CPF do responsável?"
     _PATIENT_Q = "É a primeira consulta ou o paciente já está em acompanhamento na clínica?"
-    _CONTACT_NAME_Q = "Qual o seu nome completo para contato?"
     _DOCTOR_Q = "Você tem preferência pelo Dr. Júlio ou pela Dra. Bruna?"
     _EMAIL_Q = "Qual o e-mail para envio?"
     _EMAIL_Q_CADASTRO = "Qual o seu e-mail? Precisamos para incluir no seu cadastro. 📋"
@@ -366,8 +367,13 @@ async def collect_info_node(state: ConversationState, config: RunnableConfig) ->
     # Step 1: greeting + first MISSING question (skip fields already in state)
     if not _has_greeted and _has_request:
         _pat_age_for_greeting = state.get("patient_age") or 99
+        _has_patient_name = bool(state.get("patient_name") and state.get("patient_name") != state.get("user_name") or state.get("is_patient") is True)
         if not state.get("user_name"):
             first_q = _NAME_Q
+        elif state.get("is_patient") is None:
+            first_q = _IS_PATIENT_Q
+        elif state.get("is_patient") is False and not state.get("patient_name"):
+            first_q = _PATIENT_NAME_Q
         elif not state.get("patient_cpf"):
             first_q = _CPF_Q
         elif not state.get("birth_date"):
@@ -376,11 +382,6 @@ async def collect_info_node(state: ConversationState, config: RunnableConfig) ->
             first_q = _GUARDIAN_NAME_Q
         elif _pat_age_for_greeting < 18 and not state.get("guardian_cpf"):
             first_q = _GUARDIAN_CPF_Q
-        elif _pat_age_for_greeting >= 18 and state.get("is_patient") is None:
-            _pf = (state.get("patient_name") or state.get("user_name") or "").split()[0]
-            first_q = f"Você é o(a) paciente {_pf} ou está agendando em nome dele(a)?"
-        elif _pat_age_for_greeting >= 18 and state.get("is_patient") is False and state.get("user_name") == state.get("patient_name"):
-            first_q = _CONTACT_NAME_Q
         elif state.get("is_returning_patient") is None:
             first_q = _PATIENT_Q
         elif not state.get("preferred_doctor"):
@@ -403,13 +404,42 @@ async def collect_info_node(state: ConversationState, config: RunnableConfig) ->
         last_ai = _last_ai()
         last_human = _last_human().strip()
 
-        # Step 2: full name
+        # Step 2: contact name — saved to contacts.name only
         if not state.get("user_name"):
-            if last_ai.endswith(_NAME_Q) and last_human:
-                return await _extract_and_ask(
-                    {"user_name": last_human, "patient_name": last_human}, _CPF_Q
-                )
+            if last_ai and _NAME_Q in last_ai and last_human:
+                return await _extract_and_ask({"user_name": last_human}, _IS_PATIENT_Q)
             return await _ask(_NAME_Q)
+
+        # Step 2b: is the contact the patient or scheduling for someone else?
+        if state.get("is_patient") is None:
+            _asked_is_patient = (
+                _IS_PATIENT_Q in last_ai
+                or "para você ou" in last_ai.lower()
+                or "para outra pessoa" in last_ai.lower()
+            )
+            if _asked_is_patient and last_human:
+                h = last_human.lower()
+                _not_patient_kws = [
+                    "não", "nao", "mãe", "mae", "pai", "filho", "filha",
+                    "em nome", "para meu", "para minha", "esposo", "esposa",
+                    "marido", "irmão", "irmao", "irma", "outra", "outra pessoa",
+                ]
+                is_pat = not any(kw in h for kw in _not_patient_kws)
+                if is_pat:
+                    # Contact IS the patient — reuse contact name as patient name
+                    _uname = state.get("user_name", "")
+                    return await _extract_and_ask(
+                        {"is_patient": True, "patient_name": _uname}, _CPF_Q
+                    )
+                else:
+                    return await _extract_and_ask({"is_patient": False}, _PATIENT_NAME_Q)
+            return await _ask(_IS_PATIENT_Q)
+
+        # Step 2c: patient name (only when contact is scheduling for someone else)
+        if state.get("is_patient") is False and not state.get("patient_name"):
+            if last_ai and _PATIENT_NAME_Q in last_ai and last_human:
+                return await _extract_and_ask({"patient_name": last_human}, _CPF_Q)
+            return await _ask(_PATIENT_NAME_Q)
 
         # Step 3: CPF
         if not state.get("patient_cpf"):
@@ -423,35 +453,29 @@ async def collect_info_node(state: ConversationState, config: RunnableConfig) ->
 
         # Step 4: birth date
         if not state.get("birth_date"):
-            # Use semantic match so any phrasing of the birth-date question is accepted
             asked_birth = "nascimento" in last_ai.lower()
             if asked_birth and last_human:
                 parsed = _parse_birth_date(last_human)
                 if parsed:
-                    # Calculate age
                     bd = datetime.strptime(parsed, "%d/%m/%Y")
                     today = datetime.now()
                     age = today.year - bd.year - ((today.month, today.day) < (bd.month, bd.day))
                     if age < 18:
-                        # Minor: guardian is always the contact — mark is_patient=False and ask guardian name
+                        # Minor: guardian is always the contact
                         return await _extract_and_ask(
                             {"birth_date": parsed, "patient_age": age, "is_patient": False},
                             _GUARDIAN_NAME_Q,
                         )
                     else:
-                        # Adult: ask whether the contact is the patient themselves
-                        _pf = (state.get("patient_name") or state.get("user_name") or "").split()[0]
-                        _contact_q = f"Você é o(a) paciente {_pf} ou está agendando em nome dele(a)?"
                         return await _extract_and_ask(
                             {"birth_date": parsed, "patient_age": age},
-                            _contact_q,
+                            _PATIENT_Q,
                         )
                 else:
                     return await _ask("Não consegui identificar a data. Pode informar no formato dd/mm/aaaa? Ex: 15/01/1990.")
             return await _ask(_BIRTH_Q)
 
         # Step 4b: guardian name (only for minors)
-        # Also update user_name — the guardian IS the contact on WhatsApp.
         if (state.get("patient_age") or 99) < 18 and not state.get("guardian_name"):
             _last_ai_asked_guardian_name = last_ai and (
                 _GUARDIAN_NAME_Q in last_ai
@@ -474,39 +498,6 @@ async def collect_info_node(state: ConversationState, config: RunnableConfig) ->
             if _last_ai_asked_guardian_cpf and last_human:
                 return await _extract_and_ask({"guardian_cpf": last_human}, _PATIENT_Q)
             return await _ask(_GUARDIAN_CPF_Q)
-
-        # Step 4d: for adults, determine whether the contact is the patient themselves.
-        # Uses is_patient (True = contact IS the patient; False = scheduling for someone else).
-        if (state.get("patient_age") or 99) >= 18 and state.get("is_patient") is None:
-            _asked_contact = (
-                "agendando em nome" in last_ai.lower()
-                or ("você é" in last_ai.lower() and "paciente" in last_ai.lower())
-            )
-            if _asked_contact and last_human:
-                h = last_human.lower()
-                _not_patient_kws = [
-                    "não", "nao", "mãe", "mae", "pai", "filho", "filha",
-                    "em nome", "para meu", "para minha", "esposo", "esposa",
-                    "marido", "irmão", "irmao", "irma",
-                ]
-                is_patient = not any(kw in h for kw in _not_patient_kws)
-                if is_patient:
-                    return await _extract_and_ask({"is_patient": True}, _PATIENT_Q)
-                else:
-                    return await _extract_and_ask({"is_patient": False}, _CONTACT_NAME_Q)
-            _pf = (state.get("patient_name") or state.get("user_name") or "").split()[0]
-            return await _ask(f"Você é o(a) paciente {_pf} ou está agendando em nome dele(a)?")
-
-        # Step 4e: contact name when scheduling for someone else (adults only).
-        # user_name was initially set to patient_name in Step 2; overwrite with actual contact name.
-        if (
-            (state.get("patient_age") or 99) >= 18
-            and state.get("is_patient") is False
-            and state.get("user_name") == state.get("patient_name")
-        ):
-            if last_ai and _CONTACT_NAME_Q in last_ai and last_human:
-                return await _extract_and_ask({"user_name": last_human}, _PATIENT_Q)
-            return await _ask(_CONTACT_NAME_Q)
 
         # Step 5: is_returning_patient
         # "O paciente já é paciente da clínica?" → True = returning patient, False = new patient
