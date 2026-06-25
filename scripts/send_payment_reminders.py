@@ -5,6 +5,7 @@ Runs every 30 minutes via GitHub Actions.
 Regras:
 - Só executa entre 7h e 23h (horário de Recife). Fora desse intervalo, encerra sem fazer nada.
 - 2h após o agendamento (se não pago): envia lembrete de pagamento via WhatsApp.
+  O lembrete é enviado a TODOS os contatos com role 'financeiro' vinculados ao paciente.
   Se o envio falhar, não marca como enviado (a próxima execução tentará de novo).
 - 2h após o lembrete (se ainda não pago): tenta enviar aviso de cancelamento.
   O cancelamento SÓ ocorre se o aviso for entregue com sucesso via WhatsApp.
@@ -69,8 +70,25 @@ async def send_whatsapp(phone: str, text: str) -> None:
     await send_text(phone_fmt, text)
 
 
-async def save_to_checkpoint(graph, phone: str, message: str, appt: dict) -> None:
-    """Inject the message into the LangGraph checkpoint for this patient."""
+async def get_financial_contacts(client, patient_id: str) -> list[dict]:
+    """Return all contacts with role 'financeiro' for a patient (phone + name)."""
+    result = await (
+        client.from_("patient_contacts")
+        .select("role, contacts(phone, name)")
+        .eq("patient_id", patient_id)
+        .eq("role", "financeiro")
+        .execute()
+    )
+    contacts = []
+    for row in result.data or []:
+        c = row.get("contacts") or {}
+        if c.get("phone"):
+            contacts.append({"phone": c["phone"], "name": c.get("name", "")})
+    return contacts
+
+
+async def save_to_checkpoint(graph, phone: str, message: str, patient_name: str, doctor_key: str) -> None:
+    """Inject the message into the LangGraph checkpoint for this contact."""
     from langchain_core.messages import AIMessage
 
     thread_phone = f"{phone}@s.whatsapp.net"
@@ -80,9 +98,6 @@ async def save_to_checkpoint(graph, phone: str, message: str, appt: dict) -> Non
     update: dict = {"messages": [AIMessage(content=message)]}
 
     if not snapshot.values:
-        user = appt.get("users") or {}
-        patient_name = user.get("patient_name") or user.get("name") or "paciente"
-        doctor_key = DOCTOR_KEYS.get(appt.get("doctor_id", ""), "")
         update.update({
             "phone": thread_phone,
             "stage": "patient_agent",
@@ -128,8 +143,6 @@ async def main():
     now = datetime.now(TZ)
 
     # ── Janela de envio: apenas entre 7h e 23h (horário de Recife) ────────────
-    # Lembretes e cancelamentos fora desse intervalo são adiados para a próxima
-    # execução dentro da janela. Cancelamentos de madrugada não são permitidos.
     WINDOW_START = 7
     WINDOW_END = 23
     if not (WINDOW_START <= now.hour < WINDOW_END):
@@ -138,12 +151,15 @@ async def main():
 
     two_hours_ago = (now - timedelta(hours=2)).isoformat()
 
+    _appt_select = (
+        "appointment_id, start_time, doctor_id, created_at, payment_reminder_sent_at, "
+        "patient_id, patients(name)"
+    )
+
     # ── Step 1: 1st reminder (not yet reminded, booked >= 2h ago) ─────────────
-    # Check booking_fee_paid_at — paying the R$100 reserve fee is what holds the slot.
-    # paid_at is only set on full consultation payment (after the appointment).
     reminder_result = await (
         client.from_("appointments")
-        .select("appointment_id, start_time, doctor_id, created_at, users(number, patient_name, name)")
+        .select(_appt_select)
         .eq("status", "scheduled")
         .eq("booking_fee_waived", False)
         .is_("booking_fee_paid_at", "null")
@@ -158,7 +174,7 @@ async def main():
     # ── Step 2: cancellation (reminder sent >= 2h ago, still unpaid) ──────────
     cancel_result = await (
         client.from_("appointments")
-        .select("appointment_id, start_time, doctor_id, created_at, payment_reminder_sent_at, users(number, patient_name, name)")
+        .select(_appt_select)
         .eq("status", "scheduled")
         .eq("booking_fee_waived", False)
         .is_("booking_fee_paid_at", "null")
@@ -170,8 +186,7 @@ async def main():
     cancel_appts = cancel_result.data or []
     print(f"Appointments to auto-cancel (unpaid 2h after reminder): {len(cancel_appts)}")
 
-    # Set up LangGraph checkpointer — same connection options as the main app
-    # (prepare_threshold=None is required for pgbouncer in transaction mode)
+    # Set up LangGraph checkpointer
     conn_string = os.environ.get("SUPABASE_CONNECTION_STRING")
     graph = None
     pg_conn = None
@@ -192,89 +207,99 @@ async def main():
         print("SUPABASE_CONNECTION_STRING not set — messages won't be saved to LangGraph checkpoint.")
 
     try:
-        # Process 2h reminders
+        # ── Process 2h reminders ──────────────────────────────────────────────
         for appt in reminder_appts:
             appointment_id = appt["appointment_id"]
+            patient_id = appt.get("patient_id")
+            if not patient_id:
+                print(f"  [payment_reminder] Skipping {appointment_id} — no patient_id")
+                continue
+
             start_dt = datetime.fromisoformat(appt["start_time"]).astimezone(TZ)
             date_str = start_dt.strftime("%d/%m/%Y às %H:%M")
-
-            user = appt.get("users") or {}
-            phone = user.get("number", "")
-            contact_name = user.get("name") or user.get("patient_name") or "paciente"
-            patient_name = user.get("patient_name") or ""
-            contact_first = contact_name.split()[0]
-            # Only pass patient name separately when contact and patient are different people
-            patient_first = patient_name.split()[0] if patient_name and patient_name != contact_name else None
             doctor_label = DOCTOR_LABELS.get(appt.get("doctor_id", ""), "médico(a)")
+            doctor_key = DOCTOR_KEYS.get(appt.get("doctor_id", ""), "")
+            patient_name = (appt.get("patients") or {}).get("name", "paciente")
 
-            if not phone:
+            financial_contacts = await get_financial_contacts(client, patient_id)
+            if not financial_contacts:
+                print(f"  [payment_reminder] No financial contacts for patient_id={patient_id}")
                 continue
 
-            message = payment_reminder_message(contact_first, doctor_label, date_str, patient_first)
-
-            try:
-                await send_whatsapp(phone, message)
-                await client.from_("appointments").update({
-                    "payment_reminder_sent_at": now.isoformat(),
-                }).eq("appointment_id", appointment_id).execute()
-                print(f"  [payment_reminder] Sent to {phone} — {patient_name}")
-            except Exception as e:
-                print(f"  Failed to send reminder to {phone}: {e}")
-                continue
-            # Checkpoint is non-fatal — a failure here must not affect the reminder status
-            if graph:
+            any_sent = False
+            for contact in financial_contacts:
+                phone = contact["phone"]
+                contact_first = (contact["name"] or patient_name).split()[0]
+                # Show patient name separately only when contact and patient differ
+                patient_first = patient_name.split()[0] if contact["name"] and contact["name"] != patient_name else None
+                message = payment_reminder_message(contact_first, doctor_label, date_str, patient_first)
                 try:
-                    await save_to_checkpoint(graph, phone, message, appt)
+                    await send_whatsapp(phone, message)
+                    any_sent = True
+                    print(f"  [payment_reminder] Sent to {phone} — {patient_name}")
                 except Exception as e:
-                    print(f"  [payment_reminder] save_to_checkpoint failed (non-fatal): {e}")
+                    print(f"  [payment_reminder] Failed to send to {phone}: {e}")
+                if graph:
+                    try:
+                        await save_to_checkpoint(graph, phone, message, patient_name, doctor_key)
+                    except Exception as e:
+                        print(f"  [payment_reminder] save_to_checkpoint failed (non-fatal): {e}")
 
-        # Process 4h cancellations
+            if any_sent:
+                try:
+                    await client.from_("appointments").update({
+                        "payment_reminder_sent_at": now.isoformat(),
+                    }).eq("appointment_id", appointment_id).execute()
+                except Exception as e:
+                    print(f"  [payment_reminder] DB update failed for {appointment_id}: {e}")
+
+        # ── Process 4h cancellations ──────────────────────────────────────────
         for appt in cancel_appts:
             appointment_id = appt["appointment_id"]
+            patient_id = appt.get("patient_id")
+            if not patient_id:
+                print(f"  [payment_cancel] Skipping {appointment_id} — no patient_id")
+                continue
+
             start_dt = datetime.fromisoformat(appt["start_time"]).astimezone(TZ)
             date_str = start_dt.strftime("%d/%m/%Y às %H:%M")
-
-            user = appt.get("users") or {}
-            phone = user.get("number", "")
-            contact_name = user.get("name") or user.get("patient_name") or "paciente"
-            patient_name_full = user.get("patient_name") or ""
-            contact_first = contact_name.split()[0]
-            patient_first = patient_name_full.split()[0] if patient_name_full and patient_name_full != contact_name else None
             doctor_label = DOCTOR_LABELS.get(appt.get("doctor_id", ""), "médico(a)")
+            doctor_key = DOCTOR_KEYS.get(appt.get("doctor_id", ""), "")
             doctor_id = appt.get("doctor_id", "")
+            patient_name = (appt.get("patients") or {}).get("name", "paciente")
 
-            if not phone:
+            financial_contacts = await get_financial_contacts(client, patient_id)
+            if not financial_contacts:
+                print(f"  [payment_cancel] No financial contacts for patient_id={patient_id}")
                 continue
 
-            message = payment_cancel_message(contact_first, doctor_label, date_str, patient_first)
-
-            # Step 1: Notify patient via WhatsApp — OBRIGATÓRIO para cancelar.
-            # Se o envio falhar, a consulta NÃO é cancelada e a próxima execução
-            # do script tentará novamente (dentro da janela horária permitida).
-            whatsapp_ok = False
-            try:
-                await send_whatsapp(phone, message)
-                whatsapp_ok = True
-                print(f"  [payment_cancel] WhatsApp enviado para {phone}.")
-            except Exception as e:
-                print(f"  [payment_cancel] WhatsApp FALHOU para {phone} — cancelamento adiado: {e}")
-
-            if not whatsapp_ok:
-                # Não cancelar sem confirmar que o paciente foi avisado.
-                # A próxima execução do script tentará de novo.
-                continue
-
-            # Step 2: Checkpoint — non-fatal, must not block cancellation
-            if graph:
+            # Must notify at least one contact before canceling
+            any_notified = False
+            for contact in financial_contacts:
+                phone = contact["phone"]
+                contact_first = (contact["name"] or patient_name).split()[0]
+                patient_first = patient_name.split()[0] if contact["name"] and contact["name"] != patient_name else None
+                message = payment_cancel_message(contact_first, doctor_label, date_str, patient_first)
                 try:
-                    await save_to_checkpoint(graph, phone, message, appt)
+                    await send_whatsapp(phone, message)
+                    any_notified = True
+                    print(f"  [payment_cancel] WhatsApp enviado para {phone}.")
                 except Exception as e:
-                    print(f"  [payment_cancel] save_to_checkpoint failed (non-fatal): {e}")
+                    print(f"  [payment_cancel] WhatsApp FALHOU para {phone}: {e}")
+                if graph:
+                    try:
+                        await save_to_checkpoint(graph, phone, message, patient_name, doctor_key)
+                    except Exception as e:
+                        print(f"  [payment_cancel] save_to_checkpoint failed (non-fatal): {e}")
 
-            # Step 3: Cancel Google Calendar event (already non-fatal internally)
+            if not any_notified:
+                print(f"  [payment_cancel] Nenhum contato notificado — cancelamento adiado para {appointment_id}")
+                continue
+
+            # Cancel Google Calendar event
             await cancel_calendar_event(appointment_id, doctor_id, client)
 
-            # Step 4: Update DB status
+            # Update DB status
             try:
                 await client.from_("appointments").update({
                     "status": "canceled",
@@ -283,24 +308,17 @@ async def main():
             except Exception as e:
                 print(f"  [payment_cancel] DB update failed for {appointment_id}: {e}")
 
-            # Step 5: Notify clinic by email — two attempts before giving up
+            # Notify clinic by email
             try:
                 from app.email_sender import send_clinic_notification_email
                 import asyncio as _asyncio
-                subject = f"Consulta cancelada por falta de pagamento — {patient_name_full or contact_name}"
-                whatsapp_note = (
-                    "⚠️ ATENÇÃO: o paciente NÃO foi notificado via WhatsApp (falha ao enviar). "
-                    "Por favor, entre em contato diretamente.\n\n"
-                    if not whatsapp_ok else ""
-                )
+                subject = f"Consulta cancelada por falta de pagamento — {patient_name}"
                 body = (
                     f"A consulta abaixo foi cancelada automaticamente por falta de pagamento da taxa de reserva.\n\n"
-                    f"{whatsapp_note}"
-                    f"Paciente: {patient_name_full or contact_name}\n"
-                    f"Responsável: {contact_name}\n"
+                    f"Paciente: {patient_name}\n"
                     f"Médico(a): {doctor_label}\n"
                     f"Data/hora: {date_str}\n"
-                    f"WhatsApp: {phone}\n\n"
+                    f"Contatos notificados: {', '.join(c['phone'] for c in financial_contacts)}\n\n"
                     f"A vaga foi liberada no Google Calendar."
                 )
                 for attempt in range(1, 3):
@@ -315,7 +333,7 @@ async def main():
             except Exception as e:
                 print(f"  [payment_cancel] Clinic email setup failed: {e}")
 
-            print(f"  [payment_cancel] Canceled {'and notified' if whatsapp_ok else '(WhatsApp FAILED)'} {phone} — {patient_name_full}")
+            print(f"  [payment_cancel] Canceled {'and notified' if any_notified else '(WhatsApp FAILED)'} — {patient_name}")
 
     finally:
         if pg_conn:
