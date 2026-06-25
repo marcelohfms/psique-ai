@@ -195,12 +195,23 @@ async def upsert_user(phone: str, data: dict, user_id: str | None = None) -> str
     if patient_id and contact_id:
         is_self = data.get("is_patient")
         rel = guardian_relationship or ("self" if is_self else None)
-        for role in ("agendamento", "financeiro", "consulta"):
-            await link_patient_contact(
-                patient_id, contact_id, role,
-                is_self=bool(is_self) if is_self is not None else False,
-                relationship=rel,
-            )
+        # Only write is_self/relationship when is_patient is explicitly provided —
+        # partial saves (e.g. only email) must not overwrite an existing is_self=True.
+        if "is_patient" in data or guardian_name is not None or guardian_cpf is not None:
+            for role in ("agendamento", "financeiro", "consulta"):
+                await link_patient_contact(
+                    patient_id, contact_id, role,
+                    is_self=bool(is_self) if is_self is not None else False,
+                    relationship=rel,
+                )
+        else:
+            # Ensure the link exists without touching is_self/relationship
+            for role in ("agendamento", "financeiro", "consulta"):
+                await link_patient_contact(
+                    patient_id, contact_id, role,
+                    is_self=None,
+                    relationship=None,
+                )
     return patient_id
 
 

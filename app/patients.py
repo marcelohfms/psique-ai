@@ -120,23 +120,38 @@ async def upsert_patient(data: dict, patient_id: str | None = None) -> str | Non
 
 async def link_patient_contact(
     patient_id: str, contact_id: str, role: str,
-    is_self: bool = False, relationship: str | None = None,
+    is_self: bool | None = False, relationship: str | None = None,
 ) -> None:
     """Vincula um contato a um paciente com um papel. Idempotente.
 
     Usa a constraint UNIQUE(patient_id, contact_id, role).
+    Quando is_self=None, garante que o link existe sem sobrescrever is_self/relationship.
     """
     client = await get_supabase()
-    await client.from_("patient_contacts").upsert(
-        {
-            "patient_id": patient_id,
-            "contact_id": contact_id,
-            "role": role,
-            "is_self": is_self,
-            "relationship": relationship,
-        },
-        on_conflict="patient_id,contact_id,role",
-    ).execute()
+    if is_self is None:
+        # Only create the link if it doesn't exist — don't overwrite existing values
+        await client.from_("patient_contacts").upsert(
+            {
+                "patient_id": patient_id,
+                "contact_id": contact_id,
+                "role": role,
+                "is_self": False,
+                "relationship": None,
+            },
+            on_conflict="patient_id,contact_id,role",
+            ignore_duplicates=True,
+        ).execute()
+    else:
+        await client.from_("patient_contacts").upsert(
+            {
+                "patient_id": patient_id,
+                "contact_id": contact_id,
+                "role": role,
+                "is_self": is_self,
+                "relationship": relationship,
+            },
+            on_conflict="patient_id,contact_id,role",
+        ).execute()
 
 
 async def _patient_has_upcoming_appointment(patient_id: str) -> bool:
