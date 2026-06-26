@@ -1582,10 +1582,19 @@ async def register_payment(
 
                 slot_available = False
                 if calendar_id:
-                    day_str        = slot_start.strftime("%Y-%m-%d")
-                    shift          = "manhã" if slot_start.hour < 12 else ("tarde" if slot_start.hour < 18 else "noite")
-                    available_slots = await get_available_slots(calendar_id, day_str, shift, slot_minutes, canceled_doctor_key)
-                    slot_available  = any(s == slot_start for s, _ in available_slots)
+                    # Check directly for conflicts in the calendar without applying
+                    # schedule restrictions — the original booking may have been an
+                    # encaixe outside normal hours, and we must honour that.
+                    from app.google_calendar import _credentials, _get_busy
+                    from googleapiclient.discovery import build as _build
+                    _creds = _credentials()
+                    _svc   = _build("calendar", "v3", credentials=_creds)
+                    loop   = asyncio.get_running_loop()
+                    busy_raw = await loop.run_in_executor(
+                        None, _get_busy, _svc, calendar_id, slot_start, slot_end
+                    )
+                    # No bot-created events in this window → slot is free
+                    slot_available = len(busy_raw) == 0
 
                 if slot_available and calendar_id:
                     # Slot still free — recreate event and reactivate
