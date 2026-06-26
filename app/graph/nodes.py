@@ -347,6 +347,38 @@ async def collect_info_node(state: ConversationState, config: RunnableConfig) ->
     _NAME_Q = "Pode me informar o seu nome completo?"
     _IS_PATIENT_Q = "A consulta é para você ou para outra pessoa?"
     _PATIENT_NAME_Q = "Qual o nome completo do paciente?"
+
+    def _looks_like_name(text: str) -> bool:
+        """Return True if text plausibly looks like a person's name."""
+        import re as _re
+        t = text.strip()
+        # Camada 1: tamanho e caracteres
+        if len(t) < 3:
+            return False
+        if _re.search(r'\d', t):
+            return False
+        # Camada 2: frases claramente não-nomes
+        _non_name = [
+            "que coloquei", "o mesmo", "acima", "já disse", "ja disse",
+            "o de cima", "igual", "conforme", "como disse", "como coloquei",
+            "minha filha", "meu filho", "minha mae", "minha mãe", "meu pai",
+            "o paciente", "a paciente",
+        ]
+        tl = t.lower()
+        if any(p in tl for p in _non_name):
+            return False
+        # Camada 2b: respostas de confirmação isoladas
+        _confirmations = {"sim", "não", "nao", "isso", "exato", "correto", "ok",
+                          "ele", "ela", "eu", "certo", "isso mesmo"}
+        if tl in _confirmations:
+            return False
+        # Camada 3: pelo menos uma palavra com 2+ letras
+        if not _re.search(r'[a-zA-ZÀ-ú]{2,}', t):
+            return False
+        # Camada 3b: não começa com artigo genérico + substantivo
+        if _re.match(r'^(o|a|os|as|meu|minha|seu|sua)\s', tl):
+            return False
+        return True
     _CPF_Q = "Qual o CPF do paciente?"
     _BIRTH_Q = "Qual a data de nascimento do paciente? (formato dd/mm/aaaa)"
     _GUARDIAN_NAME_Q = "Qual é o nome completo do responsável pelo paciente?"
@@ -480,9 +512,11 @@ async def collect_info_node(state: ConversationState, config: RunnableConfig) ->
         # Step 2c: patient name (only when contact is scheduling for someone else)
         if state.get("is_patient") is False and not state.get("patient_name"):
             if last_ai and _PATIENT_NAME_Q in last_ai and last_human:
-                return await _extract_and_ask(
-                    {"patient_name": last_human}, _nq(patient_name=last_human)
-                )
+                if _looks_like_name(last_human):
+                    return await _extract_and_ask(
+                        {"patient_name": last_human}, _nq(patient_name=last_human)
+                    )
+                return await _ask("Não consegui identificar o nome. Pode informar o nome completo do paciente?")
             return await _ask(_PATIENT_NAME_Q)
 
         # Step 3: birth date — calcula a idade
