@@ -437,51 +437,37 @@ async def confirm_appointment(
     if not force_encaixe:
         # Guard 0: block if patient already has a future scheduled appointment (different slot).
         # Forces Eva to use mark_reschedule_in_progress → reschedule_appointment instead.
-        # Checks both old schema (user_id) and new schema (patient_id via contacts).
         try:
             _supabase = await get_supabase()
             _phone = config["configurable"]["phone"]
             _phone_clean = _phone.replace("@s.whatsapp.net", "")
             from datetime import timezone as _tz
             _now_iso = datetime.now(_tz.utc).isoformat()
-            _all_future: list[dict] = []
 
-            # Old schema: user_id from users table
-            _users = await get_users_by_phone(_phone)
-            if _users:
-                _user_ids = [u["id"] for u in _users]
-                _r = await _supabase.from_("appointments").select("appointment_id, start_time").in_("user_id", _user_ids).eq("status", "scheduled").gte("start_time", _now_iso).execute()
-                _all_future.extend(_r.data or [])
-
-            # New schema: patient_id via contacts → patient_contacts
+            # Resolve patient_ids via contacts → patient_contacts
             _contact_r = await _supabase.from_("contacts").select("id").eq("phone", _phone_clean).execute()
             if _contact_r.data:
                 _contact_id = _contact_r.data[0]["id"]
                 _pc_r = await _supabase.from_("patient_contacts").select("patient_id").eq("contact_id", _contact_id).execute()
                 _patient_ids = [row["patient_id"] for row in (_pc_r.data or [])]
                 if _patient_ids:
-                    _r2 = await _supabase.from_("appointments").select("appointment_id, start_time").in_("patient_id", _patient_ids).eq("status", "scheduled").gte("start_time", _now_iso).execute()
-                    # Avoid duplicates already found via user_id path
-                    _seen = {a["appointment_id"] for a in _all_future}
-                    _all_future.extend(a for a in (_r2.data or []) if a["appointment_id"] not in _seen)
-
-            # Filter out the exact same slot (same-slot duplicate is handled by Guard 1 below)
-            _other_appts = [a for a in _all_future if a["start_time"] != start.isoformat()]
-            if _other_appts:
-                from zoneinfo import ZoneInfo as _ZI
-                _TZ = _ZI("America/Recife")
-                _existing_dates = ", ".join(
-                    datetime.fromisoformat(a["start_time"]).astimezone(_TZ).strftime("%d/%m/%Y às %H:%M")
-                    + f" (ID: {a['appointment_id']})"
-                    for a in _other_appts
-                )
-                _logger.warning("confirm_appointment: patient already has scheduled appt(s) — blocking new booking phone=%s", _phone_clean)
-                return (
-                    f"[INSTRUÇÃO INTERNA — NÃO ENVIE AO PACIENTE] "
-                    f"O paciente já tem consulta(s) agendada(s): {_existing_dates}. "
-                    "NÃO crie um novo agendamento. Se o paciente quer mudar de data, "
-                    "use mark_reschedule_in_progress com o ID da consulta existente e depois reschedule_appointment."
-                )
+                    _future_r = await _supabase.from_("appointments").select("appointment_id, start_time").in_("patient_id", _patient_ids).eq("status", "scheduled").gte("start_time", _now_iso).execute()
+                    _other_appts = [a for a in (_future_r.data or []) if a["start_time"] != start.isoformat()]
+                    if _other_appts:
+                        from zoneinfo import ZoneInfo as _ZI
+                        _TZ = _ZI("America/Recife")
+                        _existing_dates = ", ".join(
+                            datetime.fromisoformat(a["start_time"]).astimezone(_TZ).strftime("%d/%m/%Y às %H:%M")
+                            + f" (ID: {a['appointment_id']})"
+                            for a in _other_appts
+                        )
+                        _logger.warning("confirm_appointment: patient already has scheduled appt(s) — blocking phone=%s", _phone_clean)
+                        return (
+                            f"[INSTRUÇÃO INTERNA — NÃO ENVIE AO PACIENTE] "
+                            f"O paciente já tem consulta(s) agendada(s): {_existing_dates}. "
+                            "NÃO crie um novo agendamento. Se o paciente quer mudar de data, "
+                            "use mark_reschedule_in_progress com o ID da consulta existente e depois reschedule_appointment."
+                        )
         except Exception:
             pass  # Non-fatal — proceed
 
