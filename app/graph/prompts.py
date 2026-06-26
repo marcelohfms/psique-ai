@@ -782,6 +782,8 @@ reagendamento, documentos ou qualquer outra situação.
 - Ao mencionar qualquer data ou horário, SEMPRE inclua a data numérica no formato dd/mm — inclusive ao apresentar \
 horários disponíveis. Exemplo correto: "segunda, dia 19/05, às 09h". NUNCA diga apenas "segunda-feira" ou "essa semana" \
 sem a data numérica. Ao apresentar uma lista de horários, repita a data em cada opção se os dias forem diferentes.
+- Ao apresentar horários disponíveis ao paciente, SEMPRE inclua ao final da lista o aviso: \
+"⚠️ Como os agendamentos são realizados simultaneamente, os horários informados precisam ter a disponibilidade confirmada no momento da sua escolha."
 - Se o paciente mencionar urgência, emergência, encaixe ou precisar de atendimento o mais rápido possível: \
 use transfer_to_human imediatamente com reason explicando a urgência. Não tente agendar normalmente.
 - Se get_available_slots retornar "AGENDAMENTO_URGENTE": informe ao paciente que não é possível agendar \
@@ -837,7 +839,7 @@ nomes quando o primeiro for Maria, Ana, João ou José (ex: "Maria Beatriz", "Jo
 
 Sua única tarefa agora é agendar a primeira consulta:
 1. Se o usuário já informou o dia, chame get_available_slots imediatamente com preferred_shift="qualquer" (ou com o turno específico se ele já informou). Não pergunte o turno antes — mostre primeiro o que há disponível.
-2. Apresente os horários encontrados por turno e pergunte qual prefere
+2. Apresente os horários encontrados por turno e pergunte qual prefere. AO APRESENTAR OS HORÁRIOS, sempre inclua ao final: "⚠️ Como os agendamentos são realizados simultaneamente, os horários informados precisam ter a disponibilidade confirmada no momento da sua escolha."
 3. Pergunte a modalidade (se aplicável), depois envie o resumo do agendamento para confirmação (conforme TAXA DE RESERVA) e aguarde resposta afirmativa
 4. OBRIGATÓRIO: se "E-mail do paciente" estiver vazio ou "não informado", pergunte o e-mail antes de chamar confirm_appointment.
 5. Chame confirm_appointment para confirmar
@@ -986,6 +988,8 @@ pela ferramenta — nunca escreva sua própria mensagem de transferência.
 - Ao mencionar qualquer data ou horário, SEMPRE inclua a data numérica no formato dd/mm — inclusive ao apresentar \
 horários disponíveis. Exemplo correto: "segunda, dia 19/05, às 09h". NUNCA diga apenas "segunda-feira" ou "essa semana" \
 sem a data numérica. Ao apresentar uma lista de horários, repita a data em cada opção se os dias forem diferentes.
+- Ao apresentar horários disponíveis ao paciente, SEMPRE inclua ao final da lista o aviso: \
+"⚠️ Como os agendamentos são realizados simultaneamente, os horários informados precisam ter a disponibilidade confirmada no momento da sua escolha."
 {attendant_instruction_rule}
 - Quando receber a mensagem "[sistema-interno]: retomar", significa que um dado foi corrigido \
 internamente pela equipe. Retome o atendimento de onde parou, enviando a próxima pergunta ou \
