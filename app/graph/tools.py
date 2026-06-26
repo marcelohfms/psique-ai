@@ -2219,3 +2219,78 @@ async def consultar_data(data: str) -> str:
         rel = f"há {abs(delta)} dias"
 
     return f"{parsed.strftime('%d/%m/%Y')} é {article} {wd} ({rel})."
+
+
+@tool
+async def extend_payment_deadline(
+    deadline_iso: str,
+    state: Annotated[dict, InjectedState],
+    config: RunnableConfig,
+) -> str:
+    """Estende o prazo de pagamento da taxa de reserva quando o paciente pede mais tempo.
+
+    Use quando o paciente disser que vai pagar mais tarde, amanhã, em X horas, etc.
+    O lembrete automático será reenviado 2h antes do prazo e o cancelamento ocorrerá
+    2h após o lembrete, se não pago.
+
+    deadline_iso: data e hora limite para pagamento em ISO 8601 com fuso (ex: '2026-06-26T10:00:00-03:00').
+                  Interprete o pedido do paciente e converta para este formato.
+    """
+    phone = config["configurable"]["phone"]
+    client = await get_supabase()
+
+    # Find the scheduled appointment without booking fee
+    from app.database import get_users_by_phone
+    users = await get_users_by_phone(phone)
+    if not users:
+        return "Não encontrei cadastro para este número."
+
+    user_ids = [u["id"] for u in users]
+    from datetime import timezone as _tz
+    now_iso = datetime.now(_tz.utc).isoformat()
+
+    appt = None
+    for uid in user_ids:
+        result = await client.from_("appointments").select(
+            "appointment_id, start_time"
+        ).eq("user_id", uid).eq("status", "scheduled").is_("booking_fee_paid_at", "null").eq("booking_fee_waived", False).gte("start_time", now_iso).order("start_time").limit(1).execute()
+        if result.data:
+            appt = result.data[0]
+            break
+
+    # Also check patient_id path
+    if not appt:
+        from app.database import get_user_by_phone
+        user = await get_user_by_phone(phone)
+        if user:
+            patient_result = await client.from_("appointments").select(
+                "appointment_id, start_time"
+            ).eq("patient_id", user.get("patient_id", "")).eq("status", "scheduled").is_("booking_fee_paid_at", "null").eq("booking_fee_waived", False).gte("start_time", now_iso).order("start_time").limit(1).execute()
+            if patient_result.data:
+                appt = patient_result.data[0]
+
+    if not appt:
+        return "Não encontrei consulta agendada com taxa de reserva pendente para este paciente."
+
+    # Parse deadline and compute new created_at (deadline - 2h so reminder fires at deadline)
+    try:
+        deadline_dt = datetime.fromisoformat(deadline_iso)
+    except ValueError:
+        return f"Formato de data inválido: {deadline_iso}. Use ISO 8601 (ex: '2026-06-26T10:00:00-03:00')."
+
+    new_created_at = (deadline_dt - timedelta(hours=2)).isoformat()
+
+    await client.from_("appointments").update({
+        "created_at": new_created_at,
+        "payment_reminder_sent_at": None,
+    }).eq("appointment_id", appt["appointment_id"]).execute()
+
+    deadline_local = deadline_dt.astimezone(TZ)
+    deadline_str = deadline_local.strftime("%d/%m/%Y às %H:%M")
+
+    await log_event("payment_deadline_extended", phone, {
+        "appointment_id": appt["appointment_id"],
+        "new_deadline": deadline_iso,
+    })
+
+    return f"Prazo de pagamento estendido até {deadline_str}. O lembrete será reenviado automaticamente."

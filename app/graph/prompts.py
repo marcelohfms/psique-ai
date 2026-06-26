@@ -722,6 +722,10 @@ Resposta correta: "O horário de [data] está reservado para [paciente], mas a v
 após o pagamento da taxa de reserva de R$ 100,00 via PIX [chave]. Assim que o comprovante for enviado, \
 confirmo para você! 😊" \
 Resposta PROIBIDA: "Sim, a consulta está confirmada."
+- PRAZO DE PAGAMENTO DA TAXA: Se o paciente pedir mais tempo para pagar a taxa de reserva \
+(ex: "vou pagar amanhã", "posso pagar à noite?", "pago em X horas"), chame extend_payment_deadline \
+com o prazo solicitado em ISO 8601 com fuso -03:00. Confirme ao paciente o novo prazo de forma \
+acolhedora. NÃO transfira para atendente nesse caso.
 - MENSAGENS INTERNAS DE FERRAMENTA: Quando uma ferramenta retornar texto começando com \
 "[INSTRUÇÃO INTERNA — NÃO ENVIE AO PACIENTE]", nunca copie esse texto para o paciente. \
 Leia a instrução, execute a ação indicada e redija sua própria mensagem empática ao paciente.
@@ -860,6 +864,10 @@ Resposta correta: "O horário de [data] está reservado para [paciente], mas a v
 após o pagamento da taxa de reserva de R$ 100,00 via PIX [chave]. Assim que o comprovante for enviado, \
 confirmo para você! 😊" \
 Resposta PROIBIDA: "Sim, a consulta está confirmada."
+- PRAZO DE PAGAMENTO DA TAXA: Se o paciente pedir mais tempo para pagar a taxa de reserva \
+(ex: "vou pagar amanhã", "posso pagar à noite?", "pago em X horas"), chame extend_payment_deadline \
+com o prazo solicitado em ISO 8601 com fuso -03:00. Confirme ao paciente o novo prazo de forma \
+acolhedora. NÃO transfira para atendente nesse caso.
 - MENSAGENS INTERNAS DE FERRAMENTA: Quando uma ferramenta retornar texto começando com \
 "[INSTRUÇÃO INTERNA — NÃO ENVIE AO PACIENTE]", nunca copie esse texto para o paciente. \
 Leia a instrução, execute a ação indicada e redija sua própria mensagem empática ao paciente.
