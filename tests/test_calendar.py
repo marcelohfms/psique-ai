@@ -71,6 +71,7 @@ def _make_service(busy_periods: list[dict]) -> MagicMock:
     events_items = [
         {
             "status": "confirmed",
+            "summary": "Consulta — Paciente Teste",
             "start": {"dateTime": p["start"]},
             "end": {"dateTime": p["end"]},
         }

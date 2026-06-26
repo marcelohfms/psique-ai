@@ -29,6 +29,7 @@ SCHEDULE_EXCEPTIONS: dict[str, dict[str, list[tuple[int, int, int, int, str]]]] 
         "2026-06-23": [],                                                       # Segunda: sem atendimento (bloqueado)
         "2026-06-24": [],                                                       # Quarta: sem atendimento
         "2026-06-29": [],                                                       # Segunda: sem atendimento (bloqueado)
+        "2026-06-30": [(13, 0, 18, 0, "escolha")],                             # Terça: atendimento à tarde (exceção)
         "2026-07-06": [],                                                       # Segunda: sem atendimento (bloqueado)
     },
     "bruna": {
@@ -283,6 +284,19 @@ def _get_busy(service, calendar_id: str, window_start: datetime, window_end: dat
         # Skip all-day events (they use 'date' not 'dateTime')
         if "dateTime" not in start_raw:
             continue
+        # Only block slots for bot-created appointments. Manual events added by
+        # the attendant (blocking their personal time, notes, etc.) should not
+        # prevent the bot from offering or restoring a slot.
+        # Bot events are identified by: (a) extendedProperties.private.source=="psique-bot"
+        # (added to new events going forward) or (b) summary starting with "Consulta"
+        # (convention used for all existing bot-created events).
+        _private = (evt.get("extendedProperties") or {}).get("private") or {}
+        _is_bot_event = (
+            _private.get("source") == "psique-bot"
+            or (evt.get("summary") or "").startswith("Consulta")
+        )
+        if not _is_bot_event:
+            continue
         busy.append({"start": start_raw["dateTime"], "end": end_raw["dateTime"]})
 
     _logger.warning("EVENTS_BUSY calendar=%s window=%s→%s found=%d events=%s",
@@ -481,6 +495,7 @@ async def create_event(
         "description": description,
         "start": {"dateTime": start.isoformat(), "timeZone": TIMEZONE},
         "end": {"dateTime": end.isoformat(), "timeZone": TIMEZONE},
+        "extendedProperties": {"private": {"source": "psique-bot"}},
     }
 
     creds = _credentials()
@@ -536,6 +551,7 @@ async def update_event(
         "start": {"dateTime": new_start.isoformat(), "timeZone": TIMEZONE},
         "end":   {"dateTime": new_end.isoformat(),   "timeZone": TIMEZONE},
         "description": description,
+        "extendedProperties": {"private": {"source": "psique-bot"}},
     }
     creds = _credentials()
     service = build("calendar", "v3", credentials=creds)
