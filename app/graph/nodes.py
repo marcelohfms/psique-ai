@@ -466,7 +466,11 @@ async def collect_info_node(state: ConversationState, config: RunnableConfig) ->
 
         # Step 3: birth date — calcula a idade
         if not state.get("birth_date"):
-            asked_birth = "nascimento" in last_ai.lower()
+            asked_birth = (
+                "nascimento" in last_ai.lower()
+                or "dd/mm/aaaa" in last_ai.lower()
+                or "não consegui identificar a data" in last_ai.lower()
+            )
             if asked_birth and last_human:
                 parsed = _parse_birth_date(last_human)
                 if parsed:
