@@ -451,8 +451,29 @@ async def collect_info_node(state: ConversationState, config: RunnableConfig) ->
                         _nq(is_patient=True, patient_name=_uname),
                     )
                 else:
+                    # Infer guardian relationship and name from the same message.
+                    # e.g. "minha filha" → relationship="mãe", guardian=contact name.
+                    _rel_map = [
+                        (["filha", "filho"],        "mãe/pai"),
+                        (["mãe", "mae", "mamãe"],   "filho(a)"),
+                        (["pai", "papai"],           "filho(a)"),
+                        (["esposa", "marido", "esposo", "cônjuge", "conjuge"], "cônjuge"),
+                        (["irmã", "irma", "irmão", "irmao"], "irmão/irmã"),
+                    ]
+                    _inferred_rel = None
+                    for _kws, _rel in _rel_map:
+                        if any(kw in h for kw in _kws):
+                            _inferred_rel = _rel
+                            break
+                    _not_patient_update: dict = {"is_patient": False}
+                    # Pre-populate guardian info from the contact's own name
+                    _uname = state.get("user_name") or ""
+                    if _uname:
+                        _not_patient_update["guardian_name"] = _uname
+                    if _inferred_rel:
+                        _not_patient_update["guardian_relationship"] = _inferred_rel
                     return await _extract_and_ask(
-                        {"is_patient": False}, _nq(is_patient=False)
+                        _not_patient_update, _nq(**_not_patient_update)
                     )
             return await _ask(_IS_PATIENT_Q)
 
