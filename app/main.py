@@ -161,13 +161,8 @@ async def extract_message(payload: dict) -> tuple[str, str] | None:
         return phone, text
 
     if msg_type == "audio":
-        media_id = msg.get("audio", {}).get("id", "")
-        if not media_id:
-            return None
-        text = await process_media(media_id, "audio", phone=phone)
-        if not text:
-            return None
-        return phone, text
+        await send_text(phone, "Não consigo processar áudios. Por favor, envie sua mensagem em texto. 😊")
+        return None
 
     if msg_type == "image":
         media_id = msg.get("image", {}).get("id", "")
@@ -628,7 +623,7 @@ async def _process_chatwoot_attachments(attachments: list) -> str | None:
                 resp.raise_for_status()
                 media_bytes = resp.content
             if file_type == "audio":
-                return await transcribe_audio_bytes(media_bytes)
+                return "[audio-nao-suportado]"
             if file_type == "image":
                 return await describe_image_bytes(media_bytes)
             if file_type == "file":
@@ -985,6 +980,9 @@ async def _handle_chatwoot_payload(payload: dict) -> None:
         if text is None:
             text = await _process_chatwoot_attachments(payload.get("attachments", []))
             if not text:
+                return
+            if text == "[audio-nao-suportado]":
+                await send_text(phone, "Não consigo processar áudios. Por favor, envie sua mensagem em texto. 😊")
                 return
 
         logger.info("Chatwoot message from %s (conv=%s): %.80s", phone, conversation_id, text)

@@ -91,14 +91,14 @@ async def test_ignores_missing_from():
     assert result is None
 
 
-async def test_extracts_audio_message():
+async def test_audio_message_sends_notice_and_returns_none():
+    """Audio messages trigger a fixed reply and are not forwarded to Eva."""
     from app.main import extract_message
-    with patch("app.media.process_media", new_callable=AsyncMock, return_value="[áudio transcrito]: consulta amanhã"):
+    with patch("app.main.send_text", new_callable=AsyncMock) as mock_send:
         result = await extract_message(_meta_payload(msg_type="audio"))
-    assert result is not None
-    phone, text = result
-    assert phone == PHONE
-    assert "áudio transcrito" in text
+    assert result is None
+    mock_send.assert_called_once()
+    assert "áudio" in mock_send.call_args[0][1].lower()
 
 
 async def test_extracts_image_payment_receipt():
