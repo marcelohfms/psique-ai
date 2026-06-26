@@ -665,7 +665,10 @@ def _extract_phone_from_payload(payload: dict) -> str | None:
                 conversation.get("meta", {}).get("sender", {}))
     if not phone_raw:
         return None
-    return phone_raw.lstrip("+") + "@s.whatsapp.net"
+    from app.database import _phone_variants as _pv
+    _raw = phone_raw.lstrip("+")
+    _variants = _pv(_raw)
+    return (_variants[0] if _variants else _raw) + "@s.whatsapp.net"
 
 
 async def _apply_eva_label_action(payload: dict, added: set, removed: set) -> bool:

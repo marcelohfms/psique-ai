@@ -30,17 +30,24 @@ def normalize_phone(phone: str) -> str:
 
 
 async def get_contact_by_phone(phone: str) -> dict | None:
-    """Retorna a linha de `contacts` para este número (forma canônica), ou None."""
+    """Retorna a linha de `contacts` para este número (forma canônica), ou None.
+
+    Tenta a forma canônica (com 9) primeiro. Se não encontrar, tenta a variante
+    sem o 9 — necessário para contatos legados gravados antes da normalização.
+    """
+    from app.database import _phone_variants
     client = await get_supabase()
-    canonical = normalize_phone(phone)
-    result = (
-        await client.from_("contacts")
-        .select("*")
-        .eq("phone", canonical)
-        .execute()
-    )
-    rows = result.data or []
-    return rows[0] if rows else None
+    for variant in _phone_variants(phone):
+        result = (
+            await client.from_("contacts")
+            .select("*")
+            .eq("phone", variant)
+            .execute()
+        )
+        rows = result.data or []
+        if rows:
+            return rows[0]
+    return None
 
 
 async def get_patients_by_contact(contact_id: str, role: str | None = None) -> list[dict]:
