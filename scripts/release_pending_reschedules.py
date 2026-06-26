@@ -125,8 +125,9 @@ async def main():
 
         contact_name = user.get("name") or user.get("patient_name") or "paciente"
         patient_name = user.get("patient_name") or ""
-        contact_first = contact_name.split()[0]
-        patient_first = patient_name.split()[0] if patient_name and patient_name != contact_name else None
+        from app.utils import display_name as _dn
+        contact_first = _dn(contact_name)
+        patient_first = _dn(patient_name) if patient_name and patient_name != contact_name else None
 
         # 1. Notifica paciente (obrigatório para liberar)
         msg = pending_reschedule_message(contact_first, doctor_label, date_str, patient_first)

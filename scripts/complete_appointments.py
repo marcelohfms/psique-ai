@@ -92,7 +92,8 @@ async def main():
 
         patient = appt.get("patients") or {}
         patient_name = patient.get("name") or "paciente"
-        first_name = patient_name.split()[0] if patient_name else "paciente"
+        from app.utils import display_name as _dn
+        first_name = _dn(patient_name) if patient_name else "paciente"
 
         async def _mark_sent():
             await client.from_("appointments").update({

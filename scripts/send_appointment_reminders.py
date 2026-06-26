@@ -139,7 +139,8 @@ async def _send_reminder_to_contacts(client, appt, template_name, sent_col, now,
     modality = appt.get("modality") or ""
     patient = appt.get("patients") or appt.get("users") or {}
     patient_name = patient.get("name") or patient.get("patient_name") or "paciente"
-    first_name = patient_name.split()[0] if patient_name else "paciente"
+    from app.utils import display_name as _dn
+    first_name = _dn(patient_name) if patient_name else "paciente"
     doctor_label = DOCTOR_LABELS.get(appt.get("doctor_id", ""), "médico(a)")
     patient_id = appt.get("patient_id")
 

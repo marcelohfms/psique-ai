@@ -229,9 +229,10 @@ async def main():
             any_sent = False
             for contact in financial_contacts:
                 phone = contact["phone"]
-                contact_first = (contact["name"] or patient_name).split()[0]
+                from app.utils import display_name as _dn
+                contact_first = _dn(contact["name"] or patient_name)
                 # Show patient name separately only when contact and patient differ
-                patient_first = patient_name.split()[0] if contact["name"] and contact["name"] != patient_name else None
+                patient_first = _dn(patient_name) if contact["name"] and contact["name"] != patient_name else None
                 message = payment_reminder_message(contact_first, doctor_label, date_str, patient_first)
                 try:
                     await send_whatsapp(phone, message)
@@ -277,8 +278,9 @@ async def main():
             any_notified = False
             for contact in financial_contacts:
                 phone = contact["phone"]
-                contact_first = (contact["name"] or patient_name).split()[0]
-                patient_first = patient_name.split()[0] if contact["name"] and contact["name"] != patient_name else None
+                from app.utils import display_name as _dn
+                contact_first = _dn(contact["name"] or patient_name)
+                patient_first = _dn(patient_name) if contact["name"] and contact["name"] != patient_name else None
                 message = payment_cancel_message(contact_first, doctor_label, date_str, patient_first)
                 try:
                     await send_whatsapp(phone, message)

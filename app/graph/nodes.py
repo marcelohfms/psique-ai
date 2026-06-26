@@ -698,8 +698,9 @@ async def collect_info_node(state: ConversationState, config: RunnableConfig) ->
     _ci_user_name = state.get("user_name")
     _ci_patient_name = state.get("patient_name")
     if _ci_is_third_party and _ci_user_name and _ci_patient_name and _ci_user_name != _ci_patient_name:
-        _ci_contact_first = _ci_user_name.split()[0]
-        _ci_patient_first = _ci_patient_name.split()[0]
+        from app.utils import display_name as _dn
+        _ci_contact_first = _dn(_ci_user_name)
+        _ci_patient_first = _dn(_ci_patient_name)
         _collect_system += (
             f"\n\nIMPORTANTE — CONTATO ≠ PACIENTE: Quem está no WhatsApp é *{_ci_user_name}* "
             f"(o contato/responsável), NÃO o paciente *{_ci_patient_first}*. "
@@ -1049,7 +1050,8 @@ async def patient_agent_node(state: ConversationState, config: RunnableConfig) -
                 _result = "Erro ao confirmar o agendamento. Tente novamente."
 
             # Convert semantic codes to patient-friendly messages
-            _contact_name = (state.get("user_name") or "").split()[0] or "você"
+            from app.utils import display_name as _dn
+            _contact_name = _dn(state.get("user_name") or "") or "você"
             # confirm_appointment success codes may be prefixed with the internal-instruction tag.
             # Strip it before matching, otherwise a successful booking is misread as an error.
             _INT_PREFIX = "[INSTRUÇÃO INTERNA — NÃO ENVIE AO PACIENTE] "
@@ -1123,7 +1125,8 @@ async def patient_agent_node(state: ConversationState, config: RunnableConfig) -
     patient_age = _raw_age or 99          # numeric fallback for logic checks
     patient_age_display = f"{patient_age} anos" if _raw_age else "não informada"
     _full_name = state.get("patient_name") or state.get("user_name") or "paciente"
-    first_name = _full_name.split()[0]
+    from app.utils import display_name as _dn
+    first_name = _dn(_full_name)
     # contact_name: who is on WhatsApp. May differ from patient_name (e.g. guardian).
     # When is_patient is explicitly False the contact is NOT the patient; avoid using
     # patient_name as fallback so the LLM doesn't confuse the two people.
@@ -1131,7 +1134,7 @@ async def patient_agent_node(state: ConversationState, config: RunnableConfig) -
     _contact_full = state.get("user_name") or (
         "responsável" if _is_third_party else (state.get("patient_name") or "paciente")
     )
-    contact_first_name = _contact_full.split()[0]
+    contact_first_name = _dn(_contact_full)
     contact_name = _contact_full
     is_minor = patient_age < 18
     is_minor_first = (
@@ -1208,7 +1211,8 @@ async def patient_agent_node(state: ConversationState, config: RunnableConfig) -
     # Without this, the LLM defaults to using patient_name (prominent in the prompt header)
     # to address the contact, even when they are different people.
     if state.get("is_patient") is False and state.get("user_name"):
-        contact_first = contact_name.split()[0]
+        from app.utils import display_name as _dn
+        contact_first = _dn(contact_name)
         system_prompt += (
             f"\n\nIMPORTANTE — CONTATO ≠ PACIENTE: Quem está no WhatsApp é *{contact_name}* "
             f"(o contato/responsável), NÃO o paciente *{first_name}*. "
