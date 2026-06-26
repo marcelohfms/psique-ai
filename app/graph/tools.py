@@ -781,6 +781,23 @@ async def mark_reschedule_in_progress(
     if appt.data.get("status") not in ("scheduled", "pending_reschedule"):
         return "Esta consulta não está em status que permita reagendamento."
 
+    # Política de reagendamento: paciente pode reagendar apenas 1x.
+    # A partir do 2º reagendamento iniciado pelo paciente, é necessário
+    # solicitar uma nova consulta com nova taxa de reserva.
+    # Reagendamentos iniciados pela atendente/médico (silent_mode) são isentos.
+    if not state.get("silent_mode"):
+        phone_clean = phone.replace("@s.whatsapp.net", "")
+        count_res = await client.from_("events").select("id", count="exact") \
+            .eq("phone", phone_clean).eq("event_type", "appointment_rescheduled").execute()
+        patient_reschedule_count = count_res.count or 0
+        if patient_reschedule_count >= 1:
+            return (
+                "POLÍTICA DE REAGENDAMENTO: este paciente já utilizou o reagendamento disponível. "
+                "De acordo com nossa política, a taxa de reserva é transferida apenas uma vez. "
+                "Para uma nova consulta, é necessário fazer um novo agendamento e pagar uma nova "
+                "taxa de reserva. Informe o paciente e oriente-o a solicitar um novo agendamento."
+            )
+
     await client.from_("appointments").update({
         "reschedule_requested_at": now.isoformat(),
     }).eq("appointment_id", appointment_id).execute()
@@ -957,6 +974,7 @@ async def reschedule_appointment(
     await log_event("appointment_rescheduled", phone, {
         "appointment_id": appointment_id,
         "new_datetime": new_slot_datetime,
+        "initiated_by": "attendant" if state.get("silent_mode") else "patient",
     })
 
     if old_start_time:
