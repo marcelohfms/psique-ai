@@ -608,6 +608,7 @@ def _extract_chatwoot_message(payload: dict) -> tuple[str, str | None, int] | No
     _raw = phone_raw.lstrip("+")
     _variants = _pv(_raw)
     phone = (_variants[0] if _variants else _raw) + "@s.whatsapp.net"
+    logger.info("CHATWOOT_PHONE_RAW raw=%s normalized=%s conv=%s", phone_raw, phone, conversation_id)
     return phone, content, conversation_id
 
 
