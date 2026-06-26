@@ -127,7 +127,7 @@ async def save_to_checkpoint(graph, phone: str, message: str, appt: dict) -> Non
 
 
 async def _send_reminder_to_contacts(client, appt, template_name, sent_col, now, graph):
-    """Envia o lembrete para TODOS os contatos com role 'agendamento' do paciente.
+    """Envia o lembrete para TODOS os contatos com role 'consulta' do paciente.
 
     Marca `sent_col` UMA vez por agendamento, somente se ao menos um envio teve
     sucesso (retries do cron permanecem seguros). Retorna a lista de telefones
@@ -143,9 +143,9 @@ async def _send_reminder_to_contacts(client, appt, template_name, sent_col, now,
     doctor_label = DOCTOR_LABELS.get(appt.get("doctor_id", ""), "médico(a)")
     patient_id = appt.get("patient_id")
 
-    contacts = await get_contacts_for_patient(patient_id, "agendamento") if patient_id else []
+    contacts = await get_contacts_for_patient(patient_id, "consulta") if patient_id else []
     if not contacts:
-        print(f"  [SKIP] appt {appointment_id} sem contato de agendamento (patient_id={patient_id})")
+        print(f"  [SKIP] appt {appointment_id} sem contato de consulta (patient_id={patient_id})")
         return []
 
     # Use online-specific template name for online appointments
@@ -264,7 +264,7 @@ async def main():
         ]
 
         for appt, template_name, sent_col in batch:
-            # Envia para TODOS os contatos com role 'agendamento' do paciente
+            # Envia para TODOS os contatos com role 'consulta' do paciente
             # (ex.: pai e mãe). Marca sent_col uma vez por agendamento.
             await _send_reminder_to_contacts(client, appt, template_name, sent_col, now, graph)
     finally:
