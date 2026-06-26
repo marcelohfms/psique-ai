@@ -803,7 +803,15 @@ async def mark_reschedule_in_progress(
     }).eq("appointment_id", appointment_id).execute()
 
     await log_event("reschedule_requested", phone, {"appointment_id": appointment_id})
-    return "Reagendamento marcado como em andamento. Prossiga com get_available_slots para buscar novos horários."
+
+    first_reschedule_notice = ""
+    if not state.get("silent_mode") and patient_reschedule_count == 0:
+        first_reschedule_notice = (
+            " IMPORTANTE: informe ao paciente que este é o único reagendamento permitido sem "
+            "perda da taxa de reserva. A partir de um segundo reagendamento, será necessário "
+            "solicitar uma nova consulta e pagar uma nova taxa de reserva."
+        )
+    return f"Reagendamento marcado como em andamento. Prossiga com get_available_slots para buscar novos horários.{first_reschedule_notice}"
 
 
 @tool
