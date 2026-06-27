@@ -1079,6 +1079,7 @@ async def patient_agent_node(state: ConversationState, config: RunnableConfig) -
                         f"Esse valor será abatido do total da consulta. Em caso de cancelamento com menos de 24h de antecedência ou ausência sem justificativa, a taxa não é devolvida."
                     )
             elif _result.startswith("[INSTRUÇÃO INTERNA"):
+                _pa_logger.warning("PENDING_APPT_CONFIRM internal error phone=%s result=%.200s", state.get("phone"), _result_body)
                 # Before flagging an error, check if patient already has this appointment
                 # scheduled (bypass fired twice — e.g. patient said "Ok" after PIX message).
                 _already_booked = False
@@ -1104,6 +1105,31 @@ async def patient_agent_node(state: ConversationState, config: RunnableConfig) -
                 if _already_booked:
                     _doctor_lbl2 = {"julio": "Dr. Júlio", "bruna": "Dra. Bruna"}.get(_pending_appt.get("doctor", ""), "médico(a)")
                     _patient_msg = f"Sua consulta já está confirmada com {_doctor_lbl2}! 😊 Qualquer dúvida, estou à disposição."
+                elif "acabou de ser ocupado" in _result_body or "acabou de ser preenchido" in _result_body:
+                    # Slot taken between offer and confirmation — clear pending and ask Eva to find alternatives
+                    _slot_str = ""
+                    try:
+                        from datetime import datetime as _dtt2
+                        from zoneinfo import ZoneInfo as _ZI2
+                        _sd = _pending_appt.get("slot_datetime", "")
+                        if _sd:
+                            _dt = _dtt2.fromisoformat(_sd).astimezone(_ZI2("America/Recife"))
+                            _slot_str = f" das {_dt.strftime('%H:%M')} do dia {_dt.strftime('%d/%m')}"
+                    except Exception:
+                        pass
+                    _patient_msg = (
+                        f"Que pena, {_contact_name}! O horário{_slot_str} acabou de ser preenchido por outra pessoa. "
+                        f"Vou buscar as próximas opções disponíveis para você! 😊"
+                    )
+                    # Inject tool result so LLM picks up context and calls get_available_slots
+                    await _send_text(state["phone"], _patient_msg)
+                    await _save_msg(state["phone"], "assistant", _patient_msg)
+                    from langchain_core.messages import AIMessage as _AI2, ToolMessage as _TM2
+                    import uuid as _uuid2
+                    _tc2 = str(_uuid2.uuid4())
+                    _ai2 = _AI2(content="", tool_calls=[{"name": "confirm_appointment", "args": {}, "id": _tc2, "type": "tool_use"}])
+                    _tm2 = _TM2(content=_result_body + "\nBusque novos horários automaticamente com get_available_slots.", tool_call_id=_tc2)
+                    return {"pending_appointment": None, "messages": [_ai2, _tm2], "silent_mode": False, **_sync_updates}
                 else:
                     _patient_msg = f"Ops, {_contact_name}! Tive um problema ao confirmar o agendamento. Nossa equipe já foi notificada. 😊"
             else:
