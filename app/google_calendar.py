@@ -32,6 +32,11 @@ SCHEDULE_EXCEPTIONS: dict[str, dict[str, list[tuple[int, int, int, int, str]]]] 
         "2026-06-30": [(13, 0, 18, 0, "escolha")],                             # Terça: atendimento à tarde (exceção)
         "2026-07-06": [],                                                       # Segunda: sem atendimento (bloqueado)
         "2026-07-16": [],                                                       # Quinta: feriado Nossa Senhora do Carmo (Recife)
+        "2026-09-07": [],                                                       # Segunda: feriado Independência do Brasil
+        "2026-10-12": [],                                                       # Segunda: feriado Nossa Sra. Aparecida
+        "2026-11-02": [],                                                       # Segunda: feriado Finados
+        "2026-12-24": [],                                                       # Quinta: ponto facultativo Véspera de Natal
+        "2026-12-31": [],                                                       # Quinta: ponto facultativo Véspera de Ano Novo
     },
     "bruna": {
         "2026-05-22": [],  # Sexta: sem atendimento
@@ -40,6 +45,11 @@ SCHEDULE_EXCEPTIONS: dict[str, dict[str, list[tuple[int, int, int, int, str]]]] 
         "2026-06-24": [],  # Quarta: sem atendimento
         "2026-06-29": [(7, 30, 8, 30, "online")],  # Segunda: só manhã (tarde bloqueada)
         "2026-07-16": [],  # Quinta: feriado Nossa Senhora do Carmo (Recife)
+        "2026-09-07": [],  # Segunda: feriado Independência do Brasil
+        "2026-10-12": [],  # Segunda: feriado Nossa Sra. Aparecida
+        "2026-11-02": [],  # Segunda: feriado Finados
+        "2026-11-20": [],  # Sexta: feriado Consciência Negra
+        "2026-12-25": [],  # Sexta: feriado Natal
     },
 }
 
