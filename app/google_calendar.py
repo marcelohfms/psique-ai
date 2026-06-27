@@ -231,6 +231,14 @@ def _next_weekday(weekday: int) -> date:
     return today + timedelta(days=days_ahead)
 
 
+_MONTHS_PT = {
+    "janeiro": 1, "fevereiro": 2, "março": 3, "marco": 3,
+    "abril": 4, "maio": 5, "junho": 6, "julho": 7,
+    "agosto": 8, "setembro": 9, "outubro": 10,
+    "novembro": 11, "dezembro": 12,
+}
+
+
 def _parse_day(preferred_day: str) -> date | None:
     s = preferred_day.lower().strip()
     today = datetime.now(TZ).date()
@@ -261,6 +269,17 @@ def _parse_day(preferred_day: str) -> date | None:
             return d
     except (ValueError, IndexError):
         pass
+    # Handle month names (e.g. "outubro", "novembro") → first weekday of that month
+    for month_name, month_num in _MONTHS_PT.items():
+        if month_name in s:
+            year = today.year
+            d = date(year, month_num, 1)
+            if d < today:
+                d = date(year + 1, month_num, 1)
+            # advance to first Monday (weekday 0) of the month
+            while d.weekday() >= 5:  # skip weekends
+                d += timedelta(days=1)
+            return d
     return None
 
 
