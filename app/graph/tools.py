@@ -1440,18 +1440,16 @@ async def register_payment(
                 _dt = datetime.fromisoformat(a["start_time"]).astimezone(TZ).strftime("%d/%m/%Y às %H:%M")
                 _doc = {"d5baa58b-a788-4f40-b8c0-512c189150be": "Dr. Júlio", "18b01f87-eacd-4905-bd4a-a8293991e6fd": "Dra. Bruna"}.get(a.get("doctor_id", ""), "médico(a)")
 
-                # Check if Calendar slot is still free
-                from app.google_calendar import get_available_slots as _get_slots
-                _cal_id_map = {"d5baa58b-a788-4f40-b8c0-512c189150be": "dr.juliogouveia@gmail.com", "18b01f87-eacd-4905-bd4a-a8293991e6fd": "brunalima.psiquiatra@gmail.com"}
-                _cal_id = _cal_id_map.get(a.get("doctor_id", ""), "")
+                # Check if slot is still free using only Supabase appointments (bot-created).
+                # Ignores manual Calendar events added by attendants, which are not tracked here.
                 _slot_dt = datetime.fromisoformat(a["start_time"]).astimezone(TZ)
-                _doctor_key = DOCTOR_NAMES.get(a.get("doctor_id", ""), "")
-                _free_slots = []
-                try:
-                    _free_slots = await _get_slots(_cal_id, _slot_dt.strftime("%d/%m"), "qualquer", 60, _doctor_key)
-                except Exception:
-                    pass
-                _slot_free = any(abs((s - _slot_dt).total_seconds()) < 60 for s, _ in _free_slots)
+                _slot_end_dt = datetime.fromisoformat(a["end_time"]).astimezone(TZ)
+                _conflict = await client.from_("appointments").select("id").eq(
+                    "doctor_id", a.get("doctor_id", "")
+                ).eq("status", "scheduled").lt("start_time", _slot_end_dt.isoformat()).gt(
+                    "end_time", _slot_dt.isoformat()
+                ).neq("appointment_id", a["appointment_id"]).limit(1).execute()
+                _slot_free = not _conflict.data
 
                 if _slot_free:
                     return (
