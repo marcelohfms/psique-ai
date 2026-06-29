@@ -919,83 +919,61 @@ async def patient_agent_node(state: ConversationState, config: RunnableConfig) -
     import logging as _log_pa
     _pa_logger = _log_pa.getLogger(__name__)
 
-    # ── DB ↔ checkpoint sync for contact identity fields ─────────────────────
-    # When the DB record is corrected after the conversation has started, the
-    # checkpoint may still carry stale values (user_name == patient_name,
-    # is_patient == True). Sync them here so Eva never addresses the wrong person.
+    # ── DB ↔ checkpoint hydration ─────────────────────────────────────────────
+    # Hydrates missing fields from DB using the new patients/contacts schema.
+    # Only runs when at least one field is absent — once set, the checkpoint is trusted.
+    # Sources: contacts.name → user_name, patients.* → patient_name/preferred_doctor/
+    # is_returning_patient/patient_email, patient_contacts.is_self → is_patient.
     _sync_updates: dict = {}
     _user_db_id = state.get("user_db_id")
 
-    # Fallback: if user_db_id is missing (e.g. checkpoint was reset), load from phone.
-    # This ensures is_patient and user_name are always correct even after a state reset.
-    if not _user_db_id and state.get("phone"):
-        try:
-            _fb_user = await get_user_by_phone(state["phone"])
-            if _fb_user:
-                _user_db_id = _fb_user["id"]
-                _sync_updates["user_db_id"] = _user_db_id
-                if not state.get("user_name") and _fb_user.get("name"):
-                    _sync_updates["user_name"] = _fb_user["name"]
-                if not state.get("patient_name") and _fb_user.get("patient_name"):
-                    _sync_updates["patient_name"] = _fb_user["patient_name"]
-                if state.get("is_patient") is None and _fb_user.get("is_patient") is not None:
-                    _sync_updates["is_patient"] = _fb_user["is_patient"]
-                if not state.get("preferred_doctor") and _fb_user.get("doctor_id"):
-                    _sync_updates["preferred_doctor"] = DOCTOR_NAMES.get(_fb_user["doctor_id"])
-                if not state.get("patient_email") and _fb_user.get("email"):
-                    _sync_updates["patient_email"] = _fb_user["email"]
-                if not state.get("is_returning_patient") and _fb_user.get("is_returning_patient") is not None:
-                    _sync_updates["is_returning_patient"] = _fb_user["is_returning_patient"]
-                _pa_logger.info("Fallback DB sync from phone for %s: %s", state["phone"], list(_sync_updates.keys()))
-        except Exception:
-            _pa_logger.exception("Fallback DB sync failed for %s", state.get("phone"))
+    _needs_hydration = (
+        not _user_db_id
+        or not state.get("user_name")
+        or not state.get("patient_name")
+        or state.get("is_patient") is None
+        or state.get("is_returning_patient") is None
+    )
 
-    if _user_db_id:
+    if _needs_hydration and state.get("phone"):
         try:
-            from app.database import get_supabase as _get_supabase_sync
-            _db = await _get_supabase_sync()
-            # Query patients table (new architecture) — user_db_id = patient_id
-            # Note: is_patient is not a column in patients; derive from patient_contacts.is_self
-            _db_patient = await _db.from_("patients").select("name").eq("id", _user_db_id).maybe_single().execute()
-            if _db_patient and _db_patient.data:
-                _db_patient_name = _db_patient.data.get("name")
-                # Derive is_patient: True if any patient_contact for this phone has is_self=True
-                from app.patients import get_contact_by_phone as _get_contact_by_phone
-                _contact_obj = await _get_contact_by_phone(state["phone"])
-                _db_is_patient: bool | None = None
-                if _contact_obj:
-                    _pc_r = await _db.from_("patient_contacts").select("is_self").eq("contact_id", _contact_obj["id"]).eq("patient_id", _user_db_id).maybe_single().execute()
-                    if _pc_r and _pc_r.data:
-                        _db_is_patient = bool(_pc_r.data.get("is_self"))
-                # Derive contact name via get_user_by_phone shim (contact.name)
-                _fb = await get_user_by_phone(state["phone"])
-                _db_name = (_fb or {}).get("name")
-                # Auto-correct is_patient if DB has True but names clearly differ
-                if (
-                    _db_is_patient is True
-                    and _db_name and _db_patient_name
-                    and _db_name.strip().lower() != _db_patient_name.strip().lower()
-                ):
-                    _db_is_patient = False
-                    _pa_logger.warning(
-                        "Auto-correcting is_patient=False for %s (name=%r != patient_name=%r)",
-                        state["phone"], _db_name, _db_patient_name,
-                    )
-                    try:
-                        if _contact_obj:
-                            await _db.from_("patient_contacts").update({"is_self": False}).eq("patient_id", _user_db_id).eq("contact_id", _contact_obj["id"]).execute()
-                    except Exception:
-                        _pa_logger.exception("Failed to auto-correct is_self in DB for %s", state["phone"])
-                if _db_name and _db_name != state.get("user_name"):
-                    _sync_updates["user_name"] = _db_name
-                if _db_is_patient is not None and _db_is_patient != state.get("is_patient"):
-                    _sync_updates["is_patient"] = _db_is_patient
-                if _db_patient_name and _db_patient_name != state.get("patient_name"):
-                    _sync_updates["patient_name"] = _db_patient_name
-                if _sync_updates:
-                    _pa_logger.info("Syncing checkpoint with DB for %s: %s", state["phone"], _sync_updates)
+            from app.patients import resolve_active_patient as _resolve_active
+            from app.database import get_supabase as _get_db_hydr
+            _ctx = await _resolve_active(state["phone"])
+            _h_contact = _ctx.get("contact")
+            _h_patient = _ctx.get("patient")
+
+            if _h_contact and not state.get("user_name"):
+                _sync_updates["user_name"] = _h_contact["name"]
+
+            if _h_patient:
+                if not _user_db_id:
+                    _user_db_id = _h_patient["id"]
+                    _sync_updates["user_db_id"] = _h_patient["id"]
+                if not state.get("patient_name"):
+                    _sync_updates["patient_name"] = _h_patient["name"]
+                if not state.get("preferred_doctor") and _h_patient.get("doctor_id"):
+                    _sync_updates["preferred_doctor"] = DOCTOR_NAMES.get(_h_patient["doctor_id"])
+                if not state.get("patient_email") and _h_patient.get("email"):
+                    _sync_updates["patient_email"] = _h_patient["email"]
+                if state.get("is_returning_patient") is None and _h_patient.get("is_returning_patient") is not None:
+                    _sync_updates["is_returning_patient"] = _h_patient["is_returning_patient"]
+
+            if state.get("is_patient") is None and _h_contact and _h_patient:
+                _db_h = await _get_db_hydr()
+                _pc_h = await _db_h.from_("patient_contacts") \
+                    .select("is_self") \
+                    .eq("patient_id", _h_patient["id"]) \
+                    .eq("contact_id", _h_contact["id"]) \
+                    .maybe_single() \
+                    .execute()
+                if _pc_h and _pc_h.data:
+                    _sync_updates["is_patient"] = bool(_pc_h.data.get("is_self"))
+
+            if _sync_updates:
+                _pa_logger.info("DB hydration for %s: %s", state["phone"], list(_sync_updates.keys()))
         except Exception:
-            _pa_logger.exception("Failed to sync checkpoint with DB for %s", state["phone"])
+            _pa_logger.exception("DB hydration failed for %s", state.get("phone"))
 
     # Apply sync updates to local state view so this turn uses the correct values
     if _sync_updates:
