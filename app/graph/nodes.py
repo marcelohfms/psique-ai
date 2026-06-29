@@ -960,11 +960,11 @@ async def patient_agent_node(state: ConversationState, config: RunnableConfig) -
             if _db_patient and _db_patient.data:
                 _db_patient_name = _db_patient.data.get("name")
                 # Derive is_patient: True if any patient_contact for this phone has is_self=True
-                from app.patients import normalize_phone as _norm_phone
-                _contact_r = await _db.from_("contacts").select("id").eq("phone", _norm_phone(state["phone"])).maybe_single().execute()
+                from app.patients import get_contact_by_phone as _get_contact_by_phone
+                _contact_obj = await _get_contact_by_phone(state["phone"])
                 _db_is_patient: bool | None = None
-                if _contact_r and _contact_r.data:
-                    _pc_r = await _db.from_("patient_contacts").select("is_self").eq("contact_id", _contact_r.data["id"]).eq("patient_id", _user_db_id).maybe_single().execute()
+                if _contact_obj:
+                    _pc_r = await _db.from_("patient_contacts").select("is_self").eq("contact_id", _contact_obj["id"]).eq("patient_id", _user_db_id).maybe_single().execute()
                     if _pc_r and _pc_r.data:
                         _db_is_patient = bool(_pc_r.data.get("is_self"))
                 # Derive contact name via get_user_by_phone shim (contact.name)
@@ -982,8 +982,8 @@ async def patient_agent_node(state: ConversationState, config: RunnableConfig) -
                         state["phone"], _db_name, _db_patient_name,
                     )
                     try:
-                        if _contact_r and _contact_r.data:
-                            await _db.from_("patient_contacts").update({"is_self": False}).eq("patient_id", _user_db_id).eq("contact_id", _contact_r.data["id"]).execute()
+                        if _contact_obj:
+                            await _db.from_("patient_contacts").update({"is_self": False}).eq("patient_id", _user_db_id).eq("contact_id", _contact_obj["id"]).execute()
                     except Exception:
                         _pa_logger.exception("Failed to auto-correct is_self in DB for %s", state["phone"])
                 if _db_name and _db_name != state.get("user_name"):
