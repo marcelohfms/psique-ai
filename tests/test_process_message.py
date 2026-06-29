@@ -321,6 +321,7 @@ def _base_minor_state(**kwargs) -> dict:
         "guardian_cpf": None,
         "guardian_relationship": None,
         "is_patient": None,
+        "_is_patient_confirmed": True,  # tests set up state explicitly — treat as confirmed
         "preferred_doctor": None,
         "patient_email": None,
         "consultation_reason": None,
@@ -334,6 +335,99 @@ def _base_minor_state(**kwargs) -> dict:
     }
     base.update(kwargs)
     return base
+
+
+async def test_collect_info_is_patient_true_persists_is_self_true():
+    """Quando o contato responde 'para mim', upsert_user deve ser chamado com is_patient=True.
+
+    Reproduz o bug onde is_self ficava False no banco para pacientes adultos que
+    agendavam para si mesmos sem user_db_id preenchido no state.
+    """
+    from app.graph.nodes import collect_info_node
+    from langchain_core.messages import AIMessage, HumanMessage
+
+    state = _base_minor_state(
+        user_name="Maria de Fátima Costa",
+        patient_name=None,
+        is_patient=None,
+        user_db_id=None,
+        messages=[
+            AIMessage(content="A consulta é para você ou para outra pessoa?"),
+            HumanMessage(content="Para mim"),
+        ],
+    )
+    with patch("app.graph.nodes.send_text", new_callable=AsyncMock), \
+         patch("app.graph.nodes.save_message", new_callable=AsyncMock), \
+         patch("app.graph.nodes.get_users_by_phone", new_callable=AsyncMock, return_value=[]), \
+         patch("app.graph.nodes.upsert_user", new_callable=AsyncMock, return_value="new-patient-id") as mock_upsert:
+        result = await collect_info_node(state, {})
+
+    assert result.get("is_patient") is True
+    assert result.get("patient_name") == "Maria de Fátima Costa"
+    mock_upsert.assert_awaited()
+    db_payload = mock_upsert.call_args[0][1]
+    assert db_payload.get("is_patient") is True, (
+        f"is_patient deveria ser True no payload do DB, mas foi: {db_payload}"
+    )
+    assert result.get("_is_patient_confirmed") is True
+
+
+async def test_collect_info_unconfirmed_is_patient_asks_again():
+    """Quando is_patient veio do banco (não confirmado nesta conversa), Eva deve perguntar novamente."""
+    from app.graph.nodes import collect_info_node
+    from langchain_core.messages import AIMessage, HumanMessage
+
+    state = _base_minor_state(
+        user_name="Maria de Fátima",
+        patient_name="Maria de Fátima",
+        is_patient=False,           # veio do banco
+        _is_patient_confirmed=False,  # não confirmado nesta conversa
+        messages=[
+            AIMessage(content="Olá! Pode me dizer seu nome?"),
+            HumanMessage(content="Quero agendar"),
+        ],
+    )
+    with patch("app.graph.nodes.send_text", new_callable=AsyncMock) as mock_send, \
+         patch("app.graph.nodes.save_message", new_callable=AsyncMock), \
+         patch("app.graph.nodes.get_users_by_phone", new_callable=AsyncMock, return_value=[]), \
+         patch("app.graph.nodes.upsert_user", new_callable=AsyncMock):
+        await collect_info_node(state, {})
+
+    sent = mock_send.call_args[0][1].lower()
+    assert "para você" in sent or "outra pessoa" in sent, (
+        f"Eva deveria perguntar para quem é a consulta, mas enviou: {sent}"
+    )
+
+
+async def test_collect_info_confirmed_from_db_does_not_ask_again():
+    """Quando _is_patient_confirmed=True (respondido na conversa), Eva não pergunta de novo."""
+    from app.graph.nodes import collect_info_node
+    from langchain_core.messages import AIMessage, HumanMessage
+
+    # State with is_patient confirmed — should skip to is_returning question
+    state = _base_minor_state(
+        user_name="Maria de Fátima",
+        patient_name="Maria de Fátima",
+        patient_age=30,
+        birth_date="01/01/1994",
+        is_patient=True,
+        _is_patient_confirmed=True,
+        is_returning_patient=None,
+        messages=[
+            AIMessage(content="É a primeira consulta ou já está em acompanhamento?"),
+            HumanMessage(content="Primeira vez"),
+        ],
+    )
+    with patch("app.graph.nodes.send_text", new_callable=AsyncMock) as mock_send, \
+         patch("app.graph.nodes.save_message", new_callable=AsyncMock), \
+         patch("app.graph.nodes.get_users_by_phone", new_callable=AsyncMock, return_value=[]), \
+         patch("app.graph.nodes.upsert_user", new_callable=AsyncMock):
+        await collect_info_node(state, {})
+
+    sent = mock_send.call_args[0][1].lower()
+    assert "para você" not in sent and "outra pessoa" not in sent, (
+        f"Eva não deveria perguntar para quem é a consulta, mas enviou: {sent}"
+    )
 
 
 async def test_collect_info_asks_guardian_name_after_minor_birth_date():
@@ -1502,6 +1596,7 @@ async def test_collect_info_rejects_non_name_patient_name():
         "phone": PHONE,
         "user_name": "Maria Souza",
         "is_patient": False,
+        "_is_patient_confirmed": True,
         "patient_name": None,
         "birth_date": None,
         "patient_age": None,

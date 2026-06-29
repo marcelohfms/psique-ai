@@ -462,6 +462,37 @@ async def collect_info_node(state: ConversationState, config: RunnableConfig) ->
             return await _ask(_NAME_Q)
 
         # Step 2b: is the contact the patient or scheduling for someone else?
+        # If is_patient came from DB hydration (not explicitly answered this conversation),
+        # ask again to confirm — avoids assuming stale or incorrect DB values.
+        if state.get("is_patient") is not None and not state.get("_is_patient_confirmed"):
+            _IS_PATIENT_CONFIRM_Q = _IS_PATIENT_Q  # reuse same question
+            _asked_confirm = (
+                "para você ou" in last_ai.lower()
+                or "para outra pessoa" in last_ai.lower()
+                or _IS_PATIENT_Q in last_ai
+            )
+            if _asked_confirm and last_human:
+                h = last_human.lower()
+                _not_patient_kws = [
+                    "não", "nao", "mãe", "mae", "pai", "filho", "filha",
+                    "em nome", "para meu", "para minha", "esposo", "esposa",
+                    "marido", "irmão", "irmao", "irma", "outra", "outra pessoa",
+                ]
+                is_pat = not any(kw in h for kw in _not_patient_kws)
+                if is_pat:
+                    _uname = state.get("user_name", "")
+                    return await _extract_and_ask(
+                        {"is_patient": True, "patient_name": _uname, "_is_patient_confirmed": True},
+                        _nq(is_patient=True, patient_name=_uname),
+                    )
+                else:
+                    _not_patient_update: dict = {"is_patient": False, "_is_patient_confirmed": True}
+                    _uname = state.get("user_name") or ""
+                    if _uname:
+                        _not_patient_update["guardian_name"] = _uname
+                    return await _extract_and_ask(_not_patient_update, _nq(**_not_patient_update))
+            return await _ask(_IS_PATIENT_CONFIRM_Q)
+
         if state.get("is_patient") is None:
             _asked_is_patient = (
                 _IS_PATIENT_Q in last_ai
@@ -479,7 +510,7 @@ async def collect_info_node(state: ConversationState, config: RunnableConfig) ->
                 if is_pat:
                     _uname = state.get("user_name", "")
                     return await _extract_and_ask(
-                        {"is_patient": True, "patient_name": _uname},
+                        {"is_patient": True, "patient_name": _uname, "_is_patient_confirmed": True},
                         _nq(is_patient=True, patient_name=_uname),
                     )
                 else:
@@ -497,7 +528,7 @@ async def collect_info_node(state: ConversationState, config: RunnableConfig) ->
                         if any(kw in h for kw in _kws):
                             _inferred_rel = _rel
                             break
-                    _not_patient_update: dict = {"is_patient": False}
+                    _not_patient_update: dict = {"is_patient": False, "_is_patient_confirmed": True}
                     # Pre-populate guardian info from the contact's own name
                     _uname = state.get("user_name") or ""
                     if _uname:
@@ -969,6 +1000,8 @@ async def patient_agent_node(state: ConversationState, config: RunnableConfig) -
                     .execute()
                 if _pc_h and _pc_h.data:
                     _sync_updates["is_patient"] = bool(_pc_h.data.get("is_self"))
+                    # Mark as unconfirmed — came from DB, not from an explicit answer in this conversation.
+                    _sync_updates["_is_patient_confirmed"] = False
 
             if _sync_updates:
                 _pa_logger.info("DB hydration for %s: %s", state["phone"], list(_sync_updates.keys()))
