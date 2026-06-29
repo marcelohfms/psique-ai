@@ -960,7 +960,8 @@ async def patient_agent_node(state: ConversationState, config: RunnableConfig) -
             if _db_patient and _db_patient.data:
                 _db_patient_name = _db_patient.data.get("name")
                 # Derive is_patient: True if any patient_contact for this phone has is_self=True
-                _contact_r = await _db.from_("contacts").select("id").eq("phone", state["phone"].split("@")[0]).maybe_single().execute()
+                from app.patients import normalize_phone as _norm_phone
+                _contact_r = await _db.from_("contacts").select("id").eq("phone", _norm_phone(state["phone"])).maybe_single().execute()
                 _db_is_patient: bool | None = None
                 if _contact_r and _contact_r.data:
                     _pc_r = await _db.from_("patient_contacts").select("is_self").eq("contact_id", _contact_r.data["id"]).eq("patient_id", _user_db_id).maybe_single().execute()
