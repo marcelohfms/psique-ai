@@ -955,10 +955,17 @@ async def patient_agent_node(state: ConversationState, config: RunnableConfig) -
             from app.database import get_supabase as _get_supabase_sync
             _db = await _get_supabase_sync()
             # Query patients table (new architecture) — user_db_id = patient_id
-            _db_patient = await _db.from_("patients").select("name,is_patient").eq("id", _user_db_id).maybe_single().execute()
+            # Note: is_patient is not a column in patients; derive from patient_contacts.is_self
+            _db_patient = await _db.from_("patients").select("name").eq("id", _user_db_id).maybe_single().execute()
             if _db_patient and _db_patient.data:
                 _db_patient_name = _db_patient.data.get("name")
-                _db_is_patient = _db_patient.data.get("is_patient")
+                # Derive is_patient: True if any patient_contact for this phone has is_self=True
+                _contact_r = await _db.from_("contacts").select("id").eq("phone", state["phone"].split("@")[0]).maybe_single().execute()
+                _db_is_patient: bool | None = None
+                if _contact_r and _contact_r.data:
+                    _pc_r = await _db.from_("patient_contacts").select("is_self").eq("contact_id", _contact_r.data["id"]).eq("patient_id", _user_db_id).maybe_single().execute()
+                    if _pc_r and _pc_r.data:
+                        _db_is_patient = bool(_pc_r.data.get("is_self"))
                 # Derive contact name via get_user_by_phone shim (contact.name)
                 _fb = await get_user_by_phone(state["phone"])
                 _db_name = (_fb or {}).get("name")
@@ -974,9 +981,10 @@ async def patient_agent_node(state: ConversationState, config: RunnableConfig) -
                         state["phone"], _db_name, _db_patient_name,
                     )
                     try:
-                        await _db.from_("patients").update({"is_patient": False}).eq("id", _user_db_id).execute()
+                        if _contact_r and _contact_r.data:
+                            await _db.from_("patient_contacts").update({"is_self": False}).eq("patient_id", _user_db_id).eq("contact_id", _contact_r.data["id"]).execute()
                     except Exception:
-                        _pa_logger.exception("Failed to auto-correct is_patient in DB for %s", state["phone"])
+                        _pa_logger.exception("Failed to auto-correct is_self in DB for %s", state["phone"])
                 if _db_name and _db_name != state.get("user_name"):
                     _sync_updates["user_name"] = _db_name
                 if _db_is_patient is not None and _db_is_patient != state.get("is_patient"):
