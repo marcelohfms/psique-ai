@@ -402,6 +402,47 @@ async def process_message(phone: str, text: str) -> None:
     async with get_phone_lock(phone):
         snapshot = await graph_module.chatbot.aget_state(config)
 
+        # Recover from orphaned tool_calls: if the last AIMessage has pending
+        # tool_calls but no corresponding ToolMessage (happens when the server
+        # restarts mid-execution), inject error ToolMessages so LangGraph can
+        # continue cleanly instead of getting stuck in an invalid state.
+        if snapshot and snapshot.values:
+            _cp_msgs = snapshot.values.get("messages") or []
+            if _cp_msgs:
+                _last_ai = next(
+                    (m for m in reversed(_cp_msgs)
+                     if getattr(m, "type", None) == "ai"),
+                    None,
+                )
+                _pending_calls = getattr(_last_ai, "tool_calls", []) if _last_ai else []
+                if _pending_calls:
+                    # Check that none of these tool_calls have a ToolMessage response
+                    _answered_ids = {
+                        getattr(m, "tool_call_id", None)
+                        for m in _cp_msgs
+                        if getattr(m, "type", None) == "tool"
+                    }
+                    _orphaned = [tc for tc in _pending_calls if tc["id"] not in _answered_ids]
+                    if _orphaned:
+                        from langchain_core.messages import ToolMessage as _ToolMsg
+                        _error_msgs = [
+                            _ToolMsg(
+                                content="Erro interno — tente novamente.",
+                                tool_call_id=tc["id"],
+                            )
+                            for tc in _orphaned
+                        ]
+                        await graph_module.chatbot.aupdate_state(
+                            config,
+                            {"messages": _error_msgs},
+                            as_node="patient_agent",
+                        )
+                        logger.warning(
+                            "ORPHANED_TOOL_CALLS recovered for %s: %s",
+                            phone,
+                            [tc["name"] for tc in _orphaned],
+                        )
+
         # Cross-process dedup: if the most recent message in the checkpoint is
         # already this exact HumanMessage, another worker already processed it.
         # This works across multiple uvicorn workers since the checkpoint is in Postgres.
