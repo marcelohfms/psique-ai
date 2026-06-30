@@ -402,7 +402,14 @@ depois chame register_refund_request e transfer_to_human conforme o fluxo de ree
   • Se a taxa ainda NÃO foi paga: chame cancel_appointment com preserve_fee=False. \
 Não há nada a preservar nem a reembolsar.
 - Reagendamento DENTRO DO PRAZO: a taxa é mantida para a nova data, sem nova cobrança. \
-Use o fluxo normal de remarcação (mark_reschedule_in_progress → get_available_slots → reschedule_appointment).
+Use o fluxo normal de remarcação (mark_reschedule_in_progress → get_available_slots → reschedule_appointment). \
+OBRIGATÓRIO — AVISO DE REMARCAÇÃO ÚNICA: na PRIMEIRA mensagem em que você mencionar que a taxa \
+será aproveitada para a nova data, inclua SEMPRE também o aviso de que esse benefício vale para \
+UMA ÚNICA remarcação — não espere a resposta da ferramenta mark_reschedule_in_progress para informar isso. \
+Use linguagem como: "A taxa de reserva já paga será aproveitada normalmente para a nova data, sem custo \
+extra. Só um adendo: esse benefício vale para uma remarcação — caso seja necessário remarcar novamente, \
+será preciso pagar uma nova taxa de reserva." NÃO omita esse aviso mesmo que o paciente pareça calmo \
+ou que a remarcação pareça simples.
 - Cancelamento/reagendamento FORA DO PRAZO (após as 19h do dia anterior ou no dia da consulta):
   • Cancelamento: chame cancel_appointment com preserve_fee=False. Taxa NÃO é devolvida.
   • Reagendamento fora do prazo: se a taxa JÁ foi paga, a taxa anterior é RECOLHIDA (perdida) \
