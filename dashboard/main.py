@@ -255,12 +255,35 @@ async def lifespan(app: FastAPI):
 app = FastAPI(title="Psique Dashboard", lifespan=lifespan)
 templates = Jinja2Templates(directory="templates")
 
+import attendant_routes
+
+app.include_router(attendant_routes.router)
+
+ATTENDANT_PANEL_TOKEN = os.getenv("ATTENDANT_PANEL_TOKEN", "")
+_FRAME_ANCESTOR = os.getenv("CHATWOOT_FRAME_ANCESTOR", "'self'")
+
+
+@app.middleware("http")
+async def _frame_headers(request: Request, call_next):
+    """Permite que o Chatwoot embuta o painel num iframe (frame-ancestors)."""
+    response = await call_next(request)
+    response.headers["Content-Security-Policy"] = f"frame-ancestors 'self' {_FRAME_ANCESTOR}"
+    if "x-frame-options" in response.headers:  # CSP é a fonte da verdade
+        del response.headers["x-frame-options"]
+    return response
+
 
 # ── HTTP routes ───────────────────────────────────────────────────────────────
 
 @app.get("/")
 async def index(request: Request, username: str = Depends(verify_credentials)):
     return templates.TemplateResponse(request, "index.html", {"username": username})
+
+
+@app.get("/atendente")
+async def atendente_page(request: Request):
+    # A auth real é por token nas chamadas /api/atendente; a página injeta o token no JS.
+    return templates.TemplateResponse(request, "atendente.html", {"token": ATTENDANT_PANEL_TOKEN})
 
 
 @app.get("/api/conversations")
