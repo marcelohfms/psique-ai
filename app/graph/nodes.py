@@ -996,6 +996,12 @@ async def patient_agent_node(state: ConversationState, config: RunnableConfig) -
                     _sync_updates["patient_email"] = _h_patient["email"]
                 if state.get("is_returning_patient") is None and _h_patient.get("is_returning_patient") is not None:
                     _sync_updates["is_returning_patient"] = _h_patient["is_returning_patient"]
+                if not state.get("financial_name") and _h_patient.get("financial_name"):
+                    _sync_updates["financial_name"] = _h_patient["financial_name"]
+                if not state.get("financial_cpf") and _h_patient.get("financial_cpf"):
+                    _sync_updates["financial_cpf"] = _h_patient["financial_cpf"]
+                if not state.get("financial_email") and _h_patient.get("financial_email"):
+                    _sync_updates["financial_email"] = _h_patient["financial_email"]
 
             if state.get("is_patient") is None and _h_contact and _h_patient:
                 _db_h = await _get_db_hydr()
@@ -1014,6 +1020,28 @@ async def patient_agent_node(state: ConversationState, config: RunnableConfig) -
                 _pa_logger.info("DB hydration for %s: %s", state["phone"], list(_sync_updates.keys()))
         except Exception:
             _pa_logger.exception("DB hydration failed for %s", state.get("phone"))
+
+    # Lightweight financial-fields hydration — independent of the main hydration
+    # block above (which only runs when core registration fields are missing).
+    # Without this, a returning patient whose financial_name/cpf/email were already
+    # saved on a prior NF request would have Eva ask for them again every time,
+    # since those fields live only in the DB once the main hydration has already run.
+    _fin_user_db_id = _sync_updates.get("user_db_id") or _user_db_id
+    if _fin_user_db_id and not (state.get("financial_name") and state.get("financial_cpf") and state.get("financial_email")):
+        try:
+            from app.database import get_supabase as _get_db_fin
+            _db_fin = await _get_db_fin()
+            _fin_r = await _db_fin.from_("patients").select("financial_name, financial_cpf, financial_email") \
+                .eq("id", _fin_user_db_id).maybe_single().execute()
+            if _fin_r and _fin_r.data:
+                if not state.get("financial_name") and _fin_r.data.get("financial_name"):
+                    _sync_updates["financial_name"] = _fin_r.data["financial_name"]
+                if not state.get("financial_cpf") and _fin_r.data.get("financial_cpf"):
+                    _sync_updates["financial_cpf"] = _fin_r.data["financial_cpf"]
+                if not state.get("financial_email") and _fin_r.data.get("financial_email"):
+                    _sync_updates["financial_email"] = _fin_r.data["financial_email"]
+        except Exception:
+            _pa_logger.exception("Financial-fields hydration failed for %s", state.get("phone"))
 
     # Apply sync updates to local state view so this turn uses the correct values
     if _sync_updates:
