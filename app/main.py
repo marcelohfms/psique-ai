@@ -110,12 +110,28 @@ async def lifespan(app: FastAPI):
         from app.graph.graph import build_graph
 
         logger.info("Connecting to Supabase checkpointer...")
-        async with await AsyncConnection.connect(
-            conn_string,
-            autocommit=True,
-            prepare_threshold=None,
-            row_factory=dict_row,
-        ) as conn:
+        conn = None
+        _max_attempts = 5
+        for _attempt in range(1, _max_attempts + 1):
+            try:
+                conn = await AsyncConnection.connect(
+                    conn_string,
+                    autocommit=True,
+                    prepare_threshold=None,
+                    row_factory=dict_row,
+                )
+                break
+            except Exception:
+                if _attempt == _max_attempts:
+                    raise
+                _wait = min(2 ** _attempt, 30)
+                logger.exception(
+                    "Checkpointer connection failed (attempt %d/%d) — retrying in %ds",
+                    _attempt, _max_attempts, _wait,
+                )
+                await asyncio.sleep(_wait)
+
+        async with conn:
             checkpointer = AsyncPostgresSaver(conn)
             await checkpointer.setup()
             graph_module.chatbot = build_graph(checkpointer=checkpointer)
