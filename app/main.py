@@ -57,6 +57,47 @@ def _is_duplicate_phone_text(phone: str, text: str) -> bool:
     return False
 
 
+async def _recover_messages_lost_to_restart() -> None:
+    """Reprocess user messages that arrived right before a server restart.
+
+    The debounce buffer (app/buffer.py) is in-memory: a message is saved to the
+    `messages` table immediately, but the actual graph processing is scheduled via
+    `loop.call_later(DEBOUNCE_SECONDS)`. If the process restarts (deploy) within
+    that window, the timer is lost and the message sits in the DB forever with no
+    reply and no error — a silent failure. On every startup, find the most recent
+    user message per phone within the last 10 minutes that has no later assistant
+    reply, and re-trigger it through the normal buffer/process_message path.
+
+    Trade-off: the `messages` table can't distinguish "lost to a restart" from
+    "Eva deliberately stayed silent" (e.g. after transfer_to_human). A short window
+    keeps the blast radius small — deploys take seconds, not minutes — while still
+    catching the restart-race case. process_message's own hold/inactive checks
+    apply regardless, so reprocessing a transferred conversation is a no-op at worst.
+    """
+    try:
+        from app.database import get_supabase as _get_db_recovery
+        client = await _get_db_recovery()
+        cutoff = (datetime.now(timezone.utc) - timedelta(minutes=10)).isoformat()
+        recent = await client.from_("messages").select("phone, role, content, created_at") \
+            .gte("created_at", cutoff).order("created_at").execute()
+
+        last_per_phone: dict[str, dict] = {}
+        for row in (recent.data or []):
+            last_per_phone[row["phone"]] = row
+
+        for phone, last_msg in last_per_phone.items():
+            if last_msg["role"] != "user" or not last_msg.get("content"):
+                continue
+            full_phone = f"{phone}@s.whatsapp.net"
+            logger.warning(
+                "RESTART_RECOVERY reprocessing unanswered message for %s (sent %s): %.60s",
+                phone, last_msg["created_at"], last_msg["content"],
+            )
+            await buffer_push(full_phone, last_msg["content"], process_message)
+    except Exception:
+        logger.exception("RESTART_RECOVERY failed")
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Initialize Supabase checkpointer on startup if connection string is set."""
@@ -79,6 +120,7 @@ async def lifespan(app: FastAPI):
             await checkpointer.setup()
             graph_module.chatbot = build_graph(checkpointer=checkpointer)
             logger.info("Supabase checkpointer ready.")
+            await _recover_messages_lost_to_restart()
             yield
     else:
         logger.warning("SUPABASE_CONNECTION_STRING not set — using in-memory checkpointer.")
