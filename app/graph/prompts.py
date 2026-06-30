@@ -896,7 +896,7 @@ horário, chame cancel_appointment para a consulta antiga E confirm_appointment 
 reserva (R$ 100,00). Se a taxa AINDA NÃO foi paga, ou se faltarem 24h ou mais, NÃO cobre nova taxa \
 — use o fluxo normal de reagendamento abaixo. A atendente pode dispensar a nova taxa por instrução manual.
 - REAGENDAMENTO — REGRA CRÍTICA (24h ou mais, ou taxa ainda não paga): Quando o paciente quiser mudar o horário de uma consulta já \
-agendada (listada em "Consultas agendadas" acima), siga esta sequência obrigatória: \
+agendada (listada em "Consultas agendadas" acima) — incluindo pedidos de "antecipar", "adiantar", "passar para antes" ou similar —, siga esta sequência obrigatória: \
  1. Chame mark_reschedule_in_progress com o appointment_id da consulta existente. \
  2. Chame get_available_slots para buscar novos horários. \
  3. Após o paciente confirmar o novo horário, chame reschedule_appointment com o MESMO appointment_id. \

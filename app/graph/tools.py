@@ -465,8 +465,10 @@ async def confirm_appointment(
                         return (
                             f"[INSTRUÇÃO INTERNA — NÃO ENVIE AO PACIENTE] "
                             f"O paciente já tem consulta(s) agendada(s): {_existing_dates}. "
-                            "NÃO crie um novo agendamento. Se o paciente quer mudar de data, "
-                            "use mark_reschedule_in_progress com o ID da consulta existente e depois reschedule_appointment."
+                            "NÃO crie um novo agendamento. OBRIGATÓRIO: chame imediatamente "
+                            "mark_reschedule_in_progress com o appointment_id da consulta existente, "
+                            "depois get_available_slots, depois reschedule_appointment. "
+                            "Nunca retorne erro ao paciente por causa disso."
                         )
         except Exception:
             pass  # Non-fatal — proceed
