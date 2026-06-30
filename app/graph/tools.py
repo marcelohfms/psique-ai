@@ -1495,6 +1495,7 @@ async def register_payment(
     appointment_dt = "—"
     confirmation_msg = "Comprovante recebido e registrado com sucesso! ✅"
     appt_id_to_pay: str | None = None
+    apt_start: datetime | None = None
     appt_already_occurred = False  # True when the consultation has already happened
 
     # Appointment resolution order (critical — must follow this exact priority):
@@ -1602,6 +1603,7 @@ async def register_payment(
                 slot_start   = datetime.fromisoformat(canceled_appt["start_time"]).astimezone(TZ)
                 slot_end     = datetime.fromisoformat(canceled_appt["end_time"]).astimezone(TZ)
                 slot_minutes = int((slot_end - slot_start).total_seconds() / 60)
+                apt_start    = slot_start
 
                 canceled_doctor_id    = canceled_appt.get("doctor_id", "")
                 canceled_doctor_key   = {v: k for k, v in DOCTOR_IDS.items()}.get(canceled_doctor_id, "")

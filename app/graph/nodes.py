@@ -82,7 +82,14 @@ async def collect_info_node(state: ConversationState, config: RunnableConfig) ->
         _affirmative = {"sim", "s", "yes", "y", "isso", "correto", "certo", "exato", "confirmado", "confirmo", "ok"}
         _negative    = {"não", "nao", "no", "n", "errado", "incorreto", "outro", "outra"}
 
-        if any(w in last_human for w in _affirmative):
+        # Implicit confirmation: the reply doesn't say "sim" but already names the
+        # candidate patient (e.g. "agendar para Maria José às 11h") — treat as confirmed
+        # instead of falling through to "não entendi", which silently drops the selection.
+        _candidate_name = (candidate.get("patient_name") or candidate.get("name") or "").lower()
+        _candidate_parts = [p for p in _candidate_name.split() if len(p) > 2]
+        _implicit_confirm = bool(_candidate_parts) and any(p in last_human for p in _candidate_parts)
+
+        if any(w in last_human for w in _affirmative) or _implicit_confirm:
             doc_key = DOCTOR_NAMES.get(candidate.get("doctor_id", ""), None)
             return {
                 "pending_confirmation_patient": None,
