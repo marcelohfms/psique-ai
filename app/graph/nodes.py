@@ -1168,9 +1168,8 @@ async def patient_agent_node(state: ConversationState, config: RunnableConfig) -
                     await _save_msg(state["phone"], "assistant", _patient_msg)
                     try:
                         from app.graph.tools import transfer_to_human as _tth
-                        import types as _types
                         _fake_config = {"configurable": {"thread_id": state["phone"], "phone": state["phone"]}}
-                        await _tth(
+                        await _tth.coroutine(
                             reason=f"Erro ao confirmar agendamento: {_result_body[:200]}",
                             state=state,
                             config=_fake_config,
@@ -1603,7 +1602,7 @@ async def patient_agent_node(state: ConversationState, config: RunnableConfig) -
             _forced_tc = {"name": "transfer_to_human", "args": {"reason": "Eva prometeu transferir mas não chamou a tool — transferência forçada pelo guard."}, "id": _tc_id, "type": "tool_use"}
             _forced_ai = _AIMsg3(content=response.content, tool_calls=[_forced_tc])
             from app.graph.tools import transfer_to_human as _transfer_fn
-            _transfer_result = await _transfer_fn(
+            _transfer_result = await _transfer_fn.coroutine(
                 reason="Paciente aguarda atendimento. Eva prometeu transferir.",
                 state=state,
                 config=config,
