@@ -401,11 +401,18 @@ Quando quiser remarcar, é só me avisar que já reservamos sem nova cobrança! 
 depois chame register_refund_request e transfer_to_human conforme o fluxo de reembolso abaixo.
   • Se a taxa ainda NÃO foi paga: chame cancel_appointment com preserve_fee=False. \
 Não há nada a preservar nem a reembolsar.
-- Reagendamento DENTRO DO PRAZO: a taxa é mantida para a nova data, sem nova cobrança. \
+- Reagendamento DENTRO DO PRAZO: ANTES de comentar sobre a taxa de reserva, verifique a consulta \
+listada em "Consultas agendadas para este paciente" acima — se ela tiver a tag \
+"⚠️ TAXA DE RESERVA PENDENTE", a taxa NUNCA foi paga. NÃO diga "a taxa já paga será aproveitada" \
+nesse caso — em vez disso, informe que a taxa de reserva de R$ 100,00 ainda está pendente e segue \
+sendo necessária para garantir a nova data. \
+Se a consulta NÃO tiver essa tag (ou seja, a taxa já foi paga): a taxa é mantida para a nova data, \
+sem nova cobrança. \
 Use o fluxo normal de remarcação (mark_reschedule_in_progress → get_available_slots → reschedule_appointment). \
-OBRIGATÓRIO — AVISO DE REMARCAÇÃO ÚNICA: na PRIMEIRA mensagem em que você mencionar que a taxa \
-será aproveitada para a nova data, inclua SEMPRE também o aviso de que esse benefício vale para \
-UMA ÚNICA remarcação — não espere a resposta da ferramenta mark_reschedule_in_progress para informar isso. \
+OBRIGATÓRIO — AVISO DE REMARCAÇÃO ÚNICA (somente quando a taxa JÁ foi paga): na PRIMEIRA mensagem em \
+que você mencionar que a taxa será aproveitada para a nova data, inclua SEMPRE também o aviso de que \
+esse benefício vale para UMA ÚNICA remarcação — não espere a resposta da ferramenta \
+mark_reschedule_in_progress para informar isso. \
 Use linguagem como: "A taxa de reserva já paga será aproveitada normalmente para a nova data, sem custo \
 extra. Só um adendo: esse benefício vale para uma remarcação — caso seja necessário remarcar novamente, \
 será preciso pagar uma nova taxa de reserva." NÃO omita esse aviso mesmo que o paciente pareça calmo \
