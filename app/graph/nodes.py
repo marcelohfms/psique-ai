@@ -1150,8 +1150,39 @@ async def patient_agent_node(state: ConversationState, config: RunnableConfig) -
                     _ai2 = _AI2(content="", tool_calls=[{"name": "confirm_appointment", "args": {}, "id": _tc2, "type": "tool_use"}])
                     _tm2 = _TM2(content=_result_body + "\nBusque novos horários automaticamente com get_available_slots.", tool_call_id=_tc2)
                     return {"pending_appointment": None, "messages": [_ai2, _tm2], "silent_mode": False, **_sync_updates}
+                elif "já tem consulta" in _result_body or "use mark_reschedule_in_progress" in _result_body:
+                    # Guard fired: patient already has a scheduled appointment.
+                    # Inject the internal instruction as a ToolMessage so the LLM
+                    # follows up with mark_reschedule_in_progress → reschedule_appointment.
+                    from langchain_core.messages import AIMessage as _AI3, ToolMessage as _TM3
+                    import uuid as _uuid3
+                    _tc3 = str(_uuid3.uuid4())
+                    _ai3 = _AI3(content="", tool_calls=[{"name": "confirm_appointment", "args": {}, "id": _tc3, "type": "tool_use"}])
+                    _tm3 = _TM3(content=_result_body, tool_call_id=_tc3)
+                    return {"pending_appointment": None, "messages": [_ai3, _tm3], "silent_mode": False, **_sync_updates}
                 else:
-                    _patient_msg = f"Ops, {_contact_name}! Tive um problema ao confirmar o agendamento. Nossa equipe já foi notificada. 😊"
+                    # Unexpected error — notify attendant and transfer.
+                    _pa_logger.error("PENDING_APPT_CONFIRM unexpected error phone=%s result=%.300s", state.get("phone"), _result_body)
+                    _patient_msg = f"Ops, {_contact_name}! Tive um problema ao confirmar o agendamento. Vou te passar para nossa equipe agora. 😊"
+                    await _send_text(state["phone"], _patient_msg)
+                    await _save_msg(state["phone"], "assistant", _patient_msg)
+                    try:
+                        from app.graph.tools import transfer_to_human as _tth
+                        import types as _types
+                        _fake_config = {"configurable": {"thread_id": state["phone"], "phone": state["phone"]}}
+                        await _tth(
+                            reason=f"Erro ao confirmar agendamento: {_result_body[:200]}",
+                            state=state,
+                            config=_fake_config,
+                        )
+                    except Exception as _tth_exc:
+                        _pa_logger.error("PENDING_APPT_CONFIRM transfer_to_human failed: %s", _tth_exc)
+                    from langchain_core.messages import AIMessage as _AI4, ToolMessage as _TM4
+                    import uuid as _uuid4
+                    _tc4 = str(_uuid4.uuid4())
+                    _ai4 = _AI4(content="", tool_calls=[{"name": "confirm_appointment", "args": {}, "id": _tc4, "type": "tool_use"}])
+                    _tm4 = _TM4(content=_result_body, tool_call_id=_tc4)
+                    return {"pending_appointment": None, "messages": [_ai4, _tm4, _AI4(content=_patient_msg)], "silent_mode": False, **_sync_updates}
             else:
                 _patient_msg = _result
 
