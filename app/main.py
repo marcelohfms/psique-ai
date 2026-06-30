@@ -1,4 +1,7 @@
 import asyncio
+import hashlib
+import hmac
+import json
 import logging
 import os
 from contextlib import asynccontextmanager
@@ -55,6 +58,24 @@ def _is_duplicate_phone_text(phone: str, text: str) -> bool:
         return True
     _seen_phone_text[key] = now
     return False
+
+
+# ── Webhook signature verification (HMAC-SHA256) ──────────────────────────────
+# Both webhooks act on attacker-controllable input with high privilege (send
+# WhatsApp messages, book/cancel appointments, register payments). When the
+# corresponding secret env var is configured, the request signature is enforced;
+# when unset, validation is skipped (warned) so the bot keeps working until the
+# secret is provisioned. Configure WHATSAPP_APP_SECRET (Meta App Secret) and
+# CHATWOOT_WEBHOOK_SECRET (Chatwoot webhook HMAC token) to enable enforcement.
+
+def _verify_hmac_sha256(raw_body: bytes, secret: str, provided: str, prefix: str = "") -> bool:
+    """Return True if `provided` is a valid HMAC-SHA256 hexdigest of raw_body under secret."""
+    if not provided:
+        return False
+    if prefix and provided.startswith(prefix):
+        provided = provided[len(prefix):]
+    expected = hmac.new(secret.encode(), raw_body, hashlib.sha256).hexdigest()
+    return hmac.compare_digest(expected, provided)
 
 
 @asynccontextmanager
@@ -575,19 +596,22 @@ async def _reset_conversation(phone: str) -> None:
 
 async def _handle_payload(payload: dict) -> None:
     try:
-        result = await extract_message(payload)
-        if result is None:
-            return
-        phone, text = result
-
-        # Deduplicate: same message may arrive via /webhook AND /chatwoot-webhook
+        # Deduplicate BEFORE extract_message. The same message may arrive via both
+        # /webhook and /chatwoot-webhook, and Meta retries on timeout. extract_message
+        # has side effects that must NOT run twice: OpenAI vision (process_media),
+        # PDF description and the audio-not-supported auto-reply.
         try:
             msg_id = payload["entry"][0]["changes"][0]["value"]["messages"][0]["id"]
             if _is_duplicate(msg_id):
                 logger.info("Duplicate msg_id %s from /webhook — skipping", msg_id)
                 return
         except (KeyError, IndexError):
-            pass
+            pass  # status/reaction payloads have no message id — let extract_message filter them
+
+        result = await extract_message(payload)
+        if result is None:
+            return
+        phone, text = result
 
         logger.info("Incoming message from %s: %.80s", phone, text)
 
@@ -604,7 +628,16 @@ async def _handle_payload(payload: dict) -> None:
 
 @app.post("/webhook")
 async def webhook(request: Request):
-    payload = await request.json()
+    raw = await request.body()
+    secret = os.getenv("WHATSAPP_APP_SECRET", "")
+    if secret:
+        signature = request.headers.get("x-hub-signature-256", "")
+        if not _verify_hmac_sha256(raw, secret, signature, prefix="sha256="):
+            logger.warning("Meta webhook signature verification failed — rejecting")
+            raise HTTPException(status_code=403, detail="Invalid signature")
+    else:
+        logger.warning("WHATSAPP_APP_SECRET not set — skipping webhook signature verification")
+    payload = json.loads(raw)
     logger.debug("Webhook payload: %s", payload)
     asyncio.create_task(_handle_payload(payload))
     return {"status": "ok"}
@@ -1036,7 +1069,14 @@ async def _handle_chatwoot_payload(payload: dict) -> None:
 
 @app.post("/chatwoot-webhook")
 async def chatwoot_webhook(request: Request):
-    payload = await request.json()
+    raw = await request.body()
+    secret = os.getenv("CHATWOOT_WEBHOOK_SECRET", "")
+    if secret:
+        signature = request.headers.get("x-chatwoot-signature", "")
+        if not _verify_hmac_sha256(raw, secret, signature):
+            logger.warning("Chatwoot webhook signature verification failed — rejecting")
+            raise HTTPException(status_code=403, detail="Invalid signature")
+    payload = json.loads(raw)
     asyncio.create_task(_handle_chatwoot_payload(payload))
     return {"status": "ok"}
 

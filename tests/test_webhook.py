@@ -142,6 +142,28 @@ async def test_medical_document_pdf_handled_directly():
     assert result is None
 
 
+async def test_duplicate_image_webhook_processes_media_only_once():
+    """A retried image webhook (same msg_id) must not run OpenAI vision twice."""
+    from app.main import _handle_payload
+    payload = _meta_payload(msg_type="image")  # id == "wamid.test"
+    with patch("app.media.process_media", new_callable=AsyncMock, return_value="[imagem]: x") as mock_media, \
+         patch("app.main.save_message", new_callable=AsyncMock), \
+         patch("app.main.buffer_push", new_callable=AsyncMock):
+        await _handle_payload(payload)
+        await _handle_payload(payload)  # duplicate retry from Meta
+    assert mock_media.call_count == 1
+
+
+async def test_duplicate_audio_webhook_sends_notice_only_once():
+    """A retried audio webhook (same msg_id) must not send the notice twice."""
+    from app.main import _handle_payload
+    payload = _meta_payload(msg_type="audio")  # id == "wamid.test"
+    with patch("app.main.send_text", new_callable=AsyncMock) as mock_send:
+        await _handle_payload(payload)
+        await _handle_payload(payload)  # duplicate retry from Meta
+    assert mock_send.call_count == 1
+
+
 async def test_payment_receipt_pdf_reaches_eva():
     """Payment receipt PDFs (comprovante) still reach Eva."""
     from app.main import extract_message
@@ -195,6 +217,72 @@ def test_webhook_verify_get_rejects_wrong_token(http_client):
         params={"hub.mode": "subscribe", "hub.verify_token": "wrong-token", "hub.challenge": "abc123"},
     )
     assert response.status_code == 403
+
+
+# ── Webhook signature validation tests ────────────────────────────────────────
+
+def test_webhook_skips_signature_check_when_secret_unset(http_client):
+    """Backward-compat: no WHATSAPP_APP_SECRET configured → accept without signature."""
+    response = http_client.post("/webhook", json=_meta_payload())
+    assert response.status_code == 200
+
+
+def test_webhook_rejects_missing_signature_when_secret_set(http_client, monkeypatch):
+    monkeypatch.setenv("WHATSAPP_APP_SECRET", "topsecret")
+    response = http_client.post("/webhook", json=_meta_payload())
+    assert response.status_code == 403
+
+
+def test_webhook_rejects_invalid_signature_when_secret_set(http_client, monkeypatch):
+    monkeypatch.setenv("WHATSAPP_APP_SECRET", "topsecret")
+    response = http_client.post(
+        "/webhook",
+        json=_meta_payload(),
+        headers={"X-Hub-Signature-256": "sha256=deadbeef"},
+    )
+    assert response.status_code == 403
+
+
+def test_webhook_accepts_valid_signature(http_client, monkeypatch):
+    import hashlib
+    import hmac
+    import json
+    secret = "topsecret"
+    monkeypatch.setenv("WHATSAPP_APP_SECRET", secret)
+    raw = json.dumps(_meta_payload()).encode()
+    sig = "sha256=" + hmac.new(secret.encode(), raw, hashlib.sha256).hexdigest()
+    response = http_client.post(
+        "/webhook",
+        content=raw,
+        headers={"X-Hub-Signature-256": sig, "Content-Type": "application/json"},
+    )
+    assert response.status_code == 200
+
+
+def test_chatwoot_webhook_rejects_invalid_signature_when_secret_set(http_client, monkeypatch):
+    monkeypatch.setenv("CHATWOOT_WEBHOOK_SECRET", "cwsecret")
+    response = http_client.post(
+        "/chatwoot-webhook",
+        json={"event": "message_created"},
+        headers={"X-Chatwoot-Signature": "deadbeef"},
+    )
+    assert response.status_code == 403
+
+
+def test_chatwoot_webhook_accepts_valid_signature(http_client, monkeypatch):
+    import hashlib
+    import hmac
+    import json
+    secret = "cwsecret"
+    monkeypatch.setenv("CHATWOOT_WEBHOOK_SECRET", secret)
+    raw = json.dumps({"event": "message_created"}).encode()
+    sig = hmac.new(secret.encode(), raw, hashlib.sha256).hexdigest()
+    response = http_client.post(
+        "/chatwoot-webhook",
+        content=raw,
+        headers={"X-Chatwoot-Signature": sig, "Content-Type": "application/json"},
+    )
+    assert response.status_code == 200
 
 
 # ── Chatwoot webhook tests ────────────────────────────────────────────────────
