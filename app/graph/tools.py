@@ -109,6 +109,10 @@ async def get_available_slots(
     IMPORTANTE: Se o paciente informar uma data específica (ex: "dia 17", "17/06", "17 de junho"),
     passe SEMPRE a data completa no formato dd/mm (ex: "17/06") — NUNCA converta para o nome
     do dia da semana. Converter "17/06" para "quarta" causaria busca na semana errada.
+    Se o paciente mencionar um MÊS específico (ex: "agosto", "consulta em setembro") junto com
+    um dia da semana, inclua o mês em preferred_day (ex: "quinta de agosto") para que a busca
+    comece a partir daquele mês — NUNCA responda que "a agenda desse mês ainda não está aberta",
+    isso não existe; sempre chame a ferramenta com o mês incluído.
     Use slot_duration_minutes=120 para primeira consulta de paciente menor de 18 anos,
     60 para todos os outros casos.
     Use preferred_shift="qualquer" quando o paciente informar um dia mas ainda não tiver

@@ -239,6 +239,15 @@ _MONTHS_PT = {
 }
 
 
+def _next_weekday_in_month(weekday: int, year: int, month: int) -> date:
+    """First occurrence of `weekday` on or after the 1st of the given month/year."""
+    d = date(year, month, 1)
+    days_ahead = weekday - d.weekday()
+    if days_ahead < 0:
+        days_ahead += 7
+    return d + timedelta(days=days_ahead)
+
+
 def _parse_day(preferred_day: str) -> date | None:
     s = preferred_day.lower().strip()
     today = datetime.now(TZ).date()
@@ -247,9 +256,21 @@ def _parse_day(preferred_day: str) -> date | None:
         return today
     if s in ("amanha", "amanhã", "tomorrow"):
         return today + timedelta(days=1)
-    for name, wd in _WEEKDAYS_PT.items():
-        if name in s:
-            return _next_weekday(wd)
+
+    # Weekday name + month name together (e.g. "quinta de agosto", "quinta-feira em agosto")
+    # → search starting from that month, not from today.
+    _weekday_match = next(((name, wd) for name, wd in _WEEKDAYS_PT.items() if name in s), None)
+    _month_match = next(((name, num) for name, num in _MONTHS_PT.items() if name in s), None)
+    if _weekday_match and _month_match:
+        _, wd = _weekday_match
+        _, month_num = _month_match
+        year = today.year
+        if date(year, month_num, 1) < date(today.year, today.month, 1):
+            year += 1
+        return _next_weekday_in_month(wd, year, month_num)
+
+    if _weekday_match:
+        return _next_weekday(_weekday_match[1])
     try:
         return date.fromisoformat(s)
     except ValueError:
