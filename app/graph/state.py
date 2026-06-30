@@ -25,6 +25,7 @@ class ConversationState(TypedDict):
 
     # Clinic status
     is_patient: bool | None           # True = contact IS the patient; False = contact schedules for someone else
+    _is_patient_confirmed: bool | None  # True = is_patient was explicitly confirmed this conversation; False/None = came from DB hydration, needs re-asking
     is_returning_patient: bool | None # True = patient already attends the clinic (returning); False = new patient
     preferred_doctor: Literal["julio", "bruna"] | None
 
