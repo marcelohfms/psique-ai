@@ -1131,7 +1131,7 @@ async def patient_agent_node(state: ConversationState, config: RunnableConfig) -
                         f"Consulta registrada! ✅\n{_appt_line}\n\n"
                         f"Para garantir a vaga, é necessário o pagamento da taxa de reserva de R$ 100,00 em até 2 horas.\n"
                         f"💳 PIX: {_PIX_KEY}\n\n"
-                        f"Esse valor será abatido do total da consulta. Em caso de cancelamento com menos de 24h de antecedência ou ausência sem justificativa, a taxa não é devolvida."
+                        f"Esse valor será abatido do total da consulta. Em caso de cancelamento ou remarcação com menos de 24h de antecedência ou ausência sem justificativa, a taxa não é devolvida."
                     )
             elif _result.startswith("[INSTRUÇÃO INTERNA"):
                 _pa_logger.warning("PENDING_APPT_CONFIRM internal error phone=%s result=%.200s", state.get("phone"), _result_body)

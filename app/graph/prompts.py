@@ -260,8 +260,8 @@ Mensagem de confirmação para AGENDAMENTO_OK:
 "Consulta registrada! ✅ Para garantir a vaga, é necessário o pagamento da taxa de reserva de \
 R$ 100,00 em até 2 horas.
 💳 PIX: {key}
-Esse valor será abatido do total da consulta. Em caso de cancelamento com menos de 24h de \
-antecedência ou ausência sem justificativa, a taxa não é devolvida."
+Esse valor será abatido do total da consulta. Em caso de cancelamento ou remarcação com menos \
+de 24h de antecedência ou ausência sem justificativa, a taxa não é devolvida."
 4. Se o paciente pedir para repetir a chave PIX ou pedir só a chave para copiar, envie APENAS o número, \
 sem nenhum texto adicional, emoji ou prefixo — exemplo de resposta correta: {key}
 ATENÇÃO: a chave PIX é {key} — copie exatamente, nunca invente nem altere nenhum dígito.

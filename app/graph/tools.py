@@ -778,14 +778,35 @@ async def mark_reschedule_in_progress(
     # Valida que o appointment pertence a este paciente
     users = await get_users_by_phone(phone)
     user_ids = [u["id"] for u in users]
-    appt = await client.from_("appointments").select("appointment_id, status, patient_id") \
-        .eq("appointment_id", appointment_id).maybe_single().execute()
+    appt = await client.from_("appointments").select(
+        "appointment_id, status, patient_id, start_time, booking_fee_paid_at, booking_fee_waived"
+    ).eq("appointment_id", appointment_id).maybe_single().execute()
 
     if not appt.data or appt.data.get("patient_id") not in user_ids:
         return "ID de agendamento inválido para este paciente."
 
     if appt.data.get("status") not in ("scheduled", "pending_reschedule"):
         return "Esta consulta não está em status que permita reagendamento."
+
+    # Regra das 24h precede a regra do primeiro reagendamento: mesmo sendo a
+    # primeira remarcação do paciente, se já passou o prazo (19h do dia anterior,
+    # ou o próprio dia da consulta) e a taxa já foi paga, a taxa é recolhida e uma
+    # nova é cobrada — não se aplica o benefício de remarcação gratuita.
+    if not state.get("silent_mode") and appt.data.get("start_time"):
+        fee_paid = bool(appt.data.get("booking_fee_paid_at") or appt.data.get("booking_fee_waived"))
+        appt_start = datetime.fromisoformat(appt.data["start_time"]).astimezone(TZ)
+        deadline = (appt_start - timedelta(days=1)).replace(hour=19, minute=0, second=0, microsecond=0)
+        if fee_paid and now >= deadline:
+            return (
+                "[INSTRUÇÃO INTERNA — NÃO ENVIE AO PACIENTE] Este reagendamento está sendo "
+                "solicitado fora do prazo (menos de 24h de antecedência, ou no dia da consulta) "
+                "e a taxa de reserva já foi paga. NÃO chame mark_reschedule_in_progress/"
+                "reschedule_appointment para este caso, mesmo que seja a primeira remarcação do "
+                "paciente. Avise o paciente que a taxa anterior será recolhida e uma nova taxa de "
+                "reserva de R$ 100,00 será cobrada para a nova data. Em seguida chame "
+                "get_available_slots e, ao confirmar o novo horário, chame cancel_appointment "
+                "(para esta consulta) e confirm_appointment (para a nova data)."
+            )
 
     # Política de reagendamento: paciente pode reagendar apenas 1x.
     # A partir do 2º reagendamento iniciado pelo paciente, é necessário

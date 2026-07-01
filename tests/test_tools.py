@@ -373,6 +373,126 @@ async def test_cancel_appointment_cancels_and_notifies():
     mock_notify.assert_called()
 
 
+# ── mark_reschedule_in_progress ───────────────────────────────────────────────
+
+async def test_mark_reschedule_in_progress_first_reschedule_notice():
+    """Primeira remarcação dentro do prazo: marca em andamento e avisa que é única."""
+    from app.graph.tools import mark_reschedule_in_progress
+    client, table, execute = _make_supabase_client()
+    future_start = (datetime.now(TZ) + timedelta(days=10)).isoformat()
+    appt_data = {
+        "appointment_id": "evt-abc",
+        "status": "scheduled",
+        "patient_id": "user-1",
+        "start_time": future_start,
+        "booking_fee_paid_at": "2026-01-01T10:00:00-03:00",
+        "booking_fee_waived": False,
+    }
+    execute.side_effect = [
+        MagicMock(data=appt_data),  # appointment select
+        MagicMock(count=0),         # reschedule count
+        MagicMock(data=[]),         # update reschedule_requested_at
+    ]
+    with patch("app.graph.tools.get_supabase", new_callable=AsyncMock, return_value=client), \
+         patch("app.graph.tools.get_users_by_phone", new_callable=AsyncMock, return_value=[{"id": "user-1"}]), \
+         patch("app.graph.tools.log_event", new_callable=AsyncMock):
+        result = await mark_reschedule_in_progress.coroutine(
+            appointment_id="evt-abc",
+            state=_make_state(),
+            config=CONFIG,
+        )
+    assert "único reagendamento" in result.lower()
+    assert "get_available_slots" in result
+
+
+async def test_mark_reschedule_in_progress_less_than_24h_blocks_free_flow():
+    """Regra das 24h precede a regra do primeiro reagendamento: pedido de remarcação
+    a menos de 24h da consulta (taxa já paga) deve redirecionar para o fluxo de nova
+    cobrança, mesmo sendo a 1ª remarcação do paciente."""
+    from app.graph.tools import mark_reschedule_in_progress
+    client, table, execute = _make_supabase_client()
+    near_start = (datetime.now(TZ) + timedelta(minutes=14)).isoformat()
+    appt_data = {
+        "appointment_id": "evt-abc",
+        "status": "scheduled",
+        "patient_id": "user-1",
+        "start_time": near_start,
+        "booking_fee_paid_at": "2026-01-01T10:00:00-03:00",
+        "booking_fee_waived": False,
+    }
+    execute.return_value = MagicMock(data=appt_data)
+    with patch("app.graph.tools.get_supabase", new_callable=AsyncMock, return_value=client), \
+         patch("app.graph.tools.get_users_by_phone", new_callable=AsyncMock, return_value=[{"id": "user-1"}]), \
+         patch("app.graph.tools.log_event", new_callable=AsyncMock) as mock_log:
+        result = await mark_reschedule_in_progress.coroutine(
+            appointment_id="evt-abc",
+            state=_make_state(),
+            config=CONFIG,
+        )
+    assert "INSTRUÇÃO INTERNA" in result
+    assert "único reagendamento" not in result.lower()
+    assert "cancel_appointment" in result
+    assert "confirm_appointment" in result
+    table.update.assert_not_called()
+    mock_log.assert_not_awaited()
+
+
+async def test_mark_reschedule_in_progress_less_than_24h_fee_unpaid_proceeds_normally():
+    """Se a taxa ainda não foi paga, a remarcação segue o fluxo normal mesmo <24h."""
+    from app.graph.tools import mark_reschedule_in_progress
+    client, table, execute = _make_supabase_client()
+    near_start = (datetime.now(TZ) + timedelta(minutes=14)).isoformat()
+    appt_data = {
+        "appointment_id": "evt-abc",
+        "status": "scheduled",
+        "patient_id": "user-1",
+        "start_time": near_start,
+        "booking_fee_paid_at": None,
+        "booking_fee_waived": False,
+    }
+    execute.side_effect = [
+        MagicMock(data=appt_data),
+        MagicMock(count=0),
+        MagicMock(data=[]),
+    ]
+    with patch("app.graph.tools.get_supabase", new_callable=AsyncMock, return_value=client), \
+         patch("app.graph.tools.get_users_by_phone", new_callable=AsyncMock, return_value=[{"id": "user-1"}]), \
+         patch("app.graph.tools.log_event", new_callable=AsyncMock):
+        result = await mark_reschedule_in_progress.coroutine(
+            appointment_id="evt-abc",
+            state=_make_state(),
+            config=CONFIG,
+        )
+    assert "INSTRUÇÃO INTERNA" not in result
+    assert "get_available_slots" in result
+
+
+async def test_mark_reschedule_in_progress_silent_mode_bypasses_24h_guard():
+    """Reagendamento iniciado pela atendente (silent_mode) ignora a checagem das 24h."""
+    from app.graph.tools import mark_reschedule_in_progress
+    client, table, execute = _make_supabase_client()
+    near_start = (datetime.now(TZ) + timedelta(minutes=14)).isoformat()
+    appt_data = {
+        "appointment_id": "evt-abc",
+        "status": "scheduled",
+        "patient_id": "user-1",
+        "start_time": near_start,
+        "booking_fee_paid_at": "2026-01-01T10:00:00-03:00",
+        "booking_fee_waived": False,
+    }
+    execute.return_value = MagicMock(data=appt_data)
+    with patch("app.graph.tools.get_supabase", new_callable=AsyncMock, return_value=client), \
+         patch("app.graph.tools.get_users_by_phone", new_callable=AsyncMock, return_value=[{"id": "user-1"}]), \
+         patch("app.graph.tools.log_event", new_callable=AsyncMock):
+        result = await mark_reschedule_in_progress.coroutine(
+            appointment_id="evt-abc",
+            state=_make_state(silent_mode=True),
+            config=CONFIG,
+        )
+    assert "INSTRUÇÃO INTERNA" not in result
+    assert "get_available_slots" in result
+
+
 # ── reschedule_appointment ────────────────────────────────────────────────────
 
 async def test_reschedule_appointment_updates_event_and_notifies():
