@@ -117,3 +117,11 @@ def test_main_app_includes_router_and_csp(monkeypatch):
               params={"phone": "5581999998888", "token": "test-token"})
     assert r.status_code == 200
     assert "frame-ancestors" in r.headers.get("content-security-policy", "")
+
+
+def test_atendente_page_renders():
+    import main as dashboard_main
+    c = TestClient(dashboard_main.app)
+    r = c.get("/atendente")
+    assert r.status_code == 200
+    assert "Painel da Atendente" in r.text
