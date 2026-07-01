@@ -17,7 +17,7 @@ from app.graph.tools import (
     consultar_data, extend_payment_deadline,
     _expected_consultation_amount,
 )
-from app.graph.prompts import COLLECT_SYSTEM, MINOR_RULE, MINOR_RETURNING_RULE, ADULT_RULE, GUARDIAN_RULE, EXISTING_PATIENT_SYSTEM, NEW_PATIENT_SYSTEM, CANCELLATION_RULES, CLINIC_ADDRESS, DOCTORS_INFO, get_booking_fee_rule, MEDICAL_LIMITS_RULE, DOCTOR_CORRECTION_RULE, EMAIL_RULE, get_pricing_rules, ATTENDANT_INSTRUCTION_RULE, get_pricing_exception_rule
+from app.graph.prompts import COLLECT_SYSTEM, MINOR_RULE, MINOR_RETURNING_RULE, ADULT_RULE, GUARDIAN_RULE, EXISTING_PATIENT_SYSTEM, NEW_PATIENT_SYSTEM, CANCELLATION_RULES, CLINIC_ADDRESS, DOCTORS_INFO, get_booking_fee_rule, MEDICAL_LIMITS_RULE, DOCTOR_CORRECTION_RULE, EMAIL_RULE, get_pricing_rules, ATTENDANT_INSTRUCTION_RULE, get_pricing_exception_rule, CORRECT_PIX_KEY
 from app.whatsapp import send_text
 from app.database import upsert_user, log_event, get_upcoming_appointments, get_user_by_phone, get_users_by_phone, DOCTOR_IDS, DOCTOR_NAMES, save_message, get_last_assistant_message_time, is_registration_complete
 from app.chatwoot import get_conversation_id, add_private_note
@@ -217,7 +217,11 @@ async def collect_info_node(state: ConversationState, config: RunnableConfig) ->
             loaded = {
                 "user_db_id": u["id"],
                 "user_name": u.get("name"),
-                "patient_name": u.get("patient_name") or u.get("name"),
+                # Only default patient_name to the contact's own name when the DB
+                # already confirms the contact IS the patient. Otherwise (is_patient
+                # False/unknown) this would wrongly skip asking for the patient's
+                # name in collect_info's step machine (Step 2c).
+                "patient_name": u.get("patient_name") or (u.get("name") if u.get("is_patient") else None),
                 "patient_age": u.get("age"),
                 "birth_date": u.get("birth_date"),
                 "is_patient": u.get("is_patient"),
@@ -364,6 +368,15 @@ async def collect_info_node(state: ConversationState, config: RunnableConfig) ->
             return False
         if _re.search(r'\d', t):
             return False
+        # Camada 1b: nomes não são notas/mensagens longas
+        # Se tem múltiplos sinais de pontuação (mais de 1 ponto/vírgula/exclamação/interrogação),
+        # provavelmente é uma frase completa, não um nome
+        _punct_count = sum(1 for c in t if c in '.!?,;')
+        if _punct_count > 1:
+            return False
+        # Se é muito longo (>80 chars), é provavelmente uma nota privada
+        if len(t) > 80:
+            return False
         # Camada 2: frases claramente não-nomes
         _non_name = [
             "que coloquei", "o mesmo", "acima", "já disse", "ja disse",
@@ -497,6 +510,12 @@ async def collect_info_node(state: ConversationState, config: RunnableConfig) ->
                     _uname = state.get("user_name") or ""
                     if _uname:
                         _not_patient_update["guardian_name"] = _uname
+                    # The contact was previously assumed/confirmed to be the patient
+                    # (patient_name == user_name). Now they say it's for someone else —
+                    # clear patient_name so collect_info re-asks for the real patient's name
+                    # instead of silently keeping the contact's name as the patient's.
+                    if state.get("patient_name") and state.get("patient_name") == state.get("user_name"):
+                        _not_patient_update["patient_name"] = None
                     return await _extract_and_ask(_not_patient_update, _nq(**_not_patient_update))
             return await _ask(_IS_PATIENT_CONFIRM_Q)
 
@@ -542,6 +561,11 @@ async def collect_info_node(state: ConversationState, config: RunnableConfig) ->
                         _not_patient_update["guardian_name"] = _uname
                     if _inferred_rel:
                         _not_patient_update["guardian_relationship"] = _inferred_rel
+                    # See Step 2b above: don't let a stale patient_name==user_name
+                    # (e.g. hydrated from an earlier turn/DB state) block the
+                    # patient-name question now that we know it's for someone else.
+                    if state.get("patient_name") and state.get("patient_name") == state.get("user_name"):
+                        _not_patient_update["patient_name"] = None
                     return await _extract_and_ask(
                         _not_patient_update, _nq(**_not_patient_update)
                     )
@@ -1126,7 +1150,7 @@ async def patient_agent_node(state: ConversationState, config: RunnableConfig) -
                         f"A taxa de reserva foi dispensada. Até lá!"
                     )
                 else:
-                    _PIX_KEY = "42006848000178"
+                    _PIX_KEY = CORRECT_PIX_KEY
                     _patient_msg = (
                         f"Consulta registrada! ✅\n{_appt_line}\n\n"
                         f"Para garantir a vaga, é necessário o pagamento da taxa de reserva de R$ 100,00 em até 2 horas.\n"
@@ -1316,6 +1340,7 @@ async def patient_agent_node(state: ConversationState, config: RunnableConfig) -
         medical_limits_rule=MEDICAL_LIMITS_RULE,
         attendant_instruction_rule=ATTENDANT_INSTRUCTION_RULE,
         modality_restriction=state.get("modality_restriction") or "",
+        pix_key=CORRECT_PIX_KEY,
     )
 
     # Inject contact-vs-patient rule when the WhatsApp contact is NOT the patient.

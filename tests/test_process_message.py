@@ -399,6 +399,37 @@ async def test_collect_info_unconfirmed_is_patient_asks_again():
     )
 
 
+async def test_collect_info_flip_to_third_party_clears_stale_patient_name():
+    """When is_patient (unconfirmed, hydrated from DB as True) is re-asked and the
+    contact now says it's for someone else, a stale patient_name==user_name must be
+    cleared so collect_info asks for the real patient's name instead of silently
+    keeping the contact's own name as the patient's.
+    """
+    from app.graph.nodes import collect_info_node
+    from langchain_core.messages import AIMessage, HumanMessage
+
+    state = _base_minor_state(
+        user_name="Adriana de Faria Pilar",
+        patient_name="Adriana de Faria Pilar",  # previously inferred as self
+        is_patient=True,              # veio do banco
+        _is_patient_confirmed=False,  # não confirmado nesta conversa
+        messages=[
+            AIMessage(content="A consulta é para você ou para outra pessoa?"),
+            HumanMessage(content="Outra pessoa"),
+        ],
+    )
+    with patch("app.graph.nodes.send_text", new_callable=AsyncMock) as mock_send, \
+         patch("app.graph.nodes.save_message", new_callable=AsyncMock), \
+         patch("app.graph.nodes.get_users_by_phone", new_callable=AsyncMock, return_value=[]), \
+         patch("app.graph.nodes.upsert_user", new_callable=AsyncMock):
+        result = await collect_info_node(state, {})
+
+    assert result.get("is_patient") is False
+    assert result.get("patient_name") is None
+    sent = mock_send.call_args[0][1].lower()
+    assert "nome completo do paciente" in sent
+
+
 async def test_collect_info_confirmed_from_db_does_not_ask_again():
     """Quando _is_patient_confirmed=True (respondido na conversa), Eva não pergunta de novo."""
     from app.graph.nodes import collect_info_node
@@ -782,6 +813,62 @@ async def test_collect_info_is_patient_no_asks_patient_name():
     sent = mock_send.call_args[0][1]
     # Next step asks for the PATIENT's name, not the contact's name
     assert "paciente" in sent.lower() and "nome" in sent.lower()
+
+
+async def test_collect_info_stale_db_record_still_asks_patient_name():
+    """Regression: a partial DB record (name saved, patient_name/is_patient still
+    null) must NOT make collect_info skip the patient-name question.
+
+    Bug found 2026-07-01 (Adriana conversation, 5581981464986): the DB-reload block
+    defaulted patient_name to the contact's own name (`u.get("patient_name") or
+    u.get("name")`) even when is_patient hadn't been confirmed yet. That made the
+    step machine think the patient's name was already known and skip straight to
+    the birth-date question, silently registering the wrong person as the patient.
+    """
+    from app.graph.nodes import collect_info_node
+
+    stale_db_user = {
+        "id": "existing-id",
+        "name": "Adriana de Faria Pilar",
+        "patient_name": None,
+        "is_patient": None,
+        "age": None,
+        "birth_date": None,
+        "is_returning_patient": None,
+        "doctor_id": None,
+        "email": None,
+        "guardian_name": None,
+        "guardian_cpf": None,
+        "guardian_relationship": None,
+        "patient_cpf": None,
+        "modality_restriction": None,
+        "age_exception": None,
+        "active": True,
+    }
+    state = _base_minor_state(
+        user_name="Adriana de Faria Pilar",
+        patient_name=None,
+        patient_cpf=None,
+        patient_age=None,
+        birth_date=None,
+        is_patient=None,
+        _is_patient_confirmed=False,
+        messages=[
+            HumanMessage(content="preciso de um laudo psiquiátrico pra meu pai"),
+            AIMessage(content="A consulta é para você ou para outra pessoa?"),
+            HumanMessage(content="Outra pessoa"),
+        ],
+    )
+    with patch("app.graph.nodes.send_text", new_callable=AsyncMock) as mock_send, \
+         patch("app.graph.nodes.save_message", new_callable=AsyncMock), \
+         patch("app.graph.nodes.get_users_by_phone", new_callable=AsyncMock, return_value=[stale_db_user]), \
+         patch("app.graph.nodes.upsert_user", new_callable=AsyncMock, return_value="existing-id"):
+        result = await collect_info_node(state, {})
+
+    assert result.get("is_patient") is False
+    assert result.get("patient_name") is None
+    sent = mock_send.call_args[0][1]
+    assert "nome completo do paciente" in sent.lower()
 
 
 async def test_collect_info_patient_name_step_saves_patient_name():
@@ -1550,6 +1637,10 @@ def _get_looks_like_name():
     ("minha filha", False),
     ("o paciente", False),
     ("a paciente", False),
+    # Private notes or long messages (more than 80 chars or multiple punctuation marks)
+    ("Como ela está viajando a trabalho, não conseguirá comparecer e gostaria de reagendar o atendimento. Fico no aguardo. Muito obrigado!", False),
+    ("Patient note: He has traveled for work and needs to reschedule. Please contact.", False),
+    ("Maria Silva!", True),  # single punctuation is ok
 ])
 def test_looks_like_name(text, expected):
     """_looks_like_name rejects non-names and accepts real names."""
@@ -1561,6 +1652,12 @@ def test_looks_like_name(text, expected):
         if len(t) < 3:
             return False
         if re.search(r'\d', t):
+            return False
+        # Nomes não são notas/mensagens longas
+        _punct_count = sum(1 for c in t if c in '.!?,;')
+        if _punct_count > 1:
+            return False
+        if len(t) > 80:
             return False
         _non_name = [
             "que coloquei", "o mesmo", "acima", "já disse", "ja disse",
