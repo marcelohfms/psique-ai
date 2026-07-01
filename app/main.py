@@ -165,6 +165,26 @@ async def webhook_verify(request: Request):
     raise HTTPException(status_code=403, detail="Verification failed")
 
 
+async def _notify_document_processing_failure(phone: str, media_id: str, mime: str) -> None:
+    """Best-effort: alert the clinic that a document/PDF failed to process, so a human
+    attendant can pick it up via a private note in Chatwoot — instead of the bot
+    asking the patient to resend, so a failed document never disappears without a trace.
+    """
+    try:
+        from app.email_sender import send_clinic_notification_email
+        phone_clean = phone.replace("@s.whatsapp.net", "")
+        await send_clinic_notification_email(
+            f"Falha ao processar documento — {phone_clean}",
+            f"Número: {phone_clean}\nmedia_id: {media_id}\nmime_type: {mime}\n\n"
+            "O paciente enviou um arquivo (documento/PDF) que não pôde ser processado automaticamente. "
+            "Possível comprovante de pagamento ou documento médico.\n\n"
+            "Por favor, verifique o arquivo diretamente no WhatsApp/Chatwoot e envie uma NOTA PRIVADA "
+            "na conversa avisando a atendente sobre o problema, em vez de pedir para o paciente reenviar.",
+        )
+    except Exception:
+        logger.exception("DOCUMENT_FAILURE_CLINIC_NOTIFY failed phone=%s", phone)
+
+
 # ── Message extraction from Meta Cloud API payload ────────────────────────────
 
 async def extract_message(payload: dict) -> tuple[str, str] | None:
@@ -237,22 +257,25 @@ async def extract_message(payload: dict) -> tuple[str, str] | None:
 
     if msg_type == "document":
         mime = msg.get("document", {}).get("mime_type", "").lower()
-        if "pdf" in mime:
-            media_id = msg.get("document", {}).get("id", "")
-            if media_id:
-                try:
-                    from app.whatsapp import download_media
-                    from app.media import describe_pdf_bytes
-                    pdf_bytes = await download_media(media_id)
-                    text = await describe_pdf_bytes(pdf_bytes, phone)
-                    if not text:
-                        # Medical document — already handled (thank-you sent, clinic notified)
-                        return None
-                    return phone, text
-                except Exception:
-                    logger.exception("Failed to process PDF media_id=%s", media_id)
-            return None
-        return None  # other document types: ignore
+        media_id = msg.get("document", {}).get("id", "")
+        if "pdf" in mime and media_id:
+            try:
+                from app.whatsapp import download_media
+                from app.media import describe_pdf_bytes
+                pdf_bytes = await download_media(media_id)
+                text = await describe_pdf_bytes(pdf_bytes, phone)
+                if not text:
+                    # Medical document — already handled (thank-you sent, clinic notified)
+                    return None
+                return phone, text
+            except Exception:
+                logger.exception("Failed to process PDF media_id=%s", media_id)
+                await _notify_document_processing_failure(phone, media_id, mime)
+                return None
+        # Unrecognized document type/mime, or missing media_id — don't drop silently
+        logger.warning("Unhandled document mime_type=%s media_id=%s phone=%s", mime, media_id, phone)
+        await _notify_document_processing_failure(phone, media_id, mime)
+        return None
 
     # reaction, sticker, location, etc. — ignore
     logger.info("Unsupported message type ignored: %s", msg_type)
@@ -916,6 +939,7 @@ async def _handle_attendant_note(payload: dict) -> None:
         register_conversation(phone, conv_id)
 
     logger.info("ATTENDANT_NOTE phone=%s conv=%s content=%.120s", phone, conv_id, content)
+    await log_event("attendant_note_received", phone, {"content": content[:300], "conversation_id": conv_id})
 
     async def _run_silent(p: str, text: str) -> None:
         config = {"configurable": {"thread_id": p, "phone": p}}
@@ -1013,6 +1037,15 @@ async def _handle_chatwoot_payload(payload: dict) -> None:
                 "OUTGOING_CHECK sender_type=%s private=%s",
                 _sender_type, _is_private,
             )
+            if _is_private and not _is_human_agent:
+                # A private note arrived but from an unexpected sender_type — record it
+                # so this is diagnosable from the DB later, without needing server logs.
+                _phone_ignored = _extract_phone_from_payload(payload)
+                if _phone_ignored:
+                    await log_event("attendant_note_ignored_unexpected_sender", _phone_ignored, {
+                        "sender_type": _sender_type,
+                        "content": (payload.get("content") or "")[:300],
+                    })
             if _is_human_agent and _is_private:
                 # Private note = direct instruction to Eva → process and respond
                 await _handle_attendant_note(payload)

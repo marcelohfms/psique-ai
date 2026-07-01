@@ -167,6 +167,57 @@ async def test_payment_receipt_pdf_reaches_eva():
     assert "COMPROVANTE" in text
 
 
+async def test_pdf_processing_failure_notifies_clinic_only():
+    """If PDF processing raises, the clinic must be notified (to follow up via a
+    private Chatwoot note) and the patient must NOT be messaged directly by the bot —
+    the message must never vanish without a trace."""
+    from app.main import extract_message
+
+    def _pdf_payload(from_number=_NUMBER):
+        msg = {
+            "from": from_number,
+            "id": "wamid.pdf3",
+            "type": "document",
+            "document": {"id": "pdf-broken", "mime_type": "application/pdf"},
+        }
+        return {
+            "object": "whatsapp_business_account",
+            "entry": [{"id": "waba-id", "changes": [{"value": {"messages": [msg]}, "field": "messages"}]}],
+        }
+
+    with patch("app.whatsapp.download_media", new_callable=AsyncMock, side_effect=Exception("boom")):
+        with patch("app.main.send_text", new_callable=AsyncMock) as mock_send:
+            with patch("app.email_sender.send_clinic_notification_email", new_callable=AsyncMock) as mock_email:
+                result = await extract_message(_pdf_payload())
+    assert result is None
+    mock_send.assert_not_called()
+    mock_email.assert_called_once()
+
+
+async def test_unrecognized_document_mime_notifies_clinic_only():
+    """Documents with an unexpected mime_type (not 'pdf') must not be silently dropped,
+    but also must not trigger a direct bot reply to the patient."""
+    from app.main import extract_message
+
+    msg = {
+        "from": _NUMBER,
+        "id": "wamid.doc1",
+        "type": "document",
+        "document": {"id": "doc-xyz", "mime_type": "application/octet-stream"},
+    }
+    payload = {
+        "object": "whatsapp_business_account",
+        "entry": [{"id": "waba-id", "changes": [{"value": {"messages": [msg]}, "field": "messages"}]}],
+    }
+
+    with patch("app.main.send_text", new_callable=AsyncMock) as mock_send:
+        with patch("app.email_sender.send_clinic_notification_email", new_callable=AsyncMock) as mock_email:
+            result = await extract_message(payload)
+    assert result is None
+    mock_send.assert_not_called()
+    mock_email.assert_called_once()
+
+
 # ── /webhook endpoint tests ───────────────────────────────────────────────────
 
 def test_webhook_post_returns_200(http_client):
@@ -299,3 +350,56 @@ async def test_chatwoot_webhook_ignores_empty_attachment(async_client):
         assert response.status_code == 200
         await asyncio.sleep(0.05)
         mock_push.assert_not_called()
+
+
+def _chatwoot_private_note_payload(
+    content: str = "Marque a consulta com Dra. Bruna",
+    phone: str = "+5511999999999",
+    conversation_id: int = 42,
+    sender_type: str = "user",
+    private: bool = True,
+) -> dict:
+    return {
+        "id": 2,
+        "content": content,
+        "message_type": "outgoing",
+        "private": private,
+        "event": "message_created",
+        "conversation": {
+            "id": conversation_id,
+            "meta": {"sender": {"phone_number": phone}},
+        },
+        "sender": {"phone_number": phone, "type": sender_type},
+    }
+
+
+async def test_chatwoot_private_note_from_agent_triggers_attendant_note(async_client):
+    """A private note from a human agent (sender.type == 'user'/'agent') must be
+    routed to Eva as an instruction and recorded in events for traceability."""
+    with patch("app.main._handle_attendant_note", new_callable=AsyncMock) as mock_note, \
+         patch("app.main.log_event", new_callable=AsyncMock) as mock_log:
+        response = await async_client.post(
+            "/chatwoot-webhook",
+            json=_chatwoot_private_note_payload(sender_type="user"),
+        )
+        assert response.status_code == 200
+        await asyncio.sleep(0.05)
+        mock_note.assert_called_once()
+        mock_log.assert_not_called()  # only the ignored-sender path logs directly here
+
+
+async def test_chatwoot_private_note_unexpected_sender_is_logged_not_dropped():
+    """A private note whose sender.type isn't 'user'/'agent' (e.g. an unexpected
+    Chatwoot sender shape) must not be silently dropped — it's persisted to the
+    events table so the incident is diagnosable from the DB, without server logs."""
+    from app.main import _handle_chatwoot_payload
+
+    payload = _chatwoot_private_note_payload(sender_type="something_unexpected")
+    with patch("app.main._handle_attendant_note", new_callable=AsyncMock) as mock_note, \
+         patch("app.main.log_event", new_callable=AsyncMock) as mock_log:
+        await _handle_chatwoot_payload(payload)
+    mock_note.assert_not_called()
+    mock_log.assert_called_once()
+    args = mock_log.call_args[0]
+    assert args[0] == "attendant_note_ignored_unexpected_sender"
+    assert args[1] == "5511999999999@s.whatsapp.net"
