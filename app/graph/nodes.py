@@ -1717,7 +1717,13 @@ async def patient_agent_node(state: ConversationState, config: RunnableConfig) -
             if needs_price_notice:
                 await upsert_user(phone, {"price_adjustment_notified_at": now_dt.isoformat()}, user_id=state.get("user_db_id"))
 
-    update: dict = {"messages": [response], "silent_mode": False, **_sync_updates}
+    # Keep silent_mode alive while a tool call is pending — the ToolNode reads state
+    # right after this update is applied, and force_encaixe (and other attendant-only
+    # tool behavior) depends on silent_mode still being True at that point. Only clear
+    # it once the LLM produces its final text response (no more tool calls this turn).
+    update: dict = {"messages": [response], **_sync_updates}
+    if not response.tool_calls:
+        update["silent_mode"] = False
     if pending_action:
         update["pending_action"] = None
 

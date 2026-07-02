@@ -1095,6 +1095,50 @@ async def test_pending_appointment_success_with_internal_prefix():
     assert result.get("pending_appointment") is None
 
 
+async def test_silent_mode_survives_when_response_has_tool_calls():
+    """Regressão: quando a atendente envia uma instrução (silent_mode=True) e a LLM
+    responde com uma tool_call (ex: confirm_appointment com force_encaixe=True), o node
+    não pode resetar silent_mode para False nesse mesmo retorno — o ToolNode lê o estado
+    logo em seguida e depende de silent_mode ainda estar True para aceitar force_encaixe.
+    Resetar cedo demais fazia a Eva tentar o encaixe, ser bloqueada pela grade normal do
+    médico e mentir para a paciente dizendo que a consulta estava confirmada."""
+    from app.graph.nodes import patient_agent_node
+
+    state = _make_patient_agent_state(
+        silent_mode=True,
+        messages=[HumanMessage(content="[Instrução da atendente]: Eva, encaixe para amanhã às 08:00")],
+    )
+
+    ai_response = MagicMock()
+    ai_response.tool_calls = [{
+        "name": "confirm_appointment",
+        "args": {"slot_datetime": "2026-07-03T08:00:00", "slot_duration_minutes": 60, "force_encaixe": True},
+        "id": "call_1",
+        "type": "tool_call",
+    }]
+    ai_response.content = ""
+
+    async def fake_ainvoke(messages):
+        return ai_response
+
+    with patch("app.graph.nodes._get_agent_llm") as mock_llm_fn, \
+         patch("app.graph.nodes.send_text", new_callable=AsyncMock), \
+         patch("app.graph.nodes.save_message", new_callable=AsyncMock), \
+         patch("app.graph.nodes.get_upcoming_appointments", new_callable=AsyncMock, return_value=[]), \
+         patch("app.graph.nodes.get_user_by_phone", new_callable=AsyncMock, return_value={"price_adjustment_notified_at": "2026-01-01"}), \
+         patch("app.graph.nodes.get_last_assistant_message_time", new_callable=AsyncMock, return_value=None), \
+         patch("app.google_calendar.format_doctor_schedules", return_value="seg-sex"):
+        mock_llm = MagicMock()
+        mock_llm.ainvoke = fake_ainvoke
+        mock_llm_fn.return_value = mock_llm
+        result = await patient_agent_node(state, CONFIG)
+
+    assert result.get("silent_mode") is not False, (
+        "silent_mode foi resetado antes do ToolNode executar a tool_call — "
+        "force_encaixe seria descartado silenciosamente"
+    )
+
+
 async def test_patient_agent_injects_greeting_on_new_day():
     """Prior AI messages exist but last assistant message was on a previous day → greeting injected."""
     from datetime import datetime, timezone, timedelta
