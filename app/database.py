@@ -70,11 +70,18 @@ def _legacy_user_dict(contact: dict, patient: dict, is_self: bool,
     `name` é o nome do CONTATO; `patient_name` é o nome do PACIENTE.
     Quando is_self é False, o contato é o responsável (guardian_*).
     """
+    # contacts.name pode ficar nulo em cadastros feitos fora do fluxo de chat
+    # (import em lote, script). Quando o contato NÃO é o paciente, financial_name
+    # é garantidamente o nome do responsável (diferente do patient_name), então
+    # serve de fallback seguro para o nome do contato.
+    _contact_name = contact.get("name") or (
+        patient.get("financial_name") if not is_self else None
+    )
     u: dict = {
         "id": patient["id"],
         "_contact_id": contact["id"],
         "number": contact.get("phone"),
-        "name": contact.get("name"),
+        "name": _contact_name,
         "patient_name": patient.get("name"),
         "is_patient": bool(is_self),
     }
@@ -87,7 +94,7 @@ def _legacy_user_dict(contact: dict, patient: dict, is_self: bool,
         u["guardian_cpf"] = None
         u["guardian_relationship"] = None
     else:
-        u["guardian_name"] = contact.get("name")
+        u["guardian_name"] = _contact_name
         u["guardian_cpf"] = contact.get("cpf")
         u["guardian_relationship"] = relationship
     return u
