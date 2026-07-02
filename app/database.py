@@ -176,7 +176,12 @@ async def upsert_user(phone: str, data: dict, user_id: str | None = None) -> str
     if guardian_name is not None:
         contact_data.setdefault("name", guardian_name)
 
-    contact_id = await upsert_contact(phone, contact_data or {"name": data.get("name")})
+    # Only fall back to a bare {"name": ...} payload when a name was actually
+    # provided — otherwise this would overwrite an existing contact's name with
+    # NULL on every partial update that doesn't touch contact fields (e.g. a
+    # patient-only field like email or patient_name).
+    contact_data = contact_data or ({"name": data["name"]} if data.get("name") else {})
+    contact_id = await upsert_contact(phone, contact_data)
 
     # Resolve patient_id via phone lookup when not supplied, to avoid blind INSERT
     resolved_id = user_id

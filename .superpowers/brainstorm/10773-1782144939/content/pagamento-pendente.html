@@ -1,0 +1,26 @@
+<h2>O que é um "pagamento em aberto"?</h2>
+<p class="subtitle">Selecione os casos que devem aparecer na lista de pendências</p>
+
+<div class="options" data-multiselect>
+  <div class="option" data-choice="a" onclick="toggleSelect(this)">
+    <div class="letter">A</div>
+    <div class="content">
+      <h3>Consulta não paga (paid_at = null)</h3>
+      <p>Consultas agendadas ou realizadas onde o pagamento total da consulta ainda não foi registrado</p>
+    </div>
+  </div>
+  <div class="option" data-choice="b" onclick="toggleSelect(this)">
+    <div class="letter">B</div>
+    <div class="content">
+      <h3>Taxa de reserva não paga (booking_fee_paid_at = null)</h3>
+      <p>Consultas onde a taxa de reserva de R$100 ainda não foi recebida (e não foi dispensada)</p>
+    </div>
+  </div>
+  <div class="option" data-choice="c" onclick="toggleSelect(this)">
+    <div class="letter">C</div>
+    <div class="content">
+      <h3>Ambos — qualquer valor em aberto</h3>
+      <p>Lista unificada: taxa pendente E/OU consulta não quitada. Cada pendência aparece separadamente.</p>
+    </div>
+  </div>
+</div>

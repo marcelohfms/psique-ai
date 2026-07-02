@@ -1,0 +1,4 @@
+{"type":"server-started","port":61202,"host":"127.0.0.1","url_host":"localhost","url":"http://localhost:61202","screen_dir":"/Users/ayexatavares/psique-ai/.superpowers/brainstorm/10773-1782144939/content","state_dir":"/Users/ayexatavares/psique-ai/.superpowers/brainstorm/10773-1782144939/state"}
+{"type":"screen-added","file":"/Users/ayexatavares/psique-ai/.superpowers/brainstorm/10773-1782144939/content/pagamento-pendente.html"}
+{"type":"screen-added","file":"/Users/ayexatavares/psique-ai/.superpowers/brainstorm/10773-1782144939/content/layout-pagamentos.html"}
+{"type":"server-stopped","reason":"idle timeout"}

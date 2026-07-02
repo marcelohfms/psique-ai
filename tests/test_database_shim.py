@@ -184,6 +184,42 @@ async def test_upsert_user_routes_guardian_to_contact():
     assert all(link["is_self"] is False for link in captured["links"])
 
 
+@pytest.mark.asyncio
+async def test_upsert_user_patient_only_field_does_not_wipe_contact_name():
+    """Regression: updating a patient-only field (e.g. email, patient_name) with no
+    contact fields in the payload must NOT overwrite contacts.name with NULL.
+
+    Bug found 2026-07-01 (Adriana conversation, 5581981464986): request_registration_update
+    called upsert_user(phone, {"email": new_value}) — since "email" isn't a contact
+    field, contact_data ended up empty, and the old fallback `contact_data or
+    {"name": data.get("name")}` sent {"name": None} to upsert_contact, nulling out the
+    contact's name on every partial patient-field update.
+    """
+    contact = {"id": "c1", "phone": "5583988887777", "active": True}
+    captured = {}
+
+    async def fake_upsert_contact(phone, data):
+        captured["contact_data"] = data
+        return "c1"
+
+    async def fake_upsert_patient(data, patient_id=None):
+        captured["patient_data"] = data
+        return patient_id or "p-new"
+
+    with patch("app.database.get_contact_by_phone", new_callable=AsyncMock, return_value=contact), \
+         patch("app.database.upsert_contact", side_effect=fake_upsert_contact), \
+         patch("app.database.upsert_patient", side_effect=fake_upsert_patient), \
+         patch("app.database.link_patient_contact", new_callable=AsyncMock):
+        await database.upsert_user(
+            "5583988887777",
+            {"email": "novo@x.com"},
+            user_id="p1",
+        )
+    # No contact field was in the payload — contact_data must stay empty,
+    # never {"name": None}.
+    assert captured["contact_data"] == {}
+
+
 def _complete_minor(**overrides) -> dict:
     """Base de um cadastro de MENOR (do Dr. Júlio) completo, estilo dict legado."""
     u = {
