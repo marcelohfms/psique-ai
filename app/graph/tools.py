@@ -976,8 +976,10 @@ async def reschedule_appointment(
     new_slot_datetime deve estar no formato ISO 8601 em HORÁRIO LOCAL DE RECIFE (UTC-3),
     exatamente como exibido ao paciente — NUNCA converta para UTC antes de passar.
     modality: modalidade do novo horário — "online" ou "presencial" (se aplicável).
-    confirmed_by_patient: True se o paciente confirmou a nova data, False se é apenas
-      uma sugestão/ajuste da atendente (neste caso permanece em pending_reschedule).
+    NÃO defina confirmed_by_patient — deixe o valor padrão (True). Só chame esta ferramenta
+      quando a nova data/horário já for definitiva (seja porque o paciente escolheu no chat,
+      seja porque a atendente definiu via instrução/nota privada). Este parâmetro é reservado
+      para scripts administrativos internos, nunca para uso pela Eva.
     """
     from app.google_calendar import update_event
 
