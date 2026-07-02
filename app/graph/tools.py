@@ -1069,47 +1069,49 @@ async def reschedule_appointment(
     appt_status_result = await client.from_("appointments").select("status").eq("appointment_id", appointment_id).maybe_single().execute()
     is_pending_reschedule = (appt_status_result.data or {}).get("status") == "pending_reschedule"
 
-    from app.google_calendar import create_event
-    if is_pending_reschedule:
-        # Cria novo evento (o antigo já foi removido do Calendar quando o slot foi liberado)
-        try:
-            new_event_id = await create_event(
-                calendar_id=calendar_id,
-                start=new_start,
-                slot_minutes=slot_duration_minutes,
-                patient_name=patient_name,
-                doctor_name=doctor_label,
-                modality=effective_modality,
-                patient_email=state.get("patient_email") or "",
-                patient_number=config["configurable"]["phone"],
-            )
-            # Atualiza o appointment_id no banco com o novo event_id
-            await client.from_("appointments").update({"appointment_id": new_event_id}).eq("appointment_id", appointment_id).execute()
-            appointment_id = new_event_id
-        except Exception as e:
-            _logger.error("RESCHEDULE_DEBUG create_event FAILED appt=%s error=%s", appointment_id, e, exc_info=True)
-            return f"Não foi possível criar novo evento no Google Calendar. Erro: {e}"
-    else:
-        # Update Google Calendar event (same event_id, new time)
-        try:
-            await update_event(
-                calendar_id=calendar_id,
-                event_id=appointment_id,
-                new_start=new_start,
-                slot_minutes=slot_duration_minutes,
-                patient_name=patient_name,
-                doctor_name=doctor_label,
-                is_minor_first=is_minor_first,
-                modality=effective_modality,
-                patient_email=state.get("patient_email") or "",
-                patient_number=config["configurable"]["phone"],
-            )
-        except Exception as e:
-            _logger.error("RESCHEDULE_DEBUG update_event FAILED appt=%s error=%s", appointment_id, e, exc_info=True)
-            return (
-                f"Não foi possível atualizar o evento no Google Calendar (ID: {appointment_id}). "
-                f"Erro: {e}. Verifique se o ID do agendamento está correto e tente novamente."
-            )
+    # Only create/update Google Calendar event if patient confirmed
+    if confirmed_by_patient:
+        from app.google_calendar import create_event
+        if is_pending_reschedule:
+            # Cria novo evento (o antigo já foi removido do Calendar quando o slot foi liberado)
+            try:
+                new_event_id = await create_event(
+                    calendar_id=calendar_id,
+                    start=new_start,
+                    slot_minutes=slot_duration_minutes,
+                    patient_name=patient_name,
+                    doctor_name=doctor_label,
+                    modality=effective_modality,
+                    patient_email=state.get("patient_email") or "",
+                    patient_number=config["configurable"]["phone"],
+                )
+                # Atualiza o appointment_id no banco com o novo event_id
+                await client.from_("appointments").update({"appointment_id": new_event_id}).eq("appointment_id", appointment_id).execute()
+                appointment_id = new_event_id
+            except Exception as e:
+                _logger.error("RESCHEDULE_DEBUG create_event FAILED appt=%s error=%s", appointment_id, e, exc_info=True)
+                return f"Não foi possível criar novo evento no Google Calendar. Erro: {e}"
+        else:
+            # Update Google Calendar event (same event_id, new time)
+            try:
+                await update_event(
+                    calendar_id=calendar_id,
+                    event_id=appointment_id,
+                    new_start=new_start,
+                    slot_minutes=slot_duration_minutes,
+                    patient_name=patient_name,
+                    doctor_name=doctor_label,
+                    is_minor_first=is_minor_first,
+                    modality=effective_modality,
+                    patient_email=state.get("patient_email") or "",
+                    patient_number=config["configurable"]["phone"],
+                )
+            except Exception as e:
+                _logger.error("RESCHEDULE_DEBUG update_event FAILED appt=%s error=%s", appointment_id, e, exc_info=True)
+                return (
+                    f"Não foi possível atualizar o evento no Google Calendar (ID: {appointment_id}). "
+                    f"Erro: {e}. Verifique se o ID do agendamento está correto e tente novamente."
+                )
 
     # Update DB record
     new_end = new_start + timedelta(minutes=slot_duration_minutes)
