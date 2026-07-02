@@ -391,10 +391,13 @@ async def test_mark_reschedule_in_progress_first_reschedule_notice():
     execute.side_effect = [
         MagicMock(data=appt_data),  # appointment select
         MagicMock(count=0),         # reschedule count
-        MagicMock(data=[]),         # update reschedule_requested_at
+        MagicMock(data=[]),         # cancel_event update
     ]
     with patch("app.graph.tools.get_supabase", new_callable=AsyncMock, return_value=client), \
          patch("app.graph.tools.get_users_by_phone", new_callable=AsyncMock, return_value=[{"id": "user-1"}]), \
+         patch("app.graph.tools._resolve_doctor", new_callable=AsyncMock, return_value="julio"), \
+         patch("app.graph.tools._get_doctor_calendar_id", new_callable=AsyncMock, return_value="cal-123"), \
+         patch("app.google_calendar.cancel_event", new_callable=AsyncMock), \
          patch("app.graph.tools.log_event", new_callable=AsyncMock):
         result = await mark_reschedule_in_progress.coroutine(
             appointment_id="evt-abc",
@@ -457,6 +460,9 @@ async def test_mark_reschedule_in_progress_less_than_24h_fee_unpaid_proceeds_nor
     ]
     with patch("app.graph.tools.get_supabase", new_callable=AsyncMock, return_value=client), \
          patch("app.graph.tools.get_users_by_phone", new_callable=AsyncMock, return_value=[{"id": "user-1"}]), \
+         patch("app.graph.tools._resolve_doctor", new_callable=AsyncMock, return_value="julio"), \
+         patch("app.graph.tools._get_doctor_calendar_id", new_callable=AsyncMock, return_value="cal-123"), \
+         patch("app.google_calendar.cancel_event", new_callable=AsyncMock), \
          patch("app.graph.tools.log_event", new_callable=AsyncMock):
         result = await mark_reschedule_in_progress.coroutine(
             appointment_id="evt-abc",
@@ -480,9 +486,16 @@ async def test_mark_reschedule_in_progress_silent_mode_bypasses_24h_guard():
         "booking_fee_paid_at": "2026-01-01T10:00:00-03:00",
         "booking_fee_waived": False,
     }
-    execute.return_value = MagicMock(data=appt_data)
+    execute.side_effect = [
+        MagicMock(data=appt_data),
+        MagicMock(count=0),
+        MagicMock(data=[]),
+    ]
     with patch("app.graph.tools.get_supabase", new_callable=AsyncMock, return_value=client), \
          patch("app.graph.tools.get_users_by_phone", new_callable=AsyncMock, return_value=[{"id": "user-1"}]), \
+         patch("app.graph.tools._resolve_doctor", new_callable=AsyncMock, return_value="julio"), \
+         patch("app.graph.tools._get_doctor_calendar_id", new_callable=AsyncMock, return_value="cal-123"), \
+         patch("app.google_calendar.cancel_event", new_callable=AsyncMock), \
          patch("app.graph.tools.log_event", new_callable=AsyncMock):
         result = await mark_reschedule_in_progress.coroutine(
             appointment_id="evt-abc",
@@ -1241,6 +1254,66 @@ async def test_request_registration_update_other_field():
     mock_notify.assert_awaited_once()
 
     assert "CPF" in result or "cpf" in result.lower()
+
+
+@pytest.mark.asyncio
+async def test_request_registration_update_missing_patient_name_applies_directly():
+    """When is_patient=False and patient_name is still missing/defaulted to the
+    contact's own name, filling it in is not an "edit" of an established value —
+    it's collect_info's job that slipped through. Must update the DB immediately
+    instead of just queueing a manual review (fixed 2026-07-01, Adriana case)."""
+    from app.graph.tools import request_registration_update
+
+    state = _make_state(
+        user_name="Adriana de Faria Pilar",
+        patient_name="Adriana de Faria Pilar",  # stale default, never a real answer
+        is_patient=False,
+        user_db_id="patient-id-1",
+    )
+
+    with patch("app.graph.tools.upsert_user", new_callable=AsyncMock) as mock_upsert, \
+         patch("app.graph.tools._notify_clinic", new_callable=AsyncMock) as mock_notify, \
+         patch("app.graph.tools.log_event", new_callable=AsyncMock):
+        result = await request_registration_update.coroutine(
+            field="nome do paciente",
+            new_value="Francisco Domingues Bruno de Faria",
+            state=state,
+            config=CONFIG,
+        )
+
+    mock_upsert.assert_awaited_once()
+    assert mock_upsert.call_args.kwargs.get("user_id") == "patient-id-1" or "patient-id-1" in str(mock_upsert.call_args)
+    assert "Francisco Domingues Bruno de Faria" in str(mock_upsert.call_args)
+    mock_notify.assert_awaited_once()
+    assert "sucesso" in result.lower()
+
+
+@pytest.mark.asyncio
+async def test_request_registration_update_existing_patient_name_stays_manual():
+    """A genuine correction of an ALREADY-confirmed, distinct patient_name must
+    still go through manual review — only the stale-default case auto-applies."""
+    from app.graph.tools import request_registration_update
+
+    state = _make_state(
+        user_name="Thamiris Izidoro",
+        patient_name="Ednaldo José Izidoro da Silva",  # already a real, distinct name
+        is_patient=False,
+        user_db_id="patient-id-2",
+    )
+
+    with patch("app.graph.tools.upsert_user", new_callable=AsyncMock) as mock_upsert, \
+         patch("app.graph.tools._notify_clinic", new_callable=AsyncMock) as mock_notify, \
+         patch("app.graph.tools.log_event", new_callable=AsyncMock):
+        result = await request_registration_update.coroutine(
+            field="nome do paciente",
+            new_value="Ednaldo José da Silva",
+            state=state,
+            config=CONFIG,
+        )
+
+    mock_upsert.assert_not_awaited()
+    mock_notify.assert_awaited_once()
+    assert "equipe" in result.lower()
 
 
 @pytest.mark.asyncio

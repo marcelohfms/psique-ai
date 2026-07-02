@@ -671,7 +671,8 @@ async def confirm_appointment(
         subject=f"Agendamento realizado — {patient_name}",
     ))
 
-    pix_key = os.environ.get("PIX_KEY", "42006848000178")
+    from app.graph.prompts import get_pix_key
+    pix_key = get_pix_key()
     _custom_price_ret = (user or {}).get("custom_price")
     _prefix = "[INSTRUÇÃO INTERNA — NÃO ENVIE AO PACIENTE] "
     if _custom_price_ret == 0:
@@ -825,8 +826,21 @@ async def mark_reschedule_in_progress(
                 "taxa de reserva. Informe o paciente e oriente-o a solicitar um novo agendamento."
             )
 
+    # Delete the event from Google Calendar since the appointment is being rescheduled
+    doctor = await _resolve_doctor(state, config)
+    calendar_id = await _get_doctor_calendar_id(doctor)
+    if calendar_id:
+        from app.google_calendar import cancel_event
+        try:
+            await cancel_event(calendar_id, appointment_id)
+        except Exception as e:
+            # Log but don't fail — the appointment is already marked for rescheduling
+            logger.warning("Failed to delete calendar event %s during reschedule: %s", appointment_id, e)
+
+    # Mark the appointment as pending_reschedule so reschedule_appointment knows to create a new event
     await client.from_("appointments").update({
         "reschedule_requested_at": now.isoformat(),
+        "status": "pending_reschedule",
     }).eq("appointment_id", appointment_id).execute()
 
     await log_event("reschedule_requested", phone, {"appointment_id": appointment_id})
@@ -839,6 +853,111 @@ async def mark_reschedule_in_progress(
             "solicitar uma nova consulta e pagar uma nova taxa de reserva."
         )
     return f"Reagendamento marcado como em andamento. Prossiga com get_available_slots para buscar novos horários.{first_reschedule_notice}"
+
+
+@tool
+async def change_modality(
+    appointment_id: str,
+    new_modality: Literal["online", "presencial"],
+    state: Annotated[dict, InjectedState],
+    config: RunnableConfig,
+) -> str:
+    """
+    Altera apenas a modalidade (online ou presencial) de uma consulta existente,
+    mantendo a mesma data e hora. appointment_id é o Google Calendar event ID.
+    """
+    from app.google_calendar import update_event
+
+    doctor = await _resolve_doctor(state, config)
+    calendar_id = await _get_doctor_calendar_id(doctor)
+    if not calendar_id:
+        return "Não foi possível identificar o calendário do médico."
+
+    # Fetch appointment data
+    client = await get_supabase()
+    phone = config["configurable"]["phone"]
+    appt_result = await client.from_("appointments").select(
+        "start_time, end_time, patient_id, modality, patients(name, email)"
+    ).eq("appointment_id", appointment_id).maybe_single().execute()
+
+    if not appt_result.data:
+        return "Agendamento não encontrado."
+
+    # Validate that this appointment belongs to this phone number
+    _phone_clean = phone.replace("@s.whatsapp.net", "")
+    _phone_pids = [u["id"] for u in await get_users_by_phone(_phone_clean)]
+    _appt_patient_id = appt_result.data.get("patient_id")
+    if _appt_patient_id is None or _appt_patient_id not in _phone_pids:
+        return "Este agendamento não pertence a este paciente."
+
+    # Check if modality is actually changing
+    current_modality = appt_result.data.get("modality")
+    if current_modality == new_modality:
+        modality_label = "online" if new_modality == "online" else "presencial"
+        return f"A consulta já está marcada como {modality_label}. Nenhuma alteração necessária."
+
+    # Get start time and patient info
+    start_time_str = appt_result.data.get("start_time")
+    if not start_time_str:
+        return "Não foi possível obter a data e hora da consulta."
+
+    start = datetime.fromisoformat(start_time_str).replace(tzinfo=TZ)
+    slot_duration = 60  # Assume 1 hour by default
+    if appt_result.data.get("end_time"):
+        end = datetime.fromisoformat(appt_result.data["end_time"]).replace(tzinfo=TZ)
+        slot_duration = int((end - start).total_seconds() / 60)
+
+    _appt_patient = appt_result.data.get("patients") or {}
+    patient_name = _appt_patient.get("name") or state.get("patient_name") or state.get("user_name") or "Paciente"
+    patient_email = _appt_patient.get("email") or state.get("patient_email") or ""
+
+    doctor_label = {"julio": "Dr. Júlio", "bruna": "Dra. Bruna"}.get(doctor, "médico(a)")
+    patient_age = state.get("patient_age") or 99
+    is_minor_first = patient_age < 18 and not state.get("is_patient", False)
+
+    # Update Google Calendar event
+    try:
+        await update_event(
+            calendar_id=calendar_id,
+            event_id=appointment_id,
+            new_start=start,
+            slot_minutes=slot_duration,
+            patient_name=patient_name,
+            doctor_name=doctor_label,
+            is_minor_first=is_minor_first,
+            modality=new_modality,
+            patient_email=patient_email,
+            patient_number=config["configurable"]["phone"],
+        )
+    except Exception as e:
+        _logger.error("CHANGE_MODALITY update_event FAILED appt=%s error=%s", appointment_id, e, exc_info=True)
+        return f"Não foi possível atualizar o evento no Google Calendar. Erro: {e}"
+
+    # Update DB record
+    await client.from_("appointments").update({
+        "modality": new_modality,
+        "updated_at": datetime.now(TZ).isoformat(),
+    }).eq("appointment_id", appointment_id).execute()
+
+    await log_event("modality_changed", phone, {
+        "appointment_id": appointment_id,
+        "new_modality": new_modality,
+    })
+
+    formatted_date = start.strftime("%d/%m/%Y às %H:%M")
+    modality_label = "online" if new_modality == "online" else "presencial"
+
+    await _notify_clinic(
+        f"Modalidade alterada! 🔄\n"
+        f"Paciente: {patient_name}\n"
+        f"Data e horário: {formatted_date}\n"
+        f"Nova modalidade: {modality_label}\n"
+        f"Médico(a): {doctor_label}",
+        phone=phone,
+        subject=f"Modalidade alterada — {patient_name}",
+    )
+
+    return f"Modalidade alterada com sucesso! ✅\nSua consulta de {formatted_date} agora é {modality_label}."
 
 
 @tool
@@ -1961,10 +2080,23 @@ async def request_registration_update(
     patient_name = state.get("patient_name") or state.get("user_name") or "Paciente"
     now_str = datetime.now(TZ).strftime("%d/%m/%Y %H:%M")
     phone_clean = phone.replace("@s.whatsapp.net", "")
+    field_norm = field.lower().strip()
 
     # If the field is email, update the DB directly
-    if field.lower().strip() in ("email", "e-mail"):
-        await upsert_user(phone, {"email": new_value})
+    applied_directly = False
+    if field_norm in ("email", "e-mail"):
+        await upsert_user(phone, {"email": new_value}, user_id=state.get("user_db_id"))
+        applied_directly = True
+    elif "nome" in field_norm and "paciente" in field_norm and state.get("is_patient") is False:
+        # Safety net for the "patient_name still unknown/wrong" bug: when the contact
+        # is NOT the patient and patient_name is missing or was defaulted to the
+        # contact's own name (never a real answer), this isn't a "correction" of an
+        # established value — it's filling in data collect_info should have asked
+        # for. Apply immediately instead of queueing a manual review.
+        _stale = not state.get("patient_name") or state.get("patient_name") == state.get("user_name")
+        if _stale:
+            await upsert_user(phone, {"patient_name": new_value}, user_id=state.get("user_db_id"))
+            applied_directly = True
 
     # Notify the attendant regardless of field type
     subject = f"Solicitação de alteração cadastral — {patient_name}"
@@ -1975,9 +2107,12 @@ async def request_registration_update(
         f"Campo: {field}\n"
         f"Novo valor: {new_value}\n"
         f"Data/hora: {now_str}\n"
+        + ("(Aplicado automaticamente ao cadastro)\n" if applied_directly else "")
     )
     await _notify_clinic(body, phone=phone, subject=subject)
 
+    if applied_directly:
+        return f"{field} atualizado com sucesso para {new_value}."
     return f"Pedido de alteração de {field} registrado. A equipe irá processar em breve."
 
 
