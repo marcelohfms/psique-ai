@@ -968,6 +968,7 @@ async def reschedule_appointment(
     state: Annotated[dict, InjectedState],
     config: RunnableConfig,
     modality: str = "",
+    confirmed_by_patient: bool = True,
 ) -> str:
     """
     Remarca uma consulta existente para um novo horário.
@@ -975,6 +976,8 @@ async def reschedule_appointment(
     new_slot_datetime deve estar no formato ISO 8601 em HORÁRIO LOCAL DE RECIFE (UTC-3),
     exatamente como exibido ao paciente — NUNCA converta para UTC antes de passar.
     modality: modalidade do novo horário — "online" ou "presencial" (se aplicável).
+    confirmed_by_patient: True se o paciente confirmou a nova data, False se é apenas
+      uma sugestão/ajuste da atendente (neste caso permanece em pending_reschedule).
     """
     from app.google_calendar import update_event
 
@@ -1113,12 +1116,19 @@ async def reschedule_appointment(
     reschedule_update: dict = {
         "start_time": new_start.isoformat(),
         "end_time": new_end.isoformat(),
-        "status": "scheduled",
         "updated_at": datetime.now(TZ).isoformat(),
-        "reschedule_requested_at": None,
         "reminder_day_before_sent_at": None,
         "reminder_day_of_sent_at": None,
     }
+
+    # Only mark as scheduled and clear reschedule flag if patient confirmed
+    if confirmed_by_patient:
+        reschedule_update["status"] = "scheduled"
+        reschedule_update["reschedule_requested_at"] = None
+    else:
+        # Keep as pending_reschedule if this is just an admin adjustment
+        reschedule_update["status"] = "pending_reschedule"
+
     if effective_modality:
         reschedule_update["modality"] = effective_modality
     await client.from_("appointments").update(reschedule_update).eq("appointment_id", appointment_id).execute()
