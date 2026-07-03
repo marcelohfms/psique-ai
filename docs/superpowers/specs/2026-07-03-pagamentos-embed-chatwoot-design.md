@@ -17,6 +17,10 @@ Implementação continua no branch `feat/painel-atendente` (worktree `.worktrees
 
 ## Decisões de design
 
+- **Confirmação automática ao paciente:** quando a atendente marca um pagamento como pago pelo painel, o paciente recebe automaticamente uma mensagem de confirmação no WhatsApp (mesmo tom que a Eva já usa em `register_payment`, `app/graph/tools.py:2022-2026`: *"Olá, {paciente}! 👋 Recebemos o pagamento da [taxa de reserva da sua consulta / sua consulta] com {médico}. [Sua vaga está garantida! / Obrigado!] ✅"*). Essa mensagem é enviada **só pelo caminho novo (painel embutido)** — a página cheia `/pagamentos` (Basic Auth, fora do Chatwoot) continua sem enviar mensagem, pois não tem o `conversation_id` do Chatwoot disponível.
+- **Como enviar sem duplicar `app/`:** o Chatwoot já informa o `conversation_id` da conversa aberta no mesmo evento `appContext` que informa o telefone (mesmo payload usado hoje só para o telefone). O backend usa esse `conversation_id` direto — **não** precisa replicar `find_or_create_conversation` (que busca/cria contato e conversa do zero); só um `POST` simples em `/api/v1/accounts/{id}/conversations/{conversation_id}/messages` do Chatwoot, com o token do agent bot. Módulo novo e pequeno: `dashboard/chatwoot_client.py`.
+- **Nunca bloqueia o registro do pagamento:** igual ao padrão já usado em `tools.py` (`except Exception: _logger.exception("PATIENT_CONFIRM FAILED...")`) — se o envio falhar (Chatwoot fora do ar, `conversation_id` ausente por algum motivo), o pagamento já foi gravado no banco e a falha só é logada.
+- **Env novo no `dashboard/`:** `CHATWOOT_BASE_URL`, `CHATWOOT_ACCOUNT_ID`, `CHATWOOT_AGENT_BOT_TOKEN` (já existem no `.env.example` na raiz, usados hoje só pelo `app/`) precisam ser configurados também no ambiente de deploy do `dashboard/` — hoje ele não usa nenhuma variável do Chatwoot.
 - **Escopo dos pagamentos exibidos:** todos os pacientes vinculados ao contato/telefone da conversa (não só um paciente selecionado) — um responsável pode ter pendências de mais de um filho na mesma conversa. Sem seletor: a seção de pagamentos lista tudo de uma vez.
 - **Reuso de lógica:** a query e o cálculo de valor de pendências (`dashboard/main.py`, rota `/pagamentos`) e a ação de marcar como pago (`/api/pagamentos/{id}/pagar`) são extraídos para um módulo novo `dashboard/payments.py`, usado tanto pela página cheia (`/pagamentos`, Basic Auth, sem mudança de comportamento) quanto pelas novas rotas do painel (token, filtradas por paciente).
 - **Auth:** reaproveita `ATTENDANT_PANEL_TOKEN` e o padrão `verify_token` já existente em `attendant_routes.py`. Nenhuma variável de ambiente nova.
@@ -37,11 +41,15 @@ dashboard/attendant_routes.py (novas rotas, token via verify_token)
         │
         ├─ GET  /api/atendente/pagamentos          → payments.compute_pendencias(patient_ids)
         └─ POST /api/atendente/pagamentos/{id}/pagar → payments.mark_paid(...)
+                                                      → chatwoot_client.send_confirmation_message(conversation_id, texto)
                 │
                 ▼
 dashboard/payments.py (módulo novo, extraído de main.py)
         ├─ compute_pendencias(client, patient_ids=None)  — filtra por paciente quando informado
         └─ mark_paid(client, ...)                        — update appointments + sheet + email
+
+dashboard/chatwoot_client.py (módulo novo)
+        └─ send_confirmation_message(conversation_id, text) — POST direto na API do Chatwoot (agent bot token)
 
 dashboard/main.py
         ├─ GET  /pagamentos                  → payments.compute_pendencias(client)     (sem filtro, Basic Auth, inalterado)
@@ -50,12 +58,15 @@ dashboard/main.py
 
 ## Fluxo de dados
 
-1. `atendente.html` já resolve `CONTACT` e `patients` (telefone → contato → pacientes vinculados) na função `load()` existente.
+1. `atendente.html` já resolve `CONTACT` e `patients` (telefone → contato → pacientes vinculados) na função `load()` existente. O listener de `postMessage` (`initPhone()`) passa a guardar também `data.data.conversation.id` (além do `phone_number`), num novo global `CONVERSATION_ID`.
 2. Nova chamada em paralelo: `GET /api/atendente/pagamentos?phone=...&token=...`.
 3. Backend: `attendant_db.resolve_contact_and_patients(phone)` (já existe) → lista de `patient_id`s → `payments.compute_pendencias(client, patient_ids=[...])`.
 4. `compute_pendencias` roda a mesma query de hoje (`appointments` com `status in (scheduled, completed)`, join `patients`/`patient_contacts`/`contacts`), mas com `.in_("patient_id", patient_ids)` quando a lista é passada.
 5. Front renderiza um cartão por pendência: paciente, médico, data/hora, tipo (taxa/consulta), valor (editável), forma de pagamento (select), botão "Marcar pago".
-6. "Marcar pago" → `POST /api/atendente/pagamentos/{appointment_id}/pagar` (mesmo body de `PagarBody`) → `payments.mark_paid` grava `paid_at`/`booking_fee_paid_at`, tenta gravar na planilha e enviar e-mail (mesmo comportamento best-effort de hoje — falha silenciosa com log, não quebra a resposta). Também grava em `events` via `attendant_db.log_event("attendant_pagamento_registrado", phone, {...})`, seguindo o padrão de auditoria do painel.
+6. "Marcar pago" → `POST /api/atendente/pagamentos/{appointment_id}/pagar`, body inclui `conversation_id` (do `CONVERSATION_ID` capturado no passo 1) além dos campos de `PagarBody` de hoje. Backend:
+   - `payments.mark_paid` grava `paid_at`/`booking_fee_paid_at`, tenta gravar na planilha e enviar e-mail (mesmo comportamento best-effort de hoje — falha silenciosa com log, não quebra a resposta).
+   - Monta a mensagem de confirmação (texto conforme `tipo`) e chama `chatwoot_client.send_confirmation_message(conversation_id, texto)` — best-effort, mesma regra de nunca bloquear a resposta.
+   - Grava em `events` via `attendant_db.log_event("attendant_pagamento_registrado", phone, {...})`, seguindo o padrão de auditoria do painel.
 
 ## Testes
 
@@ -64,6 +75,8 @@ Seguir o padrão de `dashboard/tests/test_attendant_routes.py` e `test_attendant
 - `compute_pendencias` com `patient_ids` retorna só as pendências dos pacientes informados.
 - `GET /api/atendente/pagamentos` sem token → 401; com token e telefone sem contato → lista vazia.
 - `POST /api/atendente/pagamentos/{id}/pagar` grava `paid_at`/`booking_fee_paid_at` e chama `log_event`.
+- `POST /api/atendente/pagamentos/{id}/pagar` chama `chatwoot_client.send_confirmation_message` com o `conversation_id` recebido e o texto certo por `tipo` (taxa vs. consulta) — mockar o `httpx` client.
+- Falha do `send_confirmation_message` (mockar exceção) não impede a resposta 200 nem o `paid_at` gravado — cobre o comportamento best-effort.
 - `tests/conftest.py` (`FakeQuery`) precisa de suporte a `.in_()` para viabilizar os testes acima — hoje só tem `.eq()`.
 - `tests/test_dashboard_pagamentos.py` (raiz do repo, cobre `/pagamentos` e `/api/pagamentos/.../pagar` hoje) continua passando sem alteração — é o teste de não-regressão do comportamento antigo.
 
@@ -75,5 +88,7 @@ Seguir o padrão de `dashboard/tests/test_attendant_routes.py` e `test_attendant
 
 ## Riscos / pontos de atenção
 
-- `payments.py` precisa continuar sem importar `app/` (a imagem Docker do `dashboard/` não inclui `app/`) — mesma restrição já documentada para `attendant_db.py`.
+- `payments.py` e `chatwoot_client.py` precisam continuar sem importar `app/` (a imagem Docker do `dashboard/` não inclui `app/`) — mesma restrição já documentada para `attendant_db.py`.
 - Extrair `compute_pendencias`/`mark_paid` de `main.py` sem mudar comportamento da rota `/pagamentos` existente — cobrir com o teste de não-regressão citado acima antes de mexer.
+- **Suposição a validar:** o evento `appContext` do Chatwoot inclui `data.conversation.id` junto com `data.contact` (hoje `atendente.html` só lê `contact.phone_number`). Se na prática o payload não trouxer o `conversation_id` nesse evento, a mensagem de confirmação fica indisponível até resolvermos isso (o registro do pagamento em si não é afetado, por ser best-effort) — validar assim que o Dashboard App estiver configurado num Chatwoot real (Fase 4 do painel da atendente).
+- **Deploy:** lembrar de configurar `CHATWOOT_BASE_URL`/`CHATWOOT_ACCOUNT_ID`/`CHATWOOT_AGENT_BOT_TOKEN` no ambiente do `dashboard/` antes de ir pra produção — sem isso, `send_confirmation_message` falha silenciosamente (best-effort) e nenhuma mensagem sai.
