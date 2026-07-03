@@ -60,6 +60,15 @@ function initPhone() {
 
 function setStatus(t) { document.getElementById("status").textContent = t; }
 
+function escapeHtml(s) {
+  return String(s ?? "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+}
+
 // ── 2b. Pagamentos pendentes ─────────────────────────────────────────────────
 async function loadPagamentos() {
   const box = document.getElementById("pagamentos-box");
@@ -78,13 +87,13 @@ async function loadPagamentos() {
 function pagamentoCard(p) {
   const tipoLabel = p.tipo === "taxa" ? "Taxa de reserva" : "Consulta";
   const badgeClass = p.tipo === "taxa" ? "bg-green-100 text-green-700" : "bg-blue-100 text-blue-700";
-  return `<div class="bg-white rounded-lg shadow p-3" data-appt="${p.appointment_id}" data-tipo="${p.tipo}"
-       data-paciente="${p.paciente}" data-medico="${p.medico}" data-data-hora="${p.data_hora}" data-phone="${p.phone}">
+  return `<div class="bg-white rounded-lg shadow p-3" data-appt="${escapeHtml(p.appointment_id)}" data-tipo="${escapeHtml(p.tipo)}"
+       data-paciente="${escapeHtml(p.paciente)}" data-medico="${escapeHtml(p.medico)}" data-data-hora="${escapeHtml(p.data_hora)}" data-phone="${escapeHtml(p.phone)}">
     <div class="flex justify-between items-start mb-1">
-      <span class="text-sm font-medium text-gray-700">${p.paciente}</span>
+      <span class="text-sm font-medium text-gray-700">${escapeHtml(p.paciente)}</span>
       <span class="text-xs px-2 py-0.5 rounded-full ${badgeClass}">${tipoLabel}</span>
     </div>
-    <div class="text-xs text-gray-500 mb-2">${p.medico} · ${p.data_hora}</div>
+    <div class="text-xs text-gray-500 mb-2">${escapeHtml(p.medico)} · ${escapeHtml(p.data_hora)}</div>
     <div class="flex items-center gap-2">
       <input type="number" min="0" value="${p.valor}" class="valor-input w-20 border border-gray-300 rounded px-2 py-1 text-sm">
       <select class="forma-input border border-gray-300 rounded px-2 py-1 text-sm">
