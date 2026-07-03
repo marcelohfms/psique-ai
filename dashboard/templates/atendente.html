@@ -14,6 +14,11 @@
       <select id="patient-select" class="w-full border border-gray-300 rounded px-2 py-1.5 text-sm"></select>
     </div>
 
+    <div id="pagamentos-box" class="hidden mb-4">
+      <h2 class="font-medium text-gray-700 mb-2">Pagamentos pendentes</h2>
+      <div id="pagamentos-list" class="space-y-2"></div>
+    </div>
+
     <div id="forms" class="hidden space-y-4"></div>
 
     <div id="reset-box" class="hidden mt-6 border-t pt-4">
@@ -32,6 +37,7 @@
 const TOKEN = {{ token | tojson }};
 let PHONE = null;
 let CONTACT = null;
+let CONVERSATION_ID = null;
 
 // ── 1. Obter telefone: Chatwoot postMessage ou ?phone= (teste) ──────────────
 function initPhone() {
@@ -42,6 +48,9 @@ function initPhone() {
       const data = typeof e.data === "string" ? JSON.parse(e.data) : e.data;
       if (data && data.event === "appContext" && data.data && data.data.contact) {
         PHONE = data.data.contact.phone_number || PHONE;
+        if (data.data.conversation && data.data.conversation.id) {
+          CONVERSATION_ID = data.data.conversation.id;
+        }
         if (PHONE) load();
       }
     } catch (_) {}
@@ -50,6 +59,64 @@ function initPhone() {
 }
 
 function setStatus(t) { document.getElementById("status").textContent = t; }
+
+// ── 2b. Pagamentos pendentes ─────────────────────────────────────────────────
+async function loadPagamentos() {
+  const box = document.getElementById("pagamentos-box");
+  const list = document.getElementById("pagamentos-list");
+  const r = await fetch(`/api/atendente/pagamentos?phone=${encodeURIComponent(PHONE)}&token=${encodeURIComponent(TOKEN)}`);
+  if (!r.ok) return;
+  const pendencias = await r.json();
+  box.classList.remove("hidden");
+  if (!pendencias.length) {
+    list.innerHTML = `<p class="text-sm text-gray-400">Nenhum pagamento pendente.</p>`;
+    return;
+  }
+  list.innerHTML = pendencias.map(pagamentoCard).join("");
+}
+
+function pagamentoCard(p) {
+  const tipoLabel = p.tipo === "taxa" ? "Taxa de reserva" : "Consulta";
+  const badgeClass = p.tipo === "taxa" ? "bg-green-100 text-green-700" : "bg-blue-100 text-blue-700";
+  return `<div class="bg-white rounded-lg shadow p-3" data-appt="${p.appointment_id}" data-tipo="${p.tipo}"
+       data-paciente="${p.paciente}" data-medico="${p.medico}" data-data-hora="${p.data_hora}" data-phone="${p.phone}">
+    <div class="flex justify-between items-start mb-1">
+      <span class="text-sm font-medium text-gray-700">${p.paciente}</span>
+      <span class="text-xs px-2 py-0.5 rounded-full ${badgeClass}">${tipoLabel}</span>
+    </div>
+    <div class="text-xs text-gray-500 mb-2">${p.medico} · ${p.data_hora}</div>
+    <div class="flex items-center gap-2">
+      <input type="number" min="0" value="${p.valor}" class="valor-input w-20 border border-gray-300 rounded px-2 py-1 text-sm">
+      <select class="forma-input border border-gray-300 rounded px-2 py-1 text-sm">
+        <option value="PIX">PIX</option>
+        <option value="cartao_credito">Cartão de crédito</option>
+        <option value="cartao_debito">Cartão de débito</option>
+        <option value="dinheiro">Dinheiro</option>
+      </select>
+      <button onclick="marcarPago(this)" class="bg-wa-green hover:bg-wa-green-dk text-white text-xs px-3 py-1.5 rounded ml-auto">Marcar pago</button>
+    </div>
+  </div>`;
+}
+
+async function marcarPago(btn) {
+  const card = btn.closest("[data-appt]");
+  const valor = parseInt(card.querySelector(".valor-input").value, 10);
+  const forma_pagamento = card.querySelector(".forma-input").value;
+  if (isNaN(valor) || valor < 0) { alert("Valor inválido."); return; }
+  btn.disabled = true;
+  const r = await fetch(`/api/atendente/pagamentos/${card.dataset.appt}/pagar?token=${encodeURIComponent(TOKEN)}`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      tipo: card.dataset.tipo, valor, forma_pagamento,
+      paciente: card.dataset.paciente, medico: card.dataset.medico,
+      data_hora: card.dataset.dataHora, phone: card.dataset.phone,
+      conversation_id: CONVERSATION_ID,
+    }),
+  });
+  if (!r.ok) { alert("Erro ao registrar pagamento."); btn.disabled = false; return; }
+  card.remove();
+}
 
 // ── 2. Resolver contato + pacientes ─────────────────────────────────────────
 async function load() {
@@ -61,6 +128,7 @@ async function load() {
   if (!contact) { setStatus("Nenhum contato encontrado para este número."); return; }
   setStatus(`Contato: ${contact.name || contact.phone}`);
   document.getElementById("reset-box").classList.remove("hidden");
+  loadPagamentos();
 
   const sel = document.getElementById("patient-select");
   sel.innerHTML = "";
