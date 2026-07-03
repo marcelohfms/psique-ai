@@ -1616,6 +1616,68 @@ async def test_collect_info_new_adult_asks_cpf_after_is_returning():
     assert "cpf" in sent
 
 
+async def test_collect_info_ask_forces_stage_back_to_collect_info():
+    """Regressão (Talita, 2026-07-03): uma instrução da atendente força
+    stage='patient_agent' em main.py antes do turno rodar, mesmo com o cadastro
+    incompleto (CPF faltando). Se collect_info ainda pergunta o CPF, o retorno
+    DEVE resetar stage para 'collect_info' — senão _route_after_collect manda o
+    grafo seguir para patient_agent no mesmo turno, gerando uma segunda mensagem
+    conflitante e corrompendo o rastreio de última pergunta/resposta nos turnos
+    seguintes (fazendo a Eva rejeitar um CPF válido)."""
+    from app.graph.nodes import collect_info_node
+    from langchain_core.messages import HumanMessage, AIMessage
+
+    _Q = "É a primeira consulta ou o paciente já está em acompanhamento na clínica?"
+    state = _base_minor_state(
+        user_name="Talita", patient_name="Talita", patient_cpf=None,
+        is_patient=True, patient_age=35, birth_date="22/08/1990",
+        is_returning_patient=None,
+        stage="patient_agent",  # forçado por main.py ao injetar a nota da atendente
+        messages=[
+            HumanMessage(content="quero agendar"),
+            AIMessage(content=_Q),
+            HumanMessage(content="[Instrução da atendente]: Eva, será a primeira vez em atendimento na clinica"),
+        ],
+    )
+    with patch("app.graph.nodes.send_text", new_callable=AsyncMock), \
+         patch("app.graph.nodes.save_message", new_callable=AsyncMock), \
+         patch("app.graph.nodes.get_users_by_phone", new_callable=AsyncMock, return_value=[]), \
+         patch("app.graph.nodes.upsert_user", new_callable=AsyncMock, return_value="id"):
+        result = await collect_info_node(state, {})
+
+    assert result.get("is_returning_patient") is False
+    assert result.get("stage") == "collect_info", (
+        "collect_info ainda tem pergunta pendente (CPF) — stage não pode ficar "
+        "'patient_agent', senão o grafo prossegue para patient_agent no mesmo turno"
+    )
+
+
+async def test_collect_info_cpf_strips_attendant_note_prefix():
+    """Regressão (Talita, 2026-07-03): quando a atendente cola o valor do CPF numa
+    nota privada (ex: "[Instrução da atendente]: 010.022.724-40"), o campo
+    patient_cpf deve guardar só o CPF — não o prefixo da nota junto."""
+    from app.graph.nodes import collect_info_node
+    from langchain_core.messages import HumanMessage, AIMessage
+
+    state = _base_minor_state(
+        user_name="Talita", patient_name="Talita", patient_cpf=None,
+        is_patient=True, patient_age=35, birth_date="22/08/1990",
+        is_returning_patient=False,
+        messages=[
+            HumanMessage(content="quero agendar"),
+            AIMessage(content="Qual o CPF do paciente?"),
+            HumanMessage(content="[Instrução da atendente]: 010.022.724-40"),
+        ],
+    )
+    with patch("app.graph.nodes.send_text", new_callable=AsyncMock), \
+         patch("app.graph.nodes.save_message", new_callable=AsyncMock), \
+         patch("app.graph.nodes.get_users_by_phone", new_callable=AsyncMock, return_value=[]), \
+         patch("app.graph.nodes.upsert_user", new_callable=AsyncMock, return_value="id"):
+        result = await collect_info_node(state, {})
+
+    assert result.get("patient_cpf") == "010.022.724-40"
+
+
 async def test_collect_info_returning_minor_guardian_name_skips_guardian_cpf():
     """Menor que JÁ é paciente: após nome do responsável, pula CPF do responsável e vai ao médico."""
     from app.graph.nodes import collect_info_node

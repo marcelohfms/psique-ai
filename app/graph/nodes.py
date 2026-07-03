@@ -306,9 +306,16 @@ async def collect_info_node(state: ConversationState, config: RunnableConfig) ->
                     _log.getLogger(__name__).exception("Failed to persist preferred_doctor")
 
     async def _ask(reply: str) -> dict:
+        # Force stage back to collect_info: a caller upstream (e.g. an attendant
+        # instruction in main.py) may have optimistically set stage="patient_agent"
+        # before this turn even ran. Since we're asking another registration
+        # question, registration is NOT complete — without this, _route_after_collect
+        # would wrongly continue into patient_agent in the same turn, producing a
+        # second, conflicting AI message and corrupting _last_ai()/_last_human()
+        # bookkeeping for the next turn (see Talita/CPF incident 2026-07-03).
         await send_text(state["phone"], reply)
         await save_message(state["phone"], "assistant", reply)
-        return {**_persistent_updates, "messages": [AIMessage(content=reply)]}
+        return {**_persistent_updates, "stage": "collect_info", "messages": [AIMessage(content=reply)]}
 
     async def _extract_and_ask(extracted: dict, next_q: str) -> dict:
         """Persist extracted fields to Supabase and ask the next question in one turn."""
@@ -328,7 +335,8 @@ async def collect_info_node(state: ConversationState, config: RunnableConfig) ->
         db_payload = {_STATE_TO_DB[k]: v for k, v in extracted.items() if k in _STATE_TO_DB}
         if "preferred_doctor" in extracted:
             db_payload["doctor_id"] = DOCTOR_IDS.get(extracted["preferred_doctor"])
-        result_update: dict = {**_persistent_updates, **extracted, "messages": [AIMessage(content=next_q)]}
+        # See _ask() above for why stage is forced back to collect_info here too.
+        result_update: dict = {**_persistent_updates, **extracted, "stage": "collect_info", "messages": [AIMessage(content=next_q)]}
         if db_payload:
             try:
                 returned_id = await upsert_user(state["phone"], db_payload, user_id=state.get("user_db_id"))
@@ -471,6 +479,13 @@ async def collect_info_node(state: ConversationState, config: RunnableConfig) ->
         from app.graph.schemas import _parse_birth_date
         last_ai = _last_ai()
         last_human = _last_human().strip()
+        # Strip the attendant-note prefix before using last_human as a raw
+        # extracted value (CPF, email, etc). Without this, an attendant pasting
+        # a field value in a private note (e.g. "[Instrução da atendente]: 010.022.724-40")
+        # gets the whole prefixed string saved verbatim into the field.
+        _ATTENDANT_PREFIX = "[Instrução da atendente]: "
+        if last_human.startswith(_ATTENDANT_PREFIX):
+            last_human = last_human[len(_ATTENDANT_PREFIX):].strip()
 
         # Step 2: contact name — saved to contacts.name only
         if not state.get("user_name"):

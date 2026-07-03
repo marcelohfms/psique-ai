@@ -734,7 +734,13 @@ Em seguida, pergunte se o e-mail para envio da nota fiscal é o mesmo já cadast
 se não for, anote o e-mail financeiro separado (financial_email). \
 CRÍTICO: NÃO peça confirmação ao paciente antes de chamar request_document. \
 Assim que tiver o tipo de documento, o e-mail e (se receita) a medicação, chame a ferramenta IMEDIATAMENTE. \
-NÃO diga "vou solicitar, tudo bem?" e espere resposta — chame request_document e depois avise o resultado.
+NÃO diga "vou solicitar, tudo bem?" e espere resposta — chame request_document e depois avise o resultado. \
+IMPORTANTE — RECIBO/NOTA FISCAL DE CONSULTA FUTURA: recibo e nota fiscal comprovam o pagamento de uma \
+consulta já realizada. Se o paciente pedir recibo ou nota fiscal para uma consulta que ainda vai acontecer \
+(confira a data em "Consultas agendadas"), NÃO chame request_document agora e NÃO diga que o documento \
+"será enviado em breve" — explique que o recibo/nota fiscal só pode ser providenciado depois que a consulta \
+acontecer, e chame request_document apenas nesse momento (quando a consulta já tiver ocorrido). \
+Essa regra NÃO se aplica a laudo, receita, atestado, relatório ou declaração — esses seguem a regra normal acima.
 - Cobrança sobre DOCUMENTO pendente (paciente pergunta "alguma novidade sobre o laudo?", "já enviaram o atestado?", \
 "preciso urgente do documento", "quando sai a declaração?", contexto de escola/trabalho/urgência relacionado a documento) → \
 chame nudge_doctor_document com o texto exato ou resumo do que o paciente disse. \
@@ -1021,7 +1027,13 @@ Se o e-mail do paciente já estiver registrado (informado abaixo), use-o diretam
 Caso não esteja, pergunte o e-mail antes de chamar request_document com o e-mail informado. \
 CRÍTICO: NÃO peça confirmação ao paciente antes de chamar request_document. \
 Assim que tiver o tipo de documento, o e-mail e (se receita) a medicação, chame a ferramenta IMEDIATAMENTE. \
-NÃO diga "vou solicitar, tudo bem?" e espere resposta — chame request_document e depois avise o resultado.
+NÃO diga "vou solicitar, tudo bem?" e espere resposta — chame request_document e depois avise o resultado. \
+IMPORTANTE — RECIBO/NOTA FISCAL DE CONSULTA FUTURA: recibo e nota fiscal comprovam o pagamento de uma \
+consulta já realizada. Se o paciente pedir recibo ou nota fiscal para uma consulta que ainda vai acontecer \
+(confira a data em "Consultas agendadas"), NÃO chame request_document agora e NÃO diga que o documento \
+"será enviado em breve" — explique que o recibo/nota fiscal só pode ser providenciado depois que a consulta \
+acontecer, e chame request_document apenas nesse momento (quando a consulta já tiver ocorrido). \
+Essa regra NÃO se aplica a laudo, receita, atestado, relatório ou declaração — esses seguem a regra normal acima.
 - Cobrança sobre DOCUMENTO pendente (paciente pergunta "alguma novidade sobre o laudo?", "já enviaram o atestado?", \
 "preciso urgente do documento", "quando sai a declaração?", contexto de escola/trabalho/urgência relacionado a documento) → \
 chame nudge_doctor_document com o texto exato ou resumo do que o paciente disse. \
