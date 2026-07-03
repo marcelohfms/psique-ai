@@ -19,7 +19,7 @@ class FakeQuery:
         self._table = table
         self._op = "select"
         self._payload = None
-        self._filters = []  # list[tuple[col, val]]
+        self._filters = []  # list[tuple[kind, col, val]]
 
     def select(self, *_args, **_kwargs):
         self._op = "select"
@@ -40,11 +40,20 @@ class FakeQuery:
         return self
 
     def eq(self, col, val):
-        self._filters.append((col, val))
+        self._filters.append(("eq", col, val))
+        return self
+
+    def in_(self, col, values):
+        self._filters.append(("in", col, values))
         return self
 
     def _matches(self, row):
-        return all(row.get(c) == v for c, v in self._filters)
+        for kind, col, val in self._filters:
+            if kind == "eq" and row.get(col) != val:
+                return False
+            if kind == "in" and row.get(col) not in val:
+                return False
+        return True
 
     async def execute(self):
         rows = self._store.setdefault(self._table, [])
