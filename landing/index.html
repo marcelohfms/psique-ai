@@ -1,0 +1,804 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Eva · Atendimento com IA para clínicas de saúde</title>
+<meta name="description" content="Chatbot de atendimento com IA para clínicas e consultórios. Agenda consultas, responde pacientes no WhatsApp e integra com sua agenda — 24 horas por dia." />
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Figtree:wght@300;400;500;600;700;800&family=Noto+Sans:wght@300;400;500;600;700&display=swap" rel="stylesheet" />
+<style>
+  :root {
+    --color-primary: #7C3AED;
+    --color-primary-600: #6D28D9;
+    --color-on-primary: #FFFFFF;
+    --color-secondary: #A78BFA;
+    --color-accent: #0891B2;
+    --color-accent-600: #0E7490;
+    --color-background: #FAF5FF;
+    --color-surface: #FFFFFF;
+    --color-foreground: #1E1B4B;
+    --color-muted: #ECEEF9;
+    --color-muted-fg: #5B577E;
+    --color-border: #DDD6FE;
+    --color-ring: #7C3AED;
+
+    --radius-sm: 10px;
+    --radius: 16px;
+    --radius-lg: 24px;
+    --radius-full: 999px;
+
+    --shadow-sm: 0 1px 2px rgba(30, 27, 75, 0.06);
+    --shadow: 0 8px 24px -8px rgba(124, 58, 237, 0.18);
+    --shadow-lg: 0 24px 60px -20px rgba(124, 58, 237, 0.35);
+
+    --maxw: 1140px;
+    --font-head: "Figtree", system-ui, sans-serif;
+    --font-body: "Noto Sans", system-ui, sans-serif;
+  }
+
+  * { box-sizing: border-box; }
+  html { scroll-behavior: smooth; }
+
+  body {
+    margin: 0;
+    font-family: var(--font-body);
+    color: var(--color-foreground);
+    background:
+      radial-gradient(1200px 600px at 80% -10%, #EDE4FF 0%, transparent 55%),
+      radial-gradient(900px 500px at -10% 10%, #E0F5FA 0%, transparent 50%),
+      var(--color-background);
+    line-height: 1.6;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  h1, h2, h3, h4 { font-family: var(--font-head); line-height: 1.15; margin: 0; letter-spacing: -0.02em; }
+  p { margin: 0; }
+  a { color: inherit; text-decoration: none; }
+  img { max-width: 100%; display: block; }
+
+  .wrap { max-width: var(--maxw); margin: 0 auto; padding: 0 24px; }
+
+  .eyebrow {
+    display: inline-flex; align-items: center; gap: 8px;
+    font-family: var(--font-head); font-weight: 600; font-size: 13px;
+    letter-spacing: 0.04em; text-transform: uppercase;
+    color: var(--color-primary-600);
+    background: var(--color-surface);
+    border: 1px solid var(--color-border);
+    padding: 7px 14px; border-radius: var(--radius-full);
+    box-shadow: var(--shadow-sm);
+  }
+  .eyebrow .dot { width: 8px; height: 8px; border-radius: 50%; background: #16A34A; box-shadow: 0 0 0 4px rgba(22,163,74,0.15); }
+
+  /* Buttons */
+  .btn {
+    display: inline-flex; align-items: center; justify-content: center; gap: 9px;
+    font-family: var(--font-head); font-weight: 600; font-size: 16px;
+    padding: 14px 24px; border-radius: var(--radius-full);
+    cursor: pointer; border: 1px solid transparent;
+    transition: transform .18s ease, box-shadow .18s ease, background .18s ease, border-color .18s ease;
+    min-height: 48px; white-space: nowrap;
+  }
+  .btn svg { width: 18px; height: 18px; }
+  .btn-primary { background: var(--color-primary); color: var(--color-on-primary); box-shadow: var(--shadow); }
+  .btn-primary:hover { background: var(--color-primary-600); transform: translateY(-2px); box-shadow: var(--shadow-lg); }
+  .btn-accent { background: var(--color-accent); color: #fff; box-shadow: var(--shadow); }
+  .btn-accent:hover { background: var(--color-accent-600); transform: translateY(-2px); box-shadow: var(--shadow-lg); }
+  .btn-ghost { background: var(--color-surface); color: var(--color-foreground); border-color: var(--color-border); }
+  .btn-ghost:hover { border-color: var(--color-secondary); transform: translateY(-2px); box-shadow: var(--shadow); }
+  .btn:focus-visible { outline: 3px solid var(--color-ring); outline-offset: 3px; }
+
+  /* Nav */
+  header.nav {
+    position: sticky; top: 0; z-index: 100;
+    backdrop-filter: saturate(180%) blur(12px);
+    background: rgba(250, 245, 255, 0.8);
+    border-bottom: 1px solid var(--color-border);
+  }
+  .nav-inner { display: flex; align-items: center; justify-content: space-between; height: 68px; }
+  .brand { display: flex; align-items: center; gap: 11px; font-family: var(--font-head); font-weight: 800; font-size: 20px; }
+  .brand .logo {
+    width: 38px; height: 38px; border-radius: 11px;
+    background: linear-gradient(135deg, var(--color-primary), var(--color-accent));
+    display: grid; place-items: center; color: #fff; box-shadow: var(--shadow);
+  }
+  .brand .logo svg { width: 22px; height: 22px; }
+  .nav-links { display: flex; align-items: center; gap: 30px; }
+  .nav-links a { font-weight: 500; color: var(--color-muted-fg); font-size: 15px; transition: color .15s ease; }
+  .nav-links a:hover { color: var(--color-foreground); }
+  .nav-cta { display: flex; align-items: center; gap: 12px; }
+  .nav-menu-btn { display: none; }
+
+  /* Hero */
+  .hero { padding: 72px 0 40px; }
+  .hero-grid { display: grid; grid-template-columns: 1.05fr 0.95fr; gap: 56px; align-items: center; }
+  .hero h1 { font-size: clamp(38px, 5vw, 58px); font-weight: 800; margin: 22px 0 20px; }
+  .hero h1 .grad {
+    background: linear-gradient(120deg, var(--color-primary), var(--color-accent));
+    -webkit-background-clip: text; background-clip: text; -webkit-text-fill-color: transparent;
+  }
+  .hero .lead { font-size: 19px; color: var(--color-muted-fg); max-width: 34ch; }
+  .hero-actions { display: flex; gap: 14px; margin: 32px 0 20px; flex-wrap: wrap; }
+  .hero-trust { display: flex; align-items: center; gap: 18px; flex-wrap: wrap; color: var(--color-muted-fg); font-size: 14px; }
+  .hero-trust .item { display: inline-flex; align-items: center; gap: 7px; }
+  .hero-trust svg { width: 16px; height: 16px; color: #16A34A; }
+
+  /* Chat mockup */
+  .chat-card {
+    background: var(--color-surface);
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-lg);
+    box-shadow: var(--shadow-lg);
+    overflow: hidden;
+    position: relative;
+  }
+  .chat-head {
+    display: flex; align-items: center; gap: 12px;
+    padding: 16px 18px;
+    background: linear-gradient(120deg, var(--color-primary), var(--color-primary-600));
+    color: #fff;
+  }
+  .chat-head .ava {
+    width: 40px; height: 40px; border-radius: 50%;
+    background: rgba(255,255,255,0.18); display: grid; place-items: center;
+  }
+  .chat-head .ava svg { width: 22px; height: 22px; }
+  .chat-head .name { font-family: var(--font-head); font-weight: 700; font-size: 15px; line-height: 1.2; }
+  .chat-head .status { font-size: 12px; opacity: .85; display: flex; align-items: center; gap: 6px; }
+  .chat-head .status .dot { width: 7px; height: 7px; border-radius: 50%; background: #4ADE80; }
+  .chat-head .wa { margin-left: auto; opacity: .9; }
+  .chat-head .wa svg { width: 22px; height: 22px; }
+
+  .chat-body {
+    padding: 22px 18px; display: flex; flex-direction: column; gap: 14px;
+    background:
+      linear-gradient(0deg, #FBF9FF, #FBF9FF),
+      radial-gradient(circle at 20% 10%, #F3ECFF, transparent 40%);
+    min-height: 360px;
+  }
+  .msg { max-width: 82%; padding: 11px 15px; font-size: 14.5px; border-radius: 18px; box-shadow: var(--shadow-sm); animation: pop .4s ease both; }
+  .msg.in { align-self: flex-start; background: #fff; border: 1px solid var(--color-border); border-bottom-left-radius: 6px; }
+  .msg.out { align-self: flex-end; background: var(--color-primary); color: #fff; border-bottom-right-radius: 6px; }
+  .msg.out.accent { background: var(--color-accent); }
+  .msg .meta { display: block; font-size: 11px; opacity: .6; margin-top: 5px; }
+  .msg.d1 { animation-delay: .1s; }
+  .msg.d2 { animation-delay: .5s; }
+  .msg.d3 { animation-delay: 1.1s; }
+  .msg.d4 { animation-delay: 1.7s; }
+
+  .slots { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 4px; }
+  .slot-chip {
+    font-family: var(--font-head); font-weight: 600; font-size: 13px;
+    padding: 8px 13px; border-radius: var(--radius-full);
+    background: #fff; border: 1px solid var(--color-border); color: var(--color-primary-600);
+  }
+  .slot-chip.pick { background: var(--color-accent); color: #fff; border-color: var(--color-accent); }
+
+  .typing { align-self: flex-start; display: inline-flex; gap: 5px; padding: 13px 16px; background: #fff; border: 1px solid var(--color-border); border-radius: 18px; border-bottom-left-radius: 6px; box-shadow: var(--shadow-sm); animation: pop .3s ease both; animation-delay: .9s; }
+  .typing span { width: 8px; height: 8px; border-radius: 50%; background: var(--color-secondary); animation: blink 1.4s infinite both; }
+  .typing span:nth-child(2) { animation-delay: .2s; }
+  .typing span:nth-child(3) { animation-delay: .4s; }
+
+  .float-badge {
+    position: absolute; background: var(--color-surface); border: 1px solid var(--color-border);
+    border-radius: var(--radius); padding: 12px 15px; box-shadow: var(--shadow-lg);
+    display: flex; align-items: center; gap: 11px; font-family: var(--font-head);
+  }
+  .float-badge .ic { width: 34px; height: 34px; border-radius: 10px; display: grid; place-items: center; color: #fff; }
+  .float-badge .ic svg { width: 19px; height: 19px; }
+  .float-badge .k { font-size: 18px; font-weight: 800; line-height: 1; }
+  .float-badge .v { font-size: 12px; color: var(--color-muted-fg); }
+  .fb-1 { top: -22px; left: -26px; animation: floaty 5s ease-in-out infinite; }
+  .fb-1 .ic { background: #16A34A; }
+  .fb-2 { bottom: -20px; right: -22px; animation: floaty 6s ease-in-out infinite reverse; }
+  .fb-2 .ic { background: var(--color-accent); }
+
+  /* Logos / trust bar */
+  .trustbar { padding: 26px 0 8px; }
+  .trustbar p { text-align: center; color: var(--color-muted-fg); font-size: 13px; letter-spacing: .05em; text-transform: uppercase; font-weight: 600; margin-bottom: 18px; }
+  .logos { display: flex; align-items: center; justify-content: center; gap: 44px; flex-wrap: wrap; opacity: .72; }
+  .logos .lg { display: inline-flex; align-items: center; gap: 9px; font-family: var(--font-head); font-weight: 700; font-size: 18px; color: var(--color-muted-fg); }
+  .logos .lg svg { width: 22px; height: 22px; }
+
+  /* Section */
+  section { padding: 76px 0; }
+  .sec-head { text-align: center; max-width: 640px; margin: 0 auto 52px; }
+  .sec-head h2 { font-size: clamp(28px, 3.5vw, 42px); font-weight: 800; margin: 16px 0 14px; }
+  .sec-head p { font-size: 18px; color: var(--color-muted-fg); }
+
+  /* Features grid */
+  .features { display: grid; grid-template-columns: repeat(3, 1fr); gap: 22px; }
+  .feature {
+    background: var(--color-surface); border: 1px solid var(--color-border);
+    border-radius: var(--radius); padding: 28px 24px; box-shadow: var(--shadow-sm);
+    transition: transform .2s ease, box-shadow .2s ease, border-color .2s ease;
+  }
+  .feature:hover { transform: translateY(-4px); box-shadow: var(--shadow-lg); border-color: var(--color-secondary); }
+  .feature .fic {
+    width: 50px; height: 50px; border-radius: 14px; display: grid; place-items: center;
+    background: linear-gradient(135deg, #F3ECFF, #E3F6FA); color: var(--color-primary-600); margin-bottom: 18px;
+  }
+  .feature .fic svg { width: 26px; height: 26px; }
+  .feature h3 { font-size: 19px; font-weight: 700; margin-bottom: 9px; }
+  .feature p { font-size: 15px; color: var(--color-muted-fg); }
+
+  /* Stats */
+  .stats { display: grid; grid-template-columns: repeat(4, 1fr); gap: 20px; }
+  .stat {
+    text-align: center; background: linear-gradient(135deg, var(--color-primary), var(--color-primary-600));
+    color: #fff; border-radius: var(--radius); padding: 34px 18px; box-shadow: var(--shadow);
+  }
+  .stat.alt { background: linear-gradient(135deg, var(--color-accent), var(--color-accent-600)); }
+  .stat .num { font-family: var(--font-head); font-size: 40px; font-weight: 800; line-height: 1; }
+  .stat .lbl { font-size: 14px; opacity: .9; margin-top: 8px; }
+
+  /* How it works */
+  .steps { display: grid; grid-template-columns: repeat(3, 1fr); gap: 24px; position: relative; }
+  .step { text-align: center; padding: 0 12px; }
+  .step .n {
+    width: 56px; height: 56px; margin: 0 auto 18px; border-radius: 50%;
+    display: grid; place-items: center; font-family: var(--font-head); font-weight: 800; font-size: 22px;
+    background: var(--color-surface); color: var(--color-primary-600);
+    border: 2px solid var(--color-border); box-shadow: var(--shadow);
+  }
+  .step h3 { font-size: 19px; font-weight: 700; margin-bottom: 9px; }
+  .step p { color: var(--color-muted-fg); font-size: 15px; }
+
+  /* Benefits split */
+  .split { display: grid; grid-template-columns: 1fr 1fr; gap: 56px; align-items: center; }
+  .benefit-list { list-style: none; padding: 0; margin: 26px 0 0; display: grid; gap: 18px; }
+  .benefit-list li { display: flex; gap: 14px; align-items: flex-start; }
+  .benefit-list .ck { flex-shrink: 0; width: 28px; height: 28px; border-radius: 8px; background: #DCFCE7; color: #16A34A; display: grid; place-items: center; }
+  .benefit-list .ck svg { width: 17px; height: 17px; }
+  .benefit-list strong { font-family: var(--font-head); display: block; font-size: 16px; }
+  .benefit-list span { font-size: 14.5px; color: var(--color-muted-fg); }
+  .visual-card {
+    background: var(--color-surface); border: 1px solid var(--color-border); border-radius: var(--radius-lg);
+    padding: 28px; box-shadow: var(--shadow-lg);
+  }
+  .mini-row { display: flex; align-items: center; gap: 14px; padding: 15px 0; border-bottom: 1px solid var(--color-muted); }
+  .mini-row:last-child { border-bottom: 0; }
+  .mini-row .mi { width: 42px; height: 42px; border-radius: 12px; display: grid; place-items: center; color: #fff; flex-shrink: 0; }
+  .mini-row .mi svg { width: 22px; height: 22px; }
+  .mini-row .txt strong { font-family: var(--font-head); font-size: 15px; display: block; }
+  .mini-row .txt span { font-size: 13px; color: var(--color-muted-fg); }
+  .mini-row .tag { margin-left: auto; font-size: 12px; font-weight: 700; color: #16A34A; background: #DCFCE7; padding: 4px 10px; border-radius: var(--radius-full); }
+
+  /* Testimonials */
+  .testimonials { display: grid; grid-template-columns: repeat(3, 1fr); gap: 22px; }
+  .quote {
+    background: var(--color-surface); border: 1px solid var(--color-border); border-radius: var(--radius);
+    padding: 28px 24px; box-shadow: var(--shadow-sm);
+  }
+  .quote .stars { display: flex; gap: 3px; color: #F59E0B; margin-bottom: 14px; }
+  .quote .stars svg { width: 18px; height: 18px; }
+  .quote p { font-size: 15.5px; color: var(--color-foreground); }
+  .quote .who { display: flex; align-items: center; gap: 12px; margin-top: 20px; }
+  .quote .who .pic { width: 44px; height: 44px; border-radius: 50%; background: linear-gradient(135deg, var(--color-secondary), var(--color-accent)); color: #fff; display: grid; place-items: center; font-family: var(--font-head); font-weight: 700; }
+  .quote .who strong { font-family: var(--font-head); font-size: 15px; display: block; }
+  .quote .who span { font-size: 13px; color: var(--color-muted-fg); }
+
+  /* Pricing */
+  .pricing { display: grid; grid-template-columns: repeat(3, 1fr); gap: 22px; align-items: stretch; }
+  .plan {
+    background: var(--color-surface); border: 1px solid var(--color-border); border-radius: var(--radius-lg);
+    padding: 32px 26px; box-shadow: var(--shadow-sm); display: flex; flex-direction: column;
+    transition: transform .2s ease, box-shadow .2s ease;
+  }
+  .plan:hover { transform: translateY(-4px); box-shadow: var(--shadow-lg); }
+  .plan.pop { border: 2px solid var(--color-primary); box-shadow: var(--shadow-lg); position: relative; }
+  .plan.pop .ribbon {
+    position: absolute; top: -13px; left: 50%; transform: translateX(-50%);
+    background: var(--color-primary); color: #fff; font-family: var(--font-head); font-weight: 700;
+    font-size: 12px; letter-spacing: .04em; padding: 6px 16px; border-radius: var(--radius-full);
+    text-transform: uppercase;
+  }
+  .plan h3 { font-size: 20px; font-weight: 700; }
+  .plan .price { font-family: var(--font-head); font-size: 42px; font-weight: 800; margin: 14px 0 2px; }
+  .plan .price small { font-size: 16px; font-weight: 500; color: var(--color-muted-fg); }
+  .plan .pdesc { font-size: 14px; color: var(--color-muted-fg); margin-bottom: 22px; }
+  .plan ul { list-style: none; padding: 0; margin: 0 0 26px; display: grid; gap: 12px; flex: 1; }
+  .plan ul li { display: flex; gap: 10px; font-size: 14.5px; align-items: flex-start; }
+  .plan ul svg { width: 18px; height: 18px; color: #16A34A; flex-shrink: 0; margin-top: 2px; }
+
+  /* FAQ */
+  .faq { max-width: 760px; margin: 0 auto; display: grid; gap: 12px; }
+  details.faq-item {
+    background: var(--color-surface); border: 1px solid var(--color-border); border-radius: var(--radius);
+    padding: 4px 22px; box-shadow: var(--shadow-sm);
+  }
+  details.faq-item summary {
+    cursor: pointer; list-style: none; padding: 18px 0; font-family: var(--font-head); font-weight: 600; font-size: 17px;
+    display: flex; align-items: center; justify-content: space-between; gap: 16px;
+  }
+  details.faq-item summary::-webkit-details-marker { display: none; }
+  details.faq-item summary .chev { transition: transform .2s ease; flex-shrink: 0; color: var(--color-primary); }
+  details.faq-item[open] summary .chev { transform: rotate(180deg); }
+  details.faq-item p { padding: 0 0 20px; color: var(--color-muted-fg); font-size: 15px; }
+
+  /* Final CTA */
+  .cta-final {
+    background: linear-gradient(135deg, var(--color-primary), var(--color-accent));
+    border-radius: var(--radius-lg); padding: 60px 40px; text-align: center; color: #fff;
+    box-shadow: var(--shadow-lg); position: relative; overflow: hidden;
+  }
+  .cta-final::before { content: ""; position: absolute; inset: 0; background: radial-gradient(600px 300px at 80% 0%, rgba(255,255,255,.18), transparent 60%); }
+  .cta-final h2 { font-size: clamp(28px, 3.5vw, 40px); font-weight: 800; position: relative; }
+  .cta-final p { font-size: 18px; opacity: .92; max-width: 46ch; margin: 16px auto 30px; position: relative; }
+  .cta-final .btn { position: relative; }
+  .cta-final .btn-white { background: #fff; color: var(--color-primary-600); }
+  .cta-final .btn-white:hover { transform: translateY(-2px); box-shadow: var(--shadow-lg); }
+  .cta-final .sub { font-size: 13.5px; opacity: .85; margin-top: 16px; position: relative; }
+
+  /* Footer */
+  footer { padding: 56px 0 34px; border-top: 1px solid var(--color-border); margin-top: 20px; }
+  .foot-grid { display: grid; grid-template-columns: 1.4fr 1fr 1fr 1fr; gap: 40px; margin-bottom: 40px; }
+  .foot-grid p { color: var(--color-muted-fg); font-size: 14px; margin-top: 14px; max-width: 30ch; }
+  .foot-col h4 { font-family: var(--font-head); font-size: 14px; text-transform: uppercase; letter-spacing: .05em; color: var(--color-muted-fg); margin-bottom: 16px; }
+  .foot-col a { display: block; padding: 6px 0; color: var(--color-foreground); font-size: 14.5px; transition: color .15s ease; }
+  .foot-col a:hover { color: var(--color-primary); }
+  .foot-bottom { display: flex; align-items: center; justify-content: space-between; border-top: 1px solid var(--color-border); padding-top: 24px; color: var(--color-muted-fg); font-size: 13.5px; flex-wrap: wrap; gap: 12px; }
+
+  /* Animations */
+  @keyframes pop { from { opacity: 0; transform: translateY(8px) scale(.98); } to { opacity: 1; transform: none; } }
+  @keyframes blink { 0%, 60%, 100% { opacity: .3; transform: translateY(0); } 30% { opacity: 1; transform: translateY(-3px); } }
+  @keyframes floaty { 0%, 100% { transform: translateY(0); } 50% { transform: translateY(-9px); } }
+
+  @media (prefers-reduced-motion: reduce) {
+    * { animation: none !important; scroll-behavior: auto !important; transition: none !important; }
+  }
+
+  /* Responsive */
+  @media (max-width: 940px) {
+    .hero-grid { grid-template-columns: 1fr; gap: 48px; }
+    .hero .lead { max-width: none; }
+    .features, .testimonials, .pricing { grid-template-columns: 1fr; }
+    .stats { grid-template-columns: repeat(2, 1fr); }
+    .steps { grid-template-columns: 1fr; gap: 34px; }
+    .split { grid-template-columns: 1fr; gap: 36px; }
+    .foot-grid { grid-template-columns: 1fr 1fr; }
+    .nav-links { display: none; }
+    .nav-menu-btn { display: inline-grid; }
+  }
+  @media (max-width: 520px) {
+    .stats { grid-template-columns: 1fr; }
+    .foot-grid { grid-template-columns: 1fr; }
+    .hero-actions .btn { width: 100%; }
+    .cta-final { padding: 44px 24px; }
+    section { padding: 56px 0; }
+  }
+</style>
+</head>
+<body>
+
+<!-- NAV -->
+<header class="nav">
+  <div class="wrap nav-inner">
+    <a class="brand" href="#top" aria-label="Eva — página inicial">
+      <span class="logo" aria-hidden="true">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 8V4H8"/><rect width="16" height="12" x="4" y="8" rx="2"/><path d="M2 14h2M20 14h2M15 13v2M9 13v2"/></svg>
+      </span>
+      Eva
+    </a>
+    <nav class="nav-links" aria-label="Navegação principal">
+      <a href="#recursos">Recursos</a>
+      <a href="#como-funciona">Como funciona</a>
+      <a href="#precos">Preços</a>
+      <a href="#faq">Dúvidas</a>
+    </nav>
+    <div class="nav-cta">
+      <a class="btn btn-ghost" href="#precos" style="padding:11px 18px; min-height:44px; font-size:15px;">Entrar</a>
+      <a class="btn btn-primary" href="#demo" style="padding:11px 20px; min-height:44px; font-size:15px;">Agendar demo</a>
+    </div>
+  </div>
+</header>
+
+<main id="top">
+
+  <!-- HERO -->
+  <section class="hero" aria-labelledby="hero-title">
+    <div class="wrap hero-grid">
+      <div>
+        <span class="eyebrow"><span class="dot" aria-hidden="true"></span> IA de atendimento para saúde</span>
+        <h1 id="hero-title">O atendimento da sua clínica <span class="grad">no automático</span>, 24 horas por dia</h1>
+        <p class="lead">A Eva conversa com seus pacientes no WhatsApp, agenda consultas na sua agenda e responde dúvidas — sem fila, sem recepção sobrecarregada, sem paciente esperando.</p>
+        <div class="hero-actions">
+          <a class="btn btn-primary" href="#demo">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m5 12 7-7 7 7M12 19V5"/></svg>
+            Testar grátis por 14 dias
+          </a>
+          <a class="btn btn-ghost" href="#como-funciona">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="6 3 20 12 6 21 6 3"/></svg>
+            Ver como funciona
+          </a>
+        </div>
+        <div class="hero-trust">
+          <span class="item"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg> Sem cartão de crédito</span>
+          <span class="item"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg> Conformidade LGPD</span>
+          <span class="item"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg> Integração com Google Agenda</span>
+        </div>
+      </div>
+
+      <!-- Chat mockup -->
+      <div style="position: relative;">
+        <div class="float-badge fb-1">
+          <span class="ic" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg></span>
+          <span><span class="k">+42%</span><span class="v">consultas agendadas</span></span>
+        </div>
+        <div class="float-badge fb-2">
+          <span class="ic" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M12 6v6l4 2"/></svg></span>
+          <span><span class="k">8s</span><span class="v">tempo de resposta</span></span>
+        </div>
+
+        <div class="chat-card" role="img" aria-label="Exemplo de conversa: paciente agenda uma consulta com a assistente Eva pelo WhatsApp">
+          <div class="chat-head">
+            <span class="ava" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 8V4H8"/><rect width="16" height="12" x="4" y="8" rx="2"/><path d="M2 14h2M20 14h2M15 13v2M9 13v2"/></svg></span>
+            <div>
+              <div class="name">Eva · Clínica Psique</div>
+              <div class="status"><span class="dot" aria-hidden="true"></span> online agora</div>
+            </div>
+            <span class="wa" aria-hidden="true"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M17.5 14.4c-.3-.1-1.7-.8-1.9-.9-.3-.1-.5-.1-.7.1-.2.3-.7.9-.9 1.1-.2.2-.3.2-.6.1-.3-.1-1.2-.5-2.3-1.4-.9-.8-1.4-1.7-1.6-2-.2-.3 0-.5.1-.6l.4-.5c.1-.2.2-.3.3-.5.1-.2 0-.4 0-.5s-.7-1.6-.9-2.2c-.2-.6-.5-.5-.7-.5h-.6c-.2 0-.5.1-.8.4-.3.3-1 1-1 2.5s1.1 2.9 1.2 3.1c.1.2 2.1 3.2 5 4.4.7.3 1.2.5 1.7.6.7.2 1.3.2 1.8.1.6-.1 1.7-.7 1.9-1.3.2-.6.2-1.2.2-1.3-.1-.2-.3-.2-.6-.4zM12 2a10 10 0 0 0-8.6 15l-1.3 4.7L7 20.4A10 10 0 1 0 12 2z"/></svg></span>
+          </div>
+          <div class="chat-body">
+            <div class="msg in d1">Oi! Gostaria de marcar uma consulta com a Dra. Bruna 😊</div>
+            <div class="msg out d2">Claro! Prefere manhã ou tarde nesta semana?<span class="meta">Eva · 10:32</span></div>
+            <div class="typing" aria-hidden="true"><span></span><span></span><span></span></div>
+            <div class="msg out accent d3">
+              Encontrei estes horários com a Dra. Bruna:
+              <div class="slots">
+                <span class="slot-chip">Qua 14h</span>
+                <span class="slot-chip pick">Qui 09h</span>
+                <span class="slot-chip">Sex 16h</span>
+              </div>
+              <span class="meta">Eva · 10:32</span>
+            </div>
+            <div class="msg in d4">Quinta às 9h fica ótimo!</div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- TRUST BAR -->
+  <div class="trustbar">
+    <div class="wrap">
+      <p>Feito para clínicas, consultórios e operadoras de saúde</p>
+      <div class="logos">
+        <span class="lg"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M19 14c1.49-1.46 3-3.21 3-5.5A5.5 5.5 0 0 0 16.5 3c-1.76 0-3 .5-4.5 2-1.5-1.5-2.74-2-4.5-2A5.5 5.5 0 0 0 2 8.5c0 2.3 1.5 4.05 3 5.5l7 7Z"/></svg> VidaPlena</span>
+        <span class="lg"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 12h-4l-3 9L9 3l-3 9H2"/></svg> ClínicaViva</span>
+        <span class="lg"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M11 2v2M5 2v2M12 8a2 2 0 0 0-2 2c0 1.02-.1 2.51-.26 4M12 8a2 2 0 0 1 2 2c0 2.2.15 4.84 1 7M8 15a18 18 0 0 1-.6 3M14.5 14a24 24 0 0 1 .5 5M18 11a24 24 0 0 1-.2 4"/><circle cx="12" cy="10" r="1"/></svg> NeoSaúde</span>
+        <span class="lg"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4.8 2.3A.3.3 0 1 0 5 2.3M8 15v-3a4 4 0 0 0-8 0v3M11 20a2 2 0 1 0 0-4 2 2 0 0 0 0 4Z"/><path d="M14 20h6M17 17v6M9 15h4a2 2 0 0 1 2 2v3"/></svg> MedCare</span>
+        <span class="lg"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="18" height="18" x="3" y="3" rx="2"/><path d="M9 12h6M12 9v6"/></svg> Instituto Bem</span>
+      </div>
+    </div>
+  </div>
+
+  <!-- FEATURES -->
+  <section id="recursos" aria-labelledby="rec-title">
+    <div class="wrap">
+      <div class="sec-head">
+        <span class="eyebrow">Recursos</span>
+        <h2 id="rec-title">Uma recepcionista de IA que nunca dorme</h2>
+        <p>A Eva assume as tarefas repetitivas do atendimento para que sua equipe cuide do que importa: os pacientes.</p>
+      </div>
+      <div class="features">
+        <article class="feature">
+          <div class="fic" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M8 2v4M16 2v4M3 10h18"/><rect width="18" height="18" x="3" y="4" rx="2"/><path d="m9 16 2 2 4-4"/></svg></div>
+          <h3>Agendamento automático</h3>
+          <p>Mostra horários livres em tempo real e marca a consulta direto na agenda do médico, sem intervenção manual.</p>
+        </article>
+        <article class="feature">
+          <div class="fic" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M7.9 20A9 9 0 1 0 4 16.1L2 22Z"/></svg></div>
+          <h3>Nativo no WhatsApp</h3>
+          <p>Conversa no canal que o paciente já usa todos os dias — sem app novo, sem link, sem fricção.</p>
+        </article>
+        <article class="feature">
+          <div class="fic" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M12 6v6l4 2"/></svg></div>
+          <h3>Disponível 24/7</h3>
+          <p>Responde de madrugada, no fim de semana e feriado. O paciente nunca fica sem retorno.</p>
+        </article>
+        <article class="feature">
+          <div class="fic" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 9a2 2 0 0 1-2 2H6l-4 4V4a2 2 0 0 1 2-2h8a2 2 0 0 1 2 2Z"/><path d="M18 9h2a2 2 0 0 1 2 2v11l-4-4h-6a2 2 0 0 1-2-2v-1"/></svg></div>
+          <h3>Lembretes e confirmação</h3>
+          <p>Reduz faltas com lembretes automáticos e confirmação de presença antes de cada consulta.</p>
+        </article>
+        <article class="feature">
+          <div class="fic" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M22 21v-2a4 4 0 0 0-3-3.87M16 3.13a4 4 0 0 1 0 7.75"/></svg></div>
+          <h3>Passa para o humano na hora certa</h3>
+          <p>Detecta casos sensíveis e transfere para sua equipe com todo o histórico da conversa em contexto.</p>
+        </article>
+        <article class="feature">
+          <div class="fic" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="18" height="11" x="3" y="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg></div>
+          <h3>Seguro e conforme a LGPD</h3>
+          <p>Dados de pacientes criptografados e tratados dentro das normas de privacidade da saúde brasileira.</p>
+        </article>
+      </div>
+    </div>
+  </section>
+
+  <!-- STATS -->
+  <section style="padding-top: 20px;" aria-label="Resultados">
+    <div class="wrap">
+      <div class="stats">
+        <div class="stat"><div class="num">24/7</div><div class="lbl">atendimento sem pausa</div></div>
+        <div class="stat alt"><div class="num">-35%</div><div class="lbl">de faltas em consultas</div></div>
+        <div class="stat alt"><div class="num">+42%</div><div class="lbl">de agendamentos concluídos</div></div>
+        <div class="stat"><div class="num">8s</div><div class="lbl">tempo médio de resposta</div></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- HOW IT WORKS -->
+  <section id="como-funciona" aria-labelledby="hiw-title">
+    <div class="wrap">
+      <div class="sec-head">
+        <span class="eyebrow">Como funciona</span>
+        <h2 id="hiw-title">No ar em menos de um dia</h2>
+        <p>Sem trocar de sistema e sem projeto de TI. A Eva se conecta ao que sua clínica já usa.</p>
+      </div>
+      <div class="steps">
+        <div class="step">
+          <div class="n">1</div>
+          <h3>Conecte seus canais</h3>
+          <p>Ligamos a Eva ao seu número de WhatsApp e à agenda dos médicos (Google Agenda e outros).</p>
+        </div>
+        <div class="step">
+          <div class="n">2</div>
+          <h3>Personalize a Eva</h3>
+          <p>Configuramos médicos, especialidades, valores, regras de remarcação e o tom de voz da sua clínica.</p>
+        </div>
+        <div class="step">
+          <div class="n">3</div>
+          <h3>Ela cuida do atendimento</h3>
+          <p>A Eva passa a responder, agendar e confirmar sozinha — e você acompanha tudo por um painel.</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- BENEFITS SPLIT -->
+  <section aria-labelledby="ben-title">
+    <div class="wrap split">
+      <div>
+        <span class="eyebrow">Para a sua equipe</span>
+        <h2 id="ben-title" style="font-size: clamp(28px,3.4vw,40px); font-weight: 800; margin: 16px 0 8px;">Menos telefone tocando, mais tempo com o paciente</h2>
+        <p style="color: var(--color-muted-fg); font-size: 17px;">Sua recepção deixa de ser um gargalo. A Eva absorve o volume de mensagens repetitivas e entrega para a equipe só o que precisa de gente.</p>
+        <ul class="benefit-list">
+          <li>
+            <span class="ck" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg></span>
+            <div><strong>Zero paciente sem resposta</strong><span>Toda mensagem é respondida em segundos, a qualquer hora.</span></div>
+          </li>
+          <li>
+            <span class="ck" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg></span>
+            <div><strong>Agenda sempre cheia</strong><span>Horários vagos são preenchidos automaticamente e faltas caem com os lembretes.</span></div>
+          </li>
+          <li>
+            <span class="ck" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg></span>
+            <div><strong>Equipe focada no que importa</strong><span>Recepção livre das tarefas repetitivas para dar atenção de verdade a quem chega.</span></div>
+          </li>
+        </ul>
+      </div>
+      <div class="visual-card" aria-label="Painel de atividade da Eva">
+        <div class="mini-row">
+          <span class="mi" style="background: var(--color-primary);" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M8 2v4M16 2v4M3 10h18"/><rect width="18" height="18" x="3" y="4" rx="2"/></svg></span>
+          <span class="txt"><strong>Consulta agendada</strong><span>Maria S. · Dra. Bruna · Qui 09h</span></span>
+          <span class="tag">auto</span>
+        </div>
+        <div class="mini-row">
+          <span class="mi" style="background: var(--color-accent);" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 9a2 2 0 0 1-2 2H6l-4 4V4a2 2 0 0 1 2-2h8a2 2 0 0 1 2 2Z"/></svg></span>
+          <span class="txt"><strong>Lembrete enviado</strong><span>João P. · consulta amanhã 14h</span></span>
+          <span class="tag">auto</span>
+        </div>
+        <div class="mini-row">
+          <span class="mi" style="background: #16A34A;" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg></span>
+          <span class="txt"><strong>Presença confirmada</strong><span>Ana L. · hoje 16h</span></span>
+          <span class="tag">auto</span>
+        </div>
+        <div class="mini-row">
+          <span class="mi" style="background: var(--color-secondary);" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/></svg></span>
+          <span class="txt"><strong>Transferido para equipe</strong><span>Caso sensível · com histórico</span></span>
+          <span class="tag" style="color:#7C3AED; background:#EDE4FF;">humano</span>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- TESTIMONIALS -->
+  <section aria-labelledby="dep-title">
+    <div class="wrap">
+      <div class="sec-head">
+        <span class="eyebrow">Depoimentos</span>
+        <h2 id="dep-title">Clínicas que já dormem tranquilas</h2>
+      </div>
+      <div class="testimonials">
+        <figure class="quote">
+          <div class="stars" aria-label="5 de 5 estrelas">
+            <svg viewBox="0 0 24 24" fill="currentColor"><path d="m12 2 3 6.6 7.3.6-5.5 4.8 1.7 7.1L12 17.3 5.5 21.1l1.7-7.1L1.7 9.2 9 8.6z"/></svg>
+            <svg viewBox="0 0 24 24" fill="currentColor"><path d="m12 2 3 6.6 7.3.6-5.5 4.8 1.7 7.1L12 17.3 5.5 21.1l1.7-7.1L1.7 9.2 9 8.6z"/></svg>
+            <svg viewBox="0 0 24 24" fill="currentColor"><path d="m12 2 3 6.6 7.3.6-5.5 4.8 1.7 7.1L12 17.3 5.5 21.1l1.7-7.1L1.7 9.2 9 8.6z"/></svg>
+            <svg viewBox="0 0 24 24" fill="currentColor"><path d="m12 2 3 6.6 7.3.6-5.5 4.8 1.7 7.1L12 17.3 5.5 21.1l1.7-7.1L1.7 9.2 9 8.6z"/></svg>
+            <svg viewBox="0 0 24 24" fill="currentColor"><path d="m12 2 3 6.6 7.3.6-5.5 4.8 1.7 7.1L12 17.3 5.5 21.1l1.7-7.1L1.7 9.2 9 8.6z"/></svg>
+          </div>
+          <blockquote><p>"A recepção parou de virar noite respondendo WhatsApp. A Eva agenda sozinha e nossa taxa de falta despencou."</p></blockquote>
+          <figcaption class="who"><span class="pic" aria-hidden="true">CM</span><span><strong>Dra. Camila Moraes</strong><span>Clínica VidaPlena · Recife</span></span></figcaption>
+        </figure>
+        <figure class="quote">
+          <div class="stars" aria-label="5 de 5 estrelas">
+            <svg viewBox="0 0 24 24" fill="currentColor"><path d="m12 2 3 6.6 7.3.6-5.5 4.8 1.7 7.1L12 17.3 5.5 21.1l1.7-7.1L1.7 9.2 9 8.6z"/></svg>
+            <svg viewBox="0 0 24 24" fill="currentColor"><path d="m12 2 3 6.6 7.3.6-5.5 4.8 1.7 7.1L12 17.3 5.5 21.1l1.7-7.1L1.7 9.2 9 8.6z"/></svg>
+            <svg viewBox="0 0 24 24" fill="currentColor"><path d="m12 2 3 6.6 7.3.6-5.5 4.8 1.7 7.1L12 17.3 5.5 21.1l1.7-7.1L1.7 9.2 9 8.6z"/></svg>
+            <svg viewBox="0 0 24 24" fill="currentColor"><path d="m12 2 3 6.6 7.3.6-5.5 4.8 1.7 7.1L12 17.3 5.5 21.1l1.7-7.1L1.7 9.2 9 8.6z"/></svg>
+            <svg viewBox="0 0 24 24" fill="currentColor"><path d="m12 2 3 6.6 7.3.6-5.5 4.8 1.7 7.1L12 17.3 5.5 21.1l1.7-7.1L1.7 9.2 9 8.6z"/></svg>
+          </div>
+          <blockquote><p>"Implantamos em um dia. Os pacientes acham que estão falando com uma pessoa — o tom ficou exatamente com a cara da clínica."</p></blockquote>
+          <figcaption class="who"><span class="pic" aria-hidden="true">RF</span><span><strong>Rafael Fontes</strong><span>Gestor · ClínicaViva</span></span></figcaption>
+        </figure>
+        <figure class="quote">
+          <div class="stars" aria-label="5 de 5 estrelas">
+            <svg viewBox="0 0 24 24" fill="currentColor"><path d="m12 2 3 6.6 7.3.6-5.5 4.8 1.7 7.1L12 17.3 5.5 21.1l1.7-7.1L1.7 9.2 9 8.6z"/></svg>
+            <svg viewBox="0 0 24 24" fill="currentColor"><path d="m12 2 3 6.6 7.3.6-5.5 4.8 1.7 7.1L12 17.3 5.5 21.1l1.7-7.1L1.7 9.2 9 8.6z"/></svg>
+            <svg viewBox="0 0 24 24" fill="currentColor"><path d="m12 2 3 6.6 7.3.6-5.5 4.8 1.7 7.1L12 17.3 5.5 21.1l1.7-7.1L1.7 9.2 9 8.6z"/></svg>
+            <svg viewBox="0 0 24 24" fill="currentColor"><path d="m12 2 3 6.6 7.3.6-5.5 4.8 1.7 7.1L12 17.3 5.5 21.1l1.7-7.1L1.7 9.2 9 8.6z"/></svg>
+            <svg viewBox="0 0 24 24" fill="currentColor"><path d="m12 2 3 6.6 7.3.6-5.5 4.8 1.7 7.1L12 17.3 5.5 21.1l1.7-7.1L1.7 9.2 9 8.6z"/></svg>
+          </div>
+          <blockquote><p>"O melhor é a transferência para o humano no momento certo. Nada de robô travando quando o caso é delicado."</p></blockquote>
+          <figcaption class="who"><span class="pic" aria-hidden="true">JS</span><span><strong>Dr. Júlio Santos</strong><span>Psiquiatra · Instituto Bem</span></span></figcaption>
+        </figure>
+      </div>
+    </div>
+  </section>
+
+  <!-- PRICING -->
+  <section id="precos" aria-labelledby="pre-title">
+    <div class="wrap">
+      <div class="sec-head">
+        <span class="eyebrow">Preços</span>
+        <h2 id="pre-title">Um plano para cada tamanho de clínica</h2>
+        <p>Comece grátis por 14 dias. Sem fidelidade, cancele quando quiser.</p>
+      </div>
+      <div class="pricing">
+        <div class="plan">
+          <h3>Consultório</h3>
+          <div class="price">R$149<small>/mês</small></div>
+          <p class="pdesc">Para profissionais autônomos e consultórios pequenos.</p>
+          <ul>
+            <li><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg> 1 número de WhatsApp</li>
+            <li><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg> Até 2 profissionais</li>
+            <li><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg> Agendamento e lembretes</li>
+            <li><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg> Integração Google Agenda</li>
+          </ul>
+          <a class="btn btn-ghost" href="#demo" style="width:100%;">Começar grátis</a>
+        </div>
+        <div class="plan pop">
+          <span class="ribbon">Mais popular</span>
+          <h3>Clínica</h3>
+          <div class="price">R$389<small>/mês</small></div>
+          <p class="pdesc">Para clínicas com equipe e vários médicos.</p>
+          <ul>
+            <li><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg> Tudo do Consultório</li>
+            <li><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg> Profissionais ilimitados</li>
+            <li><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg> Transferência para humano</li>
+            <li><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg> Painel de métricas</li>
+            <li><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg> Tom de voz personalizado</li>
+          </ul>
+          <a class="btn btn-primary" href="#demo" style="width:100%;">Começar grátis</a>
+        </div>
+        <div class="plan">
+          <h3>Rede</h3>
+          <div class="price">Sob consulta</div>
+          <p class="pdesc">Para redes, operadoras e grandes volumes.</p>
+          <ul>
+            <li><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg> Tudo do Clínica</li>
+            <li><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg> Múltiplas unidades</li>
+            <li><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg> Integração com prontuário</li>
+            <li><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg> Gerente de conta dedicado</li>
+          </ul>
+          <a class="btn btn-ghost" href="#demo" style="width:100%;">Falar com vendas</a>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- FAQ -->
+  <section id="faq" aria-labelledby="faq-title">
+    <div class="wrap">
+      <div class="sec-head">
+        <span class="eyebrow">Dúvidas frequentes</span>
+        <h2 id="faq-title">Tudo o que você precisa saber</h2>
+      </div>
+      <div class="faq">
+        <details class="faq-item" open>
+          <summary>A Eva funciona no meu número de WhatsApp atual?
+            <span class="chev" aria-hidden="true"><svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="m6 9 6 6 6-6"/></svg></span>
+          </summary>
+          <p>Sim. Conectamos a Eva via API oficial do WhatsApp Business, mantendo seu número e histórico. A implantação é feita junto com nossa equipe.</p>
+        </details>
+        <details class="faq-item">
+          <summary>Os dados dos pacientes ficam seguros?
+            <span class="chev" aria-hidden="true"><svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="m6 9 6 6 6-6"/></svg></span>
+          </summary>
+          <p>Totalmente. Todas as conversas são criptografadas e o tratamento de dados segue a LGPD e as boas práticas de privacidade da área de saúde.</p>
+        </details>
+        <details class="faq-item">
+          <summary>E quando o caso é delicado demais para um robô?
+            <span class="chev" aria-hidden="true"><svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="m6 9 6 6 6-6"/></svg></span>
+          </summary>
+          <p>A Eva reconhece situações sensíveis e transfere na hora para um atendente humano, entregando todo o histórico da conversa para que a pessoa continue sem repetição.</p>
+        </details>
+        <details class="faq-item">
+          <summary>Preciso trocar meu sistema de agenda?
+            <span class="chev" aria-hidden="true"><svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="m6 9 6 6 6-6"/></svg></span>
+          </summary>
+          <p>Não. A Eva se integra ao Google Agenda e a outros sistemas populares. Você continua trabalhando do jeito que já está acostumado.</p>
+        </details>
+        <details class="faq-item">
+          <summary>Quanto tempo leva para colocar no ar?
+            <span class="chev" aria-hidden="true"><svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="m6 9 6 6 6-6"/></svg></span>
+          </summary>
+          <p>Na maioria das clínicas, menos de um dia útil. Configuramos médicos, horários e regras junto com você e a Eva já começa a atender.</p>
+        </details>
+      </div>
+    </div>
+  </section>
+
+  <!-- FINAL CTA -->
+  <section id="demo" aria-labelledby="cta-title">
+    <div class="wrap">
+      <div class="cta-final">
+        <h2 id="cta-title">Deixe a Eva cuidar do atendimento hoje mesmo</h2>
+        <p>Teste grátis por 14 dias. Sem cartão de crédito, sem compromisso. Veja a agenda encher sozinha.</p>
+        <a class="btn btn-white" href="#" >
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M7.9 20A9 9 0 1 0 4 16.1L2 22Z"/></svg>
+          Começar teste gratuito
+        </a>
+        <div class="sub">Já tem mais de 200 clínicas usando a Eva no Brasil.</div>
+      </div>
+    </div>
+  </section>
+
+</main>
+
+<!-- FOOTER -->
+<footer>
+  <div class="wrap">
+    <div class="foot-grid">
+      <div>
+        <a class="brand" href="#top">
+          <span class="logo" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 8V4H8"/><rect width="16" height="12" x="4" y="8" rx="2"/><path d="M2 14h2M20 14h2M15 13v2M9 13v2"/></svg></span>
+          Eva
+        </a>
+        <p>Atendimento com inteligência artificial para clínicas e consultórios da área de saúde.</p>
+      </div>
+      <div class="foot-col">
+        <h4>Produto</h4>
+        <a href="#recursos">Recursos</a>
+        <a href="#como-funciona">Como funciona</a>
+        <a href="#precos">Preços</a>
+        <a href="#demo">Agendar demo</a>
+      </div>
+      <div class="foot-col">
+        <h4>Empresa</h4>
+        <a href="#">Sobre nós</a>
+        <a href="#">Blog</a>
+        <a href="#">Contato</a>
+        <a href="#">Trabalhe conosco</a>
+      </div>
+      <div class="foot-col">
+        <h4>Legal</h4>
+        <a href="#">Privacidade</a>
+        <a href="#">Termos de uso</a>
+        <a href="#">LGPD</a>
+        <a href="#">Segurança</a>
+      </div>
+    </div>
+    <div class="foot-bottom">
+      <span>© 2026 Eva · Todos os direitos reservados.</span>
+      <span>Feito com cuidado para a saúde brasileira.</span>
+    </div>
+  </div>
+</footer>
+
+</body>
+</html>

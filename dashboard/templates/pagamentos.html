@@ -1,97 +1,533 @@
 {% extends "base.html" %}
 {% block content %}
-<style>body { overflow: auto !important; height: auto !important; }</style>
-<div class="min-h-screen bg-gray-100 p-6">
-  <div class="max-w-6xl mx-auto">
-    <div class="flex items-center justify-between mb-6">
-      <h1 class="text-2xl font-semibold text-gray-800">Pagamentos Pendentes</h1>
-      <a href="/" class="text-sm text-gray-500 hover:text-gray-700">← Conversas</a>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Fira+Sans:wght@300;400;500;600;700&family=Fira+Code:wght@400;500&display=swap');
+
+  body { overflow: auto !important; height: auto !important; }
+
+  :root {
+    --color-primary: #0891B2;
+    --color-primary-dark: #0e7490;
+    --color-primary-light: #e0f2fe;
+    --color-accent: #059669;
+    --color-accent-dark: #047857;
+    --color-accent-light: #d1fae5;
+    --color-background: #f0f9ff;
+    --color-surface: #ffffff;
+    --color-foreground: #164E63;
+    --color-muted: #E8F1F6;
+    --color-muted-text: #64748b;
+    --color-border: #bae6fd;
+    --color-taxa-bg: #dcfce7;
+    --color-taxa-text: #166534;
+    --color-consulta-bg: #dbeafe;
+    --color-consulta-text: #1e40af;
+    --radius: 10px;
+    --shadow: 0 1px 3px 0 rgb(0 0 0 / 0.07), 0 1px 2px -1px rgb(0 0 0 / 0.07);
+    --shadow-md: 0 4px 6px -1px rgb(0 0 0 / 0.08), 0 2px 4px -2px rgb(0 0 0 / 0.08);
+  }
+
+  .pag-page {
+    min-height: 100vh;
+    background: var(--color-background);
+    padding: 2rem 1.5rem 3rem;
+    font-family: 'Fira Sans', system-ui, sans-serif;
+  }
+
+  .pag-container {
+    max-width: 1140px;
+    margin: 0 auto;
+  }
+
+  /* ── Header ── */
+  .pag-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 1.75rem;
+    flex-wrap: wrap;
+    gap: 0.75rem;
+  }
+
+  .pag-header-left { display: flex; align-items: center; gap: 0.875rem; }
+
+  .pag-icon {
+    width: 42px; height: 42px;
+    background: var(--color-primary);
+    border-radius: 10px;
+    display: flex; align-items: center; justify-content: center;
+    flex-shrink: 0;
+  }
+  .pag-icon svg { width: 22px; height: 22px; color: #fff; }
+
+  .pag-title {
+    font-size: 1.35rem;
+    font-weight: 700;
+    color: var(--color-foreground);
+    letter-spacing: -0.02em;
+    line-height: 1.2;
+  }
+
+  .pag-subtitle {
+    font-size: 0.8rem;
+    color: var(--color-muted-text);
+    margin-top: 2px;
+    font-weight: 400;
+  }
+
+  .pag-back {
+    font-size: 0.8rem;
+    color: var(--color-primary);
+    text-decoration: none;
+    display: flex; align-items: center; gap: 0.35rem;
+    font-weight: 500;
+    transition: color 150ms;
+  }
+  .pag-back:hover { color: var(--color-primary-dark); }
+
+  /* ── Stats bar ── */
+  .pag-stats {
+    display: flex;
+    gap: 0.75rem;
+    margin-bottom: 1.5rem;
+    flex-wrap: wrap;
+  }
+
+  .pag-stat {
+    background: var(--color-surface);
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius);
+    padding: 0.875rem 1.25rem;
+    box-shadow: var(--shadow);
+    min-width: 130px;
+  }
+
+  .pag-stat-label {
+    font-size: 0.72rem;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: var(--color-muted-text);
+    margin-bottom: 0.3rem;
+  }
+
+  .pag-stat-value {
+    font-size: 1.55rem;
+    font-weight: 700;
+    color: var(--color-foreground);
+    font-family: 'Fira Code', monospace;
+    line-height: 1;
+  }
+
+  .pag-stat-value.green { color: var(--color-accent); }
+
+  /* ── Empty state ── */
+  .pag-empty {
+    background: var(--color-surface);
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius);
+    padding: 4rem 2rem;
+    text-align: center;
+    box-shadow: var(--shadow);
+  }
+  .pag-empty-icon {
+    width: 56px; height: 56px;
+    background: var(--color-accent-light);
+    border-radius: 50%;
+    display: flex; align-items: center; justify-content: center;
+    margin: 0 auto 1rem;
+  }
+  .pag-empty-icon svg { width: 26px; height: 26px; color: var(--color-accent); }
+  .pag-empty-title { font-size: 1.05rem; font-weight: 600; color: var(--color-foreground); margin-bottom: 0.35rem; }
+  .pag-empty-desc { font-size: 0.85rem; color: var(--color-muted-text); }
+
+  /* ── Table card ── */
+  .pag-card {
+    background: var(--color-surface);
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius);
+    box-shadow: var(--shadow-md);
+    overflow: hidden;
+  }
+
+  /* ── Table ── */
+  .pag-table { width: 100%; border-collapse: collapse; }
+
+  .pag-table thead tr {
+    background: var(--color-muted);
+    border-bottom: 1px solid var(--color-border);
+  }
+
+  .pag-table th {
+    padding: 0.75rem 1rem;
+    text-align: left;
+    font-size: 0.7rem;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: var(--color-muted-text);
+    white-space: nowrap;
+  }
+
+  .pag-table tbody tr {
+    border-bottom: 1px solid #f1f5f9;
+    transition: background 150ms;
+  }
+  .pag-table tbody tr:last-child { border-bottom: none; }
+  .pag-table tbody tr:hover { background: #f8fbff; }
+
+  .pag-table td {
+    padding: 0.875rem 1rem;
+    vertical-align: middle;
+    font-size: 0.875rem;
+  }
+
+  /* ── Cell variants ── */
+  .cell-paciente { font-weight: 600; color: var(--color-foreground); }
+  .cell-medico { color: #475569; }
+  .cell-data {
+    color: #475569;
+    font-family: 'Fira Code', monospace;
+    font-size: 0.82rem;
+    white-space: nowrap;
+  }
+
+  /* ── Badge ── */
+  .badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.3rem;
+    padding: 0.25rem 0.6rem;
+    border-radius: 99px;
+    font-size: 0.72rem;
+    font-weight: 600;
+    letter-spacing: 0.02em;
+    white-space: nowrap;
+  }
+  .badge-dot { width: 6px; height: 6px; border-radius: 50%; }
+  .badge-taxa { background: var(--color-taxa-bg); color: var(--color-taxa-text); }
+  .badge-taxa .badge-dot { background: var(--color-taxa-text); }
+  .badge-consulta { background: var(--color-consulta-bg); color: var(--color-consulta-text); }
+  .badge-consulta .badge-dot { background: var(--color-consulta-text); }
+
+  /* ── Valor input ── */
+  .valor-wrap {
+    position: relative;
+    display: inline-flex;
+    align-items: center;
+  }
+  .valor-prefix {
+    position: absolute;
+    left: 0.6rem;
+    font-size: 0.78rem;
+    color: var(--color-muted-text);
+    font-weight: 500;
+    pointer-events: none;
+  }
+  .valor-input {
+    width: 90px;
+    padding: 0.45rem 0.5rem 0.45rem 1.75rem;
+    border: 1.5px solid var(--color-border);
+    border-radius: 7px;
+    font-size: 0.875rem;
+    font-family: 'Fira Code', monospace;
+    font-weight: 500;
+    color: var(--color-foreground);
+    background: #f8fbff;
+    transition: border-color 150ms, box-shadow 150ms;
+    outline: none;
+  }
+  .valor-input:focus {
+    border-color: var(--color-primary);
+    box-shadow: 0 0 0 3px rgba(8,145,178,0.15);
+    background: #fff;
+  }
+
+  /* ── Forma select ── */
+  .forma-input {
+    padding: 0.45rem 2rem 0.45rem 0.65rem;
+    border: 1.5px solid var(--color-border);
+    border-radius: 7px;
+    font-size: 0.82rem;
+    font-family: 'Fira Sans', sans-serif;
+    color: #334155;
+    background: #f8fbff url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%2364748b' stroke-width='2.5'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E") no-repeat right 0.55rem center;
+    -webkit-appearance: none;
+    appearance: none;
+    cursor: pointer;
+    outline: none;
+    transition: border-color 150ms, box-shadow 150ms;
+    min-width: 150px;
+  }
+  .forma-input:focus {
+    border-color: var(--color-primary);
+    box-shadow: 0 0 0 3px rgba(8,145,178,0.15);
+    background-color: #fff;
+  }
+
+  /* ── Pago button ── */
+  .btn-pago {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.4rem;
+    padding: 0.45rem 0.9rem;
+    background: var(--color-accent);
+    color: #fff;
+    font-size: 0.8rem;
+    font-weight: 600;
+    font-family: 'Fira Sans', sans-serif;
+    border: none;
+    border-radius: 7px;
+    cursor: pointer;
+    transition: background 150ms, transform 100ms, box-shadow 150ms;
+    white-space: nowrap;
+    box-shadow: 0 1px 2px rgba(5,150,105,0.25);
+  }
+  .btn-pago:hover { background: var(--color-accent-dark); box-shadow: 0 2px 6px rgba(5,150,105,0.3); }
+  .btn-pago:active { transform: scale(0.97); }
+  .btn-pago:disabled { opacity: 0.55; cursor: not-allowed; transform: none; }
+  .btn-pago svg { width: 14px; height: 14px; }
+
+  /* ── Footer ── */
+  .pag-footer {
+    padding: 0.75rem 1rem;
+    background: var(--color-muted);
+    border-top: 1px solid var(--color-border);
+    display: flex;
+    align-items: center;
+    justify-content: flex-end;
+    gap: 0.4rem;
+    font-size: 0.78rem;
+    color: var(--color-muted-text);
+    font-weight: 500;
+  }
+  .pag-footer-count {
+    background: var(--color-primary-light);
+    color: var(--color-primary);
+    font-weight: 700;
+    padding: 0.1rem 0.5rem;
+    border-radius: 99px;
+    font-family: 'Fira Code', monospace;
+    font-size: 0.78rem;
+  }
+
+  /* ── Toast ── */
+  #pag-toast {
+    position: fixed;
+    bottom: 1.5rem;
+    right: 1.5rem;
+    z-index: 1000;
+    display: flex;
+    flex-direction: column;
+    gap: 0.5rem;
+    pointer-events: none;
+  }
+  .toast {
+    display: flex;
+    align-items: center;
+    gap: 0.6rem;
+    background: var(--color-foreground);
+    color: #fff;
+    padding: 0.7rem 1.1rem;
+    border-radius: 9px;
+    font-size: 0.85rem;
+    font-weight: 500;
+    box-shadow: 0 4px 16px rgba(0,0,0,0.18);
+    animation: toastIn 200ms ease-out;
+    pointer-events: auto;
+  }
+  .toast.error { background: #dc2626; }
+  .toast-icon { width: 16px; height: 16px; flex-shrink: 0; }
+  @keyframes toastIn {
+    from { opacity: 0; transform: translateY(8px) scale(0.97); }
+    to   { opacity: 1; transform: translateY(0) scale(1); }
+  }
+  @keyframes toastOut {
+    to { opacity: 0; transform: translateY(4px); }
+  }
+
+  @media (max-width: 768px) {
+    .pag-page { padding: 1rem; }
+    .pag-table { display: block; overflow-x: auto; }
+    .pag-stats { flex-direction: column; }
+    .pag-stat { min-width: unset; }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    *, *::before, *::after { transition-duration: 0ms !important; animation-duration: 0ms !important; }
+  }
+</style>
+
+<div class="pag-page">
+  <div class="pag-container">
+
+    <!-- Header -->
+    <div class="pag-header">
+      <div class="pag-header-left">
+        <div class="pag-icon">
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <rect x="2" y="5" width="20" height="14" rx="2"/>
+            <path d="M2 10h20"/>
+          </svg>
+        </div>
+        <div>
+          <div class="pag-title">Pagamentos Pendentes</div>
+          <div class="pag-subtitle">Taxas de reserva e consultas em aberto</div>
+        </div>
+      </div>
+      <a href="/" class="pag-back">
+        <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="m15 18-6-6 6-6"/></svg>
+        Conversas
+      </a>
+    </div>
+
+    <!-- Stats -->
+    {% set total_taxa = pendencias | selectattr("tipo", "equalto", "taxa") | list | length %}
+    {% set total_consulta = pendencias | selectattr("tipo", "equalto", "consulta") | list | length %}
+    <div class="pag-stats">
+      <div class="pag-stat">
+        <div class="pag-stat-label">Total pendente</div>
+        <div class="pag-stat-value" id="stat-total">{{ pendencias | length }}</div>
+      </div>
+      <div class="pag-stat">
+        <div class="pag-stat-label">Taxas de reserva</div>
+        <div class="pag-stat-value" id="stat-taxa">{{ total_taxa }}</div>
+      </div>
+      <div class="pag-stat">
+        <div class="pag-stat-label">Consultas</div>
+        <div class="pag-stat-value" id="stat-consulta">{{ total_consulta }}</div>
+      </div>
     </div>
 
     {% if not pendencias %}
-    <div class="bg-white rounded-lg shadow p-8 text-center text-gray-500">
-      Nenhum pagamento pendente 🎉
+    <!-- Empty state -->
+    <div class="pag-empty">
+      <div class="pag-empty-icon">
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/>
+        </svg>
+      </div>
+      <div class="pag-empty-title">Tudo em dia!</div>
+      <div class="pag-empty-desc">Nenhum pagamento pendente no momento.</div>
     </div>
     {% else %}
-    <div class="bg-white rounded-lg shadow overflow-hidden">
-      <table class="w-full text-sm" id="tabela-pendencias">
-        <thead class="bg-gray-50 text-gray-500 uppercase text-xs">
+
+    <!-- Table -->
+    <div class="pag-card">
+      <table class="pag-table" id="tabela-pendencias" aria-label="Pagamentos pendentes">
+        <thead>
           <tr>
-            <th class="px-4 py-3 text-left">Paciente</th>
-            <th class="px-4 py-3 text-left">Médico</th>
-            <th class="px-4 py-3 text-left">Data e hora</th>
-            <th class="px-4 py-3 text-left">Tipo</th>
-            <th class="px-4 py-3 text-left">Valor (R$)</th>
-            <th class="px-4 py-3 text-left">Forma de pagamento</th>
-            <th class="px-4 py-3"></th>
+            <th scope="col">Paciente</th>
+            <th scope="col">Médico</th>
+            <th scope="col">Data e hora</th>
+            <th scope="col">Tipo</th>
+            <th scope="col">Valor</th>
+            <th scope="col">Forma de pagamento</th>
+            <th scope="col"><span class="sr-only">Ação</span></th>
           </tr>
         </thead>
-        <tbody class="divide-y divide-gray-100">
+        <tbody>
           {% for p in pendencias %}
-          <tr id="row-{{ p.appointment_id }}-{{ p.tipo }}" class="hover:bg-gray-50"
+          <tr id="row-{{ p.appointment_id }}-{{ p.tipo }}"
               data-paciente="{{ p.paciente }}"
               data-phone="{{ p.phone }}"
               data-medico="{{ p.medico }}"
-              data-data-hora="{{ p.data_hora }}">
-            <td class="px-4 py-3 font-medium text-gray-800">{{ p.paciente }}</td>
-            <td class="px-4 py-3 text-gray-600">{{ p.medico }}</td>
-            <td class="px-4 py-3 text-gray-600">{{ p.data_hora }}</td>
-            <td class="px-4 py-3">
+              data-data-hora="{{ p.data_hora }}"
+              data-tipo="{{ p.tipo }}">
+            <td class="cell-paciente">{{ p.paciente }}</td>
+            <td class="cell-medico">{{ p.medico }}</td>
+            <td class="cell-data">{{ p.data_hora }}</td>
+            <td>
               {% if p.tipo == "taxa" %}
-              <span class="inline-block px-2 py-0.5 rounded-full text-xs font-medium bg-green-100 text-green-700">Taxa de reserva</span>
+              <span class="badge badge-taxa" aria-label="Taxa de reserva">
+                <span class="badge-dot" aria-hidden="true"></span>Taxa de reserva
+              </span>
               {% else %}
-              <span class="inline-block px-2 py-0.5 rounded-full text-xs font-medium bg-red-100 text-red-700">Consulta</span>
+              <span class="badge badge-consulta" aria-label="Consulta">
+                <span class="badge-dot" aria-hidden="true"></span>Consulta
+              </span>
               {% endif %}
             </td>
-            <td class="px-4 py-3">
-              <input
-                type="number"
-                value="{{ p.valor }}"
-                min="0"
-                class="valor-input w-20 border border-gray-300 rounded px-2 py-1 text-sm focus:outline-none focus:ring-1 focus:ring-green-400"
-              />
+            <td>
+              <div class="valor-wrap">
+                <span class="valor-prefix" aria-hidden="true">R$</span>
+                <input
+                  type="number"
+                  value="{{ p.valor }}"
+                  min="0"
+                  class="valor-input"
+                  aria-label="Valor em reais"
+                />
+              </div>
             </td>
-            <td class="px-4 py-3">
-              <select class="forma-input border border-gray-300 rounded px-2 py-1 text-sm focus:outline-none focus:ring-1 focus:ring-green-400">
+            <td>
+              <select class="forma-input" aria-label="Forma de pagamento">
                 <option value="PIX">PIX</option>
                 <option value="cartao_credito">Cartão de crédito</option>
                 <option value="cartao_debito">Cartão de débito</option>
                 <option value="dinheiro">Dinheiro</option>
               </select>
             </td>
-            <td class="px-4 py-3 text-right">
+            <td>
               <button
                 onclick="marcarPago('{{ p.appointment_id }}', '{{ p.tipo }}', this)"
-                class="bg-green-600 hover:bg-green-700 text-white text-xs font-medium px-3 py-1.5 rounded transition-colors disabled:opacity-50"
+                class="btn-pago"
+                aria-label="Marcar como pago para {{ p.paciente }}"
               >
-                Pago
+                <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                  <polyline points="20 6 9 17 4 12"/>
+                </svg>
+                Marcar pago
               </button>
             </td>
           </tr>
           {% endfor %}
         </tbody>
       </table>
-      <div class="px-4 py-3 bg-gray-50 text-xs text-gray-400 text-right">
-        <span id="contagem">{{ pendencias|length }}</span> pendência(s)
+
+      <div class="pag-footer">
+        <span>Pendências:</span>
+        <span class="pag-footer-count" id="contagem">{{ pendencias | length }}</span>
       </div>
     </div>
     {% endif %}
+
   </div>
 </div>
 
+<!-- Toast container -->
+<div id="pag-toast" aria-live="polite" aria-atomic="false"></div>
+
+<style>.sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0,0,0,0); white-space: nowrap; border: 0; }</style>
+
 <script>
+function showToast(msg, isError = false) {
+  const container = document.getElementById('pag-toast');
+  const el = document.createElement('div');
+  el.className = 'toast' + (isError ? ' error' : '');
+  el.innerHTML = isError
+    ? `<svg class="toast-icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>${msg}`
+    : `<svg class="toast-icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="20 6 9 17 4 12"/></svg>${msg}`;
+  container.appendChild(el);
+  setTimeout(() => {
+    el.style.animation = 'toastOut 200ms ease-in forwards';
+    el.addEventListener('animationend', () => el.remove());
+  }, 3500);
+}
+
 async function marcarPago(appointmentId, tipo, btn) {
   const row = document.getElementById(`row-${appointmentId}-${tipo}`);
   const valor = parseInt(row.querySelector('.valor-input').value, 10);
   const forma_pagamento = row.querySelector('.forma-input').value;
 
   if (isNaN(valor) || valor < 0) {
-    alert('Valor inválido.');
+    showToast('Valor inválido.', true);
     return;
   }
 
+  const original = btn.innerHTML;
   btn.disabled = true;
-  btn.textContent = '...';
+  btn.innerHTML = `<svg class="" style="width:14px;height:14px;animation:spin 0.8s linear infinite" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M21 12a9 9 0 1 1-6.219-8.56"/></svg>Aguarde…`;
 
   try {
     const resp = await fetch(`/api/pagamentos/${appointmentId}/pagar`, {
@@ -110,15 +546,34 @@ async function marcarPago(appointmentId, tipo, btn) {
 
     if (!resp.ok) throw new Error(await resp.text());
 
-    row.remove();
-    const contagem = document.getElementById('contagem');
-    contagem.textContent = parseInt(contagem.textContent, 10) - 1;
+    const tipoLabel = row.dataset.tipo === 'taxa' ? 'Taxa de reserva' : 'Consulta';
+    showToast(`${tipoLabel} de ${row.dataset.paciente} registrada.`);
+
+    row.style.transition = 'opacity 250ms, transform 250ms';
+    row.style.opacity = '0';
+    row.style.transform = 'translateX(8px)';
+    setTimeout(() => {
+      row.remove();
+      const c = document.getElementById('contagem');
+      const n = parseInt(c.textContent, 10) - 1;
+      c.textContent = n;
+
+      // update stats
+      const statTotal = document.getElementById('stat-total');
+      if (statTotal) statTotal.textContent = n;
+      const statKey = tipo === 'taxa' ? 'stat-taxa' : 'stat-consulta';
+      const statEl = document.getElementById(statKey);
+      if (statEl) statEl.textContent = parseInt(statEl.textContent, 10) - 1;
+    }, 260);
   } catch (err) {
     console.error(err);
-    alert('Erro ao registrar pagamento. Tente novamente.');
+    showToast('Erro ao registrar pagamento. Tente novamente.', true);
     btn.disabled = false;
-    btn.textContent = 'Pago';
+    btn.innerHTML = original;
   }
 }
 </script>
+<style>
+@keyframes spin { to { transform: rotate(360deg); } }
+</style>
 {% endblock %}

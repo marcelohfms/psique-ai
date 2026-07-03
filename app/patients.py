@@ -120,6 +120,24 @@ async def upsert_patient(data: dict, patient_id: str | None = None) -> str | Non
     if not data.get("name"):
         # Sem nome não é possível criar um paciente válido — ignora silenciosamente.
         return None
+
+    # Evita duplicar paciente já cadastrado sob outro contato (ex: cônjuge agendando
+    # pelo próprio número) — mesmo nome + mesma data de nascimento é considerado a
+    # mesma pessoa. Se achar, atualiza o existente em vez de inserir um novo.
+    birth_date = data.get("birth_date")
+    if birth_date:
+        existing = (
+            await client.from_("patients")
+            .select("id")
+            .eq("name", data["name"])
+            .eq("birth_date", birth_date)
+            .execute()
+        )
+        if existing.data:
+            existing_id = existing.data[0]["id"]
+            await client.from_("patients").update(data).eq("id", existing_id).execute()
+            return existing_id
+
     result = await client.from_("patients").insert(data).execute()
     inserted = (result.data or [{}])[0]
     return inserted.get("id")

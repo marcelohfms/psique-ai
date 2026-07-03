@@ -57,6 +57,47 @@ def _is_duplicate_phone_text(phone: str, text: str) -> bool:
     return False
 
 
+async def _recover_messages_lost_to_restart() -> None:
+    """Reprocess user messages that arrived right before a server restart.
+
+    The debounce buffer (app/buffer.py) is in-memory: a message is saved to the
+    `messages` table immediately, but the actual graph processing is scheduled via
+    `loop.call_later(DEBOUNCE_SECONDS)`. If the process restarts (deploy) within
+    that window, the timer is lost and the message sits in the DB forever with no
+    reply and no error — a silent failure. On every startup, find the most recent
+    user message per phone within the last 10 minutes that has no later assistant
+    reply, and re-trigger it through the normal buffer/process_message path.
+
+    Trade-off: the `messages` table can't distinguish "lost to a restart" from
+    "Eva deliberately stayed silent" (e.g. after transfer_to_human). A short window
+    keeps the blast radius small — deploys take seconds, not minutes — while still
+    catching the restart-race case. process_message's own hold/inactive checks
+    apply regardless, so reprocessing a transferred conversation is a no-op at worst.
+    """
+    try:
+        from app.database import get_supabase as _get_db_recovery
+        client = await _get_db_recovery()
+        cutoff = (datetime.now(timezone.utc) - timedelta(minutes=10)).isoformat()
+        recent = await client.from_("messages").select("phone, role, content, created_at") \
+            .gte("created_at", cutoff).order("created_at").execute()
+
+        last_per_phone: dict[str, dict] = {}
+        for row in (recent.data or []):
+            last_per_phone[row["phone"]] = row
+
+        for phone, last_msg in last_per_phone.items():
+            if last_msg["role"] != "user" or not last_msg.get("content"):
+                continue
+            full_phone = f"{phone}@s.whatsapp.net"
+            logger.warning(
+                "RESTART_RECOVERY reprocessing unanswered message for %s (sent %s): %.60s",
+                phone, last_msg["created_at"], last_msg["content"],
+            )
+            await buffer_push(full_phone, last_msg["content"], process_message)
+    except Exception:
+        logger.exception("RESTART_RECOVERY failed")
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Initialize Supabase checkpointer on startup if connection string is set."""
@@ -69,16 +110,33 @@ async def lifespan(app: FastAPI):
         from app.graph.graph import build_graph
 
         logger.info("Connecting to Supabase checkpointer...")
-        async with await AsyncConnection.connect(
-            conn_string,
-            autocommit=True,
-            prepare_threshold=None,
-            row_factory=dict_row,
-        ) as conn:
+        conn = None
+        _max_attempts = 5
+        for _attempt in range(1, _max_attempts + 1):
+            try:
+                conn = await AsyncConnection.connect(
+                    conn_string,
+                    autocommit=True,
+                    prepare_threshold=None,
+                    row_factory=dict_row,
+                )
+                break
+            except Exception:
+                if _attempt == _max_attempts:
+                    raise
+                _wait = min(2 ** _attempt, 30)
+                logger.exception(
+                    "Checkpointer connection failed (attempt %d/%d) — retrying in %ds",
+                    _attempt, _max_attempts, _wait,
+                )
+                await asyncio.sleep(_wait)
+
+        async with conn:
             checkpointer = AsyncPostgresSaver(conn)
             await checkpointer.setup()
             graph_module.chatbot = build_graph(checkpointer=checkpointer)
             logger.info("Supabase checkpointer ready.")
+            await _recover_messages_lost_to_restart()
             yield
     else:
         logger.warning("SUPABASE_CONNECTION_STRING not set — using in-memory checkpointer.")
@@ -105,6 +163,26 @@ async def webhook_verify(request: Request):
 
     logger.warning("Webhook verification failed — token mismatch.")
     raise HTTPException(status_code=403, detail="Verification failed")
+
+
+async def _notify_document_processing_failure(phone: str, media_id: str, mime: str) -> None:
+    """Best-effort: alert the clinic that a document/PDF failed to process, so a human
+    attendant can pick it up via a private note in Chatwoot — instead of the bot
+    asking the patient to resend, so a failed document never disappears without a trace.
+    """
+    try:
+        from app.email_sender import send_clinic_notification_email
+        phone_clean = phone.replace("@s.whatsapp.net", "")
+        await send_clinic_notification_email(
+            f"Falha ao processar documento — {phone_clean}",
+            f"Número: {phone_clean}\nmedia_id: {media_id}\nmime_type: {mime}\n\n"
+            "O paciente enviou um arquivo (documento/PDF) que não pôde ser processado automaticamente. "
+            "Possível comprovante de pagamento ou documento médico.\n\n"
+            "Por favor, verifique o arquivo diretamente no WhatsApp/Chatwoot e envie uma NOTA PRIVADA "
+            "na conversa avisando a atendente sobre o problema, em vez de pedir para o paciente reenviar.",
+        )
+    except Exception:
+        logger.exception("DOCUMENT_FAILURE_CLINIC_NOTIFY failed phone=%s", phone)
 
 
 # ── Message extraction from Meta Cloud API payload ────────────────────────────
@@ -179,22 +257,25 @@ async def extract_message(payload: dict) -> tuple[str, str] | None:
 
     if msg_type == "document":
         mime = msg.get("document", {}).get("mime_type", "").lower()
-        if "pdf" in mime:
-            media_id = msg.get("document", {}).get("id", "")
-            if media_id:
-                try:
-                    from app.whatsapp import download_media
-                    from app.media import describe_pdf_bytes
-                    pdf_bytes = await download_media(media_id)
-                    text = await describe_pdf_bytes(pdf_bytes, phone)
-                    if not text:
-                        # Medical document — already handled (thank-you sent, clinic notified)
-                        return None
-                    return phone, text
-                except Exception:
-                    logger.exception("Failed to process PDF media_id=%s", media_id)
-            return None
-        return None  # other document types: ignore
+        media_id = msg.get("document", {}).get("id", "")
+        if "pdf" in mime and media_id:
+            try:
+                from app.whatsapp import download_media
+                from app.media import describe_pdf_bytes
+                pdf_bytes = await download_media(media_id)
+                text = await describe_pdf_bytes(pdf_bytes, phone)
+                if not text:
+                    # Medical document — already handled (thank-you sent, clinic notified)
+                    return None
+                return phone, text
+            except Exception:
+                logger.exception("Failed to process PDF media_id=%s", media_id)
+                await _notify_document_processing_failure(phone, media_id, mime)
+                return None
+        # Unrecognized document type/mime, or missing media_id — don't drop silently
+        logger.warning("Unhandled document mime_type=%s media_id=%s phone=%s", mime, media_id, phone)
+        await _notify_document_processing_failure(phone, media_id, mime)
+        return None
 
     # reaction, sticker, location, etc. — ignore
     logger.info("Unsupported message type ignored: %s", msg_type)
@@ -858,6 +939,7 @@ async def _handle_attendant_note(payload: dict) -> None:
         register_conversation(phone, conv_id)
 
     logger.info("ATTENDANT_NOTE phone=%s conv=%s content=%.120s", phone, conv_id, content)
+    await log_event("attendant_note_received", phone, {"content": content[:300], "conversation_id": conv_id})
 
     async def _run_silent(p: str, text: str) -> None:
         config = {"configurable": {"thread_id": p, "phone": p}}
@@ -947,6 +1029,45 @@ async def _handle_chatwoot_payload(payload: dict) -> None:
         # versions differ on whether message_type is serialised as int or string.
         _mt = payload.get("message_type")
         is_outgoing = _mt in (1, "outgoing") or str(_mt) == "1"
+
+        # ── Outbound delivery failure (e.g. Meta rejects a template async) ─────
+        # Chatwoot's POST /messages returns 200 as soon as it queues the send —
+        # actual WhatsApp delivery happens async, and Meta's rejection (e.g. error
+        # 131049 for template messages) only surfaces later as a message_updated
+        # event with status="failed". Our automation (pos_consulta, lembretes)
+        # already treated the initial 200 as "sent" and moved on, so this was the
+        # only place such failures could ever be noticed — and nothing read it.
+        if payload.get("event") == "message_updated" and payload.get("status") == "failed":
+            _sender_type = payload.get("sender", {}).get("type", "")
+            _is_human_agent = _sender_type in ("user", "agent")
+            if is_outgoing and not payload.get("private") and not _is_human_agent:
+                _phone_failed = _extract_phone_from_payload(payload)
+                _content_failed = (payload.get("content") or "").strip()
+                _conv_id = payload.get("conversation", {}).get("id") or payload.get("id")
+                _error = (payload.get("content_attributes") or {}).get("external_error") or "status=failed"
+                logger.warning(
+                    "OUTBOUND_DELIVERY_FAILED phone=%s conv=%s error=%s content=%.80s",
+                    _phone_failed, _conv_id, _error, _content_failed,
+                )
+                if _phone_failed:
+                    await log_event("outbound_message_delivery_failed", _phone_failed, {
+                        "conversation_id": _conv_id,
+                        "content": _content_failed[:300],
+                        "error": _error,
+                    })
+                    try:
+                        if _conv_id:
+                            from app.chatwoot import add_private_note
+                            await add_private_note(
+                                _conv_id,
+                                "⚠️ Falha no envio automático desta mensagem (não foi entregue ao paciente):\n\n"
+                                f"\"{_content_failed[:200]}\"\n\n"
+                                f"Motivo reportado pelo WhatsApp: {_error}. Reenvie manualmente pelo template se necessário.",
+                            )
+                    except Exception:
+                        logger.exception("Failed to post delivery-failure note for conv=%s", _conv_id)
+            return
+
         if is_outgoing:
             _is_private = payload.get("private", False)
             _sender_type = payload.get("sender", {}).get("type", "")
@@ -955,6 +1076,15 @@ async def _handle_chatwoot_payload(payload: dict) -> None:
                 "OUTGOING_CHECK sender_type=%s private=%s",
                 _sender_type, _is_private,
             )
+            if _is_private and not _is_human_agent:
+                # A private note arrived but from an unexpected sender_type — record it
+                # so this is diagnosable from the DB later, without needing server logs.
+                _phone_ignored = _extract_phone_from_payload(payload)
+                if _phone_ignored:
+                    await log_event("attendant_note_ignored_unexpected_sender", _phone_ignored, {
+                        "sender_type": _sender_type,
+                        "content": (payload.get("content") or "")[:300],
+                    })
             if _is_human_agent and _is_private:
                 # Private note = direct instruction to Eva → process and respond
                 await _handle_attendant_note(payload)

@@ -399,6 +399,37 @@ async def test_collect_info_unconfirmed_is_patient_asks_again():
     )
 
 
+async def test_collect_info_flip_to_third_party_clears_stale_patient_name():
+    """When is_patient (unconfirmed, hydrated from DB as True) is re-asked and the
+    contact now says it's for someone else, a stale patient_name==user_name must be
+    cleared so collect_info asks for the real patient's name instead of silently
+    keeping the contact's own name as the patient's.
+    """
+    from app.graph.nodes import collect_info_node
+    from langchain_core.messages import AIMessage, HumanMessage
+
+    state = _base_minor_state(
+        user_name="Adriana de Faria Pilar",
+        patient_name="Adriana de Faria Pilar",  # previously inferred as self
+        is_patient=True,              # veio do banco
+        _is_patient_confirmed=False,  # não confirmado nesta conversa
+        messages=[
+            AIMessage(content="A consulta é para você ou para outra pessoa?"),
+            HumanMessage(content="Outra pessoa"),
+        ],
+    )
+    with patch("app.graph.nodes.send_text", new_callable=AsyncMock) as mock_send, \
+         patch("app.graph.nodes.save_message", new_callable=AsyncMock), \
+         patch("app.graph.nodes.get_users_by_phone", new_callable=AsyncMock, return_value=[]), \
+         patch("app.graph.nodes.upsert_user", new_callable=AsyncMock):
+        result = await collect_info_node(state, {})
+
+    assert result.get("is_patient") is False
+    assert result.get("patient_name") is None
+    sent = mock_send.call_args[0][1].lower()
+    assert "nome completo do paciente" in sent
+
+
 async def test_collect_info_confirmed_from_db_does_not_ask_again():
     """Quando _is_patient_confirmed=True (respondido na conversa), Eva não pergunta de novo."""
     from app.graph.nodes import collect_info_node
@@ -784,6 +815,62 @@ async def test_collect_info_is_patient_no_asks_patient_name():
     assert "paciente" in sent.lower() and "nome" in sent.lower()
 
 
+async def test_collect_info_stale_db_record_still_asks_patient_name():
+    """Regression: a partial DB record (name saved, patient_name/is_patient still
+    null) must NOT make collect_info skip the patient-name question.
+
+    Bug found 2026-07-01 (Adriana conversation, 5581981464986): the DB-reload block
+    defaulted patient_name to the contact's own name (`u.get("patient_name") or
+    u.get("name")`) even when is_patient hadn't been confirmed yet. That made the
+    step machine think the patient's name was already known and skip straight to
+    the birth-date question, silently registering the wrong person as the patient.
+    """
+    from app.graph.nodes import collect_info_node
+
+    stale_db_user = {
+        "id": "existing-id",
+        "name": "Adriana de Faria Pilar",
+        "patient_name": None,
+        "is_patient": None,
+        "age": None,
+        "birth_date": None,
+        "is_returning_patient": None,
+        "doctor_id": None,
+        "email": None,
+        "guardian_name": None,
+        "guardian_cpf": None,
+        "guardian_relationship": None,
+        "patient_cpf": None,
+        "modality_restriction": None,
+        "age_exception": None,
+        "active": True,
+    }
+    state = _base_minor_state(
+        user_name="Adriana de Faria Pilar",
+        patient_name=None,
+        patient_cpf=None,
+        patient_age=None,
+        birth_date=None,
+        is_patient=None,
+        _is_patient_confirmed=False,
+        messages=[
+            HumanMessage(content="preciso de um laudo psiquiátrico pra meu pai"),
+            AIMessage(content="A consulta é para você ou para outra pessoa?"),
+            HumanMessage(content="Outra pessoa"),
+        ],
+    )
+    with patch("app.graph.nodes.send_text", new_callable=AsyncMock) as mock_send, \
+         patch("app.graph.nodes.save_message", new_callable=AsyncMock), \
+         patch("app.graph.nodes.get_users_by_phone", new_callable=AsyncMock, return_value=[stale_db_user]), \
+         patch("app.graph.nodes.upsert_user", new_callable=AsyncMock, return_value="existing-id"):
+        result = await collect_info_node(state, {})
+
+    assert result.get("is_patient") is False
+    assert result.get("patient_name") is None
+    sent = mock_send.call_args[0][1]
+    assert "nome completo do paciente" in sent.lower()
+
+
 async def test_collect_info_patient_name_step_saves_patient_name():
     """Patient name answer (step 2c) must save patient_name and proceed to CPF.
 
@@ -1006,6 +1093,50 @@ async def test_pending_appointment_success_with_internal_prefix():
     assert "taxa de reserva" in patient_msg.lower()
     assert "25/06/2026 às 19:00" in patient_msg
     assert result.get("pending_appointment") is None
+
+
+async def test_silent_mode_survives_when_response_has_tool_calls():
+    """Regressão: quando a atendente envia uma instrução (silent_mode=True) e a LLM
+    responde com uma tool_call (ex: confirm_appointment com force_encaixe=True), o node
+    não pode resetar silent_mode para False nesse mesmo retorno — o ToolNode lê o estado
+    logo em seguida e depende de silent_mode ainda estar True para aceitar force_encaixe.
+    Resetar cedo demais fazia a Eva tentar o encaixe, ser bloqueada pela grade normal do
+    médico e mentir para a paciente dizendo que a consulta estava confirmada."""
+    from app.graph.nodes import patient_agent_node
+
+    state = _make_patient_agent_state(
+        silent_mode=True,
+        messages=[HumanMessage(content="[Instrução da atendente]: Eva, encaixe para amanhã às 08:00")],
+    )
+
+    ai_response = MagicMock()
+    ai_response.tool_calls = [{
+        "name": "confirm_appointment",
+        "args": {"slot_datetime": "2026-07-03T08:00:00", "slot_duration_minutes": 60, "force_encaixe": True},
+        "id": "call_1",
+        "type": "tool_call",
+    }]
+    ai_response.content = ""
+
+    async def fake_ainvoke(messages):
+        return ai_response
+
+    with patch("app.graph.nodes._get_agent_llm") as mock_llm_fn, \
+         patch("app.graph.nodes.send_text", new_callable=AsyncMock), \
+         patch("app.graph.nodes.save_message", new_callable=AsyncMock), \
+         patch("app.graph.nodes.get_upcoming_appointments", new_callable=AsyncMock, return_value=[]), \
+         patch("app.graph.nodes.get_user_by_phone", new_callable=AsyncMock, return_value={"price_adjustment_notified_at": "2026-01-01"}), \
+         patch("app.graph.nodes.get_last_assistant_message_time", new_callable=AsyncMock, return_value=None), \
+         patch("app.google_calendar.format_doctor_schedules", return_value="seg-sex"):
+        mock_llm = MagicMock()
+        mock_llm.ainvoke = fake_ainvoke
+        mock_llm_fn.return_value = mock_llm
+        result = await patient_agent_node(state, CONFIG)
+
+    assert result.get("silent_mode") is not False, (
+        "silent_mode foi resetado antes do ToolNode executar a tool_call — "
+        "force_encaixe seria descartado silenciosamente"
+    )
 
 
 async def test_patient_agent_injects_greeting_on_new_day():
@@ -1485,6 +1616,68 @@ async def test_collect_info_new_adult_asks_cpf_after_is_returning():
     assert "cpf" in sent
 
 
+async def test_collect_info_ask_forces_stage_back_to_collect_info():
+    """Regressão (Talita, 2026-07-03): uma instrução da atendente força
+    stage='patient_agent' em main.py antes do turno rodar, mesmo com o cadastro
+    incompleto (CPF faltando). Se collect_info ainda pergunta o CPF, o retorno
+    DEVE resetar stage para 'collect_info' — senão _route_after_collect manda o
+    grafo seguir para patient_agent no mesmo turno, gerando uma segunda mensagem
+    conflitante e corrompendo o rastreio de última pergunta/resposta nos turnos
+    seguintes (fazendo a Eva rejeitar um CPF válido)."""
+    from app.graph.nodes import collect_info_node
+    from langchain_core.messages import HumanMessage, AIMessage
+
+    _Q = "É a primeira consulta ou o paciente já está em acompanhamento na clínica?"
+    state = _base_minor_state(
+        user_name="Talita", patient_name="Talita", patient_cpf=None,
+        is_patient=True, patient_age=35, birth_date="22/08/1990",
+        is_returning_patient=None,
+        stage="patient_agent",  # forçado por main.py ao injetar a nota da atendente
+        messages=[
+            HumanMessage(content="quero agendar"),
+            AIMessage(content=_Q),
+            HumanMessage(content="[Instrução da atendente]: Eva, será a primeira vez em atendimento na clinica"),
+        ],
+    )
+    with patch("app.graph.nodes.send_text", new_callable=AsyncMock), \
+         patch("app.graph.nodes.save_message", new_callable=AsyncMock), \
+         patch("app.graph.nodes.get_users_by_phone", new_callable=AsyncMock, return_value=[]), \
+         patch("app.graph.nodes.upsert_user", new_callable=AsyncMock, return_value="id"):
+        result = await collect_info_node(state, {})
+
+    assert result.get("is_returning_patient") is False
+    assert result.get("stage") == "collect_info", (
+        "collect_info ainda tem pergunta pendente (CPF) — stage não pode ficar "
+        "'patient_agent', senão o grafo prossegue para patient_agent no mesmo turno"
+    )
+
+
+async def test_collect_info_cpf_strips_attendant_note_prefix():
+    """Regressão (Talita, 2026-07-03): quando a atendente cola o valor do CPF numa
+    nota privada (ex: "[Instrução da atendente]: 010.022.724-40"), o campo
+    patient_cpf deve guardar só o CPF — não o prefixo da nota junto."""
+    from app.graph.nodes import collect_info_node
+    from langchain_core.messages import HumanMessage, AIMessage
+
+    state = _base_minor_state(
+        user_name="Talita", patient_name="Talita", patient_cpf=None,
+        is_patient=True, patient_age=35, birth_date="22/08/1990",
+        is_returning_patient=False,
+        messages=[
+            HumanMessage(content="quero agendar"),
+            AIMessage(content="Qual o CPF do paciente?"),
+            HumanMessage(content="[Instrução da atendente]: 010.022.724-40"),
+        ],
+    )
+    with patch("app.graph.nodes.send_text", new_callable=AsyncMock), \
+         patch("app.graph.nodes.save_message", new_callable=AsyncMock), \
+         patch("app.graph.nodes.get_users_by_phone", new_callable=AsyncMock, return_value=[]), \
+         patch("app.graph.nodes.upsert_user", new_callable=AsyncMock, return_value="id"):
+        result = await collect_info_node(state, {})
+
+    assert result.get("patient_cpf") == "010.022.724-40"
+
+
 async def test_collect_info_returning_minor_guardian_name_skips_guardian_cpf():
     """Menor que JÁ é paciente: após nome do responsável, pula CPF do responsável e vai ao médico."""
     from app.graph.nodes import collect_info_node
@@ -1550,6 +1743,10 @@ def _get_looks_like_name():
     ("minha filha", False),
     ("o paciente", False),
     ("a paciente", False),
+    # Private notes or long messages (more than 80 chars or multiple punctuation marks)
+    ("Como ela está viajando a trabalho, não conseguirá comparecer e gostaria de reagendar o atendimento. Fico no aguardo. Muito obrigado!", False),
+    ("Patient note: He has traveled for work and needs to reschedule. Please contact.", False),
+    ("Maria Silva!", True),  # single punctuation is ok
 ])
 def test_looks_like_name(text, expected):
     """_looks_like_name rejects non-names and accepts real names."""
@@ -1561,6 +1758,12 @@ def test_looks_like_name(text, expected):
         if len(t) < 3:
             return False
         if re.search(r'\d', t):
+            return False
+        # Nomes não são notas/mensagens longas
+        _punct_count = sum(1 for c in t if c in '.!?,;')
+        if _punct_count > 1:
+            return False
+        if len(t) > 80:
             return False
         _non_name = [
             "que coloquei", "o mesmo", "acima", "já disse", "ja disse",

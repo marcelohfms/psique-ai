@@ -1,3 +1,4 @@
+import os
 import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
 from datetime import datetime
@@ -87,3 +88,25 @@ async def test_reminder_marks_sent_if_at_least_one_succeeds():
             "reminder_day_before_sent_at", now, None)
     assert sent == ["5581222"]
     table.update.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_day_of_query_selects_patient_id():
+    # Regression: a query "day-of" já esqueceu de selecionar patient_id e usava
+    # join com a tabela antiga `users(...)`, fazendo get_contacts_for_patient
+    # ser sempre chamado com patient_id=None e todo lembrete do dia ser pulado.
+    table = MagicMock()
+    for m in ("select", "eq", "is_", "gt", "gte", "lt", "lte"):
+        getattr(table, m).return_value = table
+    table.execute = AsyncMock(return_value=MagicMock(data=[]))
+    client = MagicMock()
+    client.from_.return_value = table
+
+    with patch("supabase.acreate_client", new_callable=AsyncMock, return_value=client), \
+         patch.dict(os.environ, {"SUPABASE_URL": "x", "SUPABASE_KEY": "y"}, clear=False), \
+         patch.dict(os.environ, {}, clear=False):
+        os.environ.pop("SUPABASE_CONNECTION_STRING", None)
+        await rem.main()
+
+    select_calls = [c.args[0] for c in table.select.call_args_list]
+    assert any("patient_id" in call and "patients(" in call for call in select_calls), select_calls

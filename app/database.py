@@ -70,11 +70,18 @@ def _legacy_user_dict(contact: dict, patient: dict, is_self: bool,
     `name` é o nome do CONTATO; `patient_name` é o nome do PACIENTE.
     Quando is_self é False, o contato é o responsável (guardian_*).
     """
+    # contacts.name pode ficar nulo em cadastros feitos fora do fluxo de chat
+    # (import em lote, script). Quando o contato NÃO é o paciente, financial_name
+    # é garantidamente o nome do responsável (diferente do patient_name), então
+    # serve de fallback seguro para o nome do contato.
+    _contact_name = contact.get("name") or (
+        patient.get("financial_name") if not is_self else None
+    )
     u: dict = {
         "id": patient["id"],
         "_contact_id": contact["id"],
         "number": contact.get("phone"),
-        "name": contact.get("name"),
+        "name": _contact_name,
         "patient_name": patient.get("name"),
         "is_patient": bool(is_self),
     }
@@ -87,7 +94,7 @@ def _legacy_user_dict(contact: dict, patient: dict, is_self: bool,
         u["guardian_cpf"] = None
         u["guardian_relationship"] = None
     else:
-        u["guardian_name"] = contact.get("name")
+        u["guardian_name"] = _contact_name
         u["guardian_cpf"] = contact.get("cpf")
         u["guardian_relationship"] = relationship
     return u
@@ -176,7 +183,12 @@ async def upsert_user(phone: str, data: dict, user_id: str | None = None) -> str
     if guardian_name is not None:
         contact_data.setdefault("name", guardian_name)
 
-    contact_id = await upsert_contact(phone, contact_data or {"name": data.get("name")})
+    # Only fall back to a bare {"name": ...} payload when a name was actually
+    # provided — otherwise this would overwrite an existing contact's name with
+    # NULL on every partial update that doesn't touch contact fields (e.g. a
+    # patient-only field like email or patient_name).
+    contact_data = contact_data or ({"name": data["name"]} if data.get("name") else {})
+    contact_id = await upsert_contact(phone, contact_data)
 
     # Resolve patient_id via phone lookup when not supplied, to avoid blind INSERT
     resolved_id = user_id

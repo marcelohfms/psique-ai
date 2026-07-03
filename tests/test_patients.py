@@ -151,6 +151,42 @@ async def test_upsert_patient_insert_returns_id():
 
 
 @pytest.mark.asyncio
+async def test_upsert_patient_dedups_by_name_and_birth_date():
+    """Mesmo nome + mesma data de nascimento = mesma pessoa; não cria duplicata."""
+    select_exec = AsyncMock(return_value=MagicMock(data=[{"id": "p-existing"}]))
+    update_exec = AsyncMock(return_value=MagicMock(data=[{"id": "p-existing"}]))
+    table = MagicMock()
+    for m in ("select", "eq", "insert"):
+        getattr(table, m).return_value = table
+    table.execute = select_exec
+    table.update.return_value.eq.return_value.execute = update_exec
+    client = MagicMock()
+    client.from_.return_value = table
+    with patch("app.patients.get_supabase", new_callable=AsyncMock, return_value=client):
+        pid = await patients.upsert_patient({"name": "Jonas Santos Ferreira", "birth_date": "09/07/1987"})
+    assert pid == "p-existing"
+    table.insert.assert_not_called()
+    table.update.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_upsert_patient_inserts_when_no_name_birth_date_match():
+    select_exec = AsyncMock(return_value=MagicMock(data=[]))
+    insert_exec = AsyncMock(return_value=MagicMock(data=[{"id": "p-new"}]))
+    table = MagicMock()
+    for m in ("select", "eq"):
+        getattr(table, m).return_value = table
+    table.execute = select_exec
+    table.insert.return_value.execute = insert_exec
+    client = MagicMock()
+    client.from_.return_value = table
+    with patch("app.patients.get_supabase", new_callable=AsyncMock, return_value=client):
+        pid = await patients.upsert_patient({"name": "Jonas Santos Ferreira", "birth_date": "09/07/1987"})
+    assert pid == "p-new"
+    table.insert.assert_called_once()
+
+
+@pytest.mark.asyncio
 async def test_upsert_patient_update_path_returns_same_id():
     client, table, execute = _client_returning([])
     with patch("app.patients.get_supabase", new_callable=AsyncMock, return_value=client):

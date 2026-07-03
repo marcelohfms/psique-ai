@@ -89,6 +89,51 @@ async def test_shim_read_minor_with_guardian_is_registration_complete():
 
 
 @pytest.mark.asyncio
+async def test_shim_falls_back_to_financial_name_when_contact_name_missing():
+    """Regression: contacts.name pode ficar nulo em cadastros feitos fora do fluxo
+    de chat (import em lote/script), fazendo a Eva reperguntar o nome/relação a
+    cada turno (caso Nara/Anselmo, 5581996571022, 2026-07-02). Quando o contato
+    NÃO é o paciente, financial_name é garantidamente o nome do responsável
+    (diferente do patient_name) e serve de fallback seguro."""
+    contact = {"id": "c1", "phone": "5581996571022", "name": None,
+               "cpf": "057.565.904-12", "active": True, "manual_hold": False}
+    pc_rows = [
+        {"patient_id": "p-anselmo", "is_self": False, "relationship": "responsável",
+         "role": "agendamento",
+         "patients": {"id": "p-anselmo", "name": "Anselmo de Oliveira Carvalho Neto",
+                      "email": "narafreitas@gmail.com", "birth_date": "2018-10-28",
+                      "age": 7, "doctor_id": "d5baa58b-a788-4f40-b8c0-512c189150be",
+                      "financial_name": "Nara Freitas Carvalho",
+                      "financial_cpf": "057.565.904-12"}},
+    ]
+    client = _mock_client(pc_rows)
+    with patch("app.database.get_contact_by_phone", new_callable=AsyncMock, return_value=contact), \
+         patch("app.database.get_supabase", new_callable=AsyncMock, return_value=client):
+        rows = await database.get_users_by_phone("5581996571022")
+    u = rows[0]
+    assert u["name"] == "Nara Freitas Carvalho"
+    assert u["guardian_name"] == "Nara Freitas Carvalho"
+
+
+@pytest.mark.asyncio
+async def test_shim_does_not_use_financial_name_when_contact_is_self():
+    """Quando is_self=True, o contato JÁ é o paciente — financial_name não deve
+    ser usado como fallback (evita confundir o nome do contato)."""
+    contact = {"id": "c1", "phone": "5581988887777", "name": None,
+               "cpf": "333", "active": True, "manual_hold": False}
+    pc_rows = [
+        {"patient_id": "p1", "is_self": True, "relationship": "self", "role": "agendamento",
+         "patients": {"id": "p1", "name": "Ana Souza", "email": "ana@x.com",
+                      "financial_name": "Ana Souza"}},
+    ]
+    client = _mock_client(pc_rows)
+    with patch("app.database.get_contact_by_phone", new_callable=AsyncMock, return_value=contact), \
+         patch("app.database.get_supabase", new_callable=AsyncMock, return_value=client):
+        rows = await database.get_users_by_phone("5581988887777")
+    assert rows[0]["name"] is None
+
+
+@pytest.mark.asyncio
 async def test_shim_read_dedups_patient_across_roles():
     contact = {"id": "c1", "phone": "5581988887777", "name": "Ana",
                "cpf": "333", "active": True, "manual_hold": False}
@@ -182,6 +227,42 @@ async def test_upsert_user_routes_guardian_to_contact():
     # (c) link_patient_contact chamado com relationship="mãe" e is_self=False
     assert all(link["relationship"] == "mãe" for link in captured["links"])
     assert all(link["is_self"] is False for link in captured["links"])
+
+
+@pytest.mark.asyncio
+async def test_upsert_user_patient_only_field_does_not_wipe_contact_name():
+    """Regression: updating a patient-only field (e.g. email, patient_name) with no
+    contact fields in the payload must NOT overwrite contacts.name with NULL.
+
+    Bug found 2026-07-01 (Adriana conversation, 5581981464986): request_registration_update
+    called upsert_user(phone, {"email": new_value}) — since "email" isn't a contact
+    field, contact_data ended up empty, and the old fallback `contact_data or
+    {"name": data.get("name")}` sent {"name": None} to upsert_contact, nulling out the
+    contact's name on every partial patient-field update.
+    """
+    contact = {"id": "c1", "phone": "5583988887777", "active": True}
+    captured = {}
+
+    async def fake_upsert_contact(phone, data):
+        captured["contact_data"] = data
+        return "c1"
+
+    async def fake_upsert_patient(data, patient_id=None):
+        captured["patient_data"] = data
+        return patient_id or "p-new"
+
+    with patch("app.database.get_contact_by_phone", new_callable=AsyncMock, return_value=contact), \
+         patch("app.database.upsert_contact", side_effect=fake_upsert_contact), \
+         patch("app.database.upsert_patient", side_effect=fake_upsert_patient), \
+         patch("app.database.link_patient_contact", new_callable=AsyncMock):
+        await database.upsert_user(
+            "5583988887777",
+            {"email": "novo@x.com"},
+            user_id="p1",
+        )
+    # No contact field was in the payload — contact_data must stay empty,
+    # never {"name": None}.
+    assert captured["contact_data"] == {}
 
 
 def _complete_minor(**overrides) -> dict:

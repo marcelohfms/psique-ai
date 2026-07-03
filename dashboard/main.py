@@ -354,7 +354,8 @@ async def pagamentos_page(request: Request, username: str = Depends(verify_crede
         .select(
             "appointment_id, start_time, doctor_id, paid_at, "
             "booking_fee_paid_at, booking_fee_waived, consultation_type, status, "
-            "users(patient_name, name, birth_date, custom_price, number)"
+            "patients(name, birth_date, custom_price, "
+            "patient_contacts(is_self, contacts(phone, name)))"
         )
         .in_("status", ["scheduled", "completed"])
         .execute()
@@ -362,9 +363,21 @@ async def pagamentos_page(request: Request, username: str = Depends(verify_crede
 
     pendencias = []
     for appt in result.data or []:
-        user = appt.get("users") or {}
-        patient_name = user.get("patient_name") or user.get("name") or "Paciente"
-        phone = user.get("number") or ""
+        patient = appt.get("patients") or {}
+        patient_name = patient.get("name") or "Paciente"
+        birth_date = patient.get("birth_date")
+        custom_price = patient.get("custom_price")
+
+        # Busca telefone via patient_contacts → contacts
+        phone = ""
+        patient_contacts = patient.get("patient_contacts") or []
+        # Prefere o contato self (próprio paciente), senão pega o primeiro
+        self_contact = next((pc for pc in patient_contacts if pc.get("is_self")), None)
+        pc_row = self_contact or (patient_contacts[0] if patient_contacts else None)
+        if pc_row:
+            contact = pc_row.get("contacts") or {}
+            phone = contact.get("phone") or ""
+
         doctor_display = DOCTOR_DISPLAY.get(appt.get("doctor_id", ""), "Médico")
         start_time = appt.get("start_time", "")
         try:
@@ -390,9 +403,9 @@ async def pagamentos_page(request: Request, username: str = Depends(verify_crede
         if not appt.get("paid_at"):
             valor = _calc_valor_consulta(
                 appt.get("doctor_id", ""),
-                user.get("birth_date"),
+                birth_date,
                 appt.get("consultation_type"),
-                user.get("custom_price"),
+                custom_price,
             )
             pendencias.append({
                 "appointment_id": appt["appointment_id"],

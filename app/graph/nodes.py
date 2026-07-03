@@ -17,7 +17,7 @@ from app.graph.tools import (
     consultar_data, extend_payment_deadline,
     _expected_consultation_amount,
 )
-from app.graph.prompts import COLLECT_SYSTEM, MINOR_RULE, MINOR_RETURNING_RULE, ADULT_RULE, GUARDIAN_RULE, EXISTING_PATIENT_SYSTEM, NEW_PATIENT_SYSTEM, CANCELLATION_RULES, CLINIC_ADDRESS, DOCTORS_INFO, get_booking_fee_rule, MEDICAL_LIMITS_RULE, DOCTOR_CORRECTION_RULE, EMAIL_RULE, get_pricing_rules, ATTENDANT_INSTRUCTION_RULE, get_pricing_exception_rule
+from app.graph.prompts import COLLECT_SYSTEM, MINOR_RULE, MINOR_RETURNING_RULE, ADULT_RULE, GUARDIAN_RULE, EXISTING_PATIENT_SYSTEM, NEW_PATIENT_SYSTEM, CANCELLATION_RULES, CLINIC_ADDRESS, DOCTORS_INFO, get_booking_fee_rule, MEDICAL_LIMITS_RULE, DOCTOR_CORRECTION_RULE, EMAIL_RULE, get_pricing_rules, ATTENDANT_INSTRUCTION_RULE, get_pricing_exception_rule, CORRECT_PIX_KEY
 from app.whatsapp import send_text
 from app.database import upsert_user, log_event, get_upcoming_appointments, get_user_by_phone, get_users_by_phone, DOCTOR_IDS, DOCTOR_NAMES, save_message, get_last_assistant_message_time, is_registration_complete
 from app.chatwoot import get_conversation_id, add_private_note
@@ -217,7 +217,11 @@ async def collect_info_node(state: ConversationState, config: RunnableConfig) ->
             loaded = {
                 "user_db_id": u["id"],
                 "user_name": u.get("name"),
-                "patient_name": u.get("patient_name") or u.get("name"),
+                # Only default patient_name to the contact's own name when the DB
+                # already confirms the contact IS the patient. Otherwise (is_patient
+                # False/unknown) this would wrongly skip asking for the patient's
+                # name in collect_info's step machine (Step 2c).
+                "patient_name": u.get("patient_name") or (u.get("name") if u.get("is_patient") else None),
                 "patient_age": u.get("age"),
                 "birth_date": u.get("birth_date"),
                 "is_patient": u.get("is_patient"),
@@ -302,9 +306,16 @@ async def collect_info_node(state: ConversationState, config: RunnableConfig) ->
                     _log.getLogger(__name__).exception("Failed to persist preferred_doctor")
 
     async def _ask(reply: str) -> dict:
+        # Force stage back to collect_info: a caller upstream (e.g. an attendant
+        # instruction in main.py) may have optimistically set stage="patient_agent"
+        # before this turn even ran. Since we're asking another registration
+        # question, registration is NOT complete — without this, _route_after_collect
+        # would wrongly continue into patient_agent in the same turn, producing a
+        # second, conflicting AI message and corrupting _last_ai()/_last_human()
+        # bookkeeping for the next turn (see Talita/CPF incident 2026-07-03).
         await send_text(state["phone"], reply)
         await save_message(state["phone"], "assistant", reply)
-        return {**_persistent_updates, "messages": [AIMessage(content=reply)]}
+        return {**_persistent_updates, "stage": "collect_info", "messages": [AIMessage(content=reply)]}
 
     async def _extract_and_ask(extracted: dict, next_q: str) -> dict:
         """Persist extracted fields to Supabase and ask the next question in one turn."""
@@ -324,7 +335,8 @@ async def collect_info_node(state: ConversationState, config: RunnableConfig) ->
         db_payload = {_STATE_TO_DB[k]: v for k, v in extracted.items() if k in _STATE_TO_DB}
         if "preferred_doctor" in extracted:
             db_payload["doctor_id"] = DOCTOR_IDS.get(extracted["preferred_doctor"])
-        result_update: dict = {**_persistent_updates, **extracted, "messages": [AIMessage(content=next_q)]}
+        # See _ask() above for why stage is forced back to collect_info here too.
+        result_update: dict = {**_persistent_updates, **extracted, "stage": "collect_info", "messages": [AIMessage(content=next_q)]}
         if db_payload:
             try:
                 returned_id = await upsert_user(state["phone"], db_payload, user_id=state.get("user_db_id"))
@@ -363,6 +375,15 @@ async def collect_info_node(state: ConversationState, config: RunnableConfig) ->
         if len(t) < 3:
             return False
         if _re.search(r'\d', t):
+            return False
+        # Camada 1b: nomes não são notas/mensagens longas
+        # Se tem múltiplos sinais de pontuação (mais de 1 ponto/vírgula/exclamação/interrogação),
+        # provavelmente é uma frase completa, não um nome
+        _punct_count = sum(1 for c in t if c in '.!?,;')
+        if _punct_count > 1:
+            return False
+        # Se é muito longo (>80 chars), é provavelmente uma nota privada
+        if len(t) > 80:
             return False
         # Camada 2: frases claramente não-nomes
         _non_name = [
@@ -458,6 +479,13 @@ async def collect_info_node(state: ConversationState, config: RunnableConfig) ->
         from app.graph.schemas import _parse_birth_date
         last_ai = _last_ai()
         last_human = _last_human().strip()
+        # Strip the attendant-note prefix before using last_human as a raw
+        # extracted value (CPF, email, etc). Without this, an attendant pasting
+        # a field value in a private note (e.g. "[Instrução da atendente]: 010.022.724-40")
+        # gets the whole prefixed string saved verbatim into the field.
+        _ATTENDANT_PREFIX = "[Instrução da atendente]: "
+        if last_human.startswith(_ATTENDANT_PREFIX):
+            last_human = last_human[len(_ATTENDANT_PREFIX):].strip()
 
         # Step 2: contact name — saved to contacts.name only
         if not state.get("user_name"):
@@ -497,6 +525,12 @@ async def collect_info_node(state: ConversationState, config: RunnableConfig) ->
                     _uname = state.get("user_name") or ""
                     if _uname:
                         _not_patient_update["guardian_name"] = _uname
+                    # The contact was previously assumed/confirmed to be the patient
+                    # (patient_name == user_name). Now they say it's for someone else —
+                    # clear patient_name so collect_info re-asks for the real patient's name
+                    # instead of silently keeping the contact's name as the patient's.
+                    if state.get("patient_name") and state.get("patient_name") == state.get("user_name"):
+                        _not_patient_update["patient_name"] = None
                     return await _extract_and_ask(_not_patient_update, _nq(**_not_patient_update))
             return await _ask(_IS_PATIENT_CONFIRM_Q)
 
@@ -542,6 +576,11 @@ async def collect_info_node(state: ConversationState, config: RunnableConfig) ->
                         _not_patient_update["guardian_name"] = _uname
                     if _inferred_rel:
                         _not_patient_update["guardian_relationship"] = _inferred_rel
+                    # See Step 2b above: don't let a stale patient_name==user_name
+                    # (e.g. hydrated from an earlier turn/DB state) block the
+                    # patient-name question now that we know it's for someone else.
+                    if state.get("patient_name") and state.get("patient_name") == state.get("user_name"):
+                        _not_patient_update["patient_name"] = None
                     return await _extract_and_ask(
                         _not_patient_update, _nq(**_not_patient_update)
                     )
@@ -996,6 +1035,12 @@ async def patient_agent_node(state: ConversationState, config: RunnableConfig) -
                     _sync_updates["patient_email"] = _h_patient["email"]
                 if state.get("is_returning_patient") is None and _h_patient.get("is_returning_patient") is not None:
                     _sync_updates["is_returning_patient"] = _h_patient["is_returning_patient"]
+                if not state.get("financial_name") and _h_patient.get("financial_name"):
+                    _sync_updates["financial_name"] = _h_patient["financial_name"]
+                if not state.get("financial_cpf") and _h_patient.get("financial_cpf"):
+                    _sync_updates["financial_cpf"] = _h_patient["financial_cpf"]
+                if not state.get("financial_email") and _h_patient.get("financial_email"):
+                    _sync_updates["financial_email"] = _h_patient["financial_email"]
 
             if state.get("is_patient") is None and _h_contact and _h_patient:
                 _db_h = await _get_db_hydr()
@@ -1014,6 +1059,28 @@ async def patient_agent_node(state: ConversationState, config: RunnableConfig) -
                 _pa_logger.info("DB hydration for %s: %s", state["phone"], list(_sync_updates.keys()))
         except Exception:
             _pa_logger.exception("DB hydration failed for %s", state.get("phone"))
+
+    # Lightweight financial-fields hydration — independent of the main hydration
+    # block above (which only runs when core registration fields are missing).
+    # Without this, a returning patient whose financial_name/cpf/email were already
+    # saved on a prior NF request would have Eva ask for them again every time,
+    # since those fields live only in the DB once the main hydration has already run.
+    _fin_user_db_id = _sync_updates.get("user_db_id") or _user_db_id
+    if _fin_user_db_id and not (state.get("financial_name") and state.get("financial_cpf") and state.get("financial_email")):
+        try:
+            from app.database import get_supabase as _get_db_fin
+            _db_fin = await _get_db_fin()
+            _fin_r = await _db_fin.from_("patients").select("financial_name, financial_cpf, financial_email") \
+                .eq("id", _fin_user_db_id).maybe_single().execute()
+            if _fin_r and _fin_r.data:
+                if not state.get("financial_name") and _fin_r.data.get("financial_name"):
+                    _sync_updates["financial_name"] = _fin_r.data["financial_name"]
+                if not state.get("financial_cpf") and _fin_r.data.get("financial_cpf"):
+                    _sync_updates["financial_cpf"] = _fin_r.data["financial_cpf"]
+                if not state.get("financial_email") and _fin_r.data.get("financial_email"):
+                    _sync_updates["financial_email"] = _fin_r.data["financial_email"]
+        except Exception:
+            _pa_logger.exception("Financial-fields hydration failed for %s", state.get("phone"))
 
     # Apply sync updates to local state view so this turn uses the correct values
     if _sync_updates:
@@ -1098,12 +1165,12 @@ async def patient_agent_node(state: ConversationState, config: RunnableConfig) -
                         f"A taxa de reserva foi dispensada. Até lá!"
                     )
                 else:
-                    _PIX_KEY = "42006848000178"
+                    _PIX_KEY = CORRECT_PIX_KEY
                     _patient_msg = (
                         f"Consulta registrada! ✅\n{_appt_line}\n\n"
                         f"Para garantir a vaga, é necessário o pagamento da taxa de reserva de R$ 100,00 em até 2 horas.\n"
                         f"💳 PIX: {_PIX_KEY}\n\n"
-                        f"Esse valor será abatido do total da consulta. Em caso de cancelamento com menos de 24h de antecedência ou ausência sem justificativa, a taxa não é devolvida."
+                        f"Esse valor será abatido do total da consulta. Em caso de cancelamento ou remarcação com menos de 24h de antecedência ou ausência sem justificativa, a taxa não é devolvida."
                     )
             elif _result.startswith("[INSTRUÇÃO INTERNA"):
                 _pa_logger.warning("PENDING_APPT_CONFIRM internal error phone=%s result=%.200s", state.get("phone"), _result_body)
@@ -1288,6 +1355,7 @@ async def patient_agent_node(state: ConversationState, config: RunnableConfig) -
         medical_limits_rule=MEDICAL_LIMITS_RULE,
         attendant_instruction_rule=ATTENDANT_INSTRUCTION_RULE,
         modality_restriction=state.get("modality_restriction") or "",
+        pix_key=CORRECT_PIX_KEY,
     )
 
     # Inject contact-vs-patient rule when the WhatsApp contact is NOT the patient.
@@ -1664,7 +1732,13 @@ async def patient_agent_node(state: ConversationState, config: RunnableConfig) -
             if needs_price_notice:
                 await upsert_user(phone, {"price_adjustment_notified_at": now_dt.isoformat()}, user_id=state.get("user_db_id"))
 
-    update: dict = {"messages": [response], "silent_mode": False, **_sync_updates}
+    # Keep silent_mode alive while a tool call is pending — the ToolNode reads state
+    # right after this update is applied, and force_encaixe (and other attendant-only
+    # tool behavior) depends on silent_mode still being True at that point. Only clear
+    # it once the LLM produces its final text response (no more tool calls this turn).
+    update: dict = {"messages": [response], **_sync_updates}
+    if not response.tool_calls:
+        update["silent_mode"] = False
     if pending_action:
         update["pending_action"] = None
 

@@ -214,7 +214,7 @@ async def main():
     # For appointments at 9h or later: reminder goes at 7h.
     day_of_result = await (
         client.from_("appointments")
-        .select("appointment_id, start_time, doctor_id, modality, users(number, patient_name, name)")
+        .select("appointment_id, start_time, doctor_id, modality, patient_id, patients(name)")
         .eq("status", "scheduled")
         .is_("reminder_day_of_sent_at", "null")
         .gt("start_time", now.isoformat())

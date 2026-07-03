@@ -1,0 +1,113 @@
+<h2>Onde o backend do painel deve morar?</h2>
+<p class="subtitle">A diferença está em <strong>quem fala com o grafo vivo da Eva</strong> (necessário pra corrigir o checkpoint com segurança)</p>
+
+<div class="split">
+  <div class="mockup">
+    <div class="mockup-header">✅ Opção 1 — Tudo no app do bot (Recomendado)</div>
+    <div class="mockup-body">
+      <svg viewBox="0 0 360 340" xmlns="http://www.w3.org/2000/svg" style="width:100%;height:auto">
+        <style>
+          .box{fill:currentColor;fill-opacity:.06;stroke:currentColor;stroke-opacity:.5;stroke-width:1.5;rx:8}
+          .hl{fill:currentColor;fill-opacity:.14;stroke:currentColor;stroke-opacity:.8;stroke-width:2}
+          .t{fill:currentColor;font-family:sans-serif;font-size:12px}
+          .tb{fill:currentColor;font-family:sans-serif;font-size:12.5px;font-weight:700}
+          .ts{fill:currentColor;font-family:sans-serif;font-size:10px;opacity:.75}
+          .arr{stroke:currentColor;stroke-opacity:.7;stroke-width:1.8;fill:none;marker-end:url(#a1)}
+        </style>
+        <defs><marker id="a1" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto"><path d="M0,0 L6,3 L0,6 Z" fill="currentColor"/></marker></defs>
+
+        <rect class="box" x="110" y="10" width="140" height="40" rx="8"/>
+        <text class="tb" x="180" y="28" text-anchor="middle">Chatwoot (iframe)</text>
+        <text class="ts" x="180" y="42" text-anchor="middle">painel da atendente</text>
+
+        <line class="arr" x1="180" y1="50" x2="180" y2="80"/>
+
+        <rect class="hl" x="40" y="82" width="280" height="170" rx="10"/>
+        <text class="tb" x="180" y="102" text-anchor="middle">App do bot (app/)</text>
+
+        <rect class="box" x="60" y="115" width="240" height="34" rx="6"/>
+        <text class="t" x="180" y="136" text-anchor="middle">router do painel + páginas</text>
+
+        <rect class="box" x="60" y="160" width="110" height="74" rx="6"/>
+        <text class="tb" x="115" y="182" text-anchor="middle">grafo vivo</text>
+        <text class="ts" x="115" y="198" text-anchor="middle">aupdate_state</text>
+        <text class="ts" x="115" y="212" text-anchor="middle">→ checkpoint</text>
+
+        <rect class="box" x="190" y="160" width="110" height="74" rx="6"/>
+        <text class="tb" x="245" y="182" text-anchor="middle">patients.py</text>
+        <text class="ts" x="245" y="198" text-anchor="middle">regras nativas</text>
+        <text class="ts" x="245" y="212" text-anchor="middle">→ DB</text>
+
+        <line class="arr" x1="115" y1="149" x2="115" y2="160"/>
+        <line class="arr" x1="245" y1="149" x2="245" y2="160"/>
+
+        <line class="arr" x1="180" y1="252" x2="180" y2="280"/>
+        <rect class="box" x="90" y="282" width="180" height="40" rx="8"/>
+        <text class="tb" x="180" y="300" text-anchor="middle">Postgres / Supabase</text>
+        <text class="ts" x="180" y="314" text-anchor="middle">checkpoint + patients/contacts</text>
+      </svg>
+      <p class="ts" style="margin-top:8px">Um backend só. A correção do checkpoint usa o grafo que já existe; o DB usa as regras que já existem. Sem CORS, uma auth só.</p>
+    </div>
+  </div>
+
+  <div class="mockup">
+    <div class="mockup-header">⚠️ Opção 2 — Divide DB e checkpoint</div>
+    <div class="mockup-body">
+      <svg viewBox="0 0 360 340" xmlns="http://www.w3.org/2000/svg" style="width:100%;height:auto">
+        <style>
+          .box2{fill:currentColor;fill-opacity:.06;stroke:currentColor;stroke-opacity:.5;stroke-width:1.5}
+          .warn{fill:#e0a000;fill-opacity:.12;stroke:#e0a000;stroke-opacity:.9;stroke-width:2}
+          .t2{fill:currentColor;font-family:sans-serif;font-size:12px}
+          .tb2{fill:currentColor;font-family:sans-serif;font-size:12.5px;font-weight:700}
+          .ts2{fill:currentColor;font-family:sans-serif;font-size:10px;opacity:.75}
+          .arr2{stroke:currentColor;stroke-opacity:.7;stroke-width:1.8;fill:none;marker-end:url(#a2)}
+        </style>
+        <defs><marker id="a2" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto"><path d="M0,0 L6,3 L0,6 Z" fill="currentColor"/></marker></defs>
+
+        <rect class="box2" x="110" y="10" width="140" height="40" rx="8"/>
+        <text class="tb2" x="180" y="28" text-anchor="middle">Chatwoot (iframe)</text>
+        <text class="ts2" x="180" y="42" text-anchor="middle">fala com DOIS backends</text>
+
+        <line class="arr2" x1="140" y1="50" x2="90" y2="78"/>
+        <line class="arr2" x1="220" y1="50" x2="270" y2="78"/>
+
+        <rect class="box2" x="20" y="80" width="150" height="120" rx="10"/>
+        <text class="tb2" x="95" y="100" text-anchor="middle">dashboard/</text>
+        <text class="ts2" x="95" y="118" text-anchor="middle">formulários de DB</text>
+        <rect class="warn" x="32" y="128" width="126" height="58" rx="6"/>
+        <text class="ts2" x="95" y="148" text-anchor="middle">REIMPLEMENTA</text>
+        <text class="ts2" x="95" y="162" text-anchor="middle">regras de</text>
+        <text class="ts2" x="95" y="176" text-anchor="middle">patients/contacts</text>
+
+        <rect class="box2" x="200" y="80" width="150" height="120" rx="10"/>
+        <text class="tb2" x="275" y="100" text-anchor="middle">app/ (bot)</text>
+        <text class="ts2" x="275" y="118" text-anchor="middle">endpoint fino</text>
+        <rect class="box2" x="212" y="128" width="126" height="58" rx="6"/>
+        <text class="ts2" x="275" y="152" text-anchor="middle">grafo vivo</text>
+        <text class="ts2" x="275" y="166" text-anchor="middle">→ checkpoint</text>
+
+        <line class="arr2" x1="95" y1="200" x2="160" y2="270"/>
+        <line class="arr2" x1="275" y1="200" x2="210" y2="270"/>
+        <rect class="box2" x="90" y="272" width="180" height="40" rx="8"/>
+        <text class="tb2" x="180" y="290" text-anchor="middle">Postgres / Supabase</text>
+        <text class="ts2" x="180" y="304" text-anchor="middle">mesmo banco</text>
+      </svg>
+      <p class="ts2" style="margin-top:8px">Dois backends atrás de um iframe (CORS/auth duplicada). As regras de paciente viram duas cópias que podem divergir do bot.</p>
+    </div>
+  </div>
+</div>
+
+<div class="options">
+  <div class="option" data-choice="op1" onclick="toggleSelect(this)">
+    <div class="letter">1</div>
+    <div class="content"><h3>Tudo no app do bot (Recomendado)</h3><p>Um backend, regras nativas reusadas, checkpoint correto via grafo vivo.</p></div>
+  </div>
+  <div class="option" data-choice="op2" onclick="toggleSelect(this)">
+    <div class="letter">2</div>
+    <div class="content"><h3>Divide DB (dashboard) + checkpoint (bot)</h3><p>Reusa o dashboard existente, mas duplica regras e tem dois backends.</p></div>
+  </div>
+  <div class="option" data-choice="op3" onclick="toggleSelect(this)">
+    <div class="letter">3</div>
+    <div class="content"><h3>Tudo no dashboard standalone</h3><p>Dashboard importa o grafo da Eva. Bot intocado, mas dois builds do grafo pra manter em sincronia (frágil).</p></div>
+  </div>
+</div>

@@ -1,0 +1,90 @@
+<h2>Layout — Página de Pagamentos Pendentes</h2>
+<p class="subtitle">Rota <code>/pagamentos</code> no dashboard existente. Clique para selecionar.</p>
+
+<div class="cards">
+  <div class="card" data-choice="a" onclick="toggleSelect(this)">
+    <div class="card-image">
+      <div style="font-family:monospace;font-size:12px;padding:12px;background:#0d1117;border-radius:6px;color:#e6edf3">
+        <div style="color:#7d8590;margin-bottom:8px">● Pagamentos Pendentes — Psique</div>
+        <div style="background:#161b22;border-radius:4px;padding:8px;margin-bottom:6px">
+          <div style="display:flex;gap:8px;color:#7d8590;font-size:10px;margin-bottom:4px">
+            <span style="flex:1.5">PACIENTE</span><span style="flex:1">MÉDICO</span><span style="flex:1">DATA/HORA</span><span style="flex:0.8">TIPO</span><span style="flex:0.8">VALOR</span><span style="flex:0.6"></span>
+          </div>
+          <div style="display:flex;gap:8px;align-items:center;padding:4px 0;border-bottom:1px solid #21262d">
+            <span style="flex:1.5;color:#e6edf3">Mariana Costa</span>
+            <span style="flex:1;color:#7d8590">Dr. Júlio</span>
+            <span style="flex:1;color:#7d8590">25/06 14h</span>
+            <span style="flex:0.8"><span style="background:#1f3a1f;color:#3fb950;padding:2px 6px;border-radius:10px;font-size:10px">Taxa R$</span></span>
+            <span style="flex:0.8"><input style="width:60px;background:#21262d;border:1px solid #30363d;color:#e6edf3;border-radius:4px;padding:2px 4px;font-size:11px" value="100" /></span>
+            <span style="flex:0.6"><button style="background:#238636;color:#fff;border:none;border-radius:4px;padding:3px 8px;font-size:10px;cursor:pointer">Pago</button></span>
+          </div>
+          <div style="display:flex;gap:8px;align-items:center;padding:4px 0;border-bottom:1px solid #21262d">
+            <span style="flex:1.5;color:#e6edf3">Roberto Alves</span>
+            <span style="flex:1;color:#7d8590">Dra. Bruna</span>
+            <span style="flex:1;color:#7d8590">26/06 10h</span>
+            <span style="flex:0.8"><span style="background:#3a1f1f;color:#f85149;padding:2px 6px;border-radius:10px;font-size:10px">Consulta</span></span>
+            <span style="flex:0.8"><input style="width:60px;background:#21262d;border:1px solid #30363d;color:#e6edf3;border-radius:4px;padding:2px 4px;font-size:11px" value="350" /></span>
+            <span style="flex:0.6"><button style="background:#238636;color:#fff;border:none;border-radius:4px;padding:3px 8px;font-size:10px;cursor:pointer">Pago</button></span>
+          </div>
+          <div style="display:flex;gap:8px;align-items:center;padding:4px 0">
+            <span style="flex:1.5;color:#e6edf3">Ana Souza</span>
+            <span style="flex:1;color:#7d8590">Dr. Júlio</span>
+            <span style="flex:1;color:#7d8590">28/06 16h</span>
+            <span style="flex:0.8"><span style="background:#1f3a1f;color:#3fb950;padding:2px 6px;border-radius:10px;font-size:10px">Taxa R$</span></span>
+            <span style="flex:0.8"><input style="width:60px;background:#21262d;border:1px solid #30363d;color:#e6edf3;border-radius:4px;padding:2px 4px;font-size:11px" value="100" /></span>
+            <span style="flex:0.6"><button style="background:#238636;color:#fff;border:none;border-radius:4px;padding:3px 8px;font-size:10px;cursor:pointer">Pago</button></span>
+          </div>
+        </div>
+        <div style="color:#7d8590;font-size:10px;text-align:right">3 pendências</div>
+      </div>
+    </div>
+    <div class="card-body">
+      <h3>Tabela simples</h3>
+      <p>Uma linha por pendência. Tipo destacado com badge colorido (taxa vs consulta). Valor editável inline. Botão "Pago" na mesma linha.</p>
+    </div>
+  </div>
+
+  <div class="card" data-choice="b" onclick="toggleSelect(this)">
+    <div class="card-image">
+      <div style="font-family:monospace;font-size:12px;padding:12px;background:#0d1117;border-radius:6px;color:#e6edf3">
+        <div style="color:#7d8590;margin-bottom:8px">● Pagamentos Pendentes — Psique</div>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px">
+          <div style="background:#161b22;border-radius:4px;padding:8px;border-left:3px solid #3fb950">
+            <div style="color:#3fb950;font-size:10px;margin-bottom:3px">TAXA DE RESERVA</div>
+            <div style="color:#e6edf3;font-size:12px">Mariana Costa</div>
+            <div style="color:#7d8590;font-size:10px">Dr. Júlio · 25/06 14h</div>
+            <div style="display:flex;align-items:center;gap:4px;margin-top:6px">
+              <span style="color:#7d8590;font-size:10px">R$</span>
+              <input style="width:50px;background:#21262d;border:1px solid #30363d;color:#e6edf3;border-radius:4px;padding:2px 4px;font-size:11px" value="100" />
+              <button style="background:#238636;color:#fff;border:none;border-radius:4px;padding:2px 8px;font-size:10px;cursor:pointer">Pago</button>
+            </div>
+          </div>
+          <div style="background:#161b22;border-radius:4px;padding:8px;border-left:3px solid #f85149">
+            <div style="color:#f85149;font-size:10px;margin-bottom:3px">CONSULTA</div>
+            <div style="color:#e6edf3;font-size:12px">Roberto Alves</div>
+            <div style="color:#7d8590;font-size:10px">Dra. Bruna · 26/06 10h</div>
+            <div style="display:flex;align-items:center;gap:4px;margin-top:6px">
+              <span style="color:#7d8590;font-size:10px">R$</span>
+              <input style="width:50px;background:#21262d;border:1px solid #30363d;color:#e6edf3;border-radius:4px;padding:2px 4px;font-size:11px" value="350" />
+              <button style="background:#238636;color:#fff;border:none;border-radius:4px;padding:3px 8px;font-size:10px;cursor:pointer">Pago</button>
+            </div>
+          </div>
+          <div style="background:#161b22;border-radius:4px;padding:8px;border-left:3px solid #3fb950">
+            <div style="color:#3fb950;font-size:10px;margin-bottom:3px">TAXA DE RESERVA</div>
+            <div style="color:#e6edf3;font-size:12px">Ana Souza</div>
+            <div style="color:#7d8590;font-size:10px">Dr. Júlio · 28/06 16h</div>
+            <div style="display:flex;align-items:center;gap:4px;margin-top:6px">
+              <span style="color:#7d8590;font-size:10px">R$</span>
+              <input style="width:50px;background:#21262d;border:1px solid #30363d;color:#e6edf3;border-radius:4px;padding:2px 4px;font-size:11px" value="100" />
+              <button style="background:#238636;color:#fff;border:none;border-radius:4px;padding:3px 8px;font-size:10px;cursor:pointer">Pago</button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="card-body">
+      <h3>Cards em grade</h3>
+      <p>Cada pendência é um card com borda colorida por tipo. Visual mais espaçado, bom para poucas pendências.</p>
+    </div>
+  </div>
+</div>

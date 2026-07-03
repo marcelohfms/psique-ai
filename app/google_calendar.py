@@ -59,7 +59,7 @@ DOCTOR_SCHEDULES: dict[str, dict[int, list[tuple[int, int, int, int, str]]]] = {
         4: [(8, 0, 12, 0, "escolha"), (13, 0, 16, 0, "online")],     # Sexta — manhã escolha, tarde online
     },
     "julio": {
-        0: [(9, 0, 12, 0, "escolha"), (13, 0, 18, 0, "escolha")],                             # Segunda
+        0: [(9, 0, 12, 0, "escolha"), (14, 0, 18, 0, "escolha")],                             # Segunda
         2: [(9, 0, 12, 0, "escolha")],                                                         # Quarta
         3: [(9, 0, 12, 0, "escolha"), (14, 0, 18, 0, "escolha"), (18, 0, 20, 0, "escolha")],  # Quinta
     },

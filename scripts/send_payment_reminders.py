@@ -26,6 +26,8 @@ from zoneinfo import ZoneInfo
 from dotenv import load_dotenv
 load_dotenv()
 
+from app.graph.prompts import get_pix_key as _get_pix_key
+
 TZ = ZoneInfo("America/Recife")
 
 DOCTOR_LABELS = {
@@ -44,7 +46,7 @@ def payment_reminder_message(contact_first_name: str, doctor_label: str, date_st
         f"Olá, {contact_first_name}! 😊 Só passando para lembrar que {consulta} com "
         f"*{doctor_label}* no dia *{date_str}* ainda aguarda o pagamento da taxa "
         f"de reserva de R$ 100,00.\n\n"
-        f"💳 PIX: {os.environ.get('PIX_KEY', '42006848000178')}\n\n"
+        f"💳 PIX: {_get_pix_key()}\n\n"
         f"Assim que o pagamento for realizado, a vaga estará garantida! "
         f"Precisa de alguma ajuda ou tem alguma dúvida sobre o pagamento? É só me chamar aqui. 🙏"
     )

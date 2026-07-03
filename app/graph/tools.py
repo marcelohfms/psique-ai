@@ -671,7 +671,8 @@ async def confirm_appointment(
         subject=f"Agendamento realizado — {patient_name}",
     ))
 
-    pix_key = os.environ.get("PIX_KEY", "42006848000178")
+    from app.graph.prompts import get_pix_key
+    pix_key = get_pix_key()
     _custom_price_ret = (user or {}).get("custom_price")
     _prefix = "[INSTRUÇÃO INTERNA — NÃO ENVIE AO PACIENTE] "
     if _custom_price_ret == 0:
@@ -778,14 +779,35 @@ async def mark_reschedule_in_progress(
     # Valida que o appointment pertence a este paciente
     users = await get_users_by_phone(phone)
     user_ids = [u["id"] for u in users]
-    appt = await client.from_("appointments").select("appointment_id, status, patient_id") \
-        .eq("appointment_id", appointment_id).maybe_single().execute()
+    appt = await client.from_("appointments").select(
+        "appointment_id, status, patient_id, start_time, booking_fee_paid_at, booking_fee_waived"
+    ).eq("appointment_id", appointment_id).maybe_single().execute()
 
     if not appt.data or appt.data.get("patient_id") not in user_ids:
         return "ID de agendamento inválido para este paciente."
 
     if appt.data.get("status") not in ("scheduled", "pending_reschedule"):
         return "Esta consulta não está em status que permita reagendamento."
+
+    # Regra das 24h precede a regra do primeiro reagendamento: mesmo sendo a
+    # primeira remarcação do paciente, se já passou o prazo (19h do dia anterior,
+    # ou o próprio dia da consulta) e a taxa já foi paga, a taxa é recolhida e uma
+    # nova é cobrada — não se aplica o benefício de remarcação gratuita.
+    if not state.get("silent_mode") and appt.data.get("start_time"):
+        fee_paid = bool(appt.data.get("booking_fee_paid_at") or appt.data.get("booking_fee_waived"))
+        appt_start = datetime.fromisoformat(appt.data["start_time"]).astimezone(TZ)
+        deadline = (appt_start - timedelta(days=1)).replace(hour=19, minute=0, second=0, microsecond=0)
+        if fee_paid and now >= deadline:
+            return (
+                "[INSTRUÇÃO INTERNA — NÃO ENVIE AO PACIENTE] Este reagendamento está sendo "
+                "solicitado fora do prazo (menos de 24h de antecedência, ou no dia da consulta) "
+                "e a taxa de reserva já foi paga. NÃO chame mark_reschedule_in_progress/"
+                "reschedule_appointment para este caso, mesmo que seja a primeira remarcação do "
+                "paciente. Avise o paciente que a taxa anterior será recolhida e uma nova taxa de "
+                "reserva de R$ 100,00 será cobrada para a nova data. Em seguida chame "
+                "get_available_slots e, ao confirmar o novo horário, chame cancel_appointment "
+                "(para esta consulta) e confirm_appointment (para a nova data)."
+            )
 
     # Política de reagendamento: paciente pode reagendar apenas 1x.
     # A partir do 2º reagendamento iniciado pelo paciente, é necessário
@@ -804,8 +826,21 @@ async def mark_reschedule_in_progress(
                 "taxa de reserva. Informe o paciente e oriente-o a solicitar um novo agendamento."
             )
 
+    # Delete the event from Google Calendar since the appointment is being rescheduled
+    doctor = await _resolve_doctor(state, config)
+    calendar_id = await _get_doctor_calendar_id(doctor)
+    if calendar_id:
+        from app.google_calendar import cancel_event
+        try:
+            await cancel_event(calendar_id, appointment_id)
+        except Exception as e:
+            # Log but don't fail — the appointment is already marked for rescheduling
+            logger.warning("Failed to delete calendar event %s during reschedule: %s", appointment_id, e)
+
+    # Mark the appointment as pending_reschedule so reschedule_appointment knows to create a new event
     await client.from_("appointments").update({
         "reschedule_requested_at": now.isoformat(),
+        "status": "pending_reschedule",
     }).eq("appointment_id", appointment_id).execute()
 
     await log_event("reschedule_requested", phone, {"appointment_id": appointment_id})
@@ -821,6 +856,111 @@ async def mark_reschedule_in_progress(
 
 
 @tool
+async def change_modality(
+    appointment_id: str,
+    new_modality: Literal["online", "presencial"],
+    state: Annotated[dict, InjectedState],
+    config: RunnableConfig,
+) -> str:
+    """
+    Altera apenas a modalidade (online ou presencial) de uma consulta existente,
+    mantendo a mesma data e hora. appointment_id é o Google Calendar event ID.
+    """
+    from app.google_calendar import update_event
+
+    doctor = await _resolve_doctor(state, config)
+    calendar_id = await _get_doctor_calendar_id(doctor)
+    if not calendar_id:
+        return "Não foi possível identificar o calendário do médico."
+
+    # Fetch appointment data
+    client = await get_supabase()
+    phone = config["configurable"]["phone"]
+    appt_result = await client.from_("appointments").select(
+        "start_time, end_time, patient_id, modality, patients(name, email)"
+    ).eq("appointment_id", appointment_id).maybe_single().execute()
+
+    if not appt_result.data:
+        return "Agendamento não encontrado."
+
+    # Validate that this appointment belongs to this phone number
+    _phone_clean = phone.replace("@s.whatsapp.net", "")
+    _phone_pids = [u["id"] for u in await get_users_by_phone(_phone_clean)]
+    _appt_patient_id = appt_result.data.get("patient_id")
+    if _appt_patient_id is None or _appt_patient_id not in _phone_pids:
+        return "Este agendamento não pertence a este paciente."
+
+    # Check if modality is actually changing
+    current_modality = appt_result.data.get("modality")
+    if current_modality == new_modality:
+        modality_label = "online" if new_modality == "online" else "presencial"
+        return f"A consulta já está marcada como {modality_label}. Nenhuma alteração necessária."
+
+    # Get start time and patient info
+    start_time_str = appt_result.data.get("start_time")
+    if not start_time_str:
+        return "Não foi possível obter a data e hora da consulta."
+
+    start = datetime.fromisoformat(start_time_str).replace(tzinfo=TZ)
+    slot_duration = 60  # Assume 1 hour by default
+    if appt_result.data.get("end_time"):
+        end = datetime.fromisoformat(appt_result.data["end_time"]).replace(tzinfo=TZ)
+        slot_duration = int((end - start).total_seconds() / 60)
+
+    _appt_patient = appt_result.data.get("patients") or {}
+    patient_name = _appt_patient.get("name") or state.get("patient_name") or state.get("user_name") or "Paciente"
+    patient_email = _appt_patient.get("email") or state.get("patient_email") or ""
+
+    doctor_label = {"julio": "Dr. Júlio", "bruna": "Dra. Bruna"}.get(doctor, "médico(a)")
+    patient_age = state.get("patient_age") or 99
+    is_minor_first = patient_age < 18 and not state.get("is_patient", False)
+
+    # Update Google Calendar event
+    try:
+        await update_event(
+            calendar_id=calendar_id,
+            event_id=appointment_id,
+            new_start=start,
+            slot_minutes=slot_duration,
+            patient_name=patient_name,
+            doctor_name=doctor_label,
+            is_minor_first=is_minor_first,
+            modality=new_modality,
+            patient_email=patient_email,
+            patient_number=config["configurable"]["phone"],
+        )
+    except Exception as e:
+        _logger.error("CHANGE_MODALITY update_event FAILED appt=%s error=%s", appointment_id, e, exc_info=True)
+        return f"Não foi possível atualizar o evento no Google Calendar. Erro: {e}"
+
+    # Update DB record
+    await client.from_("appointments").update({
+        "modality": new_modality,
+        "updated_at": datetime.now(TZ).isoformat(),
+    }).eq("appointment_id", appointment_id).execute()
+
+    await log_event("modality_changed", phone, {
+        "appointment_id": appointment_id,
+        "new_modality": new_modality,
+    })
+
+    formatted_date = start.strftime("%d/%m/%Y às %H:%M")
+    modality_label = "online" if new_modality == "online" else "presencial"
+
+    await _notify_clinic(
+        f"Modalidade alterada! 🔄\n"
+        f"Paciente: {patient_name}\n"
+        f"Data e horário: {formatted_date}\n"
+        f"Nova modalidade: {modality_label}\n"
+        f"Médico(a): {doctor_label}",
+        phone=phone,
+        subject=f"Modalidade alterada — {patient_name}",
+    )
+
+    return f"Modalidade alterada com sucesso! ✅\nSua consulta de {formatted_date} agora é {modality_label}."
+
+
+@tool
 async def reschedule_appointment(
     appointment_id: str,
     new_slot_datetime: str,
@@ -828,6 +968,7 @@ async def reschedule_appointment(
     state: Annotated[dict, InjectedState],
     config: RunnableConfig,
     modality: str = "",
+    confirmed_by_patient: bool = True,
 ) -> str:
     """
     Remarca uma consulta existente para um novo horário.
@@ -835,6 +976,10 @@ async def reschedule_appointment(
     new_slot_datetime deve estar no formato ISO 8601 em HORÁRIO LOCAL DE RECIFE (UTC-3),
     exatamente como exibido ao paciente — NUNCA converta para UTC antes de passar.
     modality: modalidade do novo horário — "online" ou "presencial" (se aplicável).
+    NÃO defina confirmed_by_patient — deixe o valor padrão (True). Só chame esta ferramenta
+      quando a nova data/horário já for definitiva (seja porque o paciente escolheu no chat,
+      seja porque a atendente definiu via instrução/nota privada). Este parâmetro é reservado
+      para scripts administrativos internos, nunca para uso pela Eva.
     """
     from app.google_calendar import update_event
 
@@ -926,59 +1071,68 @@ async def reschedule_appointment(
     appt_status_result = await client.from_("appointments").select("status").eq("appointment_id", appointment_id).maybe_single().execute()
     is_pending_reschedule = (appt_status_result.data or {}).get("status") == "pending_reschedule"
 
-    from app.google_calendar import create_event
-    if is_pending_reschedule:
-        # Cria novo evento (o antigo já foi removido do Calendar quando o slot foi liberado)
-        try:
-            new_event_id = await create_event(
-                calendar_id=calendar_id,
-                start=new_start,
-                slot_minutes=slot_duration_minutes,
-                patient_name=patient_name,
-                doctor_name=doctor_label,
-                modality=effective_modality,
-                patient_email=state.get("patient_email") or "",
-                patient_number=config["configurable"]["phone"],
-            )
-            # Atualiza o appointment_id no banco com o novo event_id
-            await client.from_("appointments").update({"appointment_id": new_event_id}).eq("appointment_id", appointment_id).execute()
-            appointment_id = new_event_id
-        except Exception as e:
-            _logger.error("RESCHEDULE_DEBUG create_event FAILED appt=%s error=%s", appointment_id, e, exc_info=True)
-            return f"Não foi possível criar novo evento no Google Calendar. Erro: {e}"
-    else:
-        # Update Google Calendar event (same event_id, new time)
-        try:
-            await update_event(
-                calendar_id=calendar_id,
-                event_id=appointment_id,
-                new_start=new_start,
-                slot_minutes=slot_duration_minutes,
-                patient_name=patient_name,
-                doctor_name=doctor_label,
-                is_minor_first=is_minor_first,
-                modality=effective_modality,
-                patient_email=state.get("patient_email") or "",
-                patient_number=config["configurable"]["phone"],
-            )
-        except Exception as e:
-            _logger.error("RESCHEDULE_DEBUG update_event FAILED appt=%s error=%s", appointment_id, e, exc_info=True)
-            return (
-                f"Não foi possível atualizar o evento no Google Calendar (ID: {appointment_id}). "
-                f"Erro: {e}. Verifique se o ID do agendamento está correto e tente novamente."
-            )
+    # Only create/update Google Calendar event if patient confirmed
+    if confirmed_by_patient:
+        from app.google_calendar import create_event
+        if is_pending_reschedule:
+            # Cria novo evento (o antigo já foi removido do Calendar quando o slot foi liberado)
+            try:
+                new_event_id = await create_event(
+                    calendar_id=calendar_id,
+                    start=new_start,
+                    slot_minutes=slot_duration_minutes,
+                    patient_name=patient_name,
+                    doctor_name=doctor_label,
+                    modality=effective_modality,
+                    patient_email=state.get("patient_email") or "",
+                    patient_number=config["configurable"]["phone"],
+                )
+                # Atualiza o appointment_id no banco com o novo event_id
+                await client.from_("appointments").update({"appointment_id": new_event_id}).eq("appointment_id", appointment_id).execute()
+                appointment_id = new_event_id
+            except Exception as e:
+                _logger.error("RESCHEDULE_DEBUG create_event FAILED appt=%s error=%s", appointment_id, e, exc_info=True)
+                return f"Não foi possível criar novo evento no Google Calendar. Erro: {e}"
+        else:
+            # Update Google Calendar event (same event_id, new time)
+            try:
+                await update_event(
+                    calendar_id=calendar_id,
+                    event_id=appointment_id,
+                    new_start=new_start,
+                    slot_minutes=slot_duration_minutes,
+                    patient_name=patient_name,
+                    doctor_name=doctor_label,
+                    is_minor_first=is_minor_first,
+                    modality=effective_modality,
+                    patient_email=state.get("patient_email") or "",
+                    patient_number=config["configurable"]["phone"],
+                )
+            except Exception as e:
+                _logger.error("RESCHEDULE_DEBUG update_event FAILED appt=%s error=%s", appointment_id, e, exc_info=True)
+                return (
+                    f"Não foi possível atualizar o evento no Google Calendar (ID: {appointment_id}). "
+                    f"Erro: {e}. Verifique se o ID do agendamento está correto e tente novamente."
+                )
 
     # Update DB record
     new_end = new_start + timedelta(minutes=slot_duration_minutes)
     reschedule_update: dict = {
         "start_time": new_start.isoformat(),
         "end_time": new_end.isoformat(),
-        "status": "scheduled",
         "updated_at": datetime.now(TZ).isoformat(),
-        "reschedule_requested_at": None,
         "reminder_day_before_sent_at": None,
         "reminder_day_of_sent_at": None,
     }
+
+    # Only mark as scheduled and clear reschedule flag if patient confirmed
+    if confirmed_by_patient:
+        reschedule_update["status"] = "scheduled"
+        reschedule_update["reschedule_requested_at"] = None
+    else:
+        # Keep as pending_reschedule if this is just an admin adjustment
+        reschedule_update["status"] = "pending_reschedule"
+
     if effective_modality:
         reschedule_update["modality"] = effective_modality
     await client.from_("appointments").update(reschedule_update).eq("appointment_id", appointment_id).execute()
@@ -1940,10 +2094,23 @@ async def request_registration_update(
     patient_name = state.get("patient_name") or state.get("user_name") or "Paciente"
     now_str = datetime.now(TZ).strftime("%d/%m/%Y %H:%M")
     phone_clean = phone.replace("@s.whatsapp.net", "")
+    field_norm = field.lower().strip()
 
     # If the field is email, update the DB directly
-    if field.lower().strip() in ("email", "e-mail"):
-        await upsert_user(phone, {"email": new_value})
+    applied_directly = False
+    if field_norm in ("email", "e-mail"):
+        await upsert_user(phone, {"email": new_value}, user_id=state.get("user_db_id"))
+        applied_directly = True
+    elif "nome" in field_norm and "paciente" in field_norm and state.get("is_patient") is False:
+        # Safety net for the "patient_name still unknown/wrong" bug: when the contact
+        # is NOT the patient and patient_name is missing or was defaulted to the
+        # contact's own name (never a real answer), this isn't a "correction" of an
+        # established value — it's filling in data collect_info should have asked
+        # for. Apply immediately instead of queueing a manual review.
+        _stale = not state.get("patient_name") or state.get("patient_name") == state.get("user_name")
+        if _stale:
+            await upsert_user(phone, {"patient_name": new_value}, user_id=state.get("user_db_id"))
+            applied_directly = True
 
     # Notify the attendant regardless of field type
     subject = f"Solicitação de alteração cadastral — {patient_name}"
@@ -1954,9 +2121,12 @@ async def request_registration_update(
         f"Campo: {field}\n"
         f"Novo valor: {new_value}\n"
         f"Data/hora: {now_str}\n"
+        + ("(Aplicado automaticamente ao cadastro)\n" if applied_directly else "")
     )
     await _notify_clinic(body, phone=phone, subject=subject)
 
+    if applied_directly:
+        return f"{field} atualizado com sucesso para {new_value}."
     return f"Pedido de alteração de {field} registrado. A equipe irá processar em breve."
 
 
