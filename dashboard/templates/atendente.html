@@ -6,7 +6,7 @@
 <style>body { overflow: auto !important; height: auto !important; }</style>
 <div class="min-h-screen bg-gray-100 p-4">
   <div class="max-w-2xl mx-auto">
-    <h1 class="text-lg font-semibold text-gray-800 mb-3">Painel da Atendente</h1>
+    <h1 class="text-lg font-semibold text-gray-800 mb-3">Painel da Eva</h1>
     <div id="status" class="text-sm text-gray-500 mb-3">Carregando contato…</div>
 
     <div id="patient-selector" class="hidden mb-4">
@@ -16,7 +16,8 @@
 
     <div class="flex gap-1 mb-4 border-b border-gray-300" id="tab-buttons">
       <button data-tab="financeiro" class="tab-btn px-3 py-2 text-sm font-medium border-b-2 border-teal-600 text-teal-700">Financeiro</button>
-      <button data-tab="cadastro" class="tab-btn px-3 py-2 text-sm font-medium border-b-2 border-transparent text-gray-500">Cadastro</button>
+      <button data-tab="contato" class="tab-btn px-3 py-2 text-sm font-medium border-b-2 border-transparent text-gray-500">Contato</button>
+      <button data-tab="paciente" class="tab-btn px-3 py-2 text-sm font-medium border-b-2 border-transparent text-gray-500">Paciente</button>
       <button data-tab="reset" class="tab-btn px-3 py-2 text-sm font-medium border-b-2 border-transparent text-gray-500">Resetar</button>
     </div>
 
@@ -28,8 +29,12 @@
       <div id="financeiro-forms"></div>
     </div>
 
-    <div id="tab-cadastro" class="tab-panel hidden space-y-4">
-      <div id="forms"></div>
+    <div id="tab-contato" class="tab-panel hidden space-y-4">
+      <div id="forms-contato"></div>
+    </div>
+
+    <div id="tab-paciente" class="tab-panel hidden space-y-4">
+      <div id="forms-paciente"></div>
     </div>
 
     <div id="tab-reset" class="tab-panel hidden">
@@ -218,17 +223,24 @@ const DOCTORS = [["", "—"],
 
 function renderForms(patient, link) {
   const c = CONTACT;
-  let cadastroHtml = `<section class="bg-white rounded-lg shadow p-4">
+  let contatoHtml = `<section class="bg-white rounded-lg shadow p-4">
     <h2 class="font-medium text-gray-700 mb-2">Contato</h2>
     ${field("Nome", "c_name", c.name)}
     ${field("CPF", "c_cpf", c.cpf)}
-    <button onclick="saveContact()" class="mt-2 bg-wa-green hover:bg-wa-green-dk text-white text-xs px-3 py-1.5 rounded">Salvar contato</button>
-  </section>`;
+    <button onclick="saveContact()" class="mt-2 bg-wa-green hover:bg-wa-green-dk text-white text-xs px-3 py-1.5 rounded">Salvar contato</button>`;
 
+  let pacienteHtml = "";
   let financeiroHtml = "";
 
   if (patient) {
-    cadastroHtml += `<section class="bg-white rounded-lg shadow p-4" data-pid="${patient.id}" data-pcid="${link ? link.id : ""}">
+    if (link) {
+      contatoHtml += `<hr class="my-3">
+        ${checkbox("É o próprio paciente (is_self)", "l_is_self", link.is_self)}
+        ${field("Relação (mãe/pai/tutor)", "l_rel", link.relationship)}
+        <button onclick="saveLink('${link.id}')" class="mt-2 bg-gray-600 hover:bg-gray-700 text-white text-xs px-3 py-1.5 rounded">Salvar vínculo</button>`;
+    }
+
+    pacienteHtml = `<section class="bg-white rounded-lg shadow p-4" data-pid="${patient.id}" data-pcid="${link ? link.id : ""}">
       <h2 class="font-medium text-gray-700 mb-2">Paciente</h2>
       ${field("Nome", "p_name", patient.name)}
       ${field("Nascimento (dd/mm/aaaa)", "p_birth", patient.birth_date)}
@@ -239,14 +251,8 @@ function renderForms(patient, link) {
       ${select("Modalidade", "p_modality", patient.modality_restriction || "", [["", "—"], ["online", "Online"], ["presencial", "Presencial"]])}
       ${checkbox("Exceção de idade", "p_age_exc", patient.age_exception)}
       ${field("Preço custom (R$)", "p_price", patient.custom_price, "number")}
-      <button onclick="savePatient('${patient.id}')" class="mt-2 bg-wa-green hover:bg-wa-green-dk text-white text-xs px-3 py-1.5 rounded">Salvar paciente</button>`;
-    if (link) {
-      cadastroHtml += `<hr class="my-3">
-        ${checkbox("É o próprio paciente (is_self)", "l_is_self", link.is_self)}
-        ${field("Relação (mãe/pai/tutor)", "l_rel", link.relationship)}
-        <button onclick="saveLink('${link.id}')" class="mt-2 bg-gray-600 hover:bg-gray-700 text-white text-xs px-3 py-1.5 rounded">Salvar vínculo</button>`;
-    }
-    cadastroHtml += `</section>`;
+      <button onclick="savePatient('${patient.id}')" class="mt-2 bg-wa-green hover:bg-wa-green-dk text-white text-xs px-3 py-1.5 rounded">Salvar paciente</button>
+    </section>`;
 
     financeiroHtml = `<section class="bg-white rounded-lg shadow p-4" data-pid="${patient.id}">
       <h2 class="font-medium text-gray-700 mb-2">Dados financeiros</h2>
@@ -256,7 +262,10 @@ function renderForms(patient, link) {
       <button onclick="saveFinanceiro('${patient.id}')" class="mt-2 bg-wa-green hover:bg-wa-green-dk text-white text-xs px-3 py-1.5 rounded">Salvar financeiro</button>
     </section>`;
   }
-  document.getElementById("forms").innerHTML = cadastroHtml;
+  contatoHtml += `</section>`;
+
+  document.getElementById("forms-contato").innerHTML = contatoHtml;
+  document.getElementById("forms-paciente").innerHTML = pacienteHtml;
   document.getElementById("financeiro-forms").innerHTML = financeiroHtml;
 }
 

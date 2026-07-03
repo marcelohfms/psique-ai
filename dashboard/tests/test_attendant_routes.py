@@ -124,7 +124,7 @@ def test_atendente_page_renders():
     c = TestClient(dashboard_main.app)
     r = c.get("/atendente")
     assert r.status_code == 200
-    assert "Painel da Atendente" in r.text
+    assert "Painel da Eva" in r.text
 
 
 import chatwoot_client
