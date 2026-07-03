@@ -53,8 +53,8 @@ async def test_pagar_taxa_atualiza_booking_fee(mock_supabase):
     update_mock = AsyncMock(return_value=AsyncMock(data=[{}]))
     mock_supabase.from_.return_value.update.return_value.eq.return_value.execute = update_mock
 
-    with patch("main._append_payment_sheet", new_callable=AsyncMock) as mock_sheets, \
-         patch("main._send_clinic_email", new_callable=AsyncMock) as mock_email:
+    with patch("payments._append_payment_sheet", new_callable=AsyncMock) as mock_sheets, \
+         patch("payments._send_clinic_email", new_callable=AsyncMock) as mock_email:
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
             resp = await ac.post(
                 "/api/pagamentos/appt-123/pagar",
@@ -80,8 +80,8 @@ async def test_pagar_consulta_atualiza_paid_at(mock_supabase):
     update_mock = AsyncMock(return_value=AsyncMock(data=[{}]))
     mock_supabase.from_.return_value.update.return_value.eq.return_value.execute = update_mock
 
-    with patch("main._append_payment_sheet", new_callable=AsyncMock) as mock_sheets, \
-         patch("main._send_clinic_email", new_callable=AsyncMock) as mock_email:
+    with patch("payments._append_payment_sheet", new_callable=AsyncMock) as mock_sheets, \
+         patch("payments._send_clinic_email", new_callable=AsyncMock) as mock_email:
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
             resp = await ac.post(
                 "/api/pagamentos/appt-456/pagar",

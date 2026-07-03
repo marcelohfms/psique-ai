@@ -1,0 +1,331 @@
+{% extends "base.html" %}
+{# Configuração no Chatwoot: Settings → Integrations → Dashboard Apps → New.
+   Endpoint URL: https://<dashboard>/atendente?token=<ATTENDANT_PANEL_TOKEN>
+   O Chatwoot envia o contato da conversa via postMessage (appContext). #}
+{% block content %}
+<style>body { overflow: auto !important; height: auto !important; }</style>
+<div class="min-h-screen bg-gray-100 p-4">
+  <div class="max-w-2xl mx-auto">
+    <h1 class="text-lg font-semibold text-gray-800 mb-3">Painel da Eva</h1>
+    <div id="status" class="text-sm text-gray-500 mb-3">Carregando contato…</div>
+
+    <div id="patient-selector" class="hidden mb-4">
+      <label class="block text-xs uppercase text-gray-500 mb-1">Paciente</label>
+      <select id="patient-select" class="w-full border border-gray-300 rounded px-2 py-1.5 text-sm"></select>
+    </div>
+
+    <div class="flex gap-1 mb-4 border-b border-gray-300" id="tab-buttons">
+      <button data-tab="financeiro" class="tab-btn px-3 py-2 text-sm font-medium border-b-2 border-teal-600 text-teal-700">Financeiro</button>
+      <button data-tab="contato" class="tab-btn px-3 py-2 text-sm font-medium border-b-2 border-transparent text-gray-500">Contato</button>
+      <button data-tab="paciente" class="tab-btn px-3 py-2 text-sm font-medium border-b-2 border-transparent text-gray-500">Paciente</button>
+      <button data-tab="reset" class="tab-btn px-3 py-2 text-sm font-medium border-b-2 border-transparent text-gray-500">Resetar</button>
+    </div>
+
+    <div id="tab-financeiro" class="tab-panel space-y-4">
+      <div id="pagamentos-box" class="hidden">
+        <h2 class="font-medium text-gray-700 mb-2">Pagamentos pendentes</h2>
+        <div id="pagamentos-list" class="space-y-2"></div>
+      </div>
+      <div id="financeiro-forms"></div>
+    </div>
+
+    <div id="tab-contato" class="tab-panel hidden space-y-4">
+      <div id="forms-contato"></div>
+    </div>
+
+    <div id="tab-paciente" class="tab-panel hidden space-y-4">
+      <div id="forms-paciente"></div>
+    </div>
+
+    <div id="tab-reset" class="tab-panel hidden">
+      <div class="border-t pt-4">
+        <button id="reset-btn"
+          class="bg-red-600 hover:bg-red-700 text-white text-sm font-medium px-4 py-2 rounded">
+          Resetar checkpoint da Eva
+        </button>
+        <p class="text-xs text-gray-400 mt-1">
+          Apaga a memória da conversa. Na próxima mensagem, a Eva relê os dados corrigidos do banco.
+        </p>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+const TOKEN = {{ token | tojson }};
+let PHONE = null;
+let CONTACT = null;
+let CONVERSATION_ID = null;
+
+// ── 0. Abas ──────────────────────────────────────────────────────────────────
+function showTab(name) {
+  document.querySelectorAll(".tab-panel").forEach((el) => {
+    el.classList.toggle("hidden", el.id !== `tab-${name}`);
+  });
+  document.querySelectorAll(".tab-btn").forEach((btn) => {
+    const active = btn.dataset.tab === name;
+    btn.classList.toggle("border-teal-600", active);
+    btn.classList.toggle("text-teal-700", active);
+    btn.classList.toggle("border-transparent", !active);
+    btn.classList.toggle("text-gray-500", !active);
+  });
+}
+document.querySelectorAll(".tab-btn").forEach((btn) => {
+  btn.onclick = () => showTab(btn.dataset.tab);
+});
+
+// ── 1. Obter telefone: Chatwoot postMessage ou ?phone= (teste) ──────────────
+function initPhone() {
+  const qp = new URLSearchParams(location.search).get("phone");
+  if (qp) { PHONE = qp; load(); return; }
+  window.addEventListener("message", (e) => {
+    try {
+      const data = typeof e.data === "string" ? JSON.parse(e.data) : e.data;
+      if (data && data.event === "appContext" && data.data && data.data.contact) {
+        PHONE = data.data.contact.phone_number || PHONE;
+        if (data.data.conversation && data.data.conversation.id) {
+          CONVERSATION_ID = data.data.conversation.id;
+        }
+        if (PHONE) load();
+      }
+    } catch (_) {}
+  });
+  window.parent.postMessage("chatwoot-dashboard-app:fetch-info", "*");
+}
+
+function setStatus(t) { document.getElementById("status").textContent = t; }
+
+function escapeHtml(s) {
+  return String(s ?? "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+}
+
+// ── 2b. Pagamentos pendentes ─────────────────────────────────────────────────
+async function loadPagamentos() {
+  const box = document.getElementById("pagamentos-box");
+  const list = document.getElementById("pagamentos-list");
+  const r = await fetch(`/api/atendente/pagamentos?phone=${encodeURIComponent(PHONE)}&token=${encodeURIComponent(TOKEN)}`);
+  if (!r.ok) return;
+  const pendencias = await r.json();
+  box.classList.remove("hidden");
+  if (!pendencias.length) {
+    list.innerHTML = `<p class="text-sm text-gray-400">Nenhum pagamento pendente.</p>`;
+    return;
+  }
+  list.innerHTML = pendencias.map(pagamentoCard).join("");
+}
+
+function pagamentoCard(p) {
+  const tipoLabel = p.tipo === "taxa" ? "Taxa de reserva" : "Consulta";
+  const badgeClass = p.tipo === "taxa" ? "bg-green-100 text-green-700" : "bg-blue-100 text-blue-700";
+  return `<div class="bg-white rounded-lg shadow p-3" data-appt="${escapeHtml(p.appointment_id)}" data-tipo="${escapeHtml(p.tipo)}"
+       data-paciente="${escapeHtml(p.paciente)}" data-medico="${escapeHtml(p.medico)}" data-data-hora="${escapeHtml(p.data_hora)}" data-phone="${escapeHtml(p.phone)}">
+    <div class="flex justify-between items-start mb-1">
+      <span class="text-sm font-medium text-gray-700">${escapeHtml(p.paciente)}</span>
+      <span class="text-xs px-2 py-0.5 rounded-full ${badgeClass}">${tipoLabel}</span>
+    </div>
+    <div class="text-xs text-gray-500 mb-2">${escapeHtml(p.medico)} · ${escapeHtml(p.data_hora)}</div>
+    <div class="flex items-center gap-2">
+      <input type="number" min="0" value="${p.valor}" class="valor-input w-20 border border-gray-300 rounded px-2 py-1 text-sm">
+      <select class="forma-input border border-gray-300 rounded px-2 py-1 text-sm">
+        <option value="PIX">PIX</option>
+        <option value="cartao_credito">Cartão de crédito</option>
+        <option value="cartao_debito">Cartão de débito</option>
+        <option value="dinheiro">Dinheiro</option>
+      </select>
+      <button onclick="marcarPago(this)" class="bg-wa-green hover:bg-wa-green-dk text-white text-xs px-3 py-1.5 rounded ml-auto">Marcar pago</button>
+    </div>
+  </div>`;
+}
+
+async function marcarPago(btn) {
+  const card = btn.closest("[data-appt]");
+  const valor = parseInt(card.querySelector(".valor-input").value, 10);
+  const forma_pagamento = card.querySelector(".forma-input").value;
+  if (isNaN(valor) || valor < 0) { alert("Valor inválido."); return; }
+  btn.disabled = true;
+  const r = await fetch(`/api/atendente/pagamentos/${card.dataset.appt}/pagar?token=${encodeURIComponent(TOKEN)}`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      tipo: card.dataset.tipo, valor, forma_pagamento,
+      paciente: card.dataset.paciente, medico: card.dataset.medico,
+      data_hora: card.dataset.dataHora, phone: card.dataset.phone,
+      conversation_id: CONVERSATION_ID,
+    }),
+  });
+  if (!r.ok) { alert("Erro ao registrar pagamento."); btn.disabled = false; return; }
+  card.remove();
+}
+
+// ── 2. Resolver contato + pacientes ─────────────────────────────────────────
+async function load() {
+  setStatus("Buscando paciente…");
+  const r = await fetch(`/api/atendente/resolve?phone=${encodeURIComponent(PHONE)}&token=${encodeURIComponent(TOKEN)}`);
+  if (!r.ok) { setStatus("Erro ao buscar (token?)."); return; }
+  const { contact, patients } = await r.json();
+  CONTACT = contact;
+  if (!contact) { setStatus("Nenhum contato encontrado para este número."); return; }
+  setStatus(`Contato: ${contact.name || contact.phone}`);
+  loadPagamentos();
+
+  const sel = document.getElementById("patient-select");
+  sel.innerHTML = "";
+  if (!patients.length) {
+    renderForms(null);
+    return;
+  }
+  patients.forEach((p) => {
+    const o = document.createElement("option");
+    o.value = p.id; o.textContent = p.name; sel.appendChild(o);
+  });
+  document.getElementById("patient-selector").classList.toggle("hidden", patients.length <= 1);
+  sel.onchange = () => loadPatient(sel.value);
+  loadPatient(patients[0].id);
+}
+
+// ── 3. Carregar paciente + vínculo ──────────────────────────────────────────
+async function loadPatient(pid) {
+  const r = await fetch(`/api/atendente/paciente/${pid}?contact_id=${CONTACT.id}&token=${encodeURIComponent(TOKEN)}`);
+  if (!r.ok) { setStatus("Erro ao carregar paciente."); return; }
+  const { patient, link } = await r.json();
+  renderForms(patient, link);
+}
+
+// ── 4. Renderizar formulários ───────────────────────────────────────────────
+function field(label, id, value, type = "text") {
+  const v = value == null ? "" : value;
+  return `<div class="mb-2">
+    <label class="block text-xs uppercase text-gray-500 mb-0.5">${label}</label>
+    <input id="${id}" type="${type}" value="${String(v).replace(/"/g, "&quot;")}"
+      class="w-full border border-gray-300 rounded px-2 py-1 text-sm">
+  </div>`;
+}
+function checkbox(label, id, checked) {
+  return `<label class="flex items-center gap-2 text-sm mb-2">
+    <input id="${id}" type="checkbox" ${checked ? "checked" : ""}> ${label}
+  </label>`;
+}
+function select(label, id, value, options) {
+  const opts = options.map(([v, t]) =>
+    `<option value="${v}" ${String(value) === String(v) ? "selected" : ""}>${t}</option>`).join("");
+  return `<div class="mb-2"><label class="block text-xs uppercase text-gray-500 mb-0.5">${label}</label>
+    <select id="${id}" class="w-full border border-gray-300 rounded px-2 py-1 text-sm">${opts}</select></div>`;
+}
+
+const DOCTORS = [["", "—"],
+  ["d5baa58b-a788-4f40-b8c0-512c189150be", "Dr. Júlio"],
+  ["18b01f87-eacd-4905-bd4a-a8293991e6fd", "Dra. Bruna"]];
+
+function renderForms(patient, link) {
+  const c = CONTACT;
+  let contatoHtml = `<section class="bg-white rounded-lg shadow p-4">
+    <h2 class="font-medium text-gray-700 mb-2">Contato</h2>
+    ${field("Nome", "c_name", c.name)}
+    ${field("CPF", "c_cpf", c.cpf)}
+    <button onclick="saveContact()" class="mt-2 bg-wa-green hover:bg-wa-green-dk text-white text-xs px-3 py-1.5 rounded">Salvar contato</button>`;
+
+  let pacienteHtml = "";
+  let financeiroHtml = "";
+
+  if (patient) {
+    if (link) {
+      contatoHtml += `<hr class="my-3">
+        ${checkbox("É o próprio paciente (is_self)", "l_is_self", link.is_self)}
+        ${field("Relação (mãe/pai/tutor)", "l_rel", link.relationship)}
+        <button onclick="saveLink('${link.id}')" class="mt-2 bg-gray-600 hover:bg-gray-700 text-white text-xs px-3 py-1.5 rounded">Salvar vínculo</button>`;
+    }
+
+    pacienteHtml = `<section class="bg-white rounded-lg shadow p-4" data-pid="${patient.id}" data-pcid="${link ? link.id : ""}">
+      <h2 class="font-medium text-gray-700 mb-2">Paciente</h2>
+      ${field("Nome", "p_name", patient.name)}
+      ${field("Nascimento (dd/mm/aaaa)", "p_birth", patient.birth_date)}
+      ${field("CPF", "p_cpf", patient.patient_cpf)}
+      ${field("E-mail", "p_email", patient.email)}
+      ${select("Médico", "p_doctor", patient.doctor_id || "", DOCTORS)}
+      ${checkbox("Paciente retornante", "p_returning", patient.is_returning_patient)}
+      ${select("Modalidade", "p_modality", patient.modality_restriction || "", [["", "—"], ["online", "Online"], ["presencial", "Presencial"]])}
+      ${checkbox("Exceção de idade", "p_age_exc", patient.age_exception)}
+      ${field("Preço custom (R$)", "p_price", patient.custom_price, "number")}
+      <button onclick="savePatient('${patient.id}')" class="mt-2 bg-wa-green hover:bg-wa-green-dk text-white text-xs px-3 py-1.5 rounded">Salvar paciente</button>
+    </section>`;
+
+    financeiroHtml = `<section class="bg-white rounded-lg shadow p-4" data-pid="${patient.id}">
+      <h2 class="font-medium text-gray-700 mb-2">Dados financeiros</h2>
+      ${field("Financeiro — nome", "p_fin_name", patient.financial_name)}
+      ${field("Financeiro — CPF", "p_fin_cpf", patient.financial_cpf)}
+      ${field("Financeiro — e-mail", "p_fin_email", patient.financial_email)}
+      <button onclick="saveFinanceiro('${patient.id}')" class="mt-2 bg-wa-green hover:bg-wa-green-dk text-white text-xs px-3 py-1.5 rounded">Salvar financeiro</button>
+    </section>`;
+  }
+  contatoHtml += `</section>`;
+
+  document.getElementById("forms-contato").innerHTML = contatoHtml;
+  document.getElementById("forms-paciente").innerHTML = pacienteHtml;
+  document.getElementById("financeiro-forms").innerHTML = financeiroHtml;
+}
+
+// ── 5. Salvar ────────────────────────────────────────────────────────────────
+async function post(url, body) {
+  const r = await fetch(`${url}?token=${encodeURIComponent(TOKEN)}`, {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ phone: PHONE, ...body }),
+  });
+  if (!r.ok) { alert("Erro ao salvar."); return false; }
+  return true;
+}
+const val = (id) => document.getElementById(id).value;
+const chk = (id) => document.getElementById(id).checked;
+const numOrNull = (id) => { const v = val(id); return v === "" ? null : parseInt(v, 10); };
+
+async function saveContact() {
+  const ok = await post(`/api/atendente/contato/${CONTACT.id}`, { data: {
+    name: val("c_name"), cpf: val("c_cpf"),
+  }});
+  if (ok) flash("Contato salvo ✓");
+}
+async function savePatient(pid) {
+  const ok = await post(`/api/atendente/paciente/${pid}`, { data: {
+    name: val("p_name"), birth_date: val("p_birth"), patient_cpf: val("p_cpf"),
+    email: val("p_email"), doctor_id: val("p_doctor") || null,
+    is_returning_patient: chk("p_returning"),
+    modality_restriction: val("p_modality") || null,
+    age_exception: chk("p_age_exc"), custom_price: numOrNull("p_price"),
+  }});
+  if (ok) flash("Paciente salvo ✓");
+}
+async function saveFinanceiro(pid) {
+  const ok = await post(`/api/atendente/paciente/${pid}`, { data: {
+    financial_name: val("p_fin_name"), financial_cpf: val("p_fin_cpf"),
+    financial_email: val("p_fin_email"),
+  }});
+  if (ok) flash("Dados financeiros salvos ✓");
+}
+async function saveLink(pcid) {
+  const ok = await post(`/api/atendente/vinculo/${pcid}`, { data: {
+    is_self: chk("l_is_self"), relationship: val("l_rel"),
+  }});
+  if (ok) flash("Vínculo salvo ✓");
+}
+
+function flash(msg) { setStatus(msg); setTimeout(() => setStatus(CONTACT ? `Contato: ${CONTACT.name || CONTACT.phone}` : ""), 1500); }
+
+// ── 6. Reset ─────────────────────────────────────────────────────────────────
+document.getElementById("reset-btn").onclick = async () => {
+  if (!confirm("Resetar o checkpoint da Eva para este número? A conversa será esquecida (mensagens permanecem).")) return;
+  const r = await fetch(`/api/atendente/reset-checkpoint?token=${encodeURIComponent(TOKEN)}`, {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ phone: PHONE }),
+  });
+  if (!r.ok) { alert("Erro ao resetar."); return; }
+  const { deleted } = await r.json();
+  flash(`Checkpoint resetado (${deleted} linhas) ✓`);
+};
+
+initPhone();
+</script>
+{% endblock %}
