@@ -4,6 +4,7 @@ Auth por token na query string (`?token=...`), validado contra
 ATTENDANT_PANEL_TOKEN. As rotas existentes do dashboard mantêm o HTTP Basic;
 estas usam o token (mais limpo dentro de um iframe do Chatwoot).
 """
+import logging
 import os
 from secrets import compare_digest
 
@@ -11,8 +12,12 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel
 
 import attendant_db
+import chatwoot_client
+import payments
+from db_client import get_client
 
 router = APIRouter(prefix="/api/atendente")
+logger = logging.getLogger(__name__)
 
 
 def verify_token(token: str = Query(default="")) -> None:
@@ -79,3 +84,61 @@ async def reset_checkpoint(body: ResetBody, _: None = Depends(verify_token)):
     deleted = await attendant_db.reset_checkpoint(body.phone)
     await attendant_db.log_event("attendant_reset_checkpoint", body.phone, {"deleted": deleted})
     return {"ok": True, "deleted": deleted}
+
+
+# ── Pagamentos ────────────────────────────────────────────────────────────────
+
+
+class AtendentePagarBody(BaseModel):
+    tipo: str             # "taxa" ou "consulta"
+    valor: int
+    forma_pagamento: str  # "PIX", "cartao_credito", "cartao_debito", "dinheiro"
+    paciente: str
+    medico: str
+    data_hora: str
+    phone: str
+    conversation_id: int | None = None
+
+
+_CONFIRM_TEXT = {
+    "taxa": (
+        "Olá, {paciente}! 👋 Recebemos o pagamento da taxa de reserva da sua consulta "
+        "com {medico}. Sua vaga está garantida! ✅"
+    ),
+    "consulta": (
+        "Olá, {paciente}! 👋 Recebemos o pagamento da sua consulta com {medico}. Obrigado! ✅"
+    ),
+}
+
+
+@router.get("/pagamentos")
+async def pagamentos(phone: str, _: None = Depends(verify_token)):
+    resolved = await attendant_db.resolve_contact_and_patients(phone)
+    patient_ids = [p["id"] for p in resolved["patients"]]
+    client = await get_client()
+    return await payments.compute_pendencias(client, patient_ids=patient_ids)
+
+
+@router.post("/pagamentos/{appointment_id}/pagar")
+async def pagar(appointment_id: str, body: AtendentePagarBody, _: None = Depends(verify_token)):
+    if body.tipo not in ("taxa", "consulta"):
+        raise HTTPException(status_code=400, detail="tipo deve ser 'taxa' ou 'consulta'")
+
+    client = await get_client()
+    await payments.mark_paid(
+        client, appointment_id, body.tipo, body.valor, body.forma_pagamento,
+        body.paciente, body.medico, body.data_hora, body.phone,
+    )
+
+    if body.conversation_id is not None:
+        try:
+            text = _CONFIRM_TEXT[body.tipo].format(paciente=body.paciente, medico=body.medico)
+            await chatwoot_client.send_confirmation_message(body.conversation_id, text)
+        except Exception:
+            logger.exception("CONFIRM_MSG_FAILED appt=%s conversation_id=%s",
+                             appointment_id, body.conversation_id)
+
+    await attendant_db.log_event("attendant_pagamento_registrado", body.phone, {
+        "appointment_id": appointment_id, "tipo": body.tipo, "valor": body.valor,
+    })
+    return {"ok": True}

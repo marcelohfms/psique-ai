@@ -125,3 +125,156 @@ def test_atendente_page_renders():
     r = c.get("/atendente")
     assert r.status_code == 200
     assert "Painel da Atendente" in r.text
+
+
+import chatwoot_client
+import payments
+
+
+# ── Pagamentos ──────────────────────────────────────────────────────────────
+
+
+def test_pagamentos_requires_token(client):
+    r = client.get("/api/atendente/pagamentos", params={"phone": "5581999998888"})
+    assert r.status_code == 401
+
+
+def test_pagamentos_lista_filtrada_por_paciente(client, monkeypatch):
+    async def fake_resolve(phone):
+        return {"contact": {"id": "c1"}, "patients": [{"id": "p1"}, {"id": "p2"}]}
+    async def fake_get_client():
+        return object()
+    async def fake_compute(_client, patient_ids=None):
+        assert patient_ids == ["p1", "p2"]
+        return [{"appointment_id": "a1", "tipo": "taxa", "valor": 100}]
+    monkeypatch.setattr(attendant_db, "resolve_contact_and_patients", fake_resolve)
+    monkeypatch.setattr(attendant_routes, "get_client", fake_get_client)
+    monkeypatch.setattr(payments, "compute_pendencias", fake_compute)
+
+    r = client.get("/api/atendente/pagamentos",
+                    params={"phone": "5581999998888", "token": "test-token"})
+    assert r.status_code == 200
+    body = r.json()
+    assert body[0]["appointment_id"] == "a1"
+
+
+def test_pagamentos_sem_contato_retorna_lista_vazia(client, monkeypatch):
+    async def fake_resolve(phone):
+        return {"contact": None, "patients": []}
+    async def fake_get_client():
+        return object()
+    async def fake_compute(_client, patient_ids=None):
+        assert patient_ids == []
+        return []
+    monkeypatch.setattr(attendant_db, "resolve_contact_and_patients", fake_resolve)
+    monkeypatch.setattr(attendant_routes, "get_client", fake_get_client)
+    monkeypatch.setattr(payments, "compute_pendencias", fake_compute)
+
+    r = client.get("/api/atendente/pagamentos",
+                    params={"phone": "5581999998888", "token": "test-token"})
+    assert r.status_code == 200
+    assert r.json() == []
+
+
+def test_pagar_requires_token(client):
+    r = client.post("/api/atendente/pagamentos/a1/pagar", json={
+        "tipo": "taxa", "valor": 100, "forma_pagamento": "PIX",
+        "paciente": "João", "medico": "Dr. Júlio", "data_hora": "10/07/2026 14:00",
+        "phone": "5581999998888",
+    })
+    assert r.status_code == 401
+
+
+def test_pagar_tipo_invalido_retorna_400(client):
+    r = client.post("/api/atendente/pagamentos/a1/pagar",
+                    params={"token": "test-token"},
+                    json={"tipo": "invalido", "valor": 100, "forma_pagamento": "PIX",
+                          "paciente": "João", "medico": "Dr. Júlio",
+                          "data_hora": "10/07/2026 14:00", "phone": "5581999998888"})
+    assert r.status_code == 400
+
+
+def test_pagar_registra_e_envia_confirmacao(client, monkeypatch):
+    calls = {}
+    async def fake_get_client():
+        return object()
+    async def fake_mark_paid(_client, appointment_id, tipo, valor, forma_pagamento,
+                              paciente, medico, data_hora, phone):
+        calls["mark_paid"] = (appointment_id, tipo, valor)
+    async def fake_send_confirmation(conversation_id, text):
+        calls["confirm"] = (conversation_id, text)
+    async def fake_log(event_type, phone, metadata):
+        calls["log"] = (event_type, phone, metadata)
+
+    monkeypatch.setattr(attendant_routes, "get_client", fake_get_client)
+    monkeypatch.setattr(payments, "mark_paid", fake_mark_paid)
+    monkeypatch.setattr(chatwoot_client, "send_confirmation_message", fake_send_confirmation)
+    monkeypatch.setattr(attendant_db, "log_event", fake_log)
+
+    r = client.post(
+        "/api/atendente/pagamentos/a1/pagar",
+        params={"token": "test-token"},
+        json={"tipo": "taxa", "valor": 100, "forma_pagamento": "PIX",
+              "paciente": "João", "medico": "Dr. Júlio", "data_hora": "10/07/2026 14:00",
+              "phone": "5581999998888", "conversation_id": 42},
+    )
+    assert r.status_code == 200
+    assert r.json() == {"ok": True}
+    assert calls["mark_paid"] == ("a1", "taxa", 100)
+    assert calls["confirm"][0] == 42
+    assert "vaga está garantida" in calls["confirm"][1]
+    assert calls["log"][0] == "attendant_pagamento_registrado"
+
+
+def test_pagar_sem_conversation_id_nao_envia_confirmacao(client, monkeypatch):
+    calls = {}
+    async def fake_get_client():
+        return object()
+    async def fake_mark_paid(*args, **kwargs):
+        calls["mark_paid"] = True
+    async def fake_send_confirmation(conversation_id, text):
+        calls["confirm"] = True
+    async def fake_log(event_type, phone, metadata):
+        calls["log"] = True
+
+    monkeypatch.setattr(attendant_routes, "get_client", fake_get_client)
+    monkeypatch.setattr(payments, "mark_paid", fake_mark_paid)
+    monkeypatch.setattr(chatwoot_client, "send_confirmation_message", fake_send_confirmation)
+    monkeypatch.setattr(attendant_db, "log_event", fake_log)
+
+    r = client.post(
+        "/api/atendente/pagamentos/a1/pagar",
+        params={"token": "test-token"},
+        json={"tipo": "consulta", "valor": 700, "forma_pagamento": "PIX",
+              "paciente": "Maria", "medico": "Dra. Bruna", "data_hora": "10/07/2026 15:00",
+              "phone": "5581999998888"},
+    )
+    assert r.status_code == 200
+    assert calls["mark_paid"] is True
+    assert "confirm" not in calls  # sem conversation_id, não tenta mandar mensagem
+
+
+def test_pagar_falha_no_envio_da_confirmacao_nao_quebra(client, monkeypatch):
+    async def fake_get_client():
+        return object()
+    async def fake_mark_paid(*args, **kwargs):
+        return None
+    async def fake_send_confirmation(conversation_id, text):
+        raise RuntimeError("chatwoot fora do ar")
+    async def fake_log(event_type, phone, metadata):
+        return None
+
+    monkeypatch.setattr(attendant_routes, "get_client", fake_get_client)
+    monkeypatch.setattr(payments, "mark_paid", fake_mark_paid)
+    monkeypatch.setattr(chatwoot_client, "send_confirmation_message", fake_send_confirmation)
+    monkeypatch.setattr(attendant_db, "log_event", fake_log)
+
+    r = client.post(
+        "/api/atendente/pagamentos/a1/pagar",
+        params={"token": "test-token"},
+        json={"tipo": "taxa", "valor": 100, "forma_pagamento": "PIX",
+              "paciente": "João", "medico": "Dr. Júlio", "data_hora": "10/07/2026 14:00",
+              "phone": "5581999998888", "conversation_id": 42},
+    )
+    assert r.status_code == 200
+    assert r.json() == {"ok": True}
