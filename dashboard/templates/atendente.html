@@ -14,21 +14,34 @@
       <select id="patient-select" class="w-full border border-gray-300 rounded px-2 py-1.5 text-sm"></select>
     </div>
 
-    <div id="pagamentos-box" class="hidden mb-4">
-      <h2 class="font-medium text-gray-700 mb-2">Pagamentos pendentes</h2>
-      <div id="pagamentos-list" class="space-y-2"></div>
+    <div class="flex gap-1 mb-4 border-b border-gray-300" id="tab-buttons">
+      <button data-tab="financeiro" class="tab-btn px-3 py-2 text-sm font-medium border-b-2 border-teal-600 text-teal-700">Financeiro</button>
+      <button data-tab="cadastro" class="tab-btn px-3 py-2 text-sm font-medium border-b-2 border-transparent text-gray-500">Cadastro</button>
+      <button data-tab="reset" class="tab-btn px-3 py-2 text-sm font-medium border-b-2 border-transparent text-gray-500">Resetar</button>
     </div>
 
-    <div id="forms" class="hidden space-y-4"></div>
+    <div id="tab-financeiro" class="tab-panel space-y-4">
+      <div id="pagamentos-box" class="hidden">
+        <h2 class="font-medium text-gray-700 mb-2">Pagamentos pendentes</h2>
+        <div id="pagamentos-list" class="space-y-2"></div>
+      </div>
+      <div id="financeiro-forms"></div>
+    </div>
 
-    <div id="reset-box" class="hidden mt-6 border-t pt-4">
-      <button id="reset-btn"
-        class="bg-red-600 hover:bg-red-700 text-white text-sm font-medium px-4 py-2 rounded">
-        Resetar checkpoint da Eva
-      </button>
-      <p class="text-xs text-gray-400 mt-1">
-        Apaga a memória da conversa. Na próxima mensagem, a Eva relê os dados corrigidos do banco.
-      </p>
+    <div id="tab-cadastro" class="tab-panel hidden space-y-4">
+      <div id="forms"></div>
+    </div>
+
+    <div id="tab-reset" class="tab-panel hidden">
+      <div class="border-t pt-4">
+        <button id="reset-btn"
+          class="bg-red-600 hover:bg-red-700 text-white text-sm font-medium px-4 py-2 rounded">
+          Resetar checkpoint da Eva
+        </button>
+        <p class="text-xs text-gray-400 mt-1">
+          Apaga a memória da conversa. Na próxima mensagem, a Eva relê os dados corrigidos do banco.
+        </p>
+      </div>
     </div>
   </div>
 </div>
@@ -38,6 +51,23 @@ const TOKEN = {{ token | tojson }};
 let PHONE = null;
 let CONTACT = null;
 let CONVERSATION_ID = null;
+
+// ── 0. Abas ──────────────────────────────────────────────────────────────────
+function showTab(name) {
+  document.querySelectorAll(".tab-panel").forEach((el) => {
+    el.classList.toggle("hidden", el.id !== `tab-${name}`);
+  });
+  document.querySelectorAll(".tab-btn").forEach((btn) => {
+    const active = btn.dataset.tab === name;
+    btn.classList.toggle("border-teal-600", active);
+    btn.classList.toggle("text-teal-700", active);
+    btn.classList.toggle("border-transparent", !active);
+    btn.classList.toggle("text-gray-500", !active);
+  });
+}
+document.querySelectorAll(".tab-btn").forEach((btn) => {
+  btn.onclick = () => showTab(btn.dataset.tab);
+});
 
 // ── 1. Obter telefone: Chatwoot postMessage ou ?phone= (teste) ──────────────
 function initPhone() {
@@ -136,13 +166,11 @@ async function load() {
   CONTACT = contact;
   if (!contact) { setStatus("Nenhum contato encontrado para este número."); return; }
   setStatus(`Contato: ${contact.name || contact.phone}`);
-  document.getElementById("reset-box").classList.remove("hidden");
   loadPagamentos();
 
   const sel = document.getElementById("patient-select");
   sel.innerHTML = "";
   if (!patients.length) {
-    document.getElementById("forms").classList.remove("hidden");
     renderForms(null);
     return;
   }
@@ -160,7 +188,6 @@ async function loadPatient(pid) {
   const r = await fetch(`/api/atendente/paciente/${pid}?contact_id=${CONTACT.id}&token=${encodeURIComponent(TOKEN)}`);
   if (!r.ok) { setStatus("Erro ao carregar paciente."); return; }
   const { patient, link } = await r.json();
-  document.getElementById("forms").classList.remove("hidden");
   renderForms(patient, link);
 }
 
@@ -191,18 +218,17 @@ const DOCTORS = [["", "—"],
 
 function renderForms(patient, link) {
   const c = CONTACT;
-  let html = `<section class="bg-white rounded-lg shadow p-4">
+  let cadastroHtml = `<section class="bg-white rounded-lg shadow p-4">
     <h2 class="font-medium text-gray-700 mb-2">Contato</h2>
     ${field("Nome", "c_name", c.name)}
     ${field("CPF", "c_cpf", c.cpf)}
-    ${field("Telefone", "c_phone", c.phone)}
-    ${checkbox("Ativo", "c_active", c.active)}
-    ${checkbox("Manual hold (silenciar Eva)", "c_manual_hold", c.manual_hold)}
     <button onclick="saveContact()" class="mt-2 bg-wa-green hover:bg-wa-green-dk text-white text-xs px-3 py-1.5 rounded">Salvar contato</button>
   </section>`;
 
+  let financeiroHtml = "";
+
   if (patient) {
-    html += `<section class="bg-white rounded-lg shadow p-4" data-pid="${patient.id}" data-pcid="${link ? link.id : ""}">
+    cadastroHtml += `<section class="bg-white rounded-lg shadow p-4" data-pid="${patient.id}" data-pcid="${link ? link.id : ""}">
       <h2 class="font-medium text-gray-700 mb-2">Paciente</h2>
       ${field("Nome", "p_name", patient.name)}
       ${field("Nascimento (dd/mm/aaaa)", "p_birth", patient.birth_date)}
@@ -213,20 +239,25 @@ function renderForms(patient, link) {
       ${select("Modalidade", "p_modality", patient.modality_restriction || "", [["", "—"], ["online", "Online"], ["presencial", "Presencial"]])}
       ${checkbox("Exceção de idade", "p_age_exc", patient.age_exception)}
       ${field("Preço custom (R$)", "p_price", patient.custom_price, "number")}
-      ${field("Financeiro — nome", "p_fin_name", patient.financial_name)}
-      ${field("Financeiro — CPF", "p_fin_cpf", patient.financial_cpf)}
-      ${field("Financeiro — e-mail", "p_fin_email", patient.financial_email)}
       <button onclick="savePatient('${patient.id}')" class="mt-2 bg-wa-green hover:bg-wa-green-dk text-white text-xs px-3 py-1.5 rounded">Salvar paciente</button>`;
     if (link) {
-      html += `<hr class="my-3">
-        ${select("Papel do contato", "l_role", link.role, [["agendamento", "Agendamento"], ["financeiro", "Financeiro"], ["consulta", "Consulta"]])}
+      cadastroHtml += `<hr class="my-3">
         ${checkbox("É o próprio paciente (is_self)", "l_is_self", link.is_self)}
         ${field("Relação (mãe/pai/tutor)", "l_rel", link.relationship)}
         <button onclick="saveLink('${link.id}')" class="mt-2 bg-gray-600 hover:bg-gray-700 text-white text-xs px-3 py-1.5 rounded">Salvar vínculo</button>`;
     }
-    html += `</section>`;
+    cadastroHtml += `</section>`;
+
+    financeiroHtml = `<section class="bg-white rounded-lg shadow p-4" data-pid="${patient.id}">
+      <h2 class="font-medium text-gray-700 mb-2">Dados financeiros</h2>
+      ${field("Financeiro — nome", "p_fin_name", patient.financial_name)}
+      ${field("Financeiro — CPF", "p_fin_cpf", patient.financial_cpf)}
+      ${field("Financeiro — e-mail", "p_fin_email", patient.financial_email)}
+      <button onclick="saveFinanceiro('${patient.id}')" class="mt-2 bg-wa-green hover:bg-wa-green-dk text-white text-xs px-3 py-1.5 rounded">Salvar financeiro</button>
+    </section>`;
   }
-  document.getElementById("forms").innerHTML = html;
+  document.getElementById("forms").innerHTML = cadastroHtml;
+  document.getElementById("financeiro-forms").innerHTML = financeiroHtml;
 }
 
 // ── 5. Salvar ────────────────────────────────────────────────────────────────
@@ -244,8 +275,7 @@ const numOrNull = (id) => { const v = val(id); return v === "" ? null : parseInt
 
 async function saveContact() {
   const ok = await post(`/api/atendente/contato/${CONTACT.id}`, { data: {
-    name: val("c_name"), cpf: val("c_cpf"), phone: val("c_phone"),
-    active: chk("c_active"), manual_hold: chk("c_manual_hold"),
+    name: val("c_name"), cpf: val("c_cpf"),
   }});
   if (ok) flash("Contato salvo ✓");
 }
@@ -256,14 +286,19 @@ async function savePatient(pid) {
     is_returning_patient: chk("p_returning"),
     modality_restriction: val("p_modality") || null,
     age_exception: chk("p_age_exc"), custom_price: numOrNull("p_price"),
-    financial_name: val("p_fin_name"), financial_cpf: val("p_fin_cpf"),
-    financial_email: val("p_fin_email"),
   }});
   if (ok) flash("Paciente salvo ✓");
 }
+async function saveFinanceiro(pid) {
+  const ok = await post(`/api/atendente/paciente/${pid}`, { data: {
+    financial_name: val("p_fin_name"), financial_cpf: val("p_fin_cpf"),
+    financial_email: val("p_fin_email"),
+  }});
+  if (ok) flash("Dados financeiros salvos ✓");
+}
 async function saveLink(pcid) {
   const ok = await post(`/api/atendente/vinculo/${pcid}`, { data: {
-    role: val("l_role"), is_self: chk("l_is_self"), relationship: val("l_rel"),
+    is_self: chk("l_is_self"), relationship: val("l_rel"),
   }});
   if (ok) flash("Vínculo salvo ✓");
 }
