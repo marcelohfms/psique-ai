@@ -332,7 +332,7 @@ async def pagamentos_page(request: Request, username: str = Depends(verify_crede
             "appointment_id, start_time, doctor_id, paid_at, "
             "booking_fee_paid_at, booking_fee_waived, consultation_type, status, "
             "patients(name, birth_date, custom_price, "
-            "patient_contacts(is_self, contacts(phone, name, financial_name)))"
+            "patient_contacts(is_self, contacts(phone, name)))"
         )
         .in_("status", ["scheduled", "completed"])
         .execute()
