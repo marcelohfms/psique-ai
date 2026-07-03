@@ -403,3 +403,82 @@ async def test_chatwoot_private_note_unexpected_sender_is_logged_not_dropped():
     args = mock_log.call_args[0]
     assert args[0] == "attendant_note_ignored_unexpected_sender"
     assert args[1] == "5511999999999@s.whatsapp.net"
+
+
+def _chatwoot_delivery_status_payload(
+    status: str = "failed",
+    content: str = "Olá! Esperamos que a consulta tenha sido boa!",
+    phone: str = "+5511999999999",
+    conversation_id: int = 42,
+    sender_type: str = "agent_bot",
+    private: bool = False,
+    external_error: str | None = "131049 - This message was not delivered to maintain healthy ecosystem engagement.",
+) -> dict:
+    return {
+        "id": 99,
+        "content": content,
+        "message_type": "outgoing",
+        "private": private,
+        "status": status,
+        "event": "message_updated",
+        "content_attributes": {"external_error": external_error} if external_error else {},
+        "conversation": {
+            "id": conversation_id,
+            "meta": {"sender": {"phone_number": phone}},
+        },
+        "sender": {"phone_number": phone, "type": sender_type},
+    }
+
+
+async def test_chatwoot_delivery_failure_logs_event_and_notifies_agent():
+    """When Meta rejects a template send asynchronously (e.g. error 131049), Chatwoot
+    reports it later via message_updated/status=failed. Since the original send call
+    already got a 200 from Chatwoot and moved on (see app/chatwoot.py send_template_message),
+    this is the only place such failures can be caught — it must log the event and alert
+    the clinic via a private note instead of silently dropping it."""
+    from app.main import _handle_chatwoot_payload
+
+    payload = _chatwoot_delivery_status_payload()
+    with patch("app.main.log_event", new_callable=AsyncMock) as mock_log, \
+         patch("app.chatwoot.add_private_note", new_callable=AsyncMock) as mock_note:
+        await _handle_chatwoot_payload(payload)
+
+    mock_log.assert_called_once()
+    args = mock_log.call_args[0]
+    assert args[0] == "outbound_message_delivery_failed"
+    assert args[1] == "5511999999999@s.whatsapp.net"
+    assert args[2]["conversation_id"] == 42
+    assert "131049" in args[2]["error"]
+
+    mock_note.assert_called_once()
+    note_args = mock_note.call_args[0]
+    assert note_args[0] == 42
+    assert "131049" in note_args[1]
+
+
+async def test_chatwoot_delivery_status_sent_is_not_flagged():
+    """A normal status update (e.g. status=sent/delivered) must not be treated as a
+    failure — only status=failed triggers the alert."""
+    from app.main import _handle_chatwoot_payload
+
+    payload = _chatwoot_delivery_status_payload(status="delivered", external_error=None)
+    with patch("app.main.log_event", new_callable=AsyncMock) as mock_log, \
+         patch("app.chatwoot.add_private_note", new_callable=AsyncMock) as mock_note:
+        await _handle_chatwoot_payload(payload)
+
+    mock_log.assert_not_called()
+    mock_note.assert_not_called()
+
+
+async def test_chatwoot_delivery_failure_ignores_human_agent_messages():
+    """A failed status on a message sent by a human agent (not our automation) should
+    not trigger the alert — the agent already knows their own message failed."""
+    from app.main import _handle_chatwoot_payload
+
+    payload = _chatwoot_delivery_status_payload(sender_type="agent")
+    with patch("app.main.log_event", new_callable=AsyncMock) as mock_log, \
+         patch("app.chatwoot.add_private_note", new_callable=AsyncMock) as mock_note:
+        await _handle_chatwoot_payload(payload)
+
+    mock_log.assert_not_called()
+    mock_note.assert_not_called()

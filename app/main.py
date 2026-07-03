@@ -1029,6 +1029,45 @@ async def _handle_chatwoot_payload(payload: dict) -> None:
         # versions differ on whether message_type is serialised as int or string.
         _mt = payload.get("message_type")
         is_outgoing = _mt in (1, "outgoing") or str(_mt) == "1"
+
+        # ── Outbound delivery failure (e.g. Meta rejects a template async) ─────
+        # Chatwoot's POST /messages returns 200 as soon as it queues the send —
+        # actual WhatsApp delivery happens async, and Meta's rejection (e.g. error
+        # 131049 for template messages) only surfaces later as a message_updated
+        # event with status="failed". Our automation (pos_consulta, lembretes)
+        # already treated the initial 200 as "sent" and moved on, so this was the
+        # only place such failures could ever be noticed — and nothing read it.
+        if payload.get("event") == "message_updated" and payload.get("status") == "failed":
+            _sender_type = payload.get("sender", {}).get("type", "")
+            _is_human_agent = _sender_type in ("user", "agent")
+            if is_outgoing and not payload.get("private") and not _is_human_agent:
+                _phone_failed = _extract_phone_from_payload(payload)
+                _content_failed = (payload.get("content") or "").strip()
+                _conv_id = payload.get("conversation", {}).get("id") or payload.get("id")
+                _error = (payload.get("content_attributes") or {}).get("external_error") or "status=failed"
+                logger.warning(
+                    "OUTBOUND_DELIVERY_FAILED phone=%s conv=%s error=%s content=%.80s",
+                    _phone_failed, _conv_id, _error, _content_failed,
+                )
+                if _phone_failed:
+                    await log_event("outbound_message_delivery_failed", _phone_failed, {
+                        "conversation_id": _conv_id,
+                        "content": _content_failed[:300],
+                        "error": _error,
+                    })
+                    try:
+                        if _conv_id:
+                            from app.chatwoot import add_private_note
+                            await add_private_note(
+                                _conv_id,
+                                "⚠️ Falha no envio automático desta mensagem (não foi entregue ao paciente):\n\n"
+                                f"\"{_content_failed[:200]}\"\n\n"
+                                f"Motivo reportado pelo WhatsApp: {_error}. Reenvie manualmente pelo template se necessário.",
+                            )
+                    except Exception:
+                        logger.exception("Failed to post delivery-failure note for conv=%s", _conv_id)
+            return
+
         if is_outgoing:
             _is_private = payload.get("private", False)
             _sender_type = payload.get("sender", {}).get("type", "")
