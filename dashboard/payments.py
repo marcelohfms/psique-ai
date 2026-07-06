@@ -290,7 +290,7 @@ async def compute_pendencias(client, patient_ids: list[str] | None = None) -> li
     query = (
         client.from_("appointments")
         .select(
-            "appointment_id, start_time, doctor_id, paid_at, "
+            "appointment_id, patient_id, start_time, doctor_id, paid_at, "
             "booking_fee_paid_at, booking_fee_waived, consultation_type, status, "
             "patients(name, birth_date, custom_price, "
             "patient_contacts(is_self, contacts(phone, name)))"
@@ -301,9 +301,23 @@ async def compute_pendencias(client, patient_ids: list[str] | None = None) -> li
         query = query.in_("patient_id", patient_ids)
     result = await query.execute()
 
-    pendencias = []
+    # Uma 1ª consulta de menor de idade vira 2 linhas de appointments (1h pais +
+    # 1h paciente, datas distintas) mas é uma cobrança só — agrupa pelo mesmo
+    # critério que register_payment já usa (app/graph/tools.py) para não exibir
+    # nem cobrar em dobro.
+    groups: dict = {}
     for appt in result.data or []:
-        patient = appt.get("patients") or {}
+        if appt.get("consultation_type") == "primeira_consulta":
+            key = (appt.get("patient_id"), "primeira_consulta")
+        else:
+            key = appt["appointment_id"]
+        groups.setdefault(key, []).append(appt)
+
+    pendencias = []
+    for rows in groups.values():
+        rows = sorted(rows, key=lambda r: r.get("start_time") or "")
+        first = rows[0]
+        patient = first.get("patients") or {}
         patient_name = patient.get("name") or "Paciente"
         birth_date = patient.get("birth_date")
         custom_price = patient.get("custom_price")
@@ -317,18 +331,24 @@ async def compute_pendencias(client, patient_ids: list[str] | None = None) -> li
             contact = pc_row.get("contacts") or {}
             phone = contact.get("phone") or ""
 
-        doctor_display = DOCTOR_DISPLAY.get(appt.get("doctor_id", ""), "Médico")
-        start_time = appt.get("start_time", "")
-        try:
-            dt = datetime.fromisoformat(start_time.replace("Z", "+00:00"))
-            dt_br = dt.astimezone(timezone(timedelta(hours=-3)))
-            data_hora = dt_br.strftime("%d/%m/%Y %H:%M")
-        except Exception:
-            data_hora = start_time[:16]
+        doctor_display = DOCTOR_DISPLAY.get(first.get("doctor_id", ""), "Médico")
 
-        if not appt.get("booking_fee_paid_at") and not appt.get("booking_fee_waived"):
+        datas_hora = []
+        for row in rows:
+            start_time = row.get("start_time", "")
+            try:
+                dt = datetime.fromisoformat(start_time.replace("Z", "+00:00"))
+                dt_br = dt.astimezone(timezone(timedelta(hours=-3)))
+                datas_hora.append(dt_br.strftime("%d/%m/%Y %H:%M"))
+            except Exception:
+                datas_hora.append(start_time[:16])
+        data_hora = " + ".join(datas_hora)
+        start_time = first.get("start_time", "")
+        appointment_id = ",".join(row["appointment_id"] for row in rows)
+
+        if not all(row.get("booking_fee_paid_at") or row.get("booking_fee_waived") for row in rows):
             pendencias.append({
-                "appointment_id": appt["appointment_id"],
+                "appointment_id": appointment_id,
                 "paciente": patient_name,
                 "phone": phone,
                 "medico": doctor_display,
@@ -339,15 +359,15 @@ async def compute_pendencias(client, patient_ids: list[str] | None = None) -> li
                 "valor": 100,
             })
 
-        if not appt.get("paid_at"):
+        if not all(row.get("paid_at") for row in rows):
             valor = _calc_valor_consulta(
-                appt.get("doctor_id", ""),
+                first.get("doctor_id", ""),
                 birth_date,
-                appt.get("consultation_type"),
+                first.get("consultation_type"),
                 custom_price,
             )
             pendencias.append({
-                "appointment_id": appt["appointment_id"],
+                "appointment_id": appointment_id,
                 "paciente": patient_name,
                 "phone": phone,
                 "medico": doctor_display,
@@ -377,16 +397,18 @@ async def mark_paid(
     """Grava o pagamento no agendamento e tenta registrar na planilha/e-mail (best-effort).
 
     Assume que `tipo` já foi validado pelo chamador ("taxa" ou "consulta").
+    `appointment_id`: um id, ou vários separados por vírgula quando a pendência
+    representa uma 1ª consulta dividida em duas sessões (ver compute_pendencias) —
+    todas as linhas são atualizadas juntas.
     `drive_link`: link do comprovante já enviado ao Drive (opcional — ver upload_comprovante).
     """
     now = datetime.now(timezone.utc).isoformat()
+    appointment_ids = appointment_id.split(",")
 
-    if tipo == "taxa":
-        await client.from_("appointments").update({"booking_fee_paid_at": now}).eq("appointment_id", appointment_id).execute()
-        payment_type = "taxa_reserva"
-    else:
-        await client.from_("appointments").update({"paid_at": now}).eq("appointment_id", appointment_id).execute()
-        payment_type = "consulta"
+    field = "booking_fee_paid_at" if tipo == "taxa" else "paid_at"
+    payment_type = "taxa_reserva" if tipo == "taxa" else "consulta"
+    for aid in appointment_ids:
+        await client.from_("appointments").update({field: now}).eq("appointment_id", aid).execute()
 
     forma_label = FORMA_PAGAMENTO_LABEL.get(forma_pagamento, forma_pagamento)
     amount_str = str(valor)

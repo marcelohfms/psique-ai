@@ -76,6 +76,36 @@ async def test_compute_pendencias_extrai_telefone_do_contato_self(fake_client):
     assert all(p["phone"] == "5581999990000" for p in out)
 
 
+async def test_compute_pendencias_agrupa_primeira_consulta_dividida(fake_client):
+    # Menor de idade: 1ª consulta vira 2 linhas (pais + paciente), datas diferentes,
+    # mesmo patient_id — deve virar 1 única pendência de "consulta" e 1 de "taxa".
+    fake_client.store["appointments"] = [
+        _appt("a1", "p1", "Gabriel", "5581999990000",
+              consultation_type="primeira_consulta",
+              start_time="2026-07-01T09:00:00+00:00"),
+        _appt("a2", "p1", "Gabriel", "5581999990000",
+              consultation_type="primeira_consulta",
+              start_time="2026-07-09T10:00:00+00:00"),
+    ]
+    out = await payments.compute_pendencias(fake_client)
+    consultas = [p for p in out if p["tipo"] == "consulta"]
+    taxas = [p for p in out if p["tipo"] == "taxa"]
+    assert len(consultas) == 1
+    assert len(taxas) == 1
+    assert consultas[0]["appointment_id"] == "a1,a2"
+    assert "01/07/2026 06:00" in consultas[0]["data_hora"]
+    assert "09/07/2026 07:00" in consultas[0]["data_hora"]
+
+
+async def test_compute_pendencias_nao_agrupa_pacientes_diferentes(fake_client):
+    fake_client.store["appointments"] = [
+        _appt("a1", "p1", "João", "5581999990000", consultation_type="primeira_consulta"),
+        _appt("a2", "p2", "Maria", "5581999991111", consultation_type="primeira_consulta"),
+    ]
+    out = await payments.compute_pendencias(fake_client)
+    assert {p["appointment_id"] for p in out if p["tipo"] == "consulta"} == {"a1", "a2"}
+
+
 async def test_compute_pendencias_fallback_telefone_sem_is_self(fake_client):
     appt = _appt("a1", "p1", "João", "5581999990000")
     appt["patients"]["patient_contacts"] = [
@@ -136,6 +166,20 @@ async def test_mark_paid_consulta_atualiza_paid_at(fake_client, monkeypatch):
     )
     row = fake_client.store["appointments"][0]
     assert row["paid_at"] is not None
+
+
+async def test_mark_paid_ids_multiplos_atualiza_todas_as_linhas(fake_client, monkeypatch):
+    fake_client.store["appointments"] = [
+        {"appointment_id": "a1", "paid_at": None},
+        {"appointment_id": "a2", "paid_at": None},
+    ]
+    monkeypatch.setattr(payments, "_append_payment_sheet", AsyncMock())
+    monkeypatch.setattr(payments, "_send_clinic_email", AsyncMock())
+    await payments.mark_paid(
+        fake_client, "a1,a2", "consulta", 700, "PIX", "Gabriel", "Dr. Júlio",
+        "01/07/2026 09:00 + 09/07/2026 10:00", "5581999990000",
+    )
+    assert all(row["paid_at"] is not None for row in fake_client.store["appointments"])
 
 
 async def test_mark_paid_sheet_failure_nao_propaga(fake_client, monkeypatch):
