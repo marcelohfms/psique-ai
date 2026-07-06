@@ -20,6 +20,9 @@ class FakeQuery:
         self._op = "select"
         self._payload = None
         self._filters = []  # list[tuple[kind, col, val]]
+        self._order_col = None
+        self._order_desc = False
+        self._limit = None
 
     def select(self, *_args, **_kwargs):
         self._op = "select"
@@ -47,6 +50,15 @@ class FakeQuery:
         self._filters.append(("in", col, values))
         return self
 
+    def order(self, col, desc=False):
+        self._order_col = col
+        self._order_desc = desc
+        return self
+
+    def limit(self, n):
+        self._limit = n
+        return self
+
     def _matches(self, row):
         for kind, col, val in self._filters:
             if kind == "eq" and row.get(col) != val:
@@ -58,7 +70,12 @@ class FakeQuery:
     async def execute(self):
         rows = self._store.setdefault(self._table, [])
         if self._op == "select":
-            return FakeResult([r for r in rows if self._matches(r)])
+            matched = [r for r in rows if self._matches(r)]
+            if self._order_col is not None:
+                matched.sort(key=lambda r: r.get(self._order_col), reverse=self._order_desc)
+            if self._limit is not None:
+                matched = matched[: self._limit]
+            return FakeResult(matched)
         if self._op == "insert":
             payload = self._payload if isinstance(self._payload, list) else [self._payload]
             for p in payload:

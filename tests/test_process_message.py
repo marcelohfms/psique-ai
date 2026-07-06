@@ -970,6 +970,58 @@ async def test_collect_info_adult_skips_guardian_steps():
     assert result.get("guardian_cpf") is None
 
 
+async def test_collect_info_final_flush_persists_is_returning_patient():
+    """Reproduces the Dammyres bug: email is the last field collected, so Step 10
+    (email) intentionally falls through to the LLM in the same turn instead of
+    returning early via _extract_and_ask. When the LLM then reports is_complete=True,
+    the final DB flush must include is_returning_patient — otherwise a stale/wrong
+    value already in the DB (e.g. True for a patient who just confirmed it's their
+    first consultation) never gets corrected."""
+    from app.graph.nodes import collect_info_node
+    from langchain_core.messages import HumanMessage, AIMessage
+    from app.graph.schemas import CollectInfoOutput
+
+    state = _base_minor_state(
+        user_name="Dammyres Barboza",
+        patient_name="Dammyres Barboza",
+        patient_age=29,
+        birth_date="27/05/1997",
+        is_patient=True,
+        _is_patient_confirmed=True,
+        is_returning_patient=False,
+        preferred_doctor="bruna",
+        patient_email=None,
+        user_db_id="patient-id-1",
+        messages=[
+            HumanMessage(content="quero marcar uma consulta"),
+            AIMessage(content="Qual o seu e-mail? Precisamos para incluir no seu cadastro. 📋"),
+            HumanMessage(content="dammyresbarboza@gmail.com"),
+        ],
+    )
+    collect_result = CollectInfoOutput(
+        reply="Perfeito, tudo anotado! Vamos agendar sua consulta.",
+        is_complete=True,
+    )
+    with patch("app.graph.nodes.send_text", new_callable=AsyncMock), \
+         patch("app.graph.nodes.save_message", new_callable=AsyncMock), \
+         patch("app.graph.nodes.get_users_by_phone", new_callable=AsyncMock, return_value=[]), \
+         patch("app.graph.nodes.upsert_user", new_callable=AsyncMock, return_value="patient-id-1") as mock_upsert, \
+         patch("app.graph.nodes.log_event", new_callable=AsyncMock), \
+         patch("app.graph.nodes._get_collect_llm") as mock_llm_fn:
+        mock_llm = MagicMock()
+        mock_llm.ainvoke = AsyncMock(return_value=collect_result)
+        mock_llm_fn.return_value = mock_llm
+        result = await collect_info_node(state, {})
+
+    assert result.get("stage") == "patient_agent"
+    mock_upsert.assert_awaited()
+    db_payload = mock_upsert.call_args[0][1]
+    assert db_payload.get("email") == "dammyresbarboza@gmail.com"
+    assert db_payload.get("is_returning_patient") is False, (
+        f"is_returning_patient deveria estar no payload final do DB, mas foi: {db_payload}"
+    )
+
+
 async def test_log_event_called_for_new_conversation():
     """log_event('conversation_started') must fire when snapshot is empty."""
     import app.graph.graph as gg

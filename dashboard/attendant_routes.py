@@ -8,7 +8,7 @@ import logging
 import os
 from secrets import compare_digest
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile, status
 from pydantic import BaseModel
 
 import attendant_db
@@ -98,6 +98,7 @@ class AtendentePagarBody(BaseModel):
     data_hora: str
     phone: str
     conversation_id: int | None = None
+    drive_link: str = ""  # link do comprovante já enviado ao Drive (ver /pagamentos/{id}/comprovante)
 
 
 _CONFIRM_TEXT = {
@@ -119,6 +120,30 @@ async def pagamentos(phone: str, _: None = Depends(verify_token)):
     return await payments.compute_pendencias(client, patient_ids=patient_ids)
 
 
+@router.get("/pagamentos/comprovantes")
+async def buscar_comprovantes(phone: str, _: None = Depends(verify_token)):
+    client = await get_client()
+    return await payments.find_receipts(client, phone)
+
+
+@router.post("/pagamentos/{appointment_id}/comprovante")
+async def upload_comprovante(
+    paciente: str = Form(...),
+    data_hora: str = Form(...),
+    valor: str = Form(...),
+    file: UploadFile = File(...),
+    _: None = Depends(verify_token),
+):
+    content = await file.read()
+    mimetype = file.content_type or "image/jpeg"
+    try:
+        drive_link = await payments.upload_comprovante(paciente, data_hora, valor, content, mimetype)
+    except Exception:
+        logger.exception("UPLOAD_COMPROVANTE_FAILED paciente=%s", paciente)
+        raise HTTPException(status_code=502, detail="Falha ao enviar comprovante ao Drive")
+    return {"drive_link": drive_link}
+
+
 @router.post("/pagamentos/{appointment_id}/pagar")
 async def pagar(appointment_id: str, body: AtendentePagarBody, _: None = Depends(verify_token)):
     if body.tipo not in ("taxa", "consulta"):
@@ -128,6 +153,7 @@ async def pagar(appointment_id: str, body: AtendentePagarBody, _: None = Depends
     await payments.mark_paid(
         client, appointment_id, body.tipo, body.valor, body.forma_pagamento,
         body.paciente, body.medico, body.data_hora, body.phone,
+        drive_link=body.drive_link,
     )
 
     if body.conversation_id is not None:

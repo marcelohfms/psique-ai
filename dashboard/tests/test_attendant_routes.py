@@ -199,7 +199,7 @@ def test_pagar_registra_e_envia_confirmacao(client, monkeypatch):
     async def fake_get_client():
         return object()
     async def fake_mark_paid(_client, appointment_id, tipo, valor, forma_pagamento,
-                              paciente, medico, data_hora, phone):
+                              paciente, medico, data_hora, phone, drive_link=""):
         calls["mark_paid"] = (appointment_id, tipo, valor)
     async def fake_send_confirmation(conversation_id, text):
         calls["confirm"] = (conversation_id, text)
@@ -278,3 +278,98 @@ def test_pagar_falha_no_envio_da_confirmacao_nao_quebra(client, monkeypatch):
     )
     assert r.status_code == 200
     assert r.json() == {"ok": True}
+
+
+# ── Upload de comprovante ─────────────────────────────────────────────────────
+
+
+def test_upload_comprovante_requires_token(client):
+    r = client.post(
+        "/api/atendente/pagamentos/a1/comprovante",
+        data={"paciente": "João", "data_hora": "10/07/2026 14:00", "valor": "100"},
+        files={"file": ("comprovante.jpg", b"fake-image-bytes", "image/jpeg")},
+    )
+    assert r.status_code == 401
+
+
+def test_upload_comprovante_retorna_drive_link(client, monkeypatch):
+    calls = {}
+    async def fake_upload(patient_name, appointment_dt, amount, file_bytes, mimetype):
+        calls["upload"] = (patient_name, appointment_dt, amount, file_bytes, mimetype)
+        return "https://drive.google.com/file/d/abc123/view"
+    monkeypatch.setattr(payments, "upload_comprovante", fake_upload)
+
+    r = client.post(
+        "/api/atendente/pagamentos/a1/comprovante",
+        params={"token": "test-token"},
+        data={"paciente": "João", "data_hora": "10/07/2026 14:00", "valor": "100"},
+        files={"file": ("comprovante.jpg", b"fake-image-bytes", "image/jpeg")},
+    )
+    assert r.status_code == 200
+    assert r.json() == {"drive_link": "https://drive.google.com/file/d/abc123/view"}
+    assert calls["upload"] == ("João", "10/07/2026 14:00", "100", b"fake-image-bytes", "image/jpeg")
+
+
+def test_upload_comprovante_falha_no_drive_retorna_502(client, monkeypatch):
+    async def fake_upload(*args, **kwargs):
+        raise RuntimeError("Drive indisponível")
+    monkeypatch.setattr(payments, "upload_comprovante", fake_upload)
+
+    r = client.post(
+        "/api/atendente/pagamentos/a1/comprovante",
+        params={"token": "test-token"},
+        data={"paciente": "João", "data_hora": "10/07/2026 14:00", "valor": "100"},
+        files={"file": ("comprovante.jpg", b"fake-image-bytes", "image/jpeg")},
+    )
+    assert r.status_code == 502
+
+
+def test_pagar_repassa_drive_link_para_mark_paid(client, monkeypatch):
+    calls = {}
+    async def fake_get_client():
+        return object()
+    async def fake_mark_paid(_client, appointment_id, tipo, valor, forma_pagamento,
+                              paciente, medico, data_hora, phone, drive_link=""):
+        calls["drive_link"] = drive_link
+    async def fake_log(event_type, phone, metadata):
+        return None
+
+    monkeypatch.setattr(attendant_routes, "get_client", fake_get_client)
+    monkeypatch.setattr(payments, "mark_paid", fake_mark_paid)
+    monkeypatch.setattr(attendant_db, "log_event", fake_log)
+
+    r = client.post(
+        "/api/atendente/pagamentos/a1/pagar",
+        params={"token": "test-token"},
+        json={"tipo": "consulta", "valor": 550, "forma_pagamento": "PIX",
+              "paciente": "Natalia", "medico": "Dra. Bruna", "data_hora": "01/07/2026 15:00",
+              "phone": "5581999688071",
+              "drive_link": "https://drive.google.com/file/d/abc123/view"},
+    )
+    assert r.status_code == 200
+    assert calls["drive_link"] == "https://drive.google.com/file/d/abc123/view"
+
+
+# ── Buscar comprovante da conversa ───────────────────────────────────────────
+
+
+def test_buscar_comprovantes_requires_token(client):
+    r = client.get("/api/atendente/pagamentos/comprovantes", params={"phone": "5581999998888"})
+    assert r.status_code == 401
+
+
+def test_buscar_comprovantes_retorna_lista(client, monkeypatch):
+    async def fake_get_client():
+        return object()
+    async def fake_find_receipts(_client, phone, limit=5):
+        assert phone == "5581999998888"
+        return [{"descricao": "COMPROVANTE DE PAGAMENTO: R$ 550,00", "drive_link": "https://drive.google.com/x", "enviado_em": "2026-07-03T15:26:00+00:00"}]
+
+    monkeypatch.setattr(attendant_routes, "get_client", fake_get_client)
+    monkeypatch.setattr(payments, "find_receipts", fake_find_receipts)
+
+    r = client.get("/api/atendente/pagamentos/comprovantes",
+                    params={"phone": "5581999998888", "token": "test-token"})
+    assert r.status_code == 200
+    body = r.json()
+    assert body[0]["drive_link"] == "https://drive.google.com/x"

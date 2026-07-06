@@ -17,14 +17,14 @@ Chatbot de atendimento via WhatsApp para a **Clínica Psique**, especializada em
 | API | FastAPI |
 | Orquestração de conversa | LangGraph |
 | LLM | OpenAI GPT-4o |
-| WhatsApp | UAZAPI |
+| WhatsApp | Chatwoot + Meta Cloud API |
 | Banco de dados | Supabase (PostgreSQL) |
 | Gerenciador de pacotes | uv |
 
 ## Arquitetura
 
 ```
-WhatsApp (UAZAPI)
+WhatsApp (Meta Cloud API)
       ↓
   /webhook  (FastAPI)
       ↓
@@ -37,7 +37,7 @@ WhatsApp (UAZAPI)
         ToolNode
   ├── schedule_appointment  → Google Calendar
   ├── request_document      → Supabase
-  └── transfer_to_human     → UAZAPI
+  └── transfer_to_human     → Chatwoot
 ```
 
 **Persistência:**
@@ -64,8 +64,13 @@ cp .env.example .env
 | Variável | Descrição |
 |----------|-----------|
 | `DEBOUNCE_SECONDS` | Tempo de debounce do buffer de mensagens (padrão: `3`) |
-| `UAZAPI_BASE_URL` | URL base da instância UAZAPI |
-| `UAZAPI_TOKEN` | Token de autenticação UAZAPI |
+| `WHATSAPP_TOKEN` | Token permanente da Meta Cloud API |
+| `WHATSAPP_PHONE_NUMBER_ID` | ID do número de telefone na Meta Cloud API |
+| `WHATSAPP_VERIFY_TOKEN` | Token de verificação do webhook da Meta |
+| `CHATWOOT_BASE_URL` | URL da instância Chatwoot |
+| `CHATWOOT_ACCOUNT_ID` | ID da conta no Chatwoot |
+| `CHATWOOT_AGENT_BOT_TOKEN` | Token do Agent Bot no Chatwoot |
+| `CHATWOOT_INBOX_ID` | ID da inbox no Chatwoot |
 | `OPENAI_API_KEY` | Chave da API OpenAI |
 | `SUPABASE_CONNECTION_STRING` | Connection string PostgreSQL (shared pooler, porta 6543) |
 | `SUPABASE_URL` | URL do projeto Supabase |
@@ -77,7 +82,7 @@ cp .env.example .env
 uv run uvicorn app.main:app --reload --port 8000
 ```
 
-O webhook da UAZAPI deve apontar para `https://<seu-domínio>/webhook`.
+O webhook da Meta Cloud API deve apontar para `https://<seu-domínio>/webhook`.
 
 ## Médicos cadastrados
 

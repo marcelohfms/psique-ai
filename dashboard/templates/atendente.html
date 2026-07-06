@@ -142,17 +142,83 @@ function pagamentoCard(p) {
         <option value="cartao_debito">Cartão de débito</option>
         <option value="dinheiro">Dinheiro</option>
       </select>
+      <label class="comprovante-label text-xs text-gray-500 dark:text-gray-400 cursor-pointer underline">
+        Anexar comprovante
+        <input type="file" accept="image/*,.pdf" class="comprovante-input hidden">
+      </label>
+      <button onclick="buscarComprovanteConversa(this)" class="buscar-conversa-btn text-xs text-gray-500 dark:text-gray-400 underline">Buscar da conversa</button>
       <button onclick="marcarPago(this)" class="bg-wa-green hover:bg-wa-green-dk text-white text-xs px-3 py-1.5 rounded ml-auto">Marcar pago</button>
     </div>
+    <div class="comprovante-nome text-xs text-gray-400 dark:text-gray-500 mt-1"></div>
+    <div class="comprovante-resultados mt-1 space-y-1"></div>
   </div>`;
+}
+
+document.addEventListener("change", (e) => {
+  if (!e.target.matches(".comprovante-input")) return;
+  const card = e.target.closest("[data-appt]");
+  const file = e.target.files[0];
+  delete card.dataset.selectedDriveLink;
+  card.querySelector(".comprovante-nome").textContent = file ? file.name : "";
+});
+
+async function buscarComprovanteConversa(btn) {
+  const card = btn.closest("[data-appt]");
+  const box = card.querySelector(".comprovante-resultados");
+  btn.disabled = true;
+  box.innerHTML = `<span class="text-xs text-gray-400">Buscando…</span>`;
+  try {
+    const r = await fetch(`/api/atendente/pagamentos/comprovantes?phone=${encodeURIComponent(card.dataset.phone)}&token=${encodeURIComponent(TOKEN)}`);
+    if (!r.ok) throw new Error();
+    const candidatos = await r.json();
+    if (!candidatos.length) {
+      box.innerHTML = `<span class="text-xs text-gray-400">Nenhum comprovante encontrado na conversa.</span>`;
+      return;
+    }
+    box.innerHTML = candidatos.map((c, i) => `
+      <div class="flex items-center gap-2 border border-gray-200 dark:border-gray-600 rounded px-2 py-1">
+        <span class="text-xs text-gray-600 dark:text-gray-300 flex-1">${escapeHtml(c.descricao)}</span>
+        <button data-idx="${i}" class="usar-comprovante-btn text-xs text-wa-green underline">Usar este</button>
+      </div>`).join("");
+    box.querySelectorAll(".usar-comprovante-btn").forEach((b) => {
+      b.addEventListener("click", () => {
+        const c = candidatos[parseInt(b.dataset.idx, 10)];
+        card.dataset.selectedDriveLink = c.drive_link;
+        card.querySelector(".comprovante-nome").textContent = `Da conversa: ${c.descricao}`;
+        card.querySelector(".comprovante-input").value = "";
+        box.innerHTML = "";
+      });
+    });
+  } catch {
+    box.innerHTML = `<span class="text-xs text-red-500">Erro ao buscar comprovantes.</span>`;
+  } finally {
+    btn.disabled = false;
+  }
 }
 
 async function marcarPago(btn) {
   const card = btn.closest("[data-appt]");
   const valor = parseInt(card.querySelector(".valor-input").value, 10);
   const forma_pagamento = card.querySelector(".forma-input").value;
+  const file = card.querySelector(".comprovante-input").files[0];
   if (isNaN(valor) || valor < 0) { alert("Valor inválido."); return; }
   btn.disabled = true;
+
+  let drive_link = card.dataset.selectedDriveLink || "";
+  if (!drive_link && file) {
+    const form = new FormData();
+    form.append("paciente", card.dataset.paciente);
+    form.append("data_hora", card.dataset.dataHora);
+    form.append("valor", String(valor));
+    form.append("file", file);
+    const upload = await fetch(`/api/atendente/pagamentos/${card.dataset.appt}/comprovante?token=${encodeURIComponent(TOKEN)}`, {
+      method: "POST",
+      body: form,
+    });
+    if (!upload.ok) { alert("Erro ao enviar comprovante."); btn.disabled = false; return; }
+    ({ drive_link } = await upload.json());
+  }
+
   const r = await fetch(`/api/atendente/pagamentos/${card.dataset.appt}/pagar?token=${encodeURIComponent(TOKEN)}`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -160,7 +226,7 @@ async function marcarPago(btn) {
       tipo: card.dataset.tipo, valor, forma_pagamento,
       paciente: card.dataset.paciente, medico: card.dataset.medico,
       data_hora: card.dataset.dataHora, phone: card.dataset.phone,
-      conversation_id: CONVERSATION_ID,
+      conversation_id: CONVERSATION_ID, drive_link,
     }),
   });
   if (!r.ok) { alert("Erro ao registrar pagamento."); btn.disabled = false; return; }

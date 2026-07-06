@@ -423,6 +423,7 @@
             <th scope="col">Tipo</th>
             <th scope="col">Valor</th>
             <th scope="col">Forma de pagamento</th>
+            <th scope="col">Comprovante</th>
             <th scope="col"><span class="sr-only">Ação</span></th>
           </tr>
         </thead>
@@ -467,6 +468,19 @@
                 <option value="cartao_debito">Cartão de débito</option>
                 <option value="dinheiro">Dinheiro</option>
               </select>
+            </td>
+            <td>
+              <label class="comprovante-label" style="font-size:0.78rem;color:var(--color-muted-text);text-decoration:underline;cursor:pointer;">
+                Anexar
+                <input type="file" accept="image/*,.pdf" class="comprovante-input" style="display:none;">
+              </label>
+              <br>
+              <button type="button" class="buscar-conversa-btn" onclick="buscarComprovanteConversa(this)"
+                      style="font-size:0.78rem;color:var(--color-muted-text);text-decoration:underline;background:none;border:none;cursor:pointer;padding:0;">
+                Buscar da conversa
+              </button>
+              <div class="comprovante-nome" style="font-size:0.72rem;color:var(--color-muted-text);"></div>
+              <div class="comprovante-resultados" style="display:flex;flex-direction:column;gap:2px;margin-top:2px;"></div>
             </td>
             <td>
               <button
@@ -515,10 +529,59 @@ function showToast(msg, isError = false) {
   }, 3500);
 }
 
+function escapeHtml(s) {
+  return String(s ?? '')
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+}
+
+document.addEventListener('change', (e) => {
+  if (!e.target.matches('.comprovante-input')) return;
+  const row = e.target.closest('tr');
+  const file = e.target.files[0];
+  delete row.dataset.selectedDriveLink;
+  row.querySelector('.comprovante-nome').textContent = file ? file.name : '';
+});
+
+async function buscarComprovanteConversa(btn) {
+  const row = btn.closest('tr');
+  const box = row.querySelector('.comprovante-resultados');
+  btn.disabled = true;
+  box.innerHTML = `<span style="font-size:0.72rem;color:var(--color-muted-text);">Buscando…</span>`;
+  try {
+    const r = await fetch(`/api/pagamentos/comprovantes?phone=${encodeURIComponent(row.dataset.phone)}`);
+    if (!r.ok) throw new Error();
+    const candidatos = await r.json();
+    if (!candidatos.length) {
+      box.innerHTML = `<span style="font-size:0.72rem;color:var(--color-muted-text);">Nenhum comprovante encontrado na conversa.</span>`;
+      return;
+    }
+    box.innerHTML = candidatos.map((c, i) => `
+      <div style="display:flex;align-items:center;gap:6px;border:1px solid var(--color-border);border-radius:6px;padding:2px 6px;">
+        <span style="font-size:0.72rem;color:var(--color-foreground);flex:1;">${escapeHtml(c.descricao)}</span>
+        <button type="button" data-idx="${i}" class="usar-comprovante-btn" style="font-size:0.72rem;color:var(--color-accent);text-decoration:underline;background:none;border:none;cursor:pointer;">Usar este</button>
+      </div>`).join('');
+    box.querySelectorAll('.usar-comprovante-btn').forEach((b) => {
+      b.addEventListener('click', () => {
+        const c = candidatos[parseInt(b.dataset.idx, 10)];
+        row.dataset.selectedDriveLink = c.drive_link;
+        row.querySelector('.comprovante-nome').textContent = `Da conversa: ${c.descricao}`;
+        row.querySelector('.comprovante-input').value = '';
+        box.innerHTML = '';
+      });
+    });
+  } catch {
+    box.innerHTML = `<span style="font-size:0.72rem;color:#dc2626;">Erro ao buscar comprovantes.</span>`;
+  } finally {
+    btn.disabled = false;
+  }
+}
+
 async function marcarPago(appointmentId, tipo, btn) {
   const row = document.getElementById(`row-${appointmentId}-${tipo}`);
   const valor = parseInt(row.querySelector('.valor-input').value, 10);
   const forma_pagamento = row.querySelector('.forma-input').value;
+  const file = row.querySelector('.comprovante-input').files[0];
 
   if (isNaN(valor) || valor < 0) {
     showToast('Valor inválido.', true);
@@ -530,6 +593,21 @@ async function marcarPago(appointmentId, tipo, btn) {
   btn.innerHTML = `<svg class="" style="width:14px;height:14px;animation:spin 0.8s linear infinite" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M21 12a9 9 0 1 1-6.219-8.56"/></svg>Aguarde…`;
 
   try {
+    let drive_link = row.dataset.selectedDriveLink || '';
+    if (!drive_link && file) {
+      const form = new FormData();
+      form.append('paciente', row.dataset.paciente);
+      form.append('data_hora', row.dataset.dataHora);
+      form.append('valor', String(valor));
+      form.append('file', file);
+      const uploadResp = await fetch(`/api/pagamentos/${appointmentId}/comprovante`, {
+        method: 'POST',
+        body: form,
+      });
+      if (!uploadResp.ok) throw new Error(await uploadResp.text());
+      ({ drive_link } = await uploadResp.json());
+    }
+
     const resp = await fetch(`/api/pagamentos/${appointmentId}/pagar`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -541,6 +619,7 @@ async function marcarPago(appointmentId, tipo, btn) {
         medico: row.dataset.medico,
         data_hora: row.dataset.dataHora,
         phone: row.dataset.phone,
+        drive_link,
       }),
     });
 

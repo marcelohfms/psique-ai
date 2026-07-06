@@ -35,6 +35,21 @@ def _fmt_date(iso: str) -> str:
     return datetime.fromisoformat(iso).astimezone(TZ).strftime("%d/%m/%Y")
 
 
+def _patient_and_contact(appt: dict) -> tuple[str, str, str]:
+    """Extrai (nome do paciente, nome do contato responsável, telefone) do join com patients."""
+    patient = appt.get("patients") or {}
+    patient_name = patient.get("name") or "—"
+
+    patient_contacts = patient.get("patient_contacts") or []
+    self_contact = next((pc for pc in patient_contacts if pc.get("is_self")), None)
+    pc_row = self_contact or (patient_contacts[0] if patient_contacts else None)
+    contact = (pc_row or {}).get("contacts") or {}
+    contact_name = contact.get("name") or "—"
+    phone = contact.get("phone") or "—"
+
+    return patient_name, contact_name, phone
+
+
 async def main() -> None:
     from supabase import acreate_client
 
@@ -45,10 +60,15 @@ async def main() -> None:
 
     now = datetime.now(TZ)
 
+    patients_select = (
+        "patients(name, custom_price, "
+        "patient_contacts(is_self, contacts(phone, name)))"
+    )
+
     # ── 1. Taxa de reserva pendente (agendadas, futuras, sem booking_fee_paid_at) ──
     r1 = await (
         client.from_("appointments")
-        .select("appointment_id, start_time, doctor_id, consultation_type, booking_fee_paid_at, paid_at, users(number, patient_name, name)")
+        .select(f"appointment_id, start_time, doctor_id, consultation_type, booking_fee_paid_at, paid_at, {patients_select}")
         .eq("status", "scheduled")
         .eq("booking_fee_waived", False)
         .is_("booking_fee_paid_at", "null")
@@ -61,7 +81,7 @@ async def main() -> None:
     # ── 2. Pagamento de consulta pendente (realizadas, sem paid_at) ──────────────
     r2 = await (
         client.from_("appointments")
-        .select("appointment_id, start_time, doctor_id, consultation_type, booking_fee_paid_at, paid_at, booking_fee_waived, users(number, patient_name, name, custom_price)")
+        .select(f"appointment_id, start_time, doctor_id, consultation_type, booking_fee_paid_at, paid_at, booking_fee_waived, {patients_select}")
         .eq("status", "completed")
         .is_("paid_at", "null")
         .order("start_time", desc=True)
@@ -70,7 +90,7 @@ async def main() -> None:
     # Exclude courtesy patients (custom_price == 0) — they have no balance to collect
     consulta_pendente = [
         appt for appt in (r2.data or [])
-        if (appt.get("users") or {}).get("custom_price") != 0
+        if (appt.get("patients") or {}).get("custom_price") != 0
     ]
 
     # ── Build email ───────────────────────────────────────────────────────────────
@@ -94,10 +114,7 @@ async def main() -> None:
         lines.append(f"TAXA DE RESERVA PENDENTE ({len(taxa_pendente)} consulta(s) agendada(s)):")
         lines.append("-" * 40)
         for appt in taxa_pendente:
-            user = appt.get("users") or {}
-            patient = user.get("patient_name") or user.get("name") or "—"
-            contact = user.get("name") or "—"
-            phone = user.get("number") or "—"
+            patient, contact, phone = _patient_and_contact(appt)
             doctor = DOCTOR_LABELS.get(appt.get("doctor_id", ""), "—")
             dt = _fmt_dt(appt["start_time"])
             ctype = appt.get("consultation_type") or ""
@@ -117,10 +134,7 @@ async def main() -> None:
         lines.append(f"PAGAMENTO DE CONSULTA PENDENTE ({len(consulta_pendente)} consulta(s) realizada(s)):")
         lines.append("-" * 40)
         for appt in consulta_pendente:
-            user = appt.get("users") or {}
-            patient = user.get("patient_name") or user.get("name") or "—"
-            contact = user.get("name") or "—"
-            phone = user.get("number") or "—"
+            patient, contact, phone = _patient_and_contact(appt)
             doctor = DOCTOR_LABELS.get(appt.get("doctor_id", ""), "—")
             dt = _fmt_date(appt["start_time"])
             taxa_waived = bool(appt.get("booking_fee_waived"))

@@ -166,3 +166,58 @@ async def test_mark_paid_email_failure_nao_propaga(fake_client, monkeypatch):
     )
     row = fake_client.store["appointments"][0]
     assert row["paid_at"] is not None  # gravação principal não foi afetada pela falha do e-mail
+
+
+# ── find_receipts ─────────────────────────────────────────────────────────────
+
+
+def _msg(phone, content, created_at):
+    return {"phone": phone, "content": content, "created_at": created_at}
+
+
+async def test_find_receipts_extrai_descricao_e_drive_link(fake_client):
+    fake_client.store["messages"] = [
+        _msg("5581999990000",
+             "[imagem]: COMPROVANTE DE PAGAMENTO: valor R$ 100,00 [drive_link:https://drive.google.com/file/d/abc/view]",
+             "2026-07-01T19:06:45+00:00"),
+    ]
+    out = await payments.find_receipts(fake_client, "5581999990000")
+    assert len(out) == 1
+    assert out[0]["drive_link"] == "https://drive.google.com/file/d/abc/view"
+    assert "COMPROVANTE DE PAGAMENTO" in out[0]["descricao"]
+
+
+async def test_find_receipts_ignora_mensagens_sem_comprovante(fake_client):
+    fake_client.store["messages"] = [
+        _msg("5581999990000", "Obrigada!", "2026-07-01T10:00:00+00:00"),
+        _msg("5581999990000", "[imagem]: LAUDO: texto do laudo", "2026-07-01T11:00:00+00:00"),
+    ]
+    out = await payments.find_receipts(fake_client, "5581999990000")
+    assert out == []
+
+
+async def test_find_receipts_ordena_mais_recente_primeiro(fake_client):
+    fake_client.store["messages"] = [
+        _msg("5581999990000",
+             "[imagem]: COMPROVANTE DE PAGAMENTO: taxa R$ 100,00 [drive_link:https://drive.google.com/file/d/old/view]",
+             "2026-07-01T10:00:00+00:00"),
+        _msg("5581999990000",
+             "[imagem]: COMPROVANTE DE PAGAMENTO: saldo R$ 550,00 [drive_link:https://drive.google.com/file/d/new/view]",
+             "2026-07-03T15:26:00+00:00"),
+    ]
+    out = await payments.find_receipts(fake_client, "5581999990000")
+    assert len(out) == 2
+    assert out[0]["drive_link"] == "https://drive.google.com/file/d/new/view"
+    assert out[1]["drive_link"] == "https://drive.google.com/file/d/old/view"
+
+
+async def test_find_receipts_busca_variante_sem_o_9(fake_client):
+    # Mensagem gravada com o telefone sem o 9º dígito (legado)
+    fake_client.store["messages"] = [
+        _msg("558199990000",
+             "[imagem]: COMPROVANTE DE PAGAMENTO: valor R$ 100,00 [drive_link:https://drive.google.com/file/d/abc/view]",
+             "2026-07-01T19:06:45+00:00"),
+    ]
+    out = await payments.find_receipts(fake_client, "5581999990000")
+    assert len(out) == 1
+    assert out[0]["drive_link"] == "https://drive.google.com/file/d/abc/view"

@@ -9,7 +9,7 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-from fastapi import Depends, FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect, status
+from fastapi import Depends, FastAPI, File, Form, HTTPException, Request, UploadFile, WebSocket, WebSocketDisconnect, status
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel
@@ -235,6 +235,32 @@ class PagarBody(BaseModel):
     medico: str
     data_hora: str
     phone: str
+    drive_link: str = ""  # link do comprovante já enviado ao Drive (ver /pagamentos/{id}/comprovante)
+
+
+@app.get("/api/pagamentos/comprovantes")
+async def api_buscar_comprovantes(phone: str, username: str = Depends(verify_credentials)):
+    client = get_supabase()
+    return await payments.find_receipts(client, phone)
+
+
+@app.post("/api/pagamentos/{appointment_id}/comprovante")
+async def api_upload_comprovante(
+    appointment_id: str,
+    paciente: str = Form(...),
+    data_hora: str = Form(...),
+    valor: str = Form(...),
+    file: UploadFile = File(...),
+    username: str = Depends(verify_credentials),
+):
+    content = await file.read()
+    mimetype = file.content_type or "image/jpeg"
+    try:
+        drive_link = await payments.upload_comprovante(paciente, data_hora, valor, content, mimetype)
+    except Exception:
+        logger.exception("UPLOAD_COMPROVANTE_FAILED appt=%s paciente=%s", appointment_id, paciente)
+        raise HTTPException(status_code=502, detail="Falha ao enviar comprovante ao Drive")
+    return {"drive_link": drive_link}
 
 
 @app.post("/api/pagamentos/{appointment_id}/pagar")
@@ -250,6 +276,7 @@ async def api_pagar(
     await payments.mark_paid(
         client, appointment_id, body.tipo, body.valor, body.forma_pagamento,
         body.paciente, body.medico, body.data_hora, body.phone,
+        drive_link=body.drive_link,
     )
     return {"ok": True}
 

@@ -346,6 +346,34 @@ async def test_confirm_appointment_blocks_when_patient_has_pending_reschedule():
     assert set(_status_call.args[1]) == {"scheduled", "pending_reschedule"}
 
 
+async def test_confirm_appointment_guard0_applies_even_with_force_encaixe():
+    """force_encaixe deve pular apenas os guards de janela/conflito de agenda, nunca o
+    Guard 0 (paciente já tem consulta futura). Caso contrário, uma atendente pedindo para
+    'encaixar' um novo horário faz a Eva criar um segundo agendamento em vez de remarcar
+    o existente (caso Gustavo Lapenda, 06/07/2026 — dois agendamentos ativos)."""
+    from app.graph.tools import confirm_appointment
+    client, table, execute = _make_supabase_client()
+    execute.side_effect = [
+        MagicMock(data=[{"id": "contact-1"}]),                            # contacts select
+        MagicMock(data=[{"patient_id": "patient-1"}]),                    # patient_contacts select
+        MagicMock(data=[{"appointment_id": "old-evt-1",
+                          "start_time": "2026-07-15T18:00:00+00:00"}]),   # appointments guard 0
+    ]
+    with patch("app.graph.tools._get_doctor_calendar_id", new_callable=AsyncMock, return_value="cal123"), \
+         patch("app.graph.tools.get_supabase", new_callable=AsyncMock, return_value=client), \
+         patch("app.google_calendar.create_event", new_callable=AsyncMock) as mock_create:
+        result = await confirm_appointment.coroutine(
+            slot_datetime="2026-07-08T13:20:00",
+            slot_duration_minutes=60,
+            state=_make_state(silent_mode=True),
+            config=CONFIG,
+            force_encaixe=True,
+        )
+    assert "NÃO crie um novo agendamento" in result
+    assert "mark_reschedule_in_progress" in result
+    mock_create.assert_not_called()
+
+
 # ── confirm_attendance (idempotência: primeiro a confirmar vence) ──────────────
 
 async def test_confirm_attendance_marks_confirmed_when_not_yet_confirmed():
@@ -1153,6 +1181,161 @@ async def test_register_payment_rename_unknown_amount_uses_placeholder():
     assert "?" not in new_filename
 
 
+def _make_supabase_client_for_override(candidates: list[dict]):
+    """Supabase client for patient_name_override tests: call 1 is the `patients`
+    ilike search (returns `candidates`), call 2 is the scheduled-appointment lookup
+    (found), the rest are empty."""
+    ilike_result = MagicMock(data=candidates)
+    apt_data = MagicMock(data=[{
+        "appointment_id": "apt-1",
+        "start_time": "2026-03-23T09:00:00+00:00",
+        "doctor_id": "d5baa58b-a788-4f40-b8c0-512c189150be",
+        "end_time": "2026-03-23T10:00:00+00:00",
+        "paid_at": None,
+        "booking_fee_paid_at": None,
+        "status": "scheduled",
+        "consultation_type": "retorno",
+    }])
+    empty = MagicMock(data=[])
+
+    def _side_effect(*_a, **_kw):
+        _side_effect.call_count += 1
+        if _side_effect.call_count == 1:
+            return ilike_result
+        if _side_effect.call_count == 2:
+            return apt_data
+        return empty
+    _side_effect.call_count = 0
+
+    execute = AsyncMock(side_effect=_side_effect)
+    table = MagicMock()
+    for m in ("select", "eq", "in_", "limit", "single", "maybe_single",
+              "gte", "order", "insert", "update", "upsert", "is_", "ilike"):
+        getattr(table, m).return_value = table
+    table.execute = execute
+    client = MagicMock()
+    client.from_.return_value = table
+    return client
+
+
+async def test_register_payment_override_ambiguous_name_asks_for_clarification():
+    """Regression: `ilike("%Francisco%")` can match several unrelated patients
+    (e.g. 'Francisco Fonseca Lima' and 'Francisco Domingues Bruno de Faria').
+    Silently taking candidates[0] misattributed a real payment to the wrong
+    patient (case: Francisco Domingues, 2026-07-03). With no way to tell which
+    candidate is right, register_payment must ask instead of guessing."""
+    from app.graph.tools import register_payment
+    client = _make_supabase_client_for_override([
+        {"id": "wrong-id", "name": "Francisco Fonseca Lima", "doctor_id": "d5baa58b-a788-4f40-b8c0-512c189150be"},
+        {"id": "right-id", "name": "Francisco Domingues Bruno de Faria", "doctor_id": "18b01f87-eacd-4905-bd4a-a8293991e6fd"},
+    ])
+    with patch("app.graph.tools.get_supabase", new_callable=AsyncMock, return_value=client), \
+         patch("app.patients.get_contact_by_phone", new_callable=AsyncMock, return_value=None), \
+         patch("app.graph.tools.log_event", new_callable=AsyncMock), \
+         patch("app.google_sheets.append_payment_receipt", new_callable=AsyncMock) as mock_sheets, \
+         patch("app.graph.tools._notify_clinic", new_callable=AsyncMock):
+        result = await register_payment.coroutine(
+            amount="550,00",
+            drive_link="https://drive.google.com/file/d/abc/view",
+            patient_name_override="Francisco",
+            state=_make_state(),
+            config=CONFIG,
+        )
+
+    assert "Francisco Fonseca Lima" in result
+    assert "Francisco Domingues Bruno de Faria" in result
+    mock_sheets.assert_not_awaited()  # must not register the payment against either candidate
+
+
+async def test_register_payment_override_disambiguates_via_sender_contact_link():
+    """When multiple patients share the search name, but the sender's phone is
+    already linked (patient_contacts) to exactly one of them, use that one
+    instead of asking — this is the common case (a guardian paying for their
+    own registered dependent)."""
+    from app.graph.tools import register_payment
+    client = _make_supabase_client_for_override([
+        {"id": "wrong-id", "name": "Francisco Fonseca Lima", "doctor_id": "d5baa58b-a788-4f40-b8c0-512c189150be"},
+        {"id": "right-id", "name": "Francisco Domingues Bruno de Faria", "doctor_id": "18b01f87-eacd-4905-bd4a-a8293991e6fd"},
+    ])
+    with patch("app.graph.tools.get_supabase", new_callable=AsyncMock, return_value=client), \
+         patch("app.patients.get_contact_by_phone", new_callable=AsyncMock, return_value={"id": "contact-1"}), \
+         patch("app.patients.get_patients_by_contact", new_callable=AsyncMock, return_value=[{"id": "right-id", "name": "Francisco Domingues Bruno de Faria"}]), \
+         patch("app.patients.get_contacts_for_patient", new_callable=AsyncMock, return_value=[{"phone": "5511900000000"}]), \
+         patch("app.graph.tools.log_event", new_callable=AsyncMock), \
+         patch("app.graph.tools.send_text", new_callable=AsyncMock), \
+         patch("app.google_drive.rename_file", new_callable=AsyncMock), \
+         patch("app.google_sheets.append_payment_receipt", new_callable=AsyncMock) as mock_sheets, \
+         patch("app.graph.tools._notify_clinic", new_callable=AsyncMock):
+        result = await register_payment.coroutine(
+            amount="550,00",
+            drive_link="https://drive.google.com/file/d/abc/view",
+            patient_name_override="Francisco",
+            state=_make_state(),
+            config=CONFIG,
+        )
+
+    assert "✅" in result
+    mock_sheets.assert_awaited_once()
+    assert "Francisco Domingues Bruno de Faria" in mock_sheets.call_args[0][0]
+
+
+async def test_register_payment_override_unlinked_sender_requires_confirmation():
+    """A UNIQUE ilike match is not proof of identity — the sender could type a
+    name that happens to match a different patient's registration. If the
+    sender's phone has no known link (patient_contacts) to the matched patient,
+    register_payment must ask for explicit confirmation instead of silently
+    filing the payment under that patient's name."""
+    from app.graph.tools import register_payment
+    client = _make_supabase_client_for_override([
+        {"id": "some-id", "name": "Maria Eduarda Souza", "doctor_id": "d5baa58b-a788-4f40-b8c0-512c189150be"},
+    ])
+    with patch("app.graph.tools.get_supabase", new_callable=AsyncMock, return_value=client), \
+         patch("app.patients.get_contact_by_phone", new_callable=AsyncMock, return_value=None), \
+         patch("app.graph.tools.log_event", new_callable=AsyncMock), \
+         patch("app.google_sheets.append_payment_receipt", new_callable=AsyncMock) as mock_sheets, \
+         patch("app.graph.tools._notify_clinic", new_callable=AsyncMock):
+        result = await register_payment.coroutine(
+            amount="550,00",
+            drive_link="https://drive.google.com/file/d/abc/view",
+            patient_name_override="Maria Eduarda Souza",
+            state=_make_state(),
+            config=CONFIG,
+        )
+
+    assert "Maria Eduarda Souza" in result
+    mock_sheets.assert_not_awaited()
+
+
+async def test_register_payment_override_unlinked_sender_confirmed_registers():
+    """Once the attendant/Eva has confirmed with the sender that the receipt is
+    really for that patient, passing sender_confirmed_patient=True must bypass
+    the patient_contacts link requirement and register the payment normally."""
+    from app.graph.tools import register_payment
+    client = _make_supabase_client_for_override([
+        {"id": "some-id", "name": "Maria Eduarda Souza", "doctor_id": "d5baa58b-a788-4f40-b8c0-512c189150be"},
+    ])
+    with patch("app.graph.tools.get_supabase", new_callable=AsyncMock, return_value=client), \
+         patch("app.patients.get_contact_by_phone", new_callable=AsyncMock, return_value=None), \
+         patch("app.patients.get_contacts_for_patient", new_callable=AsyncMock, return_value=[{"phone": "5511900000000"}]), \
+         patch("app.graph.tools.log_event", new_callable=AsyncMock), \
+         patch("app.graph.tools.send_text", new_callable=AsyncMock), \
+         patch("app.google_drive.rename_file", new_callable=AsyncMock), \
+         patch("app.google_sheets.append_payment_receipt", new_callable=AsyncMock) as mock_sheets, \
+         patch("app.graph.tools._notify_clinic", new_callable=AsyncMock):
+        result = await register_payment.coroutine(
+            amount="550,00",
+            drive_link="https://drive.google.com/file/d/abc/view",
+            patient_name_override="Maria Eduarda Souza",
+            sender_confirmed_patient=True,
+            state=_make_state(),
+            config=CONFIG,
+        )
+
+    assert "✅" in result
+    mock_sheets.assert_awaited_once()
+    assert "Maria Eduarda Souza" in mock_sheets.call_args[0][0]
+
+
 # ── _parse_brl_amount ──────────────────────────────────────────────────────────
 
 def test_parse_brl_amount_comma_decimal():
@@ -1801,20 +1984,65 @@ async def test_reschedule_appointment_presencial_restriction_on_online_only_slot
 # ── send_pending_payments_reminder filter logic ───────────────────────────────
 
 def test_pending_payments_courtesy_filter():
-    """Courtesy appointments (users.custom_price == 0) must be excluded from consulta_pendente."""
+    """Courtesy appointments (patients.custom_price == 0) must be excluded from consulta_pendente."""
     appts = [
         {"appointment_id": "apt-1", "start_time": "2026-06-01T10:00:00+00:00",
          "doctor_id": "d5baa58b-a788-4f40-b8c0-512c189150be",
          "booking_fee_paid_at": None, "paid_at": None, "consultation_type": None,
-         "users": {"number": "5581999999999", "patient_name": "Ana", "name": "Ana", "custom_price": None}},
+         "patients": {"name": "Ana", "custom_price": None, "patient_contacts": []}},
         {"appointment_id": "apt-2", "start_time": "2026-06-02T10:00:00+00:00",
          "doctor_id": "d5baa58b-a788-4f40-b8c0-512c189150be",
          "booking_fee_paid_at": None, "paid_at": None, "consultation_type": None,
-         "users": {"number": "5581888888888", "patient_name": "Cortesia", "name": "Cortesia", "custom_price": 0}},
+         "patients": {"name": "Cortesia", "custom_price": 0, "patient_contacts": []}},
     ]
     consulta_pendente = [
         appt for appt in appts
-        if (appt.get("users") or {}).get("custom_price") != 0
+        if (appt.get("patients") or {}).get("custom_price") != 0
     ]
     assert len(consulta_pendente) == 1
     assert consulta_pendente[0]["appointment_id"] == "apt-1"
+
+
+def test_pending_payments_patient_and_contact_extraction():
+    """_patient_and_contact must read patient name/phone via patients -> patient_contacts -> contacts,
+    preferring the is_self contact, since appointments.patient_id no longer joins to `users`."""
+    from scripts.send_pending_payments_reminder import _patient_and_contact
+
+    appt_with_guardian = {
+        "patients": {
+            "name": "Miguel",
+            "custom_price": None,
+            "patient_contacts": [
+                {"is_self": False, "contacts": {"phone": "5581999999999", "name": "Mãe do Miguel"}},
+                {"is_self": True, "contacts": {"phone": "5581888888888", "name": "Miguel"}},
+            ],
+        },
+    }
+    patient, contact, phone = _patient_and_contact(appt_with_guardian)
+    assert patient == "Miguel"
+    assert contact == "Miguel"
+    assert phone == "5581888888888"
+
+    appt_no_contacts = {"patients": {"name": "Ana", "custom_price": None, "patient_contacts": []}}
+    patient, contact, phone = _patient_and_contact(appt_no_contacts)
+    assert patient == "Ana"
+    assert contact == "—"
+    assert phone == "—"
+
+
+# ── send_doctor_daily_agenda patient name extraction ──────────────────────────
+
+def test_doctor_daily_agenda_reads_patient_name_from_patients_join():
+    """appt.get("patients") replaces the stale appt.get("users") join post-refactor."""
+    from scripts.send_doctor_daily_agenda import _format_agenda_email
+
+    appts = [{
+        "start_time": "2026-06-01T13:00:00-03:00",
+        "end_time": "2026-06-01T14:00:00-03:00",
+        "modality": "online",
+        "paid_at": None,
+        "patients": {"name": "Miguel"},
+    }]
+    _, body = _format_agenda_email("Dr. Júlio", "01/06/2026", appts)
+    assert "Miguel" in body
+    assert "Paciente" not in body

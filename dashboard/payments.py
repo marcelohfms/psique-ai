@@ -3,8 +3,10 @@
 (token, filtrado por paciente).
 """
 import asyncio
+import io
 import logging
 import os
+import re
 import smtplib
 from datetime import date, datetime, timedelta, timezone
 from email.mime.multipart import MIMEMultipart
@@ -13,6 +15,7 @@ from zoneinfo import ZoneInfo
 
 from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import build
+from googleapiclient.http import MediaIoBaseUpload
 
 logger = logging.getLogger(__name__)
 
@@ -96,6 +99,47 @@ async def _send_clinic_email(subject: str, body: str) -> None:
     await loop.run_in_executor(None, _send)
 
 
+def _set_hyperlink_cell(service, spreadsheet_id: str, updated_range: str, drive_link: str, filename: str) -> None:
+    """Update the comprovante cell (column I) with a clickable hyperlink (text=filename, link=drive_link)."""
+    match = re.search(r"'?([^'!]+)'?!(?:[A-Z]+)(\d+)", updated_range)
+    if not match:
+        logger.warning("_set_hyperlink_cell: could not parse range %r — skipping hyperlink update", updated_range)
+        return
+
+    sheet_name, row_number = match.group(1), int(match.group(2))
+    meta = service.spreadsheets().get(spreadsheetId=spreadsheet_id, fields="sheets(properties)").execute()
+    sheet_id = next(
+        (s["properties"]["sheetId"] for s in meta.get("sheets", [])
+         if s["properties"]["title"] == sheet_name),
+        None,
+    )
+    if sheet_id is None:
+        logger.warning("_set_hyperlink_cell: sheet %r not found", sheet_name)
+        return
+
+    col_index = 8  # Column I = Comprovante
+    service.spreadsheets().batchUpdate(
+        spreadsheetId=spreadsheet_id,
+        body={
+            "requests": [{
+                "updateCells": {
+                    "rows": [{
+                        "values": [{
+                            "userEnteredValue": {"stringValue": filename},
+                            "textFormatRuns": [{
+                                "startIndex": 0,
+                                "format": {"link": {"uri": drive_link.strip()}},
+                            }],
+                        }]
+                    }],
+                    "start": {"sheetId": sheet_id, "rowIndex": row_number - 1, "columnIndex": col_index},
+                    "fields": "userEnteredValue,textFormatRuns",
+                }
+            }]
+        },
+    ).execute()
+
+
 async def _append_payment_sheet(
     patient_name: str,
     phone: str,
@@ -104,6 +148,7 @@ async def _append_payment_sheet(
     amount: str,
     payment_type: str,
     payment_method: str,
+    drive_link: str = "",
 ) -> None:
     spreadsheet_id = os.environ.get("GOOGLE_SHEETS_PAYMENTS_ID")
     if not spreadsheet_id:
@@ -120,17 +165,116 @@ async def _append_payment_sheet(
     now = datetime.now(_TZ).strftime("%d/%m/%Y %H:%M")
     row = [now, patient_name, doctor_name, appointment_dt, amount, phone, payment_type, payment_method, "", ""]
 
-    def _write() -> None:
+    def _append() -> str:
         service = build("sheets", "v4", credentials=creds)
-        service.spreadsheets().values().append(
+        response = service.spreadsheets().values().append(
             spreadsheetId=spreadsheet_id,
             range=_PAYMENTS_SHEET_RANGE,
             valueInputOption="USER_ENTERED",
             body={"values": [row]},
         ).execute()
+        return response.get("updates", {}).get("updatedRange", "")
 
     loop = asyncio.get_running_loop()
-    await loop.run_in_executor(None, _write)
+    updated_range = await loop.run_in_executor(None, _append)
+
+    if drive_link and updated_range:
+        safe_name = patient_name.replace(" ", "_")
+        date_clean = appointment_dt.split(" ")[0].replace("/", "-") if appointment_dt else now.split(" ")[0]
+        filename = f"{safe_name}_{date_clean}_R${amount}"
+        try:
+            service = build("sheets", "v4", credentials=creds)
+            await loop.run_in_executor(
+                None, _set_hyperlink_cell, service, spreadsheet_id, updated_range, drive_link, filename,
+            )
+        except Exception:
+            logger.exception("HYPERLINK_FAILED (row was written) range=%r drive_link=%r", updated_range, drive_link)
+
+
+def _upload_comprovante_sync(filename: str, file_bytes: bytes, mimetype: str) -> str:
+    folder_id = os.environ.get("GOOGLE_DRIVE_PAYMENTS_FOLDER_ID", "")
+    if not folder_id:
+        raise RuntimeError("GOOGLE_DRIVE_PAYMENTS_FOLDER_ID não configurado")
+
+    creds = Credentials(
+        token=None,
+        refresh_token=os.environ["GOOGLE_REFRESH_TOKEN"],
+        token_uri="https://oauth2.googleapis.com/token",
+        client_id=os.environ["GOOGLE_CLIENT_ID"],
+        client_secret=os.environ["GOOGLE_CLIENT_SECRET"],
+        scopes=["https://www.googleapis.com/auth/drive.file"],
+    )
+    service = build("drive", "v3", credentials=creds)
+    media = MediaIoBaseUpload(io.BytesIO(file_bytes), mimetype=mimetype, resumable=False)
+    file = service.files().create(
+        body={"name": filename, "parents": [folder_id]},
+        media_body=media,
+        fields="id,webViewLink",
+    ).execute()
+    file_id = file["id"]
+    try:
+        service.permissions().create(fileId=file_id, body={"role": "reader", "type": "anyone"}).execute()
+    except Exception:
+        logger.warning("DRIVE_SHARE_FAILED (file created but not public) file_id=%s", file_id)
+    return file.get("webViewLink", f"https://drive.google.com/file/d/{file_id}/view")
+
+
+async def upload_comprovante(patient_name: str, appointment_dt: str, amount: str, file_bytes: bytes, mimetype: str) -> str:
+    """Upload a payment receipt (image or PDF) to the payments Drive folder. Returns the shareable link."""
+    date_clean = appointment_dt.split(" ")[0].replace("/", "-") if appointment_dt else datetime.now(_TZ).strftime("%d-%m-%Y")
+    safe_name = patient_name.replace(" ", "_")
+    amount_clean = str(amount).replace(",", "-").replace(".", "-")
+    filename = f"{safe_name}_{date_clean}_R${amount_clean}"
+    loop = asyncio.get_running_loop()
+    return await loop.run_in_executor(None, _upload_comprovante_sync, filename, file_bytes, mimetype)
+
+
+def _phone_variants(phone: str) -> list[str]:
+    """Variantes com e sem o 9 de um celular brasileiro. Espelha attendant_db.py."""
+    digits = phone.replace("@s.whatsapp.net", "").lstrip("+")
+    if len(digits) == 13 and digits.startswith("55"):
+        return [digits, digits[:4] + digits[5:]]
+    if len(digits) == 12 and digits.startswith("55"):
+        return [digits[:4] + "9" + digits[4:], digits]
+    return [digits]
+
+
+# Bot já classifica a imagem via visão (OpenAI) no momento do recebimento — só
+# imagens identificadas como "COMPROVANTE DE PAGAMENTO" chegam com esse prefixo
+# e são enviadas ao Drive de pagamentos (ver app/media.py::describe_image_bytes).
+# Aqui não repetimos a classificação: só filtramos e extraímos o que já foi feito.
+_RECEIPT_PATTERN = re.compile(
+    r"\[imagem\]:\s*(COMPROVANTE DE PAGAMENTO:.*?)\s*\[drive_link:(https?://[^\]]+)\]",
+    re.DOTALL,
+)
+
+
+async def find_receipts(client, phone: str, limit: int = 5) -> list[dict]:
+    """Varre as últimas mensagens do paciente em busca de comprovantes de pagamento
+    já recebidos e enviados ao Drive pelo bot. Retorna os mais recentes primeiro.
+    """
+    out: list[dict] = []
+    for variant in _phone_variants(phone):
+        result = await (
+            client.from_("messages")
+            .select("content, created_at")
+            .eq("phone", variant)
+            .order("created_at", desc=True)
+            .limit(50)
+            .execute()
+        )
+        for row in result.data or []:
+            match = _RECEIPT_PATTERN.search(row.get("content") or "")
+            if match:
+                out.append({
+                    "descricao": match.group(1).strip(),
+                    "drive_link": match.group(2).strip(),
+                    "enviado_em": row.get("created_at"),
+                })
+        if out:
+            break  # achou nessa variante do telefone — não precisa checar a outra
+    out.sort(key=lambda r: r["enviado_em"], reverse=True)
+    return out[:limit]
 
 
 async def compute_pendencias(client, patient_ids: list[str] | None = None) -> list[dict]:
@@ -228,10 +372,12 @@ async def mark_paid(
     medico: str,
     data_hora: str,
     phone: str,
+    drive_link: str = "",
 ) -> None:
     """Grava o pagamento no agendamento e tenta registrar na planilha/e-mail (best-effort).
 
     Assume que `tipo` já foi validado pelo chamador ("taxa" ou "consulta").
+    `drive_link`: link do comprovante já enviado ao Drive (opcional — ver upload_comprovante).
     """
     now = datetime.now(timezone.utc).isoformat()
 
@@ -254,12 +400,14 @@ async def mark_paid(
             amount=amount_str,
             payment_type=payment_type,
             payment_method=forma_pagamento,
+            drive_link=drive_link,
         )
     except Exception:
         logger.exception("SHEETS_APPEND FAILED patient=%s", paciente)
 
     try:
         tipo_label = "Taxa de reserva" if tipo == "taxa" else "Consulta"
+        comprovante_line = f"\nComprovante: {drive_link}" if drive_link else ""
         await _send_clinic_email(
             subject=f"Pagamento registrado — {paciente}",
             body=(
@@ -270,6 +418,7 @@ async def mark_paid(
                 f"Tipo: {tipo_label}\n"
                 f"Valor: R$ {amount_str}\n"
                 f"Forma: {forma_label}"
+                f"{comprovante_line}"
             ),
         )
     except Exception:

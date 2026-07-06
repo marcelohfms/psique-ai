@@ -363,6 +363,10 @@ async def confirm_appointment(
       use transfer_to_human antes de chamar confirm_appointment.
     force_encaixe: quando True, ignora verificações de bloqueio de agenda e conflitos
       de horário — use SOMENTE quando a atendente solicitar um encaixe explicitamente.
+      NÃO usar force_encaixe se o paciente já tem uma consulta futura agendada: "encaixar
+      para outra data/horário" nesse caso significa REMARCAR a consulta existente
+      (mark_reschedule_in_progress + reschedule_appointment), nunca criar uma segunda
+      consulta com confirm_appointment.
     patient_name_override: quando a atendente mencionar um nome de paciente diferente
       do que está no estado da conversa (ex: contato tem múltiplos pacientes),
       passe o nome aqui para garantir que o agendamento seja feito para a pessoa correta.
@@ -437,51 +441,57 @@ async def confirm_appointment(
                     "Avise o paciente com empatia e chame get_available_slots para buscar outro horário disponível."
                 )
 
+    # Guard 0: block if patient already has a future scheduled OR pending_reschedule
+    # appointment (different slot). Forces Eva to use mark_reschedule_in_progress →
+    # reschedule_appointment instead. pending_reschedule must be included here — otherwise
+    # a mid-reschedule appointment (already marked pending_reschedule by
+    # mark_reschedule_in_progress) becomes invisible to this guard, and confirm_appointment
+    # can slip through and INSERT a brand-new appointment row instead of updating the
+    # existing one, losing the already-paid booking fee (caso Tiago Perrelli, 03/07/2026).
+    # Runs even when force_encaixe=True — encaixe only bypasses schedule-window/conflict
+    # checks below, never the "patient already has an appointment" check (caso Gustavo
+    # Lapenda, 06/07/2026: atendente pediu para "encaixar" um novo horário em vez de
+    # remarcar, e o encaixe pulou esse guard, criando dois agendamentos ativos).
+    try:
+        _supabase = await get_supabase()
+        _phone = config["configurable"]["phone"]
+        _phone_clean = _phone.replace("@s.whatsapp.net", "")
+        from datetime import timezone as _tz
+        _now_iso = datetime.now(_tz.utc).isoformat()
+
+        # Resolve patient_ids via contacts → patient_contacts
+        _contact_r = await _supabase.from_("contacts").select("id").eq("phone", _phone_clean).execute()
+        if _contact_r.data:
+            _contact_id = _contact_r.data[0]["id"]
+            _pc_r = await _supabase.from_("patient_contacts").select("patient_id").eq("contact_id", _contact_id).execute()
+            _patient_ids = [row["patient_id"] for row in (_pc_r.data or [])]
+            if _patient_ids:
+                _future_r = await _supabase.from_("appointments").select("appointment_id, start_time").in_("patient_id", _patient_ids).in_("status", ["scheduled", "pending_reschedule"]).gte("start_time", _now_iso).execute()
+                _other_appts = [a for a in (_future_r.data or []) if a["start_time"] != start.isoformat()]
+                if _other_appts:
+                    from zoneinfo import ZoneInfo as _ZI
+                    _TZ = _ZI("America/Recife")
+                    _existing_dates = ", ".join(
+                        datetime.fromisoformat(a["start_time"]).astimezone(_TZ).strftime("%d/%m/%Y às %H:%M")
+                        + f" (ID: {a['appointment_id']})"
+                        for a in _other_appts
+                    )
+                    _logger.warning("confirm_appointment: patient already has scheduled appt(s) — blocking phone=%s", _phone_clean)
+                    return (
+                        f"[INSTRUÇÃO INTERNA — NÃO ENVIE AO PACIENTE] "
+                        f"O paciente já tem consulta(s) agendada(s): {_existing_dates}. "
+                        "NÃO crie um novo agendamento, mesmo que a atendente tenha pedido para "
+                        "'encaixar' um novo horário — isso significa remarcar a consulta existente, "
+                        "não criar uma segunda. OBRIGATÓRIO: chame imediatamente "
+                        "mark_reschedule_in_progress com o appointment_id da consulta existente, "
+                        "depois get_available_slots, depois reschedule_appointment. "
+                        "Nunca retorne erro ao paciente por causa disso."
+                    )
+    except Exception:
+        pass  # Non-fatal — proceed
+
     # Double-check slot is still free before booking — skipped for encaixe
     if not force_encaixe:
-        # Guard 0: block if patient already has a future scheduled OR pending_reschedule
-        # appointment (different slot). Forces Eva to use mark_reschedule_in_progress →
-        # reschedule_appointment instead. pending_reschedule must be included here — otherwise
-        # a mid-reschedule appointment (already marked pending_reschedule by
-        # mark_reschedule_in_progress) becomes invisible to this guard, and confirm_appointment
-        # can slip through and INSERT a brand-new appointment row instead of updating the
-        # existing one, losing the already-paid booking fee (caso Tiago Perrelli, 03/07/2026).
-        try:
-            _supabase = await get_supabase()
-            _phone = config["configurable"]["phone"]
-            _phone_clean = _phone.replace("@s.whatsapp.net", "")
-            from datetime import timezone as _tz
-            _now_iso = datetime.now(_tz.utc).isoformat()
-
-            # Resolve patient_ids via contacts → patient_contacts
-            _contact_r = await _supabase.from_("contacts").select("id").eq("phone", _phone_clean).execute()
-            if _contact_r.data:
-                _contact_id = _contact_r.data[0]["id"]
-                _pc_r = await _supabase.from_("patient_contacts").select("patient_id").eq("contact_id", _contact_id).execute()
-                _patient_ids = [row["patient_id"] for row in (_pc_r.data or [])]
-                if _patient_ids:
-                    _future_r = await _supabase.from_("appointments").select("appointment_id, start_time").in_("patient_id", _patient_ids).in_("status", ["scheduled", "pending_reschedule"]).gte("start_time", _now_iso).execute()
-                    _other_appts = [a for a in (_future_r.data or []) if a["start_time"] != start.isoformat()]
-                    if _other_appts:
-                        from zoneinfo import ZoneInfo as _ZI
-                        _TZ = _ZI("America/Recife")
-                        _existing_dates = ", ".join(
-                            datetime.fromisoformat(a["start_time"]).astimezone(_TZ).strftime("%d/%m/%Y às %H:%M")
-                            + f" (ID: {a['appointment_id']})"
-                            for a in _other_appts
-                        )
-                        _logger.warning("confirm_appointment: patient already has scheduled appt(s) — blocking phone=%s", _phone_clean)
-                        return (
-                            f"[INSTRUÇÃO INTERNA — NÃO ENVIE AO PACIENTE] "
-                            f"O paciente já tem consulta(s) agendada(s): {_existing_dates}. "
-                            "NÃO crie um novo agendamento. OBRIGATÓRIO: chame imediatamente "
-                            "mark_reschedule_in_progress com o appointment_id da consulta existente, "
-                            "depois get_available_slots, depois reschedule_appointment. "
-                            "Nunca retorne erro ao paciente por causa disso."
-                        )
-        except Exception:
-            pass  # Non-fatal — proceed
-
         # Guard 1: check Supabase for an existing scheduled appointment for this patient
         # at the same time — catches race conditions where two messages trigger confirm_appointment
         # simultaneously before either Calendar event is visible.
@@ -1551,6 +1561,7 @@ async def register_payment(
     image_description: str = "",
     is_link: bool = False,
     payment_method: str = "",
+    sender_confirmed_patient: bool = False,
 ) -> str:
     """
     Registra um comprovante de pagamento PIX na planilha.
@@ -1563,6 +1574,12 @@ async def register_payment(
     image_description: texto completo da descrição da imagem.
     patient_name_override: use quando este número não tem agendamento e o remetente informou
       o nome do paciente — busca pelo nome no cadastro e envia confirmação ao número original do paciente.
+      Se o remetente não tiver vínculo cadastrado (patient_contacts) com o paciente encontrado, a tool
+      vai pedir confirmação em vez de registrar — pergunte ao remetente se o comprovante é realmente
+      para esse paciente e, se confirmado, chame novamente com sender_confirmed_patient=True.
+    sender_confirmed_patient: True somente depois que o remetente confirmar explicitamente que o
+      comprovante é para o paciente encontrado via patient_name_override (quando o número dele não é
+      um contato cadastrado desse paciente). Nunca assuma isso sem confirmação explícita.
     """
     import logging as _log
     import re as _re
@@ -1630,9 +1647,46 @@ async def register_payment(
                 "Pode confirmar o nome completo?"
             )
 
-        matched = user_result.data[0]
+        candidates = user_result.data
+
+        from app.patients import get_contact_by_phone as _gcbp, get_patients_by_contact as _gpbc
+        _sender_contact = await _gcbp(phone)
+        _linked_ids = {p["id"] for p in await _gpbc(_sender_contact["id"])} if _sender_contact else set()
+
+        if len(candidates) > 1:
+            # Ambiguous ilike match (e.g. "%Francisco%" matches many unrelated patients).
+            # Prefer an exact case-insensitive full-name match; otherwise prefer the
+            # candidate already linked (via patient_contacts) to the sender's own phone —
+            # never silently pick candidates[0], which can misattribute a payment to a
+            # completely unrelated patient.
+            exact = [c for c in candidates if c.get("name", "").strip().lower() == search_name.lower()]
+            if len(exact) == 1:
+                candidates = exact
+            else:
+                linked = [c for c in candidates if c["id"] in _linked_ids]
+                if len(linked) == 1:
+                    candidates = linked
+            if len(candidates) > 1:
+                names = ", ".join(c.get("name", "Paciente") for c in candidates)
+                return (
+                    f"Encontrei mais de um paciente com nome parecido a '{search_name}': {names}. "
+                    "Para qual deles é este comprovante? Por favor, confirme o nome completo."
+                )
+
+        matched = candidates[0]
         patient_name = matched.get("name", "Paciente")
         user_id = matched["id"]
+
+        # Safeguard: a unique/exact name match is not proof of identity — the sender
+        # could type a name that happens to match a different patient's registration.
+        # Without a known patient_contacts link, require explicit confirmation before
+        # filing the payment under this patient, to avoid silently misattributing it.
+        if user_id not in _linked_ids and not sender_confirmed_patient:
+            return (
+                f"Encontrei o paciente '{patient_name}' pelo nome informado, mas este número "
+                f"não está cadastrado como contato dele. Confirme com quem enviou que o "
+                f"comprovante é realmente para '{patient_name}' antes de eu registrar o pagamento."
+            )
         # Telefone do paciente vem dos contatos (consulta, ou agendamento como fallback).
         from app.patients import get_contacts_for_patient as _gcfp
         _pcontacts = await _gcfp(user_id, "consulta") or await _gcfp(user_id, "agendamento")

@@ -46,8 +46,8 @@ def _format_agenda_email(doctor_label: str, date_str: str, appointments: list) -
         end_dt = datetime.fromisoformat(appt["end_time"]).astimezone(TZ)
         time_str = f"{start_dt.strftime('%H:%M')} – {end_dt.strftime('%H:%M')}"
 
-        user = appt.get("users") or {}
-        patient_name = user.get("patient_name") or user.get("name") or "Paciente"
+        patient = appt.get("patients") or {}
+        patient_name = patient.get("name") or "Paciente"
         modality = MODALITY_LABELS.get(appt.get("modality", ""), appt.get("modality", "—"))
         paid = "✅ Pago" if appt.get("paid_at") else "⏳ Aguardando pagamento"
 
@@ -103,7 +103,7 @@ async def main():
     # Fetch all tomorrow's scheduled appointments with patient info
     result = await (
         client.from_("appointments")
-        .select("appointment_id, start_time, end_time, doctor_id, modality, paid_at, users(patient_name, name)")
+        .select("appointment_id, start_time, end_time, doctor_id, modality, paid_at, patients(name)")
         .eq("status", "scheduled")
         .gte("start_time", time_min.isoformat())
         .lt("start_time", time_max.isoformat())
