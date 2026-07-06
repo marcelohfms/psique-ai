@@ -1453,6 +1453,41 @@ def _expected_consultation_amount(
     return base - 50  # R$50 PIX/cash discount
 
 
+def _parse_brl_amount(raw: str) -> float:
+    """Parse a monetary string that may use Brazilian (1.234,56) or plain/US
+    (1234.56 / 1234) formatting into a float. Returns 0.0 if unparseable.
+
+    A naive "strip dots, comma→dot" parse (Brazilian-only) silently mangles a
+    value like "100.00" into 10000.0 whenever the amount arrives with a dot
+    decimal separator (e.g. the LLM copies it verbatim from an English-formatted
+    receipt), which can wrongly classify a booking fee as a full payment.
+    """
+    cleaned = (raw or "").replace("R$", "").replace(" ", "").strip()
+    if not cleaned:
+        return 0.0
+    has_comma = "," in cleaned
+    has_dot = "." in cleaned
+    try:
+        if has_comma and has_dot:
+            # Whichever separator appears last is the decimal separator.
+            if cleaned.rfind(",") > cleaned.rfind("."):
+                cleaned = cleaned.replace(".", "").replace(",", ".")
+            else:
+                cleaned = cleaned.replace(",", "")
+        elif has_comma:
+            cleaned = cleaned.replace(",", ".")
+        elif has_dot:
+            # A lone dot followed by exactly 2 digits is a decimal separator
+            # (e.g. "100.00"); anything else is treated as a thousands
+            # separator (e.g. "1.200" → 1200), matching Brazilian convention.
+            _, _sep, frac = cleaned.rpartition(".")
+            if len(frac) != 2:
+                cleaned = cleaned.replace(".", "")
+        return float(cleaned)
+    except ValueError:
+        return 0.0
+
+
 @tool
 async def register_payment(
     amount: str,
@@ -1491,7 +1526,13 @@ async def register_payment(
     # Strategy:
     #  1. Strip the [drive_link:...] wrapper if the LLM passed the full tag.
     #  2. If drive_link is still empty, extract from image_description.
-    #  3. If still empty, scan the last few conversation messages.
+    #  3. If still empty, scan recent messages for it — this covers both the
+    #     attendant asking (via private note) to recognize a receipt already in
+    #     the conversation, AND the patient insisting "já enviei, está aqui" after
+    #     the bot missed/ignored an earlier image. Never do this for is_link/
+    #     payment_method payments (dashboard or "PAGAMENTO CONFIRMADO" flows) —
+    #     those intentionally have no receipt image, and grabbing an older
+    #     comprovante's link would misattribute the file to the wrong payment.
     def _extract_url(text: str) -> str:
         """Return first https:// URL found in text, stripped of any trailing delimiters."""
         m = _re.search(r'https?://[^\s\]]+', text)
@@ -1504,8 +1545,9 @@ async def register_payment(
             drive_link = clean
     if not drive_link and image_description:
         drive_link = _extract_url(image_description)
-    if not drive_link:
-        for _msg in reversed(state.get("messages", [])):
+    if not drive_link and not is_link and not payment_method:
+        _RECENT_MSG_WINDOW = 40
+        for _msg in reversed(state.get("messages", [])[-_RECENT_MSG_WINDOW:]):
             _content = getattr(_msg, "content", "") or ""
             if "[drive_link:" in _content:
                 drive_link = _extract_url(_content)
@@ -1829,6 +1871,10 @@ async def register_payment(
                     appt_id_to_pay = canceled_result.data[0]["appointment_id"]
 
     # ── Rename Drive file ──────────────────────────────────────────────────────
+    # new_filename is passed WITHOUT an extension — rename_file preserves whatever
+    # extension the file was actually uploaded with (jpg or pdf), instead of the
+    # previous hardcoded ".jpg" that mislabeled every PDF receipt.
+    _drive_rename_failed = False
     if drive_link:
         try:
             from app.google_drive import rename_file
@@ -1837,25 +1883,40 @@ async def register_payment(
                          _re.search(r'[?&]id=([^?&#\s]+)', drive_link)
             if not _fid_match:
                 raise ValueError(f"Cannot extract file_id from drive_link: {drive_link!r}")
-            file_id      = _fid_match.group(1)
-            amount_clean = amount.replace("R$", "").replace(" ", "").strip()
+            file_id = _fid_match.group(1)
+            # Keep only digits/separators from amount ("100,00", "R$ 100,00", "?" →
+            # all normalized), then use "-" instead of ","/"." so the value can't
+            # collide with filename/extension parsing. Falls back to a placeholder
+            # when the amount wasn't identified, instead of emitting a broken
+            # trailing "_R$.jpg"/"_R$?.jpg".
+            _amount_digits = _re.sub(r"[^\d,.]", "", amount or "")
+            amount_clean = _amount_digits.replace(",", "-").replace(".", "-") if _amount_digits else "valor-nao-identificado"
             date_clean   = (
                 appointment_dt.split(" ")[0].replace("/", "-")
                 if appointment_dt != "—"
                 else datetime.now(TZ).strftime("%d-%m-%Y")
             )
             safe_name    = patient_name.replace(" ", "_")
-            new_filename = f"{safe_name}_{date_clean}_R${amount_clean}.jpg"
+            new_filename = f"{safe_name}_{date_clean}_R${amount_clean}"
             await rename_file(file_id, new_filename)
             _logger.info("DRIVE_RENAME OK file_id=%s new_name=%s", file_id, new_filename)
         except Exception:
             _logger.exception("DRIVE_RENAME FAILED drive_link=%r", drive_link)
+            _drive_rename_failed = True
+    # The webViewLink is keyed by file ID, not filename, so the link the clinic
+    # receives below still opens the right file even if the rename below failed —
+    # only the friendly filename in Drive is affected. Still worth flagging: the
+    # patient-name lookup used for the file's *initial* upload name is based on the
+    # message sender's phone (see app/media.py::_get_patient_name), which can differ
+    # from the actual patient once register_payment resolves it here — if the
+    # rename that fixes that up silently fails, nobody would otherwise notice.
+    _rename_warning = (
+        "\n⚠️ O arquivo no Drive não pôde ser renomeado automaticamente — "
+        "confira se o nome do arquivo corresponde a este paciente/pagamento."
+    ) if _drive_rename_failed else ""
 
     # ── Classify payment and update DB fields ─────────────────────────────────
-    try:
-        amount_float = float(amount.replace("R$", "").replace(".", "").replace(",", ".").strip())
-    except (ValueError, AttributeError):
-        amount_float = 0.0
+    amount_float = _parse_brl_amount(amount)
 
     now_dt = datetime.now(TZ)
     _age = state.get("patient_age") or 99
@@ -1929,7 +1990,8 @@ async def register_payment(
             _logger.exception("SHEETS_APPEND FAILED patient=%s", patient_name)
         await _notify_clinic(
             f"💰 Comprovante recebido!\nPaciente: {patient_name}\nValor: R$ {amount}"
-            f"\nTipo: Consulta (cortesia)\nConsulta: {appointment_dt}\nLink: {drive_link}",
+            f"\nTipo: Consulta (cortesia)\nConsulta: {appointment_dt}\nLink: {drive_link}"
+            f"{_rename_warning}",
             subject=f"Comprovante recebido — {patient_name}",
         )
         await log_event("payment_receipt_registered", phone, {
@@ -1998,7 +2060,8 @@ async def register_payment(
         _logger.exception("SHEETS_APPEND FAILED patient=%s", patient_name)
 
     await _notify_clinic(
-        f"💰 Comprovante recebido!\nPaciente: {patient_name}\nValor: R$ {amount}\nTipo: {payment_type}\nConsulta: {appointment_dt}\nLink: {drive_link}",
+        f"💰 Comprovante recebido!\nPaciente: {patient_name}\nValor: R$ {amount}\nTipo: {payment_type}\nConsulta: {appointment_dt}\nLink: {drive_link}"
+        f"{_rename_warning}",
         subject=f"Comprovante recebido — {patient_name}",
     )
 

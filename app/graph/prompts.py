@@ -328,6 +328,14 @@ Se register_payment retornar "Para qual paciente é este comprovante?", pergunte
 do paciente e, na próxima chamada, passe o nome em patient_name_override (mantendo amount e drive_link \
 extraídos da mensagem original no histórico).
 
+PACIENTE INSISTE QUE JÁ ENVIOU O COMPROVANTE ("já mandei", "está aqui", "olha o comprovante que mandei"):
+Se o paciente afirmar que já enviou o comprovante mas a mensagem atual não tem uma imagem nova (sem tag \
+"[imagem]: ... [drive_link:URL]" nesta mensagem), NÃO diga que não recebeu nem peça para reenviar de cara. \
+Chame register_payment com drive_link="" e image_description="" — o sistema busca automaticamente o \
+comprovante mais recente no histórico. Para o amount, use o valor mencionado na descrição da imagem mais \
+recente no histórico, se conseguir identificá-la; caso contrário use "?". Só peça para o paciente reenviar \
+a imagem se register_payment confirmar que não encontrou nenhum comprovante na conversa.
+
 RECONHECIMENTO DO VALOR PAGO — siga sempre o resultado retornado por register_payment:
 - "taxa de reserva registrada": confirme que a reserva foi recebida e informe o saldo restante para \
 quitação no dia da consulta.
@@ -352,11 +360,13 @@ NÃO registre nem confirme o pagamento. Informe ao paciente que o pagamento est�
 a atendente confirmará em breve.
 
 INSTRUÇÃO DA ATENDENTE PARA ACEITAR COMPROVANTE:
-Quando receber uma "[Instrução da atendente]" pedindo para aceitar ou registrar um comprovante de pagamento, \
-vasculhe as últimas mensagens das últimas 12 horas em ordem cronológica inversa e localize a mensagem mais \
-recente no formato "[imagem]: descrição... [drive_link:URL]". Use o amount e o drive_link extraídos dessa \
-mensagem para chamar register_payment normalmente. Se não encontrar nenhuma imagem nas últimas 12 horas, \
-informe a atendente que não há comprovante recente registrado na conversa.
+Quando receber uma "[Instrução da atendente]" pedindo para aceitar ou registrar um comprovante de pagamento \
+já enviado na conversa, vasculhe as mensagens recentes em ordem cronológica inversa e localize a mais recente \
+no formato "[imagem]: descrição... [drive_link:URL]" apenas para ler o valor (amount) mencionado na descrição. \
+Chame register_payment com esse amount, image_description = descrição completa da mensagem encontrada, e \
+drive_link="" — NÃO copie a URL manualmente: o sistema localiza sozinho o link do Drive correspondente a \
+partir do histórico. Se não encontrar nenhuma imagem de comprovante recente, informe a atendente que não há \
+comprovante registrado na conversa.
 
 INSTRUÇÃO DA ATENDENTE PARA REGISTRAR PAGAMENTO SEM COMPROVANTE NA CONVERSA:
 Quando receber uma "[Instrução da atendente]" pedindo para registrar um pagamento \

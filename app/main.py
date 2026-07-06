@@ -729,7 +729,7 @@ def _extract_chatwoot_message(payload: dict) -> tuple[str, str | None, int] | No
     return phone, content, conversation_id
 
 
-async def _process_chatwoot_attachments(attachments: list) -> str | None:
+async def _process_chatwoot_attachments(attachments: list, phone: str = "") -> str | None:
     """Download and process the first recognisable attachment (audio or image)."""
     import httpx
     from app.media import transcribe_audio_bytes, describe_image_bytes, describe_pdf_bytes
@@ -747,11 +747,11 @@ async def _process_chatwoot_attachments(attachments: list) -> str | None:
             if file_type == "audio":
                 return "[audio-nao-suportado]"
             if file_type == "image":
-                return await describe_image_bytes(media_bytes)
+                return await describe_image_bytes(media_bytes, phone=phone)
             if file_type == "file":
                 content_type = (att.get("content_type") or "").lower()
                 if "pdf" in content_type or data_url.lower().endswith(".pdf"):
-                    return await describe_pdf_bytes(media_bytes)
+                    return await describe_pdf_bytes(media_bytes, phone=phone)
                 return "[pdf-recebido]"
         except Exception:
             logger.exception("Failed to process Chatwoot attachment type=%s url=%.80s", file_type, data_url)
@@ -1148,13 +1148,27 @@ async def _handle_chatwoot_payload(payload: dict) -> None:
             await _reset_conversation(phone)
             return
 
-        if text is None:
-            text = await _process_chatwoot_attachments(payload.get("attachments", []))
-            if not text:
-                return
-            if text == "[audio-nao-suportado]":
+        attachments = payload.get("attachments", [])
+        if attachments:
+            # Process attachments whenever present — even if the message also has a
+            # caption (text). Previously this only ran when text was None, so a
+            # comprovante/document sent WITH a caption had its attachment silently
+            # dropped and only the caption text reached Eva.
+            caption = text
+            attachment_text = await _process_chatwoot_attachments(attachments, phone=phone)
+            if attachment_text == "[audio-nao-suportado]":
                 await send_text(phone, "Não consigo processar áudios. Por favor, envie sua mensagem em texto. 😊")
                 return
+            if attachment_text:
+                text = f"{caption}\n{attachment_text}" if caption else attachment_text
+            else:
+                # Attachment processing failed, or was already fully handled elsewhere
+                # (medical document: thank-you + clinic notification sent directly, or
+                # an irrelevant image) — fall back to the caption so it isn't lost,
+                # mirroring the Meta webhook's image-handling behavior.
+                text = caption
+        if text is None:
+            return
 
         logger.info("Chatwoot message from %s (conv=%s): %.80s", phone, conversation_id, text)
 

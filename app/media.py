@@ -41,14 +41,14 @@ def _safe_name(name: str) -> str:
 
 
 async def _get_patient_name(phone: str) -> str:
-    """Look up patient name from DB for use in filenames. Returns 'paciente' on failure."""
+    """Look up patient's full name from DB for use in filenames. Returns 'paciente' on failure."""
     try:
         from app.database import get_user_by_phone
         user = await get_user_by_phone(phone)
         if user:
             name = user.get("patient_name") or user.get("name") or ""
             if name:
-                return _safe_name(name.split()[0])
+                return _safe_name(" ".join(name.split()))
     except Exception:
         pass
     return "paciente"

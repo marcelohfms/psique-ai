@@ -58,11 +58,23 @@ def _upload_and_share(service, folder_id: str, filename: str, image_bytes: bytes
 
 
 def _rename_file(service, file_id: str, new_name: str) -> None:
-    service.files().update(fileId=file_id, body={"name": new_name}).execute()
+    """Rename a Drive file, preserving its current extension.
+
+    new_name is passed WITHOUT an extension — callers (e.g. register_payment)
+    don't reliably know whether the underlying upload was a jpg or a pdf, so we
+    read the file's existing name from Drive and reuse its extension instead of
+    guessing/hardcoding one.
+    """
+    meta = service.files().get(fileId=file_id, fields="name").execute()
+    current_name = meta.get("name", "")
+    _, dot, ext = current_name.rpartition(".")
+    final_name = f"{new_name}.{ext}" if dot else new_name
+    service.files().update(fileId=file_id, body={"name": final_name}).execute()
 
 
 async def rename_file(file_id: str, new_name: str) -> None:
-    """Rename an existing Drive file."""
+    """Rename an existing Drive file. new_name should have no extension — the
+    file's current extension is preserved automatically (see _rename_file)."""
     creds = _credentials()
     service = build("drive", "v3", credentials=creds)
     loop = asyncio.get_running_loop()

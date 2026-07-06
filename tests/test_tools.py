@@ -5,6 +5,8 @@ from datetime import datetime, timedelta
 from unittest.mock import AsyncMock, MagicMock, patch
 from zoneinfo import ZoneInfo
 
+from langchain_core.messages import HumanMessage
+
 from tests.conftest import PHONE, CONFIG
 
 TZ = ZoneInfo("America/Recife")
@@ -861,7 +863,7 @@ async def test_register_payment_rename_failure_still_succeeds():
     with patch("app.graph.tools.get_supabase", new_callable=AsyncMock, return_value=client), \
          patch("app.graph.tools.get_users_by_phone", new_callable=AsyncMock, return_value=[{"id": "user-123", "patient_name": "Maria"}]), \
          patch("app.graph.tools.log_event", new_callable=AsyncMock), \
-         patch("app.graph.tools._notify_clinic", new_callable=AsyncMock), \
+         patch("app.graph.tools._notify_clinic", new_callable=AsyncMock) as mock_notify, \
          patch("app.google_drive.rename_file", new_callable=AsyncMock, side_effect=Exception("Drive unavailable")), \
          patch("app.google_sheets.append_payment_receipt", new_callable=AsyncMock), \
          patch("app.graph.tools.send_text", new_callable=AsyncMock):
@@ -872,6 +874,181 @@ async def test_register_payment_rename_failure_still_succeeds():
             config=CONFIG,
         )
     assert "✅" in result
+    # A failed rename must not go unnoticed — the clinic notification should flag
+    # that the Drive filename may not match this patient/payment.
+    notify_msg = mock_notify.call_args[0][0]
+    assert "não pôde ser renomeado" in notify_msg
+
+
+async def test_register_payment_rename_uses_no_extension_and_sanitizes_amount():
+    """The filename passed to rename_file must have no extension (rename_file now
+    preserves whatever extension the file was actually uploaded with) and the
+    amount portion must use hyphens instead of commas/dots."""
+    from app.graph.tools import register_payment
+    client, _, _ = _make_supabase_client_with_appointment()
+    with patch("app.graph.tools.get_supabase", new_callable=AsyncMock, return_value=client), \
+         patch("app.graph.tools.get_users_by_phone", new_callable=AsyncMock, return_value=[{"id": "user-123", "patient_name": "Maria"}]), \
+         patch("app.graph.tools.log_event", new_callable=AsyncMock), \
+         patch("app.graph.tools._notify_clinic", new_callable=AsyncMock), \
+         patch("app.google_drive.rename_file", new_callable=AsyncMock) as mock_rename, \
+         patch("app.google_sheets.append_payment_receipt", new_callable=AsyncMock), \
+         patch("app.graph.tools.send_text", new_callable=AsyncMock):
+        await register_payment.coroutine(
+            amount="R$ 100,00",
+            drive_link="https://drive.google.com/file/d/abc/view",
+            state=_make_state(),
+            config=CONFIG,
+        )
+    new_filename = mock_rename.call_args[0][1]
+    assert "." not in new_filename
+    assert "," not in new_filename
+    assert "100-00" in new_filename
+
+
+async def test_register_payment_rename_unknown_amount_uses_placeholder():
+    """amount='?' (not identified) must not produce a broken filename like
+    '..._R$.pdf' or '..._R$?.pdf' — falls back to a readable placeholder."""
+    from app.graph.tools import register_payment
+    client, _, _ = _make_supabase_client_with_appointment()
+    with patch("app.graph.tools.get_supabase", new_callable=AsyncMock, return_value=client), \
+         patch("app.graph.tools.get_users_by_phone", new_callable=AsyncMock, return_value=[{"id": "user-123", "patient_name": "Maria"}]), \
+         patch("app.graph.tools.log_event", new_callable=AsyncMock), \
+         patch("app.graph.tools._notify_clinic", new_callable=AsyncMock), \
+         patch("app.google_drive.rename_file", new_callable=AsyncMock) as mock_rename, \
+         patch("app.google_sheets.append_payment_receipt", new_callable=AsyncMock), \
+         patch("app.graph.tools.send_text", new_callable=AsyncMock):
+        await register_payment.coroutine(
+            amount="?",
+            drive_link="https://drive.google.com/file/d/abc/view",
+            state=_make_state(),
+            config=CONFIG,
+        )
+    new_filename = mock_rename.call_args[0][1]
+    assert "valor-nao-identificado" in new_filename
+    assert "?" not in new_filename
+
+
+# ── _parse_brl_amount ──────────────────────────────────────────────────────────
+
+def test_parse_brl_amount_comma_decimal():
+    from app.graph.tools import _parse_brl_amount
+    assert _parse_brl_amount("100,00") == 100.0
+
+
+def test_parse_brl_amount_dot_decimal():
+    """A plain/US-style dot decimal ('100.00') must NOT be mangled into 10000.0
+    by treating the dot as a thousands separator."""
+    from app.graph.tools import _parse_brl_amount
+    assert _parse_brl_amount("100.00") == 100.0
+
+
+def test_parse_brl_amount_thousands_with_comma_decimal():
+    from app.graph.tools import _parse_brl_amount
+    assert _parse_brl_amount("1.200,00") == 1200.0
+
+
+def test_parse_brl_amount_with_currency_prefix_and_spaces():
+    from app.graph.tools import _parse_brl_amount
+    assert _parse_brl_amount("R$ 650,00") == 650.0
+
+
+def test_parse_brl_amount_unidentified_returns_zero():
+    from app.graph.tools import _parse_brl_amount
+    assert _parse_brl_amount("?") == 0.0
+    assert _parse_brl_amount("") == 0.0
+
+
+async def test_register_payment_silent_mode_recovers_drive_link_from_history():
+    """Attendant note (silent_mode=True) asking to register an existing receipt:
+    drive_link="" should be recovered by scanning recent conversation messages."""
+    from app.graph.tools import register_payment
+    client, _, _ = _make_supabase_client_with_appointment()
+    state = _make_state(
+        silent_mode=True,
+        messages=[
+            HumanMessage(content="[imagem]: COMPROVANTE DE PAGAMENTO: R$ 100,00 [drive_link:https://drive.google.com/file/d/xyz789/view]"),
+            HumanMessage(content="[Instrução da atendente]: pode registrar o comprovante acima"),
+        ],
+    )
+    with patch("app.graph.tools.get_supabase", new_callable=AsyncMock, return_value=client), \
+         patch("app.graph.tools.get_users_by_phone", new_callable=AsyncMock, return_value=[{"id": "user-123", "patient_name": "Maria"}]), \
+         patch("app.graph.tools.log_event", new_callable=AsyncMock), \
+         patch("app.graph.tools._notify_clinic", new_callable=AsyncMock), \
+         patch("app.google_drive.rename_file", new_callable=AsyncMock) as mock_rename, \
+         patch("app.google_sheets.append_payment_receipt", new_callable=AsyncMock) as mock_sheets, \
+         patch("app.graph.tools.send_text", new_callable=AsyncMock):
+        await register_payment.coroutine(
+            amount="100,00",
+            drive_link="",
+            state=state,
+            config=CONFIG,
+        )
+    mock_rename.assert_awaited_once()
+    assert mock_rename.call_args[0][0] == "xyz789"
+    sheets_kwargs = mock_sheets.call_args
+    assert "https://drive.google.com/file/d/xyz789/view" in sheets_kwargs[0][5]  # drive_link
+
+
+async def test_register_payment_patient_insists_already_sent_recovers_from_history():
+    """Patient claims 'já enviei, está aqui!' on a later turn with no new image
+    attached — drive_link is empty and there's no silent_mode/attendant note involved.
+    The bot previously missed/ignored the image; register_payment must still recover
+    the receipt link by scanning recent conversation history (not just attendant-note
+    triggered calls), otherwise it wrongly tells the patient nothing was received."""
+    from app.graph.tools import register_payment
+    client, _, _ = _make_supabase_client_with_appointment()
+    state = _make_state(
+        messages=[
+            HumanMessage(content="[imagem]: COMPROVANTE DE PAGAMENTO: R$ 100,00 [drive_link:https://drive.google.com/file/d/abc123/view]"),
+            HumanMessage(content="eu enviei sim, está aqui!"),
+        ],
+    )
+    with patch("app.graph.tools.get_supabase", new_callable=AsyncMock, return_value=client), \
+         patch("app.graph.tools.get_users_by_phone", new_callable=AsyncMock, return_value=[{"id": "user-123", "patient_name": "Maria"}]), \
+         patch("app.graph.tools.log_event", new_callable=AsyncMock), \
+         patch("app.graph.tools._notify_clinic", new_callable=AsyncMock), \
+         patch("app.google_drive.rename_file", new_callable=AsyncMock) as mock_rename, \
+         patch("app.google_sheets.append_payment_receipt", new_callable=AsyncMock) as mock_sheets, \
+         patch("app.graph.tools.send_text", new_callable=AsyncMock):
+        await register_payment.coroutine(
+            amount="100,00",
+            drive_link="",
+            state=state,
+            config=CONFIG,
+        )
+    mock_rename.assert_awaited_once()
+    assert mock_rename.call_args[0][0] == "abc123"
+    sheets_kwargs = mock_sheets.call_args
+    assert "https://drive.google.com/file/d/abc123/view" in sheets_kwargs[0][5]
+
+
+async def test_register_payment_is_link_skips_history_scan_even_in_silent_mode():
+    """is_link=True payments (attendant-confirmed via 'PAGAMENTO CONFIRMADO') intentionally
+    have no receipt image — even in silent_mode, drive_link must stay empty rather than
+    being backfilled from an unrelated older comprovante in the conversation."""
+    from app.graph.tools import register_payment
+    client, _, _ = _make_supabase_client_with_appointment()
+    state = _make_state(
+        silent_mode=True,
+        messages=[
+            HumanMessage(content="[imagem]: COMPROVANTE DE PAGAMENTO: R$ 100,00 [drive_link:https://drive.google.com/file/d/old222/view]"),
+        ],
+    )
+    with patch("app.graph.tools.get_supabase", new_callable=AsyncMock, return_value=client), \
+         patch("app.graph.tools.get_users_by_phone", new_callable=AsyncMock, return_value=[{"id": "user-123", "patient_name": "Maria"}]), \
+         patch("app.graph.tools.log_event", new_callable=AsyncMock), \
+         patch("app.graph.tools._notify_clinic", new_callable=AsyncMock), \
+         patch("app.google_drive.rename_file", new_callable=AsyncMock) as mock_rename, \
+         patch("app.google_sheets.append_payment_receipt", new_callable=AsyncMock), \
+         patch("app.graph.tools.send_text", new_callable=AsyncMock):
+        await register_payment.coroutine(
+            amount="600,00",
+            drive_link="",
+            is_link=True,
+            state=state,
+            config=CONFIG,
+        )
+    mock_rename.assert_not_awaited()
 
 
 async def test_transfer_to_human_unassigns_chatwoot_bot(mock_send_text):

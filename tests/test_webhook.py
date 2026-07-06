@@ -340,6 +340,113 @@ async def test_chatwoot_webhook_processes_audio_attachment(async_client):
         mock_push.assert_called_once()
 
 
+async def test_chatwoot_webhook_processes_attachment_with_caption(async_client):
+    """Regression guard: a comprovante/document sent WITH a caption (e.g. 'segue o
+    comprovante') must still have its attachment processed — not just the caption
+    text. Previously the attachment was only processed when the message had no
+    caption at all, silently dropping the image/PDF whenever text was present."""
+    payload = _chatwoot_payload(content="segue o comprovante")
+    payload["attachments"] = [
+        {"file_type": "image", "data_url": "https://storage.example.com/img.jpg"}
+    ]
+    with patch("app.main.buffer_push") as mock_push, \
+         patch("app.main.save_message") as mock_save, \
+         patch("app.main._process_chatwoot_attachments", new_callable=AsyncMock,
+               return_value="[imagem]: COMPROVANTE DE PAGAMENTO: R$ 100,00 [drive_link:https://drive.google.com/file/d/x/view]") as mock_att:
+        mock_push.return_value = None
+        mock_save.return_value = None
+        response = await async_client.post("/chatwoot-webhook", json=payload)
+        assert response.status_code == 200
+        await asyncio.sleep(0.05)
+        mock_att.assert_called_once()
+        mock_push.assert_called_once()
+        pushed_text = mock_push.call_args[0][1]
+        assert "segue o comprovante" in pushed_text
+        assert "[drive_link:" in pushed_text
+
+
+async def test_chatwoot_webhook_document_with_caption_falls_back_to_caption(async_client):
+    """When the attachment is a medical document already fully handled (thank-you
+    sent, clinic notified — describe_image_bytes returns None), the caption sent
+    alongside it should still reach Eva instead of being silently discarded."""
+    payload = _chatwoot_payload(content="segue meu exame, pode encaminhar?")
+    payload["attachments"] = [
+        {"file_type": "image", "data_url": "https://storage.example.com/exame.jpg"}
+    ]
+    with patch("app.main.buffer_push") as mock_push, \
+         patch("app.main.save_message") as mock_save, \
+         patch("app.main._process_chatwoot_attachments", new_callable=AsyncMock, return_value=None) as mock_att:
+        mock_push.return_value = None
+        mock_save.return_value = None
+        response = await async_client.post("/chatwoot-webhook", json=payload)
+        assert response.status_code == 200
+        await asyncio.sleep(0.05)
+        mock_att.assert_called_once()
+        mock_push.assert_called_once()
+        pushed_text = mock_push.call_args[0][1]
+        assert pushed_text == "segue meu exame, pode encaminhar?"
+
+
+async def test_process_chatwoot_attachments_forwards_phone_for_image():
+    """Image attachments must carry the patient's phone into describe_image_bytes —
+    otherwise a comprovante gets filed under a generic 'paciente' name and, worse, a
+    medical document's thank-you/clinic-notify block (which requires phone) silently
+    does nothing."""
+    from app.main import _process_chatwoot_attachments
+    attachments = [{"file_type": "image", "data_url": "https://storage.example.com/img.jpg"}]
+
+    with patch("httpx.AsyncClient") as mock_client_cls, \
+         patch("app.media.describe_image_bytes", new_callable=AsyncMock, return_value="[imagem]: ok") as mock_describe:
+        mock_resp = AsyncMock()
+        mock_resp.raise_for_status = lambda: None
+        mock_resp.content = b"fake-image-bytes"
+        mock_client = mock_client_cls.return_value.__aenter__.return_value
+        mock_client.get = AsyncMock(return_value=mock_resp)
+
+        result = await _process_chatwoot_attachments(attachments, phone="5511999999999@s.whatsapp.net")
+
+    assert result == "[imagem]: ok"
+    mock_describe.assert_awaited_once_with(b"fake-image-bytes", phone="5511999999999@s.whatsapp.net")
+
+
+async def test_process_chatwoot_attachments_forwards_phone_for_pdf():
+    """PDF attachments must also carry phone into describe_pdf_bytes (same reasoning
+    as the image case: medical-document handling depends on phone being present)."""
+    from app.main import _process_chatwoot_attachments
+    attachments = [{"file_type": "file", "content_type": "application/pdf",
+                     "data_url": "https://storage.example.com/doc.pdf"}]
+
+    with patch("httpx.AsyncClient") as mock_client_cls, \
+         patch("app.media.describe_pdf_bytes", new_callable=AsyncMock, return_value="[imagem]: ok") as mock_describe:
+        mock_resp = AsyncMock()
+        mock_resp.raise_for_status = lambda: None
+        mock_resp.content = b"fake-pdf-bytes"
+        mock_client = mock_client_cls.return_value.__aenter__.return_value
+        mock_client.get = AsyncMock(return_value=mock_resp)
+
+        result = await _process_chatwoot_attachments(attachments, phone="5511999999999@s.whatsapp.net")
+
+    assert result == "[imagem]: ok"
+    mock_describe.assert_awaited_once_with(b"fake-pdf-bytes", phone="5511999999999@s.whatsapp.net")
+
+
+async def test_chatwoot_webhook_passes_phone_to_attachment_processing(async_client):
+    """The webhook handler must pass the extracted phone through to
+    _process_chatwoot_attachments (regression guard for the missing-phone bug)."""
+    payload = _chatwoot_payload(content="", phone="+5511999999999")
+    payload["attachments"] = [{"file_type": "audio", "data_url": "https://storage.example.com/audio.ogg"}]
+    with patch("app.main.buffer_push") as mock_push, \
+         patch("app.main.save_message") as mock_save, \
+         patch("app.main._process_chatwoot_attachments", new_callable=AsyncMock, return_value="[áudio transcrito]: consulta amanhã") as mock_att:
+        mock_push.return_value = None
+        mock_save.return_value = None
+        response = await async_client.post("/chatwoot-webhook", json=payload)
+        assert response.status_code == 200
+        await asyncio.sleep(0.05)
+        _, kwargs = mock_att.call_args
+        assert kwargs.get("phone")
+
+
 async def test_chatwoot_webhook_ignores_empty_attachment(async_client):
     payload = _chatwoot_payload(content="")
     payload["attachments"] = [{"file_type": "audio", "data_url": ""}]
