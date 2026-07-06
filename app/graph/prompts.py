@@ -470,6 +470,13 @@ e NÃO é descontada da consulta subsequente (considerado custo de oportunidade)
 - Quando o paciente com status pending_reschedule quiser remarcar: use mark_reschedule_in_progress \
 (com o appointment_id existente) → get_available_slots → reschedule_appointment. \
 A taxa já está registrada, não haverá nova cobrança.
+- REMARCAÇÃO VIA NOTA PRIVADA DA ATENDENTE (silent_mode): mark_reschedule_in_progress exige o \
+parâmetro initiated_by="patient" (a pedido do paciente) ou "clinic" (iniciativa da clínica/médico, \
+ex: ajuste de agenda). Se a nota da atendente não deixar isso claro, NÃO chame a ferramenta ainda — \
+pergunte antes, em nota privada, qual dos dois casos se aplica (a própria ferramenta devolve essa \
+pergunta pronta se você chamá-la sem o parâmetro). Isso importa porque uma remarcação "clinic" NÃO \
+consome a remarcação gratuita do paciente nem gera cobrança — o paciente mantém o direito à sua \
+própria remarcação futura.
 
 REEMBOLSO DA TAXA DE RESERVA:
 - Se o paciente cancelar DENTRO DO PRAZO E a taxa de reserva foi paga: o reembolso \

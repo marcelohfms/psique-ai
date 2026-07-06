@@ -439,8 +439,13 @@ async def confirm_appointment(
 
     # Double-check slot is still free before booking — skipped for encaixe
     if not force_encaixe:
-        # Guard 0: block if patient already has a future scheduled appointment (different slot).
-        # Forces Eva to use mark_reschedule_in_progress → reschedule_appointment instead.
+        # Guard 0: block if patient already has a future scheduled OR pending_reschedule
+        # appointment (different slot). Forces Eva to use mark_reschedule_in_progress →
+        # reschedule_appointment instead. pending_reschedule must be included here — otherwise
+        # a mid-reschedule appointment (already marked pending_reschedule by
+        # mark_reschedule_in_progress) becomes invisible to this guard, and confirm_appointment
+        # can slip through and INSERT a brand-new appointment row instead of updating the
+        # existing one, losing the already-paid booking fee (caso Tiago Perrelli, 03/07/2026).
         try:
             _supabase = await get_supabase()
             _phone = config["configurable"]["phone"]
@@ -455,7 +460,7 @@ async def confirm_appointment(
                 _pc_r = await _supabase.from_("patient_contacts").select("patient_id").eq("contact_id", _contact_id).execute()
                 _patient_ids = [row["patient_id"] for row in (_pc_r.data or [])]
                 if _patient_ids:
-                    _future_r = await _supabase.from_("appointments").select("appointment_id, start_time").in_("patient_id", _patient_ids).eq("status", "scheduled").gte("start_time", _now_iso).execute()
+                    _future_r = await _supabase.from_("appointments").select("appointment_id, start_time").in_("patient_id", _patient_ids).in_("status", ["scheduled", "pending_reschedule"]).gte("start_time", _now_iso).execute()
                     _other_appts = [a for a in (_future_r.data or []) if a["start_time"] != start.isoformat()]
                     if _other_appts:
                         from zoneinfo import ZoneInfo as _ZI
@@ -766,11 +771,19 @@ async def mark_reschedule_in_progress(
     appointment_id: str,
     state: Annotated[dict, InjectedState],
     config: RunnableConfig,
+    initiated_by: Literal["patient", "clinic"] | None = None,
 ) -> str:
     """Marca que um reagendamento está em andamento para esta consulta.
     Chame ANTES de get_available_slots quando o paciente pedir para remarcar uma consulta existente.
     Isso registra o timestamp de início para que o sistema possa liberar o slot automaticamente
     caso o paciente não confirme o novo horário em 1 hora.
+
+    initiated_by: só relevante quando a instrução vem de nota privada da atendente (silent_mode).
+      Use "patient" se a nota deixar claro que é a pedido do paciente (ex: paciente ligou pedindo
+      para remarcar); use "clinic" se for por iniciativa da clínica/médico (ex: médico precisou
+      ajustar a agenda). Se a nota da atendente não deixar isso claro, NÃO chame esta ferramenta
+      ainda — pergunte antes, em nota privada, qual dos dois casos se aplica. Fora do silent_mode
+      (paciente conversando diretamente), não informe este parâmetro.
     """
     client = await get_supabase()
     phone = config["configurable"]["phone"]
@@ -788,6 +801,24 @@ async def mark_reschedule_in_progress(
 
     if appt.data.get("status") not in ("scheduled", "pending_reschedule"):
         return "Esta consulta não está em status que permita reagendamento."
+
+    # Quando a instrução vem de nota privada da atendente, é preciso saber se a
+    # remarcação é a pedido do paciente ou por iniciativa da clínica/médico —
+    # isso decide se ela conta como a remarcação gratuita do paciente. Sem essa
+    # informação, pergunte antes de prosseguir em vez de assumir um lado.
+    if state.get("silent_mode"):
+        if initiated_by is None:
+            return (
+                "[INSTRUÇÃO INTERNA — NÃO ENVIE AO PACIENTE] Antes de prosseguir, pergunte à "
+                "atendente, em nota privada, se esta remarcação é \"a pedido do paciente\" ou "
+                "\"pela clínica/médico\", e chame mark_reschedule_in_progress novamente informando "
+                "initiated_by. Explique que: \"a pedido do paciente\" conta como a remarcação do "
+                "paciente (pode gerar cobrança de nova taxa se ele já tiver remarcado antes); "
+                "\"pela clínica\" não conta como remarcação do paciente e não gera cobrança."
+            )
+        effective_initiated_by = initiated_by
+    else:
+        effective_initiated_by = "patient"
 
     # Regra das 24h precede a regra do primeiro reagendamento: mesmo sendo a
     # primeira remarcação do paciente, se já passou o prazo (19h do dia anterior,
@@ -815,8 +846,12 @@ async def mark_reschedule_in_progress(
     # Reagendamentos iniciados pela atendente/médico (silent_mode) são isentos.
     if not state.get("silent_mode"):
         phone_clean = phone.replace("@s.whatsapp.net", "")
+        # Reagendamentos marcados como iniciativa da clínica (reschedule_initiated_by
+        # = "clinic") não contam aqui — eventos antigos sem essa marcação são
+        # tratados como remarcação do paciente (era o único fluxo antes desta mudança).
         count_res = await client.from_("events").select("id", count="exact") \
-            .eq("phone", phone_clean).eq("event_type", "appointment_rescheduled").execute()
+            .eq("phone", phone_clean).eq("event_type", "appointment_rescheduled") \
+            .or_("metadata->>initiated_by.is.null,metadata->>initiated_by.eq.patient").execute()
         patient_reschedule_count = count_res.count or 0
         if patient_reschedule_count >= 1:
             return (
@@ -841,6 +876,7 @@ async def mark_reschedule_in_progress(
     await client.from_("appointments").update({
         "reschedule_requested_at": now.isoformat(),
         "status": "pending_reschedule",
+        "reschedule_initiated_by": effective_initiated_by,
     }).eq("appointment_id", appointment_id).execute()
 
     await log_event("reschedule_requested", phone, {"appointment_id": appointment_id})
@@ -980,6 +1016,10 @@ async def reschedule_appointment(
       quando a nova data/horário já for definitiva (seja porque o paciente escolheu no chat,
       seja porque a atendente definiu via instrução/nota privada). Este parâmetro é reservado
       para scripts administrativos internos, nunca para uso pela Eva.
+    Se a data/hora da consulta NÃO for mudar e o paciente só quiser trocar entre
+      online e presencial, use change_modality em vez desta ferramenta — reschedule_appointment
+      conta como o reagendamento gratuito do paciente (política de 1 remarcação), então usá-la
+      só para trocar a modalidade consome esse benefício indevidamente.
     """
     from app.google_calendar import update_event
 
@@ -1022,7 +1062,7 @@ async def reschedule_appointment(
     # not the actual patient — e.g. when the phone has multiple patients like parent + child).
     client = await get_supabase()
     phone = config["configurable"]["phone"]
-    appt_result = await client.from_("appointments").select("start_time, patient_id, patients(name)").eq("appointment_id", appointment_id).maybe_single().execute()
+    appt_result = await client.from_("appointments").select("start_time, patient_id, patients(name), reschedule_initiated_by").eq("appointment_id", appointment_id).maybe_single().execute()
 
     # Validate that this appointment actually belongs to this phone number
     _phone_clean = phone.replace("@s.whatsapp.net", "")
@@ -1139,17 +1179,30 @@ async def reschedule_appointment(
 
     _weekday_new = _WEEKDAY_LABELS_PT.get(new_start.weekday(), "")
     formatted_new = f"{_weekday_new}, {new_start.strftime('%d/%m/%Y às %H:%M')}" if _weekday_new else new_start.strftime("%d/%m/%Y às %H:%M")
-    await log_event("appointment_rescheduled", phone, {
-        "appointment_id": appointment_id,
-        "new_datetime": new_slot_datetime,
-        "initiated_by": "attendant" if state.get("silent_mode") else "patient",
-    })
 
     if old_start_time:
         old_dt = datetime.fromisoformat(old_start_time).astimezone(TZ)
         formatted_old = old_dt.strftime("%d/%m/%Y às %H:%M")
     else:
+        old_dt = None
         formatted_old = "horário não disponível"
+
+    # Se a data/hora não mudou, isto é uma troca de modalidade (ex: chamada por
+    # engano em vez de change_modality) — não conta como o reagendamento gratuito
+    # do paciente, senão consome a política de "1 remarcação" sem o paciente ter
+    # de fato remarcado nada.
+    if old_dt is not None and old_dt == new_start:
+        await log_event("modality_changed", phone, {
+            "appointment_id": appointment_id,
+            "new_modality": effective_modality,
+        })
+    else:
+        await log_event("appointment_rescheduled", phone, {
+            "appointment_id": appointment_id,
+            "new_datetime": new_slot_datetime,
+            "initiated_by": (appt_result.data or {}).get("reschedule_initiated_by")
+                or ("clinic" if state.get("silent_mode") else "patient"),
+        })
 
     await _notify_clinic(
         f"Agendamento alterado! 🔄\n"
@@ -2112,7 +2165,7 @@ async def save_patient_email(
     Deve ser chamado ANTES de confirm_appointment quando patient_email não estiver registrado.
     """
     phone = config["configurable"]["phone"]
-    await upsert_user(phone, {"email": email})
+    await upsert_user(phone, {"email": email}, user_id=state.get("user_db_id"))
     await log_event("patient_email_saved", phone, {"email": email})
     return f"E-mail {email} registrado com sucesso. Agora pode prosseguir com o agendamento."
 
