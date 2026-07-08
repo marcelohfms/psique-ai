@@ -17,7 +17,7 @@ from app.graph.tools import (
     consultar_data, extend_payment_deadline,
     _expected_consultation_amount,
 )
-from app.graph.prompts import COLLECT_SYSTEM, MINOR_RULE, MINOR_RETURNING_RULE, ADULT_RULE, GUARDIAN_RULE, EXISTING_PATIENT_SYSTEM, NEW_PATIENT_SYSTEM, CANCELLATION_RULES, CLINIC_ADDRESS, DOCTORS_INFO, get_booking_fee_rule, MEDICAL_LIMITS_RULE, DOCTOR_CORRECTION_RULE, EMAIL_RULE, get_pricing_rules, ATTENDANT_INSTRUCTION_RULE, get_pricing_exception_rule, CORRECT_PIX_KEY
+from app.graph.prompts import COLLECT_SYSTEM, MINOR_RULE, MINOR_RETURNING_RULE, ADULT_RULE, GUARDIAN_RULE, EXISTING_PATIENT_SYSTEM, NEW_PATIENT_SYSTEM, CANCELLATION_RULES, CLINIC_ADDRESS, CLINIC_ADDRESS_TEXT, DOCTORS_INFO, get_booking_fee_rule, MEDICAL_LIMITS_RULE, DOCTOR_CORRECTION_RULE, EMAIL_RULE, get_pricing_rules, ATTENDANT_INSTRUCTION_RULE, get_pricing_exception_rule, CORRECT_PIX_KEY
 from app.whatsapp import send_text
 from app.database import upsert_user, log_event, get_upcoming_appointments, get_user_by_phone, get_users_by_phone, DOCTOR_IDS, DOCTOR_NAMES, save_message, get_last_assistant_message_time, is_registration_complete
 from app.chatwoot import get_conversation_id, add_private_note
@@ -1649,6 +1649,26 @@ async def patient_agent_node(state: ConversationState, config: RunnableConfig) -
                 "messages": [_AIMsg2(content=_summary)],
                 "pending_appointment": _pending_from_args,
             }
+
+    # ── Guard: block hallucinated clinic address ────────────────────────────
+    # A Eva já alucinou um endereço do Rio de Janeiro numa conversa real, mesmo
+    # com o endereço correto (Recife) presente no system prompt. Se a resposta
+    # final menciona "endereço" e cita um termo de uma cidade/local incorretos,
+    # descarta a resposta da LLM e substitui pelo endereço correto. Roda antes
+    # do GUARD_TRANSFER abaixo, para que ele veja o conteúdo já corrigido.
+    _WRONG_ADDRESS_TERMS = (
+        "rio de janeiro", "tijuca", "conde de bonfim",
+        "duas unidades", "duas localizações", "duas localizacoes",
+    )
+    if not response.tool_calls and response.content:
+        _addr_lower = response.content.lower()
+        _mentions_address = "endereço" in _addr_lower or "endereco" in _addr_lower
+        if _mentions_address and any(term in _addr_lower for term in _WRONG_ADDRESS_TERMS):
+            _logger.warning(
+                "GUARD_WRONG_ADDRESS: blocked wrong address phone=%s original=%s",
+                state["phone"], response.content,
+            )
+            response = AIMessage(content=f"O endereço da clínica é:\n{CLINIC_ADDRESS_TEXT}")
 
     # ── Guard: catch promised-but-not-called transfer_to_human ──────────────
     # If the LLM said "vou transferir" in its text but produced no tool calls,
