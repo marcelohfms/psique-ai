@@ -1873,3 +1873,13 @@ async def test_collect_info_rejects_non_name_patient_name():
     assert result.get("patient_name") is None
     sent = mock_send.call_args[0][1].lower()
     assert "nome" in sent
+
+
+# ── Guard: wrong clinic address ──────────────────────────────────────────────
+
+def test_clinic_address_text_is_embedded_in_clinic_address_prompt():
+    """CLINIC_ADDRESS_TEXT é a fonte única do endereço — CLINIC_ADDRESS (prompt)
+    deve conter exatamente esse texto, para nunca divergir do que o guard usa."""
+    from app.graph.prompts import CLINIC_ADDRESS, CLINIC_ADDRESS_TEXT
+    assert CLINIC_ADDRESS_TEXT in CLINIC_ADDRESS
+    assert "Recife-PE" in CLINIC_ADDRESS_TEXT
