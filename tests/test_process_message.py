@@ -1612,7 +1612,7 @@ async def test_patient_agent_prompt_has_reference_block_and_appointment_labels()
 
     system_prompt = captured["messages"][0].content
     assert "CALENDÁRIO DE REFERÊNCIA" in system_prompt
-    assert "Consultas agendadas para este paciente:" in system_prompt
+    assert "Consultas agendadas (por paciente):" in system_prompt
     # The appointment line carries the pre-computed relative + weekday label.
     assert "(amanhã," in system_prompt
 

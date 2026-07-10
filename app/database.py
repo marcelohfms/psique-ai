@@ -325,22 +325,28 @@ async def get_upcoming_appointments(phone: str) -> list[dict]:
       (complete_appointments script hasn't run yet) — flagged with 'recently_ended'
     """
     client = await get_supabase()
-    user = await get_user_by_phone(phone)
-    if not user:
+    # Consider ALL patients linked to this contact — a contact may manage several
+    # patients (e.g. Daniela books for Daniela, Flávia e Silvia). Using a single
+    # arbitrary patient (get_user_by_phone) made appointments of the other patients
+    # invisible to Eva (caso Silvia/Daniela, 10/07/2026).
+    users = await get_users_by_phone(phone)
+    if not users:
         return []
+    patient_ids = [u["id"] for u in users]
+    name_by_id = {u["id"]: (u.get("patient_name") or u.get("name") or "") for u in users}
     from datetime import datetime, timezone, timedelta
     now = datetime.now(timezone.utc)
     now_iso = now.isoformat()
     cutoff_recent = (now - timedelta(hours=48)).isoformat()
 
-    _appt_fields = "appointment_id, start_time, end_time, status, reschedule_requested_at, booking_fee_paid_at, booking_fee_waived"
+    _appt_fields = "appointment_id, patient_id, start_time, end_time, status, reschedule_requested_at, booking_fee_paid_at, booking_fee_waived"
 
     # Future + ongoing (end_time has not yet passed)
     future_result = (
         await client.from_("appointments")
         .select(_appt_fields)
         .in_("status", ["scheduled", "pending_reschedule"])
-        .eq("patient_id", user["id"])
+        .in_("patient_id", patient_ids)
         .gte("end_time", now_iso)
         .order("start_time")
         .execute()
@@ -351,16 +357,18 @@ async def get_upcoming_appointments(phone: str) -> list[dict]:
         await client.from_("appointments")
         .select(_appt_fields)
         .in_("status", ["scheduled", "pending_reschedule"])
-        .eq("patient_id", user["id"])
+        .in_("patient_id", patient_ids)
         .lt("end_time", now_iso)
         .gte("end_time", cutoff_recent)
         .order("start_time")
         .execute()
     )
 
-    # Tag recently-ended rows so the caller can present them differently
-    recent = [dict(r, recently_ended=True) for r in (recent_result.data or [])]
-    return (future_result.data or []) + recent
+    # Attach patient_name to each row so the caller can attribute the appointment
+    # to the correct patient when the contact manages more than one.
+    future = [dict(r, patient_name=name_by_id.get(r.get("patient_id"), "")) for r in (future_result.data or [])]
+    recent = [dict(r, recently_ended=True, patient_name=name_by_id.get(r.get("patient_id"), "")) for r in (recent_result.data or [])]
+    return future + recent
 
 
 # ── Message persistence ───────────────────────────────────────────────────────

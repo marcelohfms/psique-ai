@@ -1452,13 +1452,17 @@ async def patient_agent_node(state: ConversationState, config: RunnableConfig) -
             fee_ok = apt.get("booking_fee_paid_at") or apt.get("booking_fee_waived")
             fee_tag = "" if fee_ok else " ⚠️ TAXA DE RESERVA PENDENTE"
             _suffix = date_suffix_pt(dt.date(), _now_recife.date())
-            label = f"- {dt.strftime('%d/%m/%Y às %H:%M')} ({_suffix}) (ID: {apt['appointment_id']}){fee_tag}"
+            # Prefix with the patient name — the contact may manage several patients,
+            # so the LLM must not assume the appointment belongs to the active one.
+            _pname = (apt.get("patient_name") or "").strip()
+            _who = f"{_pname} — " if _pname else ""
+            label = f"- {_who}{dt.strftime('%d/%m/%Y às %H:%M')} ({_suffix}) (ID: {apt['appointment_id']}){fee_tag}"
             if apt.get("recently_ended"):
                 recent_lines.append(label)
             else:
                 future_lines.append(label)
         if future_lines:
-            system_prompt += "\n\nConsultas agendadas para este paciente:\n" + "\n".join(future_lines)
+            system_prompt += "\n\nConsultas agendadas (por paciente):\n" + "\n".join(future_lines)
         if recent_lines:
             system_prompt += "\n\nConsulta(s) recém-realizada(s) (nas últimas 48h):\n" + "\n".join(recent_lines)
 

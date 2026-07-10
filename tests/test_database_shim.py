@@ -341,10 +341,41 @@ async def test_get_upcoming_appointments_filters_by_patient_id():
     client = MagicMock()
     client.from_.return_value = table
     with patch("app.database.get_supabase", new_callable=AsyncMock, return_value=client), \
-         patch("app.database.get_user_by_phone", new_callable=AsyncMock,
-               return_value={"id": "p-99"}):
+         patch("app.database.get_users_by_phone", new_callable=AsyncMock,
+               return_value=[{"id": "p-99", "patient_name": "Fulano"}]):
         await database.get_upcoming_appointments("5583999999999")
-    # o filtro foi por patient_id == id do paciente
-    table.eq.assert_any_call("patient_id", "p-99")
+    # o filtro foi por patient_id, via in_ (cobre múltiplos pacientes do contato)
+    table.in_.assert_any_call("patient_id", ["p-99"])
     # nunca filtrou por user_id
     assert all(c.args[0] != "user_id" for c in table.eq.call_args_list)
+
+
+async def test_get_upcoming_appointments_covers_all_contact_patients():
+    """Contato com vários pacientes: deve trazer consultas de TODOS, com patient_name
+    anexado em cada linha (bug Silvia/Daniela — get_user_by_phone pegava paciente
+    arbitrário e a Eva ficava cega para a consulta do outro paciente)."""
+    users = [
+        {"id": "p-silvia", "patient_name": "Silvia De Souza Passos"},
+        {"id": "p-daniela", "patient_name": "Daniela De Souza Passos"},
+    ]
+    future_rows = [{
+        "appointment_id": "a1",
+        "start_time": "2026-07-20T20:00:00+00:00",
+        "end_time": "2026-07-20T21:00:00+00:00",
+        "status": "scheduled",
+        "patient_id": "p-silvia",
+    }]
+    table = MagicMock()
+    for m in ("select", "eq", "in_", "order", "gte", "lt"):
+        getattr(table, m).return_value = table
+    # 1ª execução = query de futuros; 2ª = recém-terminados
+    table.execute = AsyncMock(side_effect=[MagicMock(data=future_rows), MagicMock(data=[])])
+    client = MagicMock()
+    client.from_.return_value = table
+    with patch("app.database.get_supabase", new_callable=AsyncMock, return_value=client), \
+         patch("app.database.get_users_by_phone", new_callable=AsyncMock, return_value=users):
+        result = await database.get_upcoming_appointments("5581981179458")
+    # consultou por TODOS os patient_ids do contato
+    table.in_.assert_any_call("patient_id", ["p-silvia", "p-daniela"])
+    # anexou o nome do paciente correto na consulta retornada
+    assert result and result[0]["patient_name"] == "Silvia De Souza Passos"
