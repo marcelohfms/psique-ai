@@ -1209,6 +1209,36 @@ async def test_patient_agent_injects_greeting_on_new_day():
     assert "Carlos" in system_msg.content
 
 
+async def test_patient_agent_age_exception_injects_clause_for_over_65_julio():
+    """Paciente >65 marcado como age_exception=True com Dr. Júlio: o system prompt
+    deve conter a cláusula de exceção de idade, para que a Eva NÃO redirecione o
+    paciente para a Dra. Bruna por conta do limite de 65 anos (caso Silvia Passos)."""
+    state = _make_patient_agent_state(
+        patient_name="Silvia De Souza Passos",
+        patient_age=67,
+        birth_date="09/03/1959",
+        preferred_doctor="julio",
+        is_returning_patient=True,
+        age_exception=True,
+    )
+    system_msg = await _run_patient_agent(state, last_assistant_time=None)
+    assert system_msg is not None
+    assert "EXCEÇÃO DE IDADE AUTORIZADA" in system_msg.content
+
+
+async def test_patient_agent_no_age_exception_clause_when_flag_absent():
+    """Sem age_exception, a cláusula de exceção NÃO deve aparecer — o limite normal
+    de idade dos médicos continua valendo."""
+    state = _make_patient_agent_state(
+        patient_age=67,
+        preferred_doctor="julio",
+        is_returning_patient=True,
+    )
+    system_msg = await _run_patient_agent(state, last_assistant_time=None)
+    assert system_msg is not None
+    assert "EXCEÇÃO DE IDADE AUTORIZADA" not in system_msg.content
+
+
 async def test_patient_agent_no_greeting_injection_on_same_day():
     """Prior AI messages exist and last assistant message was today → no greeting injected."""
     from datetime import datetime, timezone
@@ -1873,3 +1903,103 @@ async def test_collect_info_rejects_non_name_patient_name():
     assert result.get("patient_name") is None
     sent = mock_send.call_args[0][1].lower()
     assert "nome" in sent
+
+
+# ── Guard: wrong clinic address ──────────────────────────────────────────────
+
+def test_clinic_address_text_is_embedded_in_clinic_address_prompt():
+    """CLINIC_ADDRESS_TEXT é a fonte única do endereço — CLINIC_ADDRESS (prompt)
+    deve conter exatamente esse texto, para nunca divergir do que o guard usa."""
+    from app.graph.prompts import CLINIC_ADDRESS, CLINIC_ADDRESS_TEXT
+    assert CLINIC_ADDRESS_TEXT in CLINIC_ADDRESS
+    assert "Recife-PE" in CLINIC_ADDRESS_TEXT
+
+
+async def _run_patient_agent_with_response(state: dict, content: str, tool_calls=None):
+    """Helper: roda patient_agent_node com uma resposta fixa da LLM e retorna
+    (texto enviado ao paciente via send_text, dict de retorno do node)."""
+    from app.graph.nodes import patient_agent_node
+
+    ai_response = MagicMock()
+    ai_response.tool_calls = tool_calls or []
+    ai_response.content = content
+
+    async def fake_ainvoke(messages):
+        return ai_response
+
+    sent = []
+
+    async def fake_send_text(phone, text):
+        sent.append(text)
+
+    with patch("app.graph.nodes._get_agent_llm") as mock_llm_fn, \
+         patch("app.graph.nodes.send_text", side_effect=fake_send_text), \
+         patch("app.graph.nodes.save_message", new_callable=AsyncMock), \
+         patch("app.graph.nodes.get_upcoming_appointments", new_callable=AsyncMock, return_value=[]), \
+         patch("app.graph.nodes.get_user_by_phone", new_callable=AsyncMock, return_value={"price_adjustment_notified_at": "2026-01-01"}), \
+         patch("app.graph.nodes.get_last_assistant_message_time", new_callable=AsyncMock, return_value=None), \
+         patch("app.google_calendar.format_doctor_schedules", return_value="seg-sex"):
+        mock_llm = MagicMock()
+        mock_llm.ainvoke = fake_ainvoke
+        mock_llm_fn.return_value = mock_llm
+        result = await patient_agent_node(state, CONFIG)
+
+    sent_text = sent[0] if sent else None
+    return sent_text, result
+
+
+async def test_guard_blocks_hallucinated_rio_de_janeiro_address():
+    """Regressão: conversa real 5581988054825 (08/07/2026) — a Eva respondeu com um
+    endereço do Rio de Janeiro (Tijuca) mesmo com o endereço correto (Recife) no
+    prompt. O guard deve substituir a resposta inteira pelo endereço correto."""
+    from app.graph.prompts import CLINIC_ADDRESS_TEXT
+
+    state = _make_patient_agent_state(
+        messages=[HumanMessage(content="Me manda o endereço da clínica")],
+    )
+    sent_text, result = await _run_patient_agent_with_response(
+        state,
+        "O endereço da clínica é: Rua Conde de Bonfim, 344, sala 605 — Tijuca, Rio de Janeiro.",
+    )
+
+    assert sent_text is not None, "nenhuma mensagem enviada ao paciente"
+    assert "Rio de Janeiro" not in sent_text
+    assert "Tijuca" not in sent_text
+    assert CLINIC_ADDRESS_TEXT in sent_text
+    assert result["messages"][0].content == sent_text
+
+
+async def test_guard_blocks_invented_two_units_address():
+    """Regressão: na mesma conversa, a Eva chegou a inventar que a clínica tem
+    'duas unidades' (Rio de Janeiro e Recife). Deve ser bloqueado também."""
+    state = _make_patient_agent_state(
+        messages=[HumanMessage(content="Então qual o endereço certo?")],
+    )
+    sent_text, _ = await _run_patient_agent_with_response(
+        state,
+        "A Clínica Psique possui duas unidades: uma no Rio de Janeiro (Tijuca) e outra em Recife. "
+        "Posso te passar o endereço certinho da unidade correta.",
+    )
+    assert "duas unidades" not in sent_text.lower()
+
+
+async def test_guard_does_not_touch_correct_address():
+    """O endereço correto (Recife) mencionado pela LLM não deve ser alterado pelo guard."""
+    state = _make_patient_agent_state(
+        messages=[HumanMessage(content="Qual o endereço?")],
+    )
+    original = "O endereço da clínica é: RioMar Trade Center, Av. República do Líbano, 251 — Recife-PE."
+    sent_text, _ = await _run_patient_agent_with_response(state, original)
+    assert sent_text == original
+
+
+async def test_guard_ignores_rio_de_janeiro_mention_unrelated_to_address():
+    """Falso positivo: se a LLM menciona 'Rio de Janeiro' sem estar falando do
+    endereço da clínica (ex.: comentando a cidade do paciente), o guard não deve
+    disparar — falta a palavra-gatilho 'endereço'."""
+    state = _make_patient_agent_state(
+        messages=[HumanMessage(content="Sou do Rio de Janeiro, atendem online?")],
+    )
+    original = "Sim! Vi que você é do Rio de Janeiro — atendemos online normalmente, sem problema."
+    sent_text, _ = await _run_patient_agent_with_response(state, original)
+    assert sent_text == original
