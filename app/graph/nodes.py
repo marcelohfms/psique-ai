@@ -17,7 +17,7 @@ from app.graph.tools import (
     consultar_data, extend_payment_deadline,
     _expected_consultation_amount,
 )
-from app.graph.prompts import COLLECT_SYSTEM, MINOR_RULE, MINOR_RETURNING_RULE, ADULT_RULE, GUARDIAN_RULE, EXISTING_PATIENT_SYSTEM, NEW_PATIENT_SYSTEM, CANCELLATION_RULES, CLINIC_ADDRESS, CLINIC_ADDRESS_TEXT, DOCTORS_INFO, get_booking_fee_rule, MEDICAL_LIMITS_RULE, DOCTOR_CORRECTION_RULE, EMAIL_RULE, get_pricing_rules, ATTENDANT_INSTRUCTION_RULE, get_pricing_exception_rule, CORRECT_PIX_KEY
+from app.graph.prompts import COLLECT_SYSTEM, MINOR_RULE, MINOR_RETURNING_RULE, ADULT_RULE, GUARDIAN_RULE, EXISTING_PATIENT_SYSTEM, NEW_PATIENT_SYSTEM, CANCELLATION_RULES, CLINIC_ADDRESS, CLINIC_ADDRESS_TEXT, DOCTORS_INFO, get_booking_fee_rule, MEDICAL_LIMITS_RULE, AGE_EXCEPTION_RULE, DOCTOR_CORRECTION_RULE, EMAIL_RULE, get_pricing_rules, ATTENDANT_INSTRUCTION_RULE, get_pricing_exception_rule, CORRECT_PIX_KEY
 from app.whatsapp import send_text
 from app.database import upsert_user, log_event, get_upcoming_appointments, get_user_by_phone, get_users_by_phone, DOCTOR_IDS, DOCTOR_NAMES, save_message, get_last_assistant_message_time, is_registration_complete
 from app.chatwoot import get_conversation_id, add_private_note
@@ -1354,6 +1354,7 @@ async def patient_agent_node(state: ConversationState, config: RunnableConfig) -
         clinic_address=CLINIC_ADDRESS,
         doctors_info=DOCTORS_INFO,
         medical_limits_rule=MEDICAL_LIMITS_RULE,
+        age_exception_rule=AGE_EXCEPTION_RULE if state.get("age_exception") else "",
         attendant_instruction_rule=ATTENDANT_INSTRUCTION_RULE,
         modality_restriction=state.get("modality_restriction") or "",
         pix_key=CORRECT_PIX_KEY,

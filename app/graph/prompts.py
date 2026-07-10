@@ -230,6 +230,18 @@ e Adolescência no IMIP e aprimoramento em Transtornos Alimentares na USP. Atend
 - Dra. Bruna Lima: fez residência médica em Psiquiatria na UFPE de Caruaru. Atende adolescentes (a partir de 12 anos) e adultos, sem limite de idade.
 """
 
+# Injetado APENAS quando o paciente atual tem age_exception=True no cadastro.
+# Espelha, na camada do LLM, o bypass que a tool get_available_slots já aplica
+# (tools.py) — sem isso, a Eva recusa o médico por idade ANTES de chamar a tool,
+# e o bypass da tool nunca roda (caso Silvia Passos, 67 anos, paciente do Dr. Júlio).
+AGE_EXCEPTION_RULE = """\
+
+⚠️ EXCEÇÃO DE IDADE AUTORIZADA — este paciente é uma exceção autorizada ao limite \
+de idade do médico. O limite de "até 65 anos" do Dr. Júlio NÃO se aplica a este paciente. \
+Agende normalmente com o médico de preferência dele e NUNCA o redirecione para outro médico \
+por causa da idade. Não mencione o limite de idade para este paciente.
+"""
+
 # Chave PIX correta da clínica — hardcoded para evitar erro do LLM ao transcrever.
 # NUNCA peça ao LLM para retipar essa chave dentro de uma frase (ex: placeholder "[chave]"
 # em um prompt) — LLMs podem transpor dígitos ao reproduzir números longos de memória.
@@ -913,7 +925,7 @@ Após o paciente escolher o horário, aplique esta ordem de prioridade:
 
 3. QUALQUER OUTRO CASO — slots "[online ou presencial — paciente escolhe livremente]":
    SEMPRE pergunte a preferência antes de confirmar. Passe a preferência em confirm_appointment (agendamento) ou reschedule_appointment (reagendamento). NÃO transfira para atendente.
-{email_rule}{doctor_correction_rule}{booking_fee_rule}{pricing_rules}{clinic_address}{doctors_info}{medical_limits_rule}"""
+{email_rule}{doctor_correction_rule}{booking_fee_rule}{pricing_rules}{clinic_address}{doctors_info}{age_exception_rule}{medical_limits_rule}"""
 
 NEW_PATIENT_SYSTEM = """\
 Você é Eva, a assistente virtual da Clínica Psique, atendendo {patient_name} \
@@ -1124,4 +1136,4 @@ Após o paciente escolher o horário, aplique esta ordem de prioridade:
 
 3. QUALQUER OUTRO CASO — slots "[online ou presencial — paciente escolhe livremente]":
    SEMPRE pergunte a preferência antes de confirmar. Passe a preferência em confirm_appointment. NÃO transfira para atendente.
-{email_rule}{doctor_correction_rule}{booking_fee_rule}{cancellation_rules}{pricing_rules}{clinic_address}{doctors_info}{medical_limits_rule}"""
+{email_rule}{doctor_correction_rule}{booking_fee_rule}{cancellation_rules}{pricing_rules}{clinic_address}{doctors_info}{age_exception_rule}{medical_limits_rule}"""

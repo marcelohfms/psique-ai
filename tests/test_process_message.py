@@ -1209,6 +1209,36 @@ async def test_patient_agent_injects_greeting_on_new_day():
     assert "Carlos" in system_msg.content
 
 
+async def test_patient_agent_age_exception_injects_clause_for_over_65_julio():
+    """Paciente >65 marcado como age_exception=True com Dr. Júlio: o system prompt
+    deve conter a cláusula de exceção de idade, para que a Eva NÃO redirecione o
+    paciente para a Dra. Bruna por conta do limite de 65 anos (caso Silvia Passos)."""
+    state = _make_patient_agent_state(
+        patient_name="Silvia De Souza Passos",
+        patient_age=67,
+        birth_date="09/03/1959",
+        preferred_doctor="julio",
+        is_returning_patient=True,
+        age_exception=True,
+    )
+    system_msg = await _run_patient_agent(state, last_assistant_time=None)
+    assert system_msg is not None
+    assert "EXCEÇÃO DE IDADE AUTORIZADA" in system_msg.content
+
+
+async def test_patient_agent_no_age_exception_clause_when_flag_absent():
+    """Sem age_exception, a cláusula de exceção NÃO deve aparecer — o limite normal
+    de idade dos médicos continua valendo."""
+    state = _make_patient_agent_state(
+        patient_age=67,
+        preferred_doctor="julio",
+        is_returning_patient=True,
+    )
+    system_msg = await _run_patient_agent(state, last_assistant_time=None)
+    assert system_msg is not None
+    assert "EXCEÇÃO DE IDADE AUTORIZADA" not in system_msg.content
+
+
 async def test_patient_agent_no_greeting_injection_on_same_day():
     """Prior AI messages exist and last assistant message was today → no greeting injected."""
     from datetime import datetime, timezone
