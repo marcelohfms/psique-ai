@@ -56,6 +56,17 @@ preenchidas (`now()`) no mesmo momento, deixando claro que não há lembrete
 pendente. O cron também pula explicitamente linhas `15_dias` como camada
 redundante de segurança.
 
+### Caso especial: `1_mes` pula "um mês antes"
+
+Para `1_mes`, `next_return_date` é sempre exatamente "mês da consulta + 1" —
+ou seja, a condição de `retorno_um_mes_antes` (mês atual == mês-alvo − 1) já
+fica verdadeira no dia seguinte à própria classificação, disparando um
+lembrete "um mês antes" que na prática sai colado na consulta que acabou de
+acontecer (sem sentido temporal, mesmo problema do `15_dias`). Por isso,
+`1_mes` também tem `month_before_sent_at` já gravado (`now()`) no momento da
+classificação — só dispara `retorno_no_mes` e, se ainda não agendou,
+`retorno_atrasado` (no máximo 2 lembretes).
+
 ## Dashboard (`/retornos`)
 
 Nova página em `dashboard/`, HTTP Basic auth (mesmo padrão de
@@ -81,8 +92,9 @@ anteriormente, se houver) + botão "Salvar".
 Ao salvar (`POST /api/retornos/{patient_id}`, mesmo padrão de auth dos outros
 endpoints do dashboard): upsert em `return_reminders` com
 `next_return_date = data_da_consulta + intervalo`, atualiza
-`last_classified_appointment_id`, zera as 3 flags de envio (ou já marca as 3
-como enviadas, se `15_dias`).
+`last_classified_appointment_id`, e zera as flags de envio — exceto nos casos
+especiais: `15_dias` já marca as 3 como enviadas; `1_mes` já marca
+`month_before_sent_at` como enviada (ver seção "Cron de envio" abaixo).
 
 ## Cron de envio (`scripts/send_return_reminders.py`)
 
@@ -93,8 +105,9 @@ que qualquer envio que não coube no lote do dia 1 (por causa do throttling)
 seja retomado automaticamente nos dias seguintes, já que a flag só é marcada
 em caso de sucesso — sem precisar de lógica extra de retry.
 
-Para cada linha de `return_reminders` (exceto `15_dias`, já marcadas como
-enviadas):
+Para cada linha de `return_reminders` (`15_dias` sempre pulada — as 3 flags já
+vêm marcadas; `1_mes` só concorre a `retorno_no_mes`/`retorno_atrasado`, já
+que `month_before_sent_at` também vem pré-marcado nesse caso):
 
 1. **Pula** se o paciente já tem consulta futura agendada **com o mesmo
    médico** (`return_reminders.doctor_id`) — evita insistir com quem já
@@ -142,10 +155,13 @@ mesmo pré-requisito dos templates existentes. Serão documentados em
 ## Testes
 
 - `tests/test_return_reminders.py`: cálculo de `next_return_date` por
-  intervalo, seleção do template certo por mês calendário, skip de
-  `15_dias`, skip quando há consulta futura agendada com o mesmo médico,
-  garantia de envio único por flag, batching/throttling.
+  intervalo, seleção do template certo por mês calendário (usando chave
+  ano*12+mês, incluindo virada de ano), skip de `15_dias`, skip de
+  `retorno_um_mes_antes` para `1_mes`, skip quando há consulta futura
+  agendada com o mesmo médico, garantia de envio único por flag,
+  batching/throttling.
 - `dashboard/tests/test_retornos_routes.py` (novo módulo): endpoint
   `POST /api/retornos/{patient_id}` — upsert correto, cálculo de
   `next_return_date`, caso especial `15_dias` marcando as 3 flags como
-  enviadas, filtros das seções "Hoje" / "Pendentes" por médico.
+  enviadas, caso especial `1_mes` marcando `month_before_sent_at` como
+  enviada, filtros das seções "Hoje" / "Pendentes" por médico.
