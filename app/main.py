@@ -1,4 +1,7 @@
 import asyncio
+import hashlib
+import hmac
+import json
 import logging
 import os
 from contextlib import asynccontextmanager
@@ -573,29 +576,47 @@ async def process_message(phone: str, text: str) -> None:
                 if db_sync:
                     state_update.update(db_sync)
             elif snapshot.values.get("stage") == "patient_agent" and existing:
+                # get_user_by_phone (→ existing) returns an ARBITRARY patient when the
+                # contact has more than one (e.g. twins sharing a guardian's number) —
+                # it has no notion of which patient this conversation is actually about.
+                # Resolve to the specific patient already selected via disambiguation
+                # (state["user_db_id"]) so per-patient fields never get silently synced
+                # from the wrong sibling (caso Renata Monteiro / Laila+Suzi Viana,
+                # 5581996962165, 08/07/2026: mid-conversation about Suzi, this block
+                # overwrote state["patient_name"] with "Laila" — existing's arbitrary
+                # pick — which made confirm_appointment attach the new appointment to
+                # Laila's patient_id, and it was later canceled as "Laila's" consulta,
+                # actually canceling Suzi's paid consultation).
+                _active_uid = snapshot.values.get("user_db_id")
+                _sync_source = existing
+                if _active_uid:
+                    _matched = next((u for u in all_users if u["id"] == _active_uid), None)
+                    if _matched:
+                        _sync_source = _matched
+
                 # If registration is incomplete, drop back to collect_info so Eva can
                 # ask for the missing fields instead of looping in patient_agent.
                 from app.database import is_registration_complete as _is_complete
-                if not _is_complete(existing):
+                if not _is_complete(_sync_source):
                     state_update["stage"] = "collect_info"
                     logger.info("INCOMPLETE_REGISTRATION phone=%s — reverting to collect_info", phone)
 
                 # For ongoing patient_agent conversations, sync critical fields that may be
                 # missing from older checkpoints or changed in the DB since last message.
                 pa_sync: dict = {}
-                if snapshot.values.get("is_returning_patient") is None and existing.get("is_returning_patient") is not None:
-                    pa_sync["is_returning_patient"] = existing["is_returning_patient"]
-                if snapshot.values.get("preferred_doctor") is None and existing.get("doctor_id"):
-                    pa_sync["preferred_doctor"] = DOCTOR_NAMES.get(existing["doctor_id"])
+                if snapshot.values.get("is_returning_patient") is None and _sync_source.get("is_returning_patient") is not None:
+                    pa_sync["is_returning_patient"] = _sync_source["is_returning_patient"]
+                if snapshot.values.get("preferred_doctor") is None and _sync_source.get("doctor_id"):
+                    pa_sync["preferred_doctor"] = DOCTOR_NAMES.get(_sync_source["doctor_id"])
                 # Always sync is_patient and user_name from DB — these may have been
                 # corrected by an attendant after the conversation started, and the
                 # patient_agent prompt relies on them to address the contact correctly.
-                if existing.get("is_patient") is not None:
-                    pa_sync["is_patient"] = existing["is_patient"]
-                if existing.get("name"):
-                    pa_sync["user_name"] = existing["name"]
-                if existing.get("patient_name"):
-                    pa_sync["patient_name"] = existing["patient_name"]
+                if _sync_source.get("is_patient") is not None:
+                    pa_sync["is_patient"] = _sync_source["is_patient"]
+                if _sync_source.get("name"):
+                    pa_sync["user_name"] = _sync_source["name"]
+                if _sync_source.get("patient_name"):
+                    pa_sync["patient_name"] = _sync_source["patient_name"]
                 if pa_sync:
                     state_update.update(pa_sync)
         else:
@@ -683,9 +704,22 @@ async def _handle_payload(payload: dict) -> None:
         logger.exception("Error handling webhook payload")
 
 
+def _valid_meta_signature(raw_body: bytes, signature_header: str | None) -> bool:
+    """Verify Meta's X-Hub-Signature-256 (HMAC-SHA256 of the raw body with the app secret)."""
+    if not signature_header or not signature_header.startswith("sha256="):
+        return False
+    secret = os.environ["META_APP_SECRET"]
+    expected = hmac.new(secret.encode(), raw_body, hashlib.sha256).hexdigest()
+    return hmac.compare_digest(signature_header[len("sha256="):], expected)
+
+
 @app.post("/webhook")
-async def webhook(request: Request):
-    payload = await request.json()
+async def webhook(request: Request, x_hub_signature_256: str | None = Header(default=None)):
+    raw_body = await request.body()
+    if not _valid_meta_signature(raw_body, x_hub_signature_256):
+        logger.warning("Webhook signature validation failed — rejecting request.")
+        raise HTTPException(status_code=401, detail="Invalid signature")
+    payload = json.loads(raw_body)
     logger.debug("Webhook payload: %s", payload)
     asyncio.create_task(_handle_payload(payload))
     return {"status": "ok"}

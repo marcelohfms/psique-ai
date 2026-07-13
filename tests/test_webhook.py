@@ -1,5 +1,9 @@
 """Tests for extract_message() and the /webhook endpoint (Meta Cloud API format)."""
 import asyncio
+import hashlib
+import hmac
+import json
+import os
 import pytest
 from unittest.mock import AsyncMock, patch
 
@@ -220,11 +224,36 @@ async def test_unrecognized_document_mime_notifies_clinic_only():
 
 # ── /webhook endpoint tests ───────────────────────────────────────────────────
 
+def _signed(body: bytes) -> str:
+    secret = os.environ["META_APP_SECRET"]
+    digest = hmac.new(secret.encode(), body, hashlib.sha256).hexdigest()
+    return f"sha256={digest}"
+
+
 def test_webhook_post_returns_200(http_client):
-    """POST /webhook must respond 200 immediately."""
-    response = http_client.post("/webhook", json=_meta_payload())
+    """POST /webhook must respond 200 immediately when the signature is valid."""
+    body = json.dumps(_meta_payload()).encode()
+    response = http_client.post(
+        "/webhook", content=body, headers={"X-Hub-Signature-256": _signed(body)},
+    )
     assert response.status_code == 200
     assert response.json() == {"status": "ok"}
+
+
+def test_webhook_post_rejects_missing_signature(http_client):
+    """POST /webhook must respond 401 when X-Hub-Signature-256 is absent."""
+    body = json.dumps(_meta_payload()).encode()
+    response = http_client.post("/webhook", content=body)
+    assert response.status_code == 401
+
+
+def test_webhook_post_rejects_invalid_signature(http_client):
+    """POST /webhook must respond 401 when the signature doesn't match the body."""
+    body = json.dumps(_meta_payload()).encode()
+    response = http_client.post(
+        "/webhook", content=body, headers={"X-Hub-Signature-256": "sha256=deadbeef"},
+    )
+    assert response.status_code == 401
 
 
 def test_webhook_verify_get_returns_challenge(http_client):
