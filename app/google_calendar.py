@@ -46,6 +46,9 @@ SCHEDULE_EXCEPTIONS: dict[str, dict[str, list[tuple[int, int, int, int, str]]]] 
         "2026-06-29": [(7, 30, 8, 30, "online")],  # Segunda: só manhã (tarde bloqueada)
         "2026-07-16": [],  # Quinta: feriado Nossa Senhora do Carmo (Recife)
         "2026-07-24": [],  # Sexta: sem atendimento (bloqueado)
+        "2026-08-03": [],  # Segunda: sem atendimento (bloqueado)
+        "2026-08-05": [],  # Quarta: sem atendimento (bloqueado)
+        "2026-08-07": [],  # Sexta: sem atendimento (bloqueado)
         "2026-09-07": [],  # Segunda: feriado Independência do Brasil
         "2026-10-12": [],  # Segunda: feriado Nossa Sra. Aparecida
         "2026-11-02": [],  # Segunda: feriado Finados
