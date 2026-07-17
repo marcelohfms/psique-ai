@@ -1,6 +1,6 @@
 import asyncio
 import os
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, date
 from typing import Annotated, Literal
 from zoneinfo import ZoneInfo
 
@@ -93,6 +93,139 @@ _MOD_LABELS = {
     "presencial_sob_consulta": "online ou presencial",
 }
 
+_ANY_DAY_MAX_DAYS_CURRENT_WEEK = 3
+_ANY_DAY_MIN_DISTINCT_DAYS = 2
+_ANY_DAY_MAX_WEEKS = 8
+
+
+def _week_range(offset_weeks: int) -> tuple[date, date]:
+    """Retorna (início, fim) da janela de busca: offset_weeks=0 é "esta semana"
+    (de hoje até domingo); offset_weeks>=1 é uma semana cheia (segunda a
+    domingo), offset_weeks semanas após a atual."""
+    today = datetime.now(TZ).date()
+    if offset_weeks == 0:
+        start = today
+    else:
+        next_monday = today + timedelta(days=7 - today.weekday())
+        start = next_monday + timedelta(weeks=offset_weeks - 1)
+    end = start + timedelta(days=6 - start.weekday())
+    return start, end
+
+
+def _business_days(start: date, end: date):
+    """Percorre cada dia útil (segunda a sexta) de start a end, inclusive."""
+    day = start
+    while day <= end:
+        if day.weekday() < 5:
+            yield day
+        day += timedelta(days=1)
+
+
+async def _slots_for_any_day(
+    day: date, calendar_id: str, doctor: str, preferred_shift: str,
+    slot_duration_minutes: int, _get_slots,
+) -> dict:
+    """Retorna {turno: slots} para o dia informado. Consulta apenas o turno
+    pedido, ou os três turnos quando preferred_shift == "qualquer"."""
+    if preferred_shift != "qualquer":
+        slots = await _get_slots(
+            calendar_id=calendar_id,
+            preferred_day=day.isoformat(),
+            preferred_shift=preferred_shift,
+            slot_minutes=slot_duration_minutes,
+            doctor_key=doctor,
+        )
+        return {preferred_shift: slots} if slots else {}
+    result: dict = {}
+    for shift_key in ("manha", "tarde", "noite"):
+        slots = await _get_slots(
+            calendar_id=calendar_id,
+            preferred_day=day.isoformat(),
+            preferred_shift=shift_key,
+            slot_minutes=slot_duration_minutes,
+            doctor_key=doctor,
+        )
+        if slots:
+            result[shift_key] = slots
+    return result
+
+
+def _format_any_day_section(day: date, day_shifts: dict, preferred_shift: str) -> str:
+    day_label = _WEEKDAY_LABELS_PT.get(day.weekday(), "")
+    date_label = day.strftime("%d/%m")
+    header = f"{day_label}, dia {date_label}" if day_label else date_label
+    if preferred_shift == "qualquer":
+        lines = [f"{header}:"]
+        for shift_key, shift_label in [("manha", "manhã"), ("tarde", "tarde"), ("noite", "noite")]:
+            slots = day_shifts.get(shift_key)
+            if slots:
+                times = ", ".join(s[0].strftime("%H:%M") for s in slots)
+                lines.append(f"  - {shift_label.capitalize()}: {times}")
+        return "\n".join(lines)
+    slots = day_shifts.get(preferred_shift, [])
+    lines = [f"{header} ({preferred_shift}):"]
+    for i, (slot, modality) in enumerate(slots, 1):
+        lines.append(f"  {i}. {slot.strftime('%H:%M')} [{_MOD_LABELS.get(modality, modality)}]")
+    return "\n".join(lines)
+
+
+async def _search_any_day(calendar_id: str, doctor: str, preferred_shift: str, slot_duration_minutes: int) -> str:
+    """Busca dias úteis futuros (qualquer dia da semana) quando o paciente não
+    tem preferência de dia (ex: "qualquer dia"). Busca primeiro a semana atual
+    (até 3 dias distintos com vaga); se encontrar menos de 2 dias distintos,
+    também busca a semana seguinte inteira; se ainda assim não achar nada,
+    continua expandindo semana a semana (limite de segurança) até achar algo —
+    nunca informa ao paciente que "não encontrou"."""
+    from app.google_calendar import get_available_slots as _get_slots
+
+    found: list[tuple[date, dict]] = []
+
+    start, end = _week_range(0)
+    for day in _business_days(start, end):
+        day_shifts = await _slots_for_any_day(
+            day, calendar_id, doctor, preferred_shift, slot_duration_minutes, _get_slots
+        )
+        if day_shifts:
+            found.append((day, day_shifts))
+            if len(found) >= _ANY_DAY_MAX_DAYS_CURRENT_WEEK:
+                break
+
+    extended = False
+    if len(found) < _ANY_DAY_MIN_DISTINCT_DAYS:
+        extended = True
+        start, end = _week_range(1)
+        for day in _business_days(start, end):
+            day_shifts = await _slots_for_any_day(
+                day, calendar_id, doctor, preferred_shift, slot_duration_minutes, _get_slots
+            )
+            if day_shifts:
+                found.append((day, day_shifts))
+
+    week_offset = 2
+    while not found and week_offset <= _ANY_DAY_MAX_WEEKS:
+        extended = True
+        start, end = _week_range(week_offset)
+        for day in _business_days(start, end):
+            day_shifts = await _slots_for_any_day(
+                day, calendar_id, doctor, preferred_shift, slot_duration_minutes, _get_slots
+            )
+            if day_shifts:
+                found.append((day, day_shifts))
+        week_offset += 1
+
+    if not found:
+        return (
+            "Não encontrei horários disponíveis nas próximas semanas. "
+            "Use transfer_to_human para encaminhar ao atendente humano verificar outras opções."
+        )
+
+    sections = [_format_any_day_section(day, day_shifts, preferred_shift) for day, day_shifts in found]
+    prefix = (
+        "Poucos horários disponíveis na semana atual — incluí também outras semanas:\n\n"
+        if extended else ""
+    )
+    return prefix + "\n\n".join(sections)
+
 
 @tool
 async def get_available_slots(
@@ -152,22 +285,37 @@ async def get_available_slots(
     if doctor == "bruna":
         slot_duration_minutes = 60
 
+    now = datetime.now(TZ)
+    shift_norm = preferred_shift.lower().replace("ã", "a").replace("manhã", "manha").strip()
+    shift_start_h, shift_end_h = SHIFT_HOURS.get(shift_norm, (8, 18))
+
+    # ── Detect weekday name so the branches below only run for real day values ─
+    preferred_day_norm = preferred_day.lower().strip()
+    weekday_key = next(
+        (wd for name, wd in _WEEKDAYS_PT.items() if name in preferred_day_norm),
+        None,
+    )
+
+    # ── No day preference (e.g. "qualquer dia", "tanto faz") → search upcoming
+    # business days regardless of weekday, expanding to later weeks if needed ──
+    _no_day_pref_patterns = ("qualquer", "tanto faz")
+    if weekday_key is None and any(p in preferred_day_norm for p in _no_day_pref_patterns):
+        return await _search_any_day(
+            calendar_id=calendar_id,
+            doctor=doctor,
+            preferred_shift=preferred_shift,
+            slot_duration_minutes=slot_duration_minutes,
+        )
+
     # ── "qualquer" shift: check all shifts and return summary ─────────────────
     if preferred_shift == "qualquer":
-        # Detect whether preferred_day is a weekday name so we can do multi-week
-        # search — the same logic used below for specific shifts.
-        preferred_day_norm_q = preferred_day.lower().strip()
-        weekday_key_q = next(
-            (wd for name, wd in _WEEKDAYS_PT.items() if name in preferred_day_norm_q),
-            None,
-        )
         base_date_q = _parse_day(preferred_day)
         if base_date_q is None:
             return "Não entendi a data. Por favor informe um dia específico (ex: segunda, 19/05, amanhã)."
 
         # For weekday names: try up to 4 weeks until we find a date with slots.
         # For specific dates: single attempt only.
-        max_weeks = 4 if weekday_key_q is not None else 1
+        max_weeks = 4 if weekday_key is not None else 1
         for week_offset in range(max_weeks):
             try_date = base_date_q + timedelta(weeks=week_offset)
             day_of_week = _WEEKDAY_LABELS_PT.get(try_date.weekday(), "")
@@ -212,19 +360,8 @@ async def get_available_slots(
             # No slots at all this week — try the next occurrence (only for weekday names)
         return f"Não há horários disponíveis para {header}. Deseja tentar outro dia?"
 
-    now = datetime.now(TZ)
-    shift_norm = preferred_shift.lower().replace("ã", "a").replace("manhã", "manha").strip()
-    shift_start_h, shift_end_h = SHIFT_HOURS.get(shift_norm, (8, 18))
-
-    # ── Detect weekday name → multi-week search ───────────────────────────────
-    preferred_day_norm = preferred_day.lower().strip()
-    weekday_key = next(
-        (wd for name, wd in _WEEKDAYS_PT.items() if name in preferred_day_norm),
-        None,
-    )
-
     # ── Vague expressions (e.g. "próxima semana") → ask for specific day ─────
-    _vague_patterns = ("semana", "mês", "mes", "em breve", "qualquer", "tanto faz")
+    _vague_patterns = ("semana", "mês", "mes", "em breve")
     if weekday_key is None and any(p in preferred_day_norm for p in _vague_patterns):
         return (
             "CLARIFICAÇÃO NECESSÁRIA: O paciente disse uma expressão vaga (ex: 'próxima semana'). "
