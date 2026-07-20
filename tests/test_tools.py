@@ -819,6 +819,63 @@ async def test_mark_reschedule_in_progress_first_reschedule_notice():
     assert "get_available_slots" in result
 
 
+async def test_mark_reschedule_in_progress_canceled_status_says_slot_released():
+    """Consulta já cancelada (ex: por timeout de taxa não paga): a tool não pode deixar
+    a Eva inferir que a consulta ainda está reservada — regressão do caso Larissa
+    (5581991947587, 2026-07-15), onde a Eva disse "ainda está reservada" para uma
+    consulta que já tinha sido cancelada."""
+    from app.graph.tools import mark_reschedule_in_progress
+    client, table, execute = _make_supabase_client()
+    appt_data = {
+        "appointment_id": "evt-abc",
+        "status": "canceled",
+        "patient_id": "user-1",
+        "start_time": (datetime.now(TZ) + timedelta(days=10)).isoformat(),
+        "booking_fee_paid_at": None,
+        "booking_fee_waived": False,
+    }
+    execute.return_value = MagicMock(data=appt_data)
+    with patch("app.graph.tools.get_supabase", new_callable=AsyncMock, return_value=client), \
+         patch("app.graph.tools.get_users_by_phone", new_callable=AsyncMock, return_value=[{"id": "user-1"}]):
+        result = await mark_reschedule_in_progress.coroutine(
+            appointment_id="evt-abc",
+            state=_make_state(),
+            config=CONFIG,
+        )
+    assert "INSTRUÇÃO INTERNA" in result
+    assert "cancelada" in result.lower()
+    assert "NÃO diga ao paciente que a consulta \"ainda está reservada\"" in result
+    assert "get_available_slots" in result
+    table.update.assert_not_called()
+
+
+async def test_mark_reschedule_in_progress_completed_status_reports_real_status():
+    """Status diferente de canceled (ex: completed) também não pode ser confundido
+    com "ainda reservada/pendente" — a tool deve indicar o status real."""
+    from app.graph.tools import mark_reschedule_in_progress
+    client, table, execute = _make_supabase_client()
+    appt_data = {
+        "appointment_id": "evt-abc",
+        "status": "completed",
+        "patient_id": "user-1",
+        "start_time": (datetime.now(TZ) - timedelta(days=10)).isoformat(),
+        "booking_fee_paid_at": "2026-01-01T10:00:00-03:00",
+        "booking_fee_waived": False,
+    }
+    execute.return_value = MagicMock(data=appt_data)
+    with patch("app.graph.tools.get_supabase", new_callable=AsyncMock, return_value=client), \
+         patch("app.graph.tools.get_users_by_phone", new_callable=AsyncMock, return_value=[{"id": "user-1"}]):
+        result = await mark_reschedule_in_progress.coroutine(
+            appointment_id="evt-abc",
+            state=_make_state(),
+            config=CONFIG,
+        )
+    assert "INSTRUÇÃO INTERNA" in result
+    assert "completed" in result
+    assert "NÃO afirme que a consulta ainda" in result
+    table.update.assert_not_called()
+
+
 async def test_mark_reschedule_in_progress_less_than_24h_blocks_free_flow():
     """Regra das 24h precede a regra do primeiro reagendamento: pedido de remarcação
     a menos de 24h da consulta (taxa já paga) deve redirecionar para o fluxo de nova

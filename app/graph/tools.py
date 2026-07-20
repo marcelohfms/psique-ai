@@ -1029,8 +1029,25 @@ async def mark_reschedule_in_progress(
     if not appt.data or appt.data.get("patient_id") not in user_ids:
         return "ID de agendamento inválido para este paciente."
 
-    if appt.data.get("status") not in ("scheduled", "pending_reschedule"):
-        return "Esta consulta não está em status que permita reagendamento."
+    appt_status = appt.data.get("status")
+    if appt_status not in ("scheduled", "pending_reschedule"):
+        if appt_status == "canceled":
+            return (
+                "[INSTRUÇÃO INTERNA — NÃO ENVIE AO PACIENTE] Esta consulta já foi CANCELADA — "
+                "a vaga já foi liberada, não está mais reservada nem pendente de pagamento. "
+                "NÃO diga ao paciente que a consulta \"ainda está reservada\" ou qualquer coisa "
+                "parecida — isso seria falso. Informe que essa consulta não está mais ativa e "
+                "ofereça um NOVO agendamento: chame get_available_slots e, ao confirmar o novo "
+                "horário, confirm_appointment (nova consulta, nova taxa de reserva de R$ 100,00)."
+            )
+        return (
+            f"[INSTRUÇÃO INTERNA — NÃO ENVIE AO PACIENTE] Esta consulta está com status "
+            f"\"{appt_status}\" e não permite reagendamento. NÃO afirme que a consulta ainda "
+            "está reservada ou pendente de pagamento se isso não corresponder à realidade. "
+            "Informe o paciente da situação real desta consulta e oriente o próximo passo "
+            "adequado (ex: se \"completed\", a consulta já ocorreu — ofereça um novo "
+            "agendamento se for o caso)."
+        )
 
     # Quando a instrução vem de nota privada da atendente, é preciso saber se a
     # remarcação é a pedido do paciente ou por iniciativa da clínica/médico —
