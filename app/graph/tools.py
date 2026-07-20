@@ -1299,6 +1299,37 @@ async def reschedule_appointment(
     appt_status_result = await client.from_("appointments").select("status").eq("appointment_id", appointment_id).maybe_single().execute()
     is_pending_reschedule = (appt_status_result.data or {}).get("status") == "pending_reschedule"
 
+    old_dt = None
+    if old_start_time:
+        try:
+            old_dt = datetime.fromisoformat(old_start_time).astimezone(TZ)
+        except ValueError:
+            old_dt = None
+
+    # Guard: check Google Calendar for conflicts on the NEW slot before writing it.
+    # confirm_appointment already had this check, but reschedule_appointment didn't —
+    # a stale slot offer confirmed after someone else took that time slipped through
+    # and double-booked the doctor (caso Raynner/Bernardo, 23/07/2026 19h, Dr. Júlio).
+    # Skipped when old_dt == new_start (pure modality change, no time actually moves —
+    # the appointment's own event already occupies that slot).
+    if confirmed_by_patient and old_dt != new_start:
+        from app.google_calendar import _get_busy, _credentials
+        from googleapiclient.discovery import build as _build
+        new_end_check = new_start + timedelta(minutes=slot_duration_minutes)
+        try:
+            _creds = _credentials()
+            _service = _build("calendar", "v3", credentials=_creds)
+            loop = asyncio.get_running_loop()
+            busy = await loop.run_in_executor(None, _get_busy, _service, calendar_id, new_start, new_end_check)
+            if busy:
+                return (
+                    f"[INSTRUÇÃO INTERNA — NÃO ENVIE AO PACIENTE] "
+                    f"Este horário ({new_start.strftime('%d/%m/%Y às %H:%M')}) já está ocupado por outro agendamento. "
+                    "Avise o paciente com empatia e chame get_available_slots para buscar outro horário disponível."
+                )
+        except Exception:
+            pass  # If check fails, proceed anyway — better to double-book than block
+
     # Only create/update Google Calendar event if patient confirmed
     if confirmed_by_patient:
         from app.google_calendar import create_event
@@ -1368,11 +1399,9 @@ async def reschedule_appointment(
     _weekday_new = _WEEKDAY_LABELS_PT.get(new_start.weekday(), "")
     formatted_new = f"{_weekday_new}, {new_start.strftime('%d/%m/%Y às %H:%M')}" if _weekday_new else new_start.strftime("%d/%m/%Y às %H:%M")
 
-    if old_start_time:
-        old_dt = datetime.fromisoformat(old_start_time).astimezone(TZ)
+    if old_dt is not None:
         formatted_old = old_dt.strftime("%d/%m/%Y às %H:%M")
     else:
-        old_dt = None
         formatted_old = "horário não disponível"
 
     # Se a data/hora não mudou, isto é uma troca de modalidade (ex: chamada por

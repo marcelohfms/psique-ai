@@ -911,6 +911,43 @@ async def test_reschedule_appointment_updates_event_and_notifies():
     mock_notify.assert_called()
 
 
+async def test_reschedule_appointment_blocks_when_new_slot_busy():
+    """reschedule_appointment deve recusar gravar um novo horário que já está
+    ocupado por outro agendamento no Calendar — sem isso, uma oferta desatualizada
+    confirmada depois pode colidir com um horário que outro paciente já confirmou
+    nesse meio-tempo (caso Raynner/Bernardo, 23/07/2026 19h com o Dr. Júlio).
+    confirm_appointment já tinha esse busy-check; reschedule_appointment não tinha."""
+    from app.graph.tools import reschedule_appointment
+    client, table, execute = _make_supabase_client()
+    execute.return_value = MagicMock(data={
+        "start_time": "2026-03-20T09:00:00-03:00",
+        "patient_id": "user-1",
+        "patients": {"name": "Maria"},
+    })
+    with patch("app.graph.tools._get_doctor_calendar_id", new_callable=AsyncMock, return_value="cal123"), \
+         patch("app.google_calendar.update_event", new_callable=AsyncMock) as mock_update, \
+         patch("app.google_calendar.create_event", new_callable=AsyncMock) as mock_create, \
+         patch("app.graph.tools.get_supabase", new_callable=AsyncMock, return_value=client), \
+         patch("app.graph.tools.get_users_by_phone", new_callable=AsyncMock, return_value=[{"id": "user-1"}]), \
+         patch("app.graph.tools.log_event", new_callable=AsyncMock), \
+         patch("app.graph.tools._notify_clinic", new_callable=AsyncMock), \
+         patch("app.google_calendar._credentials", return_value=MagicMock()), \
+         patch("googleapiclient.discovery.build", return_value=MagicMock()), \
+         patch("app.google_calendar._get_busy", return_value=[
+             {"start": "2026-03-25T10:00:00-03:00", "end": "2026-03-25T11:00:00-03:00"}
+         ]):
+        result = await reschedule_appointment.coroutine(
+            appointment_id="evt-abc",
+            new_slot_datetime="2026-03-25T10:00:00",
+            slot_duration_minutes=60,
+            state=_make_state(),
+            config=CONFIG,
+        )
+    assert "ocupado" in result.lower()
+    mock_update.assert_not_awaited()
+    mock_create.assert_not_awaited()
+
+
 async def test_reschedule_appointment_resets_reminder_fields():
     """Reagendar deve zerar reminder_day_before_sent_at e reminder_day_of_sent_at."""
     from app.graph.tools import reschedule_appointment
