@@ -559,6 +559,119 @@ async def test_confirm_appointment_guard0_applies_even_with_force_encaixe():
     mock_create.assert_not_called()
 
 
+# ── confirm_appointment: guard de duração do slot (Dr. Júlio) ──────────────────
+
+async def test_confirm_appointment_julio_rejects_slot_that_overruns_window():
+    """Dr. Júlio: bloco de 2h começando às 19:00 numa quinta (janela 18–20) termina
+    21:00, estourando o fecho — deve ser rejeitado sem gravar (caso Bernardo, mãe
+    Mônica, 5581991320003: 1ª consulta gravada 19:00–21:00 fora da grade)."""
+    from app.graph.tools import confirm_appointment
+    client, table, execute = _make_supabase_client()
+    with patch("app.graph.tools._get_doctor_calendar_id", new_callable=AsyncMock, return_value="cal123"), \
+         patch("app.graph.tools.get_supabase", new_callable=AsyncMock, return_value=client), \
+         patch("app.google_calendar.create_event", new_callable=AsyncMock) as mock_create:
+        result = await confirm_appointment.coroutine(
+            slot_datetime="2026-03-26T19:00:00",  # quinta-feira
+            slot_duration_minutes=120,
+            state=_make_state(preferred_doctor="julio"),
+            config=CONFIG,
+        )
+    assert "INSTRUÇÃO INTERNA" in result
+    mock_create.assert_not_called()
+
+
+async def test_confirm_appointment_julio_accepts_2h_block_that_fits():
+    """Dr. Júlio: bloco de 2h às 18:00 numa quinta cabe em 18–20 → aceito."""
+    from app.graph.tools import confirm_appointment
+    client, _, _ = _make_supabase_client()
+    with patch("app.graph.tools._get_doctor_calendar_id", new_callable=AsyncMock, return_value="cal123"), \
+         patch("app.google_calendar.create_event", new_callable=AsyncMock, return_value="evt-2h-fit") as mock_create, \
+         patch("app.graph.tools.get_supabase", new_callable=AsyncMock, return_value=client), \
+         patch("app.graph.tools.get_users_by_phone", new_callable=AsyncMock, return_value=[{"id": "user-1"}]), \
+         patch("app.graph.tools.get_user_by_phone", new_callable=AsyncMock, return_value={"id": "user-1"}), \
+         patch("app.graph.tools.log_event", new_callable=AsyncMock), \
+         patch("app.graph.tools._notify_clinic", new_callable=AsyncMock):
+        result = await confirm_appointment.coroutine(
+            slot_datetime="2026-03-26T18:00:00",  # quinta-feira
+            slot_duration_minutes=120,
+            state=_make_state(preferred_doctor="julio"),
+            config=CONFIG,
+        )
+    assert "evt-2h-fit" in result
+    mock_create.assert_called_once()
+
+
+async def test_confirm_appointment_julio_accepts_60min_split_at_19h():
+    """Dr. Júlio: sessão separada de 1h às 19:00 numa quinta cabe em 18–20 → aceito."""
+    from app.graph.tools import confirm_appointment
+    client, _, _ = _make_supabase_client()
+    with patch("app.graph.tools._get_doctor_calendar_id", new_callable=AsyncMock, return_value="cal123"), \
+         patch("app.google_calendar.create_event", new_callable=AsyncMock, return_value="evt-split-19") as mock_create, \
+         patch("app.graph.tools.get_supabase", new_callable=AsyncMock, return_value=client), \
+         patch("app.graph.tools.get_users_by_phone", new_callable=AsyncMock, return_value=[{"id": "user-1"}]), \
+         patch("app.graph.tools.get_user_by_phone", new_callable=AsyncMock, return_value={"id": "user-1"}), \
+         patch("app.graph.tools.log_event", new_callable=AsyncMock), \
+         patch("app.graph.tools._notify_clinic", new_callable=AsyncMock), \
+         patch("app.graph.tools.send_text", new_callable=AsyncMock):
+        result = await confirm_appointment.coroutine(
+            slot_datetime="2026-03-26T19:00:00",  # quinta-feira
+            slot_duration_minutes=60,
+            state=_make_state(preferred_doctor="julio"),
+            config=CONFIG,
+            session_note="1ª hora — responsáveis",
+        )
+    assert "evt-split-19" in result
+    mock_create.assert_called_once()
+
+
+# ── confirm_appointment: encaixe da Dra. Bruna começando a :20 vira 40min ──────
+
+async def test_confirm_appointment_bruna_encaixe_at_20min_clamped_to_40():
+    """Encaixe da Dra. Bruna começando a :20 termina no topo da hora (40min) para não
+    bloquear o slot regular da hora seguinte (ex: sexta 13:20 → 14:00, mantém o 14h)."""
+    from app.graph.tools import confirm_appointment
+    client, table, execute = _make_supabase_client()
+    with patch("app.graph.tools._get_doctor_calendar_id", new_callable=AsyncMock, return_value="cal-bruna"), \
+         patch("app.google_calendar.create_event", new_callable=AsyncMock, return_value="evt-enc-40") as mock_create, \
+         patch("app.graph.tools.get_supabase", new_callable=AsyncMock, return_value=client), \
+         patch("app.graph.tools.get_users_by_phone", new_callable=AsyncMock, return_value=[{"id": "user-1"}]), \
+         patch("app.graph.tools.get_user_by_phone", new_callable=AsyncMock, return_value={"id": "user-1"}), \
+         patch("app.graph.tools.log_event", new_callable=AsyncMock), \
+         patch("app.graph.tools._notify_clinic", new_callable=AsyncMock):
+        await confirm_appointment.coroutine(
+            slot_datetime="2026-03-27T13:20:00",  # sexta-feira
+            slot_duration_minutes=60,
+            state=_make_state(preferred_doctor="bruna", silent_mode=True),
+            config=CONFIG,
+            force_encaixe=True,
+        )
+    assert mock_create.call_args.kwargs["slot_minutes"] == 40
+    _insert_payload = table.insert.call_args[0][0]
+    end_dt = datetime.fromisoformat(_insert_payload["end_time"])
+    assert (end_dt.hour, end_dt.minute) == (14, 0)
+
+
+async def test_confirm_appointment_bruna_encaixe_on_grid_stays_60():
+    """Encaixe da Dra. Bruna on-grid (:00) não é encurtado — segue 60min."""
+    from app.graph.tools import confirm_appointment
+    client, table, execute = _make_supabase_client()
+    with patch("app.graph.tools._get_doctor_calendar_id", new_callable=AsyncMock, return_value="cal-bruna"), \
+         patch("app.google_calendar.create_event", new_callable=AsyncMock, return_value="evt-enc-60") as mock_create, \
+         patch("app.graph.tools.get_supabase", new_callable=AsyncMock, return_value=client), \
+         patch("app.graph.tools.get_users_by_phone", new_callable=AsyncMock, return_value=[{"id": "user-1"}]), \
+         patch("app.graph.tools.get_user_by_phone", new_callable=AsyncMock, return_value={"id": "user-1"}), \
+         patch("app.graph.tools.log_event", new_callable=AsyncMock), \
+         patch("app.graph.tools._notify_clinic", new_callable=AsyncMock):
+        await confirm_appointment.coroutine(
+            slot_datetime="2026-03-27T13:00:00",  # sexta-feira
+            slot_duration_minutes=60,
+            state=_make_state(preferred_doctor="bruna", silent_mode=True),
+            config=CONFIG,
+            force_encaixe=True,
+        )
+    assert mock_create.call_args.kwargs["slot_minutes"] == 60
+
+
 # ── confirm_attendance (idempotência: primeiro a confirmar vence) ──────────────
 
 async def test_confirm_attendance_marks_confirmed_when_not_yet_confirmed():

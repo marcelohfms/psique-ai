@@ -572,6 +572,12 @@ async def confirm_appointment(
         force_encaixe = False
         _logger.warning("confirm_appointment: force_encaixe=True rejected — not in silent_mode (attendant instruction)")
 
+    # Encaixe da Dra. Bruna começando a :20 termina no topo da hora (40min) para
+    # não bloquear o slot regular da hora seguinte no busy-check (ex: sexta 13:20 →
+    # 14:00, mantém o slot das 14h agendável). Só vale para encaixe (force_encaixe).
+    if force_encaixe and doctor == "bruna" and start.minute == 20:
+        slot_duration_minutes = 40
+
     # Reject slots outside the doctor's schedule — skipped for encaixe
     if not force_encaixe:
         from app.google_calendar import SCHEDULE_EXCEPTIONS, DOCTOR_SCHEDULES
@@ -617,6 +623,26 @@ async def confirm_appointment(
                     f"[INSTRUÇÃO INTERNA — NÃO ENVIE AO PACIENTE] "
                     f"Este horário ({start.strftime('%H:%M')}) está fora da grade de atendimento de {_doctor_label}. "
                     "Avise o paciente com empatia e chame get_available_slots para buscar outro horário disponível."
+                )
+
+        # Dr. Júlio: além do início, exigir que o slot INTEIRO (início + duração)
+        # caiba numa única janela — senão um bloco de 2h começando no fim da grade
+        # (ex: 19:00 numa quinta que fecha 20:00) seria gravado estourando o
+        # expediente (caso Bernardo/Mônica 5581991320003, 09/07/2026: 1ª consulta
+        # gravada 19:00–21:00). get_available_slots já respeita isso; o confirm não.
+        if doctor == "julio":
+            _slot_end_min = _slot_min + slot_duration_minutes
+            if not any(
+                (sh * 60 + sm) <= _slot_min and _slot_end_min <= (eh * 60 + em)
+                for sh, sm, eh, em, _ in _day_wins
+            ):
+                _dur_h = slot_duration_minutes // 60
+                return (
+                    f"[INSTRUÇÃO INTERNA — NÃO ENVIE AO PACIENTE] "
+                    f"Não há bloco de {_dur_h}h seguidas a partir das {start.strftime('%H:%M')} na grade de "
+                    f"{_doctor_label} no dia {start.strftime('%d/%m/%Y')} — o horário ultrapassaria o fim do expediente. "
+                    "Chame get_available_slots novamente para um horário que comporte a duração, ou ofereça "
+                    "agendar os dois momentos da 1ª consulta em sessões separadas de 1h."
                 )
 
     # Guard 0: block if patient already has a future scheduled OR pending_reschedule
