@@ -280,6 +280,48 @@ async def test_get_available_slots_qualquer_dia_e_qualquer_turno_shows_per_shift
     assert "Manhã: 09:00" in result
 
 
+async def test_pick_doctor_by_earliest_availability_picks_earlier_doctor():
+    """'qualquer um' entre dois médicos válidos → escolhe o de agenda mais próxima.
+    Bruna tem vaga na terça (07/07); Júlio só na quinta (09/07) → retorna 'bruna'."""
+    from app.graph.tools import pick_doctor_by_earliest_availability
+
+    async def _fake_slots(*, calendar_id, preferred_day, preferred_shift, slot_minutes, doctor_key):
+        if doctor_key == "bruna" and preferred_day == "2026-07-07" and preferred_shift == "manha":
+            return [(datetime(2026, 7, 7, 9, 0, tzinfo=TZ), "escolha")]
+        if doctor_key == "julio" and preferred_day == "2026-07-09" and preferred_shift == "manha":
+            return [(datetime(2026, 7, 9, 9, 0, tzinfo=TZ), "escolha")]
+        return []
+
+    with patch("app.graph.tools.datetime", _FrozenDTTuesday), \
+         patch("app.graph.tools._get_doctor_calendar_id", new_callable=AsyncMock, return_value="cal123"), \
+         patch("app.google_calendar.get_available_slots", new_callable=AsyncMock, side_effect=_fake_slots):
+        doctor = await pick_doctor_by_earliest_availability(["julio", "bruna"], slot_duration_minutes=60)
+
+    assert doctor == "bruna"
+
+
+async def test_pick_doctor_by_earliest_availability_bruna_uses_60min():
+    """Bruna sempre usa slots de 60min, mesmo quando o parâmetro pede 120 (menor 1ª
+    consulta). Só Júlio deve ser consultado com 120min."""
+    from app.graph.tools import pick_doctor_by_earliest_availability
+
+    seen: list[tuple[str, int]] = []
+
+    async def _fake_slots(*, calendar_id, preferred_day, preferred_shift, slot_minutes, doctor_key):
+        seen.append((doctor_key, slot_minutes))
+        return []
+
+    with patch("app.graph.tools.datetime", _FrozenDTTuesday), \
+         patch("app.graph.tools._get_doctor_calendar_id", new_callable=AsyncMock, return_value="cal123"), \
+         patch("app.google_calendar.get_available_slots", new_callable=AsyncMock, side_effect=_fake_slots):
+        await pick_doctor_by_earliest_availability(["julio", "bruna"], slot_duration_minutes=120)
+
+    bruna_durations = {mins for doc, mins in seen if doc == "bruna"}
+    julio_durations = {mins for doc, mins in seen if doc == "julio"}
+    assert bruna_durations == {60}
+    assert julio_durations == {120}
+
+
 async def test_get_available_slots_semana_que_vem_still_asks_clarification():
     """Regressão: separar 'qualquer'/'tanto faz' de _vague_patterns não pode quebrar
     o fluxo de esclarecimento para 'semana que vem' (sem dia informado)."""

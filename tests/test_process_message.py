@@ -1760,6 +1760,182 @@ async def test_collect_info_cpf_strips_attendant_note_prefix():
     assert result.get("patient_cpf") == "010.022.724-40"
 
 
+async def test_collect_info_qualquer_um_doctor_picks_by_availability():
+    """Regressão (Arthur/Lúcio, 2026-07-20): 'qualquer um' na escolha de médico não
+    pode virar loop de re-pergunta. Para 12–65 anos (ambos válidos), a Eva escolhe
+    automaticamente o médico com a agenda mais próxima."""
+    from app.graph.nodes import collect_info_node
+    from langchain_core.messages import HumanMessage, AIMessage
+
+    _DOCTOR_Q = "Você tem preferência pelo Dr. Júlio ou pela Dra. Bruna?"
+    state = _base_minor_state(
+        user_name="Ana", patient_name="Ana", patient_cpf="111.222.333-00",
+        is_patient=True, patient_age=30, birth_date="22/08/1996",
+        is_returning_patient=False, preferred_doctor=None,
+        messages=[
+            HumanMessage(content="quero agendar"),
+            AIMessage(content=_DOCTOR_Q),
+            HumanMessage(content="qualquer um"),
+        ],
+    )
+    with patch("app.graph.nodes.send_text", new_callable=AsyncMock) as mock_send, \
+         patch("app.graph.nodes.save_message", new_callable=AsyncMock), \
+         patch("app.graph.nodes.get_users_by_phone", new_callable=AsyncMock, return_value=[]), \
+         patch("app.graph.nodes.upsert_user", new_callable=AsyncMock, return_value="id"), \
+         patch("app.graph.tools.pick_doctor_by_earliest_availability",
+               new_callable=AsyncMock, return_value="bruna") as mock_pick:
+        result = await collect_info_node(state, {})
+
+    assert result.get("preferred_doctor") == "bruna"
+    mock_pick.assert_awaited_once()
+    # candidatos passados = ambos os médicos (12–65 anos)
+    assert set(mock_pick.await_args[0][0]) == {"julio", "bruna"}
+    # a Eva reconhece o médico escolhido antes de seguir para o e-mail
+    sent = mock_send.call_args[0][1].lower()
+    assert "bruna" in sent
+    assert "agenda mais próxima" in sent
+
+
+async def test_collect_info_qualquer_um_under_12_forces_julio_without_availability():
+    """Menor de 12 anos: 'qualquer um' deve resultar em Dr. Júlio (único válido)
+    sem consultar disponibilidade — a regra de idade decide sozinha."""
+    from app.graph.nodes import collect_info_node
+    from langchain_core.messages import HumanMessage, AIMessage
+
+    _DOCTOR_Q = "Você tem preferência pelo Dr. Júlio ou pela Dra. Bruna?"
+    state = _base_minor_state(
+        user_name="Ana", patient_name="Joãozinho", patient_cpf="111.222.333-00",
+        is_patient=False, patient_age=10, birth_date="22/08/2016",
+        is_returning_patient=False, preferred_doctor=None,
+        guardian_name="Ana", guardian_cpf="111.222.333-44",
+        messages=[
+            HumanMessage(content="quero agendar"),
+            AIMessage(content=_DOCTOR_Q),
+            HumanMessage(content="qualquer um"),
+        ],
+    )
+    with patch("app.graph.nodes.send_text", new_callable=AsyncMock), \
+         patch("app.graph.nodes.save_message", new_callable=AsyncMock), \
+         patch("app.graph.nodes.get_users_by_phone", new_callable=AsyncMock, return_value=[]), \
+         patch("app.graph.nodes.upsert_user", new_callable=AsyncMock, return_value="id"), \
+         patch("app.graph.tools.pick_doctor_by_earliest_availability",
+               new_callable=AsyncMock) as mock_pick:
+        result = await collect_info_node(state, {})
+
+    assert result.get("preferred_doctor") == "julio"
+    mock_pick.assert_not_awaited()
+
+
+async def test_collect_info_unrecognized_doctor_answer_still_reasks():
+    """Guard de regressão: uma resposta que não é médico nem 'qualquer um'
+    (ex: 'oi') deve continuar re-perguntando, não escolher médico à toa."""
+    from app.graph.nodes import collect_info_node
+    from langchain_core.messages import HumanMessage, AIMessage
+
+    _DOCTOR_Q = "Você tem preferência pelo Dr. Júlio ou pela Dra. Bruna?"
+    state = _base_minor_state(
+        user_name="Ana", patient_name="Ana", patient_cpf="111.222.333-00",
+        is_patient=True, patient_age=30, birth_date="22/08/1996",
+        is_returning_patient=False, preferred_doctor=None,
+        messages=[
+            HumanMessage(content="quero agendar"),
+            AIMessage(content=_DOCTOR_Q),
+            HumanMessage(content="oi"),
+        ],
+    )
+    with patch("app.graph.nodes.send_text", new_callable=AsyncMock) as mock_send, \
+         patch("app.graph.nodes.save_message", new_callable=AsyncMock), \
+         patch("app.graph.nodes.get_users_by_phone", new_callable=AsyncMock, return_value=[]), \
+         patch("app.graph.nodes.upsert_user", new_callable=AsyncMock, return_value="id"), \
+         patch("app.graph.tools.pick_doctor_by_earliest_availability",
+               new_callable=AsyncMock) as mock_pick:
+        result = await collect_info_node(state, {})
+
+    assert result.get("preferred_doctor") is None
+    assert "júlio" in mock_send.call_args[0][1].lower()
+    mock_pick.assert_not_awaited()
+
+
+async def test_collect_info_answers_info_question_without_consuming_field():
+    """Regressão (Arthur/Lúcio, 2026-07-20): durante o cadastro, uma pergunta de
+    informação do paciente (ex: 'Qual valor da consulta?') NÃO pode ser tratada
+    como resposta do campo atual (CPF). A Eva deve responder a pergunta e repetir a
+    pergunta pendente — sem 'CPF inválido' e sem avançar o campo. O turno é roteado
+    ao LLM (que tem as regras de preço) com a pergunta pendente injetada."""
+    from app.graph.nodes import collect_info_node
+    from app.graph.schemas import CollectInfoOutput
+    from langchain_core.messages import HumanMessage, AIMessage
+
+    llm_result = CollectInfoOutput(
+        reply="A primeira consulta infantil com o Dr. Júlio é R$ 850,00. "
+              "Voltando ao cadastro: qual o CPF do paciente?",
+        is_complete=False,
+    )
+    state = _base_minor_state(
+        user_name="Lúcio", patient_name="Arthur", patient_cpf=None,
+        is_patient=False, patient_age=15, birth_date="21/07/2010",
+        is_returning_patient=False, guardian_name=None,
+        messages=[
+            HumanMessage(content="quero agendar"),
+            AIMessage(content="Qual o CPF do paciente?"),
+            HumanMessage(content="Qual valor da consulta?"),
+        ],
+    )
+    with patch("app.graph.nodes._get_collect_llm") as mock_llm_fn, \
+         patch("app.graph.nodes.send_text", new_callable=AsyncMock) as mock_send, \
+         patch("app.graph.nodes.save_message", new_callable=AsyncMock), \
+         patch("app.graph.nodes.get_users_by_phone", new_callable=AsyncMock, return_value=[]), \
+         patch("app.graph.nodes.upsert_user", new_callable=AsyncMock, return_value="id"):
+        mock_llm = MagicMock()
+        mock_llm.ainvoke = AsyncMock(return_value=llm_result)
+        mock_llm_fn.return_value = mock_llm
+        result = await collect_info_node(state, {})
+
+    # roteou ao LLM (não caiu no reprompt programático de CPF)
+    mock_llm.ainvoke.assert_awaited_once()
+    # a pergunta pendente (CPF) foi injetada como instrução de retomada
+    system_content = mock_llm.ainvoke.call_args[0][0][0].content
+    assert "Qual o CPF do paciente?" in system_content
+    # o CPF não foi consumido nem falsamente marcado inválido
+    assert result.get("patient_cpf") is None
+    assert "inválido" not in mock_send.call_args[0][1].lower()
+
+
+async def test_collect_info_accepts_cpf_after_invalid_reprompt():
+    """Regressão (Arthur/Lúcio, 2026-07-20): depois que a Eva manda o reprompt
+    'CPF inválido...' (porque a resposta anterior não tinha dígitos), o próximo
+    CPF válido enviado pelo paciente DEVE ser aceito. O bug: o guard do Step 5
+    exigia _CPF_Q exato em last_ai, e o reprompt não contém esse texto, então o
+    CPF válido caía no re-ask e era ignorado — travando o cadastro em cascata
+    (patient_cpf, guardian_name e guardian_cpf ficaram todos None)."""
+    from app.graph.nodes import collect_info_node
+    from langchain_core.messages import HumanMessage, AIMessage
+
+    _REPROMPT = (
+        "CPF inválido. Por favor, informe o CPF do paciente com os números (ex: 123.456.789-10).\n"
+        "Caso o paciente não tenha CPF (estrangeiro), responda \"não tenho CPF\"."
+    )
+    state = _base_minor_state(
+        user_name="Lúcio", patient_name="Arthur Guilherme", patient_cpf=None,
+        is_patient=False, patient_age=35, birth_date="21/07/2010",
+        is_returning_patient=False,
+        messages=[
+            HumanMessage(content="quero agendar"),
+            AIMessage(content="Qual o CPF do paciente?"),
+            HumanMessage(content="Qual valor da consulta?"),  # sem dígitos → reprompt
+            AIMessage(content=_REPROMPT),
+            HumanMessage(content="059.554.043-09"),  # CPF válido logo após o reprompt
+        ],
+    )
+    with patch("app.graph.nodes.send_text", new_callable=AsyncMock), \
+         patch("app.graph.nodes.save_message", new_callable=AsyncMock), \
+         patch("app.graph.nodes.get_users_by_phone", new_callable=AsyncMock, return_value=[]), \
+         patch("app.graph.nodes.upsert_user", new_callable=AsyncMock, return_value="id"):
+        result = await collect_info_node(state, {})
+
+    assert result.get("patient_cpf") == "059.554.043-09"
+
+
 async def test_collect_info_returning_minor_guardian_name_skips_guardian_cpf():
     """Menor que JÁ é paciente: após nome do responsável, pula CPF do responsável e vai ao médico."""
     from app.graph.nodes import collect_info_node

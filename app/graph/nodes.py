@@ -463,6 +463,31 @@ async def collect_info_node(state: ConversationState, config: RunnableConfig) ->
         merged.update(extra)
         return _next_question(merged)
 
+    def _is_info_question(text: str) -> bool:
+        """True quando o paciente interrompe o cadastro com uma pergunta de
+        informação (valor, endereço, convênio, pagamento, duração). Nesses casos a
+        Eva deve RESPONDER e repetir a pergunta pendente — nunca tratar o texto como
+        resposta do campo atual (caso Arthur/Lúcio: 'Qual valor da consulta?' era
+        engolido como CPF inválido, 2026-07-20)."""
+        tl = (text or "").lower()
+        _info_kws = [
+            "valor", "valores", "preço", "preco", "quanto custa", "quanto é",
+            "quanto e", "quanto fica", "custa", "custo", "endereço", "endereco",
+            "onde fica", "onde é", "onde e", "como funciona", "convênio", "convenio",
+            "plano de saúde", "plano de saude", "aceita plano", "quanto tempo",
+            "duração", "duracao", "forma de pagamento", "formas de pagamento",
+            "aceita cartão", "aceita cartao", "parcela",
+        ]
+        return any(kw in tl for kw in _info_kws)
+
+    # Uma pergunta de informação durante o cadastro (FASE 2) é roteada ao LLM, que
+    # tem as regras de preço/endereço e responde antes de retomar a pergunta pendente.
+    _is_interruption = (
+        _has_request
+        and _nq() is not None
+        and _is_info_question(_last_human())
+    )
+
     # Step 1: greeting + first MISSING question (skip fields already in state)
     if not _has_greeted and _has_request:
         first_q = _nq()
@@ -474,8 +499,9 @@ async def collect_info_node(state: ConversationState, config: RunnableConfig) ->
             )
             return await _ask(greeting)
 
-    # Steps 2-8 only run when user has made a specific request
-    if _has_request:
+    # Steps 2-8 only run when user has made a specific request — but NOT when the
+    # patient interrupted with an info question (that turn is answered by the LLM).
+    if _has_request and not _is_interruption:
         from app.graph.schemas import _parse_birth_date
         last_ai = _last_ai()
         last_human = _last_human().strip()
@@ -659,7 +685,13 @@ async def collect_info_node(state: ConversationState, config: RunnableConfig) ->
 
         # Step 5: CPF do paciente — apenas para pacientes NOVOS; opcional p/ estrangeiros
         if state.get("is_returning_patient") is False and not state.get("patient_cpf"):
-            if last_ai and _CPF_Q in last_ai and last_human:
+            # O guard reconhece tanto a pergunta original quanto o reprompt
+            # "CPF inválido..." — senão o CPF válido enviado logo após o reprompt
+            # cai no re-ask e é ignorado (caso Arthur/Lúcio, 2026-07-20).
+            _last_ai_asked_cpf = last_ai and (
+                _CPF_Q in last_ai or "cpf inválido" in last_ai.lower()
+            )
+            if _last_ai_asked_cpf and last_human:
                 import re as _re
                 _foreign_kws = [
                     "não tenho", "nao tenho", "estrangeiro", "estrangeira",
@@ -723,14 +755,51 @@ async def collect_info_node(state: ConversationState, config: RunnableConfig) ->
             )
             if _last_ai_asked_doctor and last_human:
                 h = last_human.lower()
+                # "sem preferência" → escolher automaticamente respeitando a regra
+                # de idade e a agenda mais próxima (caso Arthur/Lúcio, 2026-07-20).
+                _no_pref_kws = [
+                    "qualquer", "tanto faz", "indiferente", "sem preferência",
+                    "sem preferencia", "não tenho pref", "nao tenho pref",
+                    "nenhum", "os dois", "vocês escolh", "voces escolh",
+                    "o que tiver", "mais cedo", "mais rápido", "mais rapido",
+                    "mais próximo", "mais proximo", "pode ser qualquer",
+                ]
+                _auto_picked = False
                 if "julio" in h or "júlio" in h:
                     doctor = "julio"
                 elif "bruna" in h:
                     doctor = "bruna"
+                elif any(kw in h for kw in _no_pref_kws):
+                    from app.graph.tools import pick_doctor_by_earliest_availability
+                    age = state.get("patient_age") or 99
+                    age_exception = state.get("age_exception")
+                    # Júlio atende até 65 (sem limite superior se age_exception);
+                    # Bruna atende a partir de 12 anos, sem limite superior.
+                    candidates = []
+                    if age <= 65 or age_exception:
+                        candidates.append("julio")
+                    if age >= 12:
+                        candidates.append("bruna")
+                    if not candidates:
+                        candidates = ["julio"]  # fallback defensivo
+                    if len(candidates) == 1:
+                        doctor = candidates[0]
+                    else:
+                        _minor_first = age < 18 and state.get("is_returning_patient") is False
+                        _slot_dur = 120 if _minor_first else 60
+                        doctor = await pick_doctor_by_earliest_availability(candidates, _slot_dur)
+                    _auto_picked = bool(doctor)
                 else:
                     doctor = None
                 if doctor:
                     next_email_q = _EMAIL_Q if _is_document else _EMAIL_Q_CADASTRO
+                    if _auto_picked:
+                        _doctor_label = "o Dr. Júlio" if doctor == "julio" else "a Dra. Bruna"
+                        next_email_q = (
+                            f"Sem problemas! Como você não tem preferência, seguirei com "
+                            f"{_doctor_label}, que tem a agenda mais próxima. 😊\n\n"
+                            + next_email_q
+                        )
                     return await _extract_and_ask({"preferred_doctor": doctor}, next_email_q)
             return await _ask(_DOCTOR_Q)
 
@@ -770,6 +839,18 @@ async def collect_info_node(state: ConversationState, config: RunnableConfig) ->
         pricing_rules=get_pricing_rules(datetime.now()),
         medical_limits_rule=MEDICAL_LIMITS_RULE,
     )
+    # Interrupção com pergunta de informação: instrua o LLM a responder a dúvida e
+    # retomar exatamente a pergunta pendente do cadastro, sem pular etapas.
+    if _is_interruption:
+        _pending_q = _nq()
+        _collect_system += (
+            f"\n\nO paciente interrompeu o cadastro com uma pergunta: "
+            f"\"{_last_human()}\". Responda a dúvida de forma clara e objetiva usando "
+            f"as regras acima (preços, endereço, formas de pagamento, etc.). "
+            f"EM SEGUIDA, na MESMA mensagem, retome o cadastro repetindo exatamente "
+            f"esta pergunta pendente, sem pular etapas: \"{_pending_q}\". "
+            f"NÃO marque is_complete=true e NÃO extraia nenhum campo deste turno."
+        )
     # Inject contact-vs-patient rule when already known during collect phase
     _ci_is_third_party = state.get("is_patient") is False
     _ci_user_name = state.get("user_name")

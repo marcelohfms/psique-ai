@@ -169,6 +169,47 @@ def _format_any_day_section(day: date, day_shifts: dict, preferred_shift: str) -
     return "\n".join(lines)
 
 
+async def _earliest_slot_dt(calendar_id: str, doctor: str, slot_duration_minutes: int) -> datetime | None:
+    """Retorna o datetime do slot disponível mais cedo para o médico, varrendo os
+    dias úteis futuros (até _ANY_DAY_MAX_WEEKS semanas). Como os dias são
+    percorridos em ordem cronológica, o primeiro dia com vaga contém o slot mais
+    cedo. None se nada for encontrado dentro do horizonte."""
+    from app.google_calendar import get_available_slots as _get_slots
+
+    for offset in range(0, _ANY_DAY_MAX_WEEKS + 1):
+        start, end = _week_range(offset)
+        for day in _business_days(start, end):
+            day_shifts = await _slots_for_any_day(
+                day, calendar_id, doctor, "qualquer", slot_duration_minutes, _get_slots
+            )
+            slots = [s[0] for lst in day_shifts.values() for s in lst]
+            if slots:
+                return min(slots)
+    return None
+
+
+async def pick_doctor_by_earliest_availability(
+    candidates: list[str], slot_duration_minutes: int = 60,
+) -> str | None:
+    """Entre os médicos candidatos (já filtrados por idade), retorna o que tem o
+    slot disponível mais cedo — a "agenda mais próxima". A Dra. Bruna sempre usa
+    slots de 60min (mesmo em 1ª consulta de menor). Empate ou falha de agenda →
+    primeiro candidato (fallback determinístico, nunca deixa sem médico)."""
+    best_doctor: str | None = None
+    best_dt: datetime | None = None
+    for doctor in candidates:
+        calendar_id = await _get_doctor_calendar_id(doctor)
+        if not calendar_id:
+            continue
+        dur = 60 if doctor == "bruna" else slot_duration_minutes
+        dt = await _earliest_slot_dt(calendar_id, doctor, dur)
+        if dt is None:
+            continue
+        if best_dt is None or dt < best_dt:
+            best_dt, best_doctor = dt, doctor
+    return best_doctor or (candidates[0] if candidates else None)
+
+
 async def _search_any_day(calendar_id: str, doctor: str, preferred_shift: str, slot_duration_minutes: int) -> str:
     """Busca dias úteis futuros (qualquer dia da semana) quando o paciente não
     tem preferência de dia (ex: "qualquer dia"). Busca primeiro a semana atual
