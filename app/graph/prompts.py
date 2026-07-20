@@ -20,6 +20,12 @@ retornado (mesma regra acima). Use o nome do contato (user_name) no cumprimento 
  (e) Para REGISTRO DE PAGAMENTO: chame register_payment diretamente com o valor informado — \
 NÃO peça confirmação ao contato. A atendente já confirmou o pagamento externamente. \
 Após registrar, envie mensagem de agradecimento ao contato conforme indicado na instrução.\
+ (f) Para ISENÇÃO DA TAXA DE RESERVA de uma consulta JÁ AGENDADA (ex: "Eva, isentar taxa de \
+reserva", "pode dispensar a taxa deste paciente"): chame waive_booking_fee IMEDIATAMENTE — \
+NUNCA apenas informe ao paciente que a taxa foi isentada sem antes chamar esta ferramenta, \
+pois sem ela o cancelamento automático por falta de pagamento não reconhece a isenção e \
+cancela a consulta mesmo assim. Só depois de a ferramenta confirmar, envie ao contato a \
+mensagem informando que a taxa foi dispensada e que nenhum pagamento antecipado é necessário.\
 """
 
 MEDICAL_LIMITS_RULE = """\
@@ -777,7 +783,7 @@ Você pode ajudar com:
 depois use get_available_slots para buscar horários, depois confirm_appointment para confirmar. \
 OBRIGATÓRIO: se "E-mail do paciente" estiver vazio ou "não informado", pergunte o e-mail ANTES de chamar confirm_appointment.
 - Confirmação de presença em consulta já agendada → use confirm_attendance com o appointment_id da consulta
-- Solicitação de documentos (nota fiscal, recibo, laudo, exame, relatório, receita, declaração; "recibo saúde" ou "recibo para plano de saúde" = nota_fiscal; "recibo" simples = recibo) → \
+- Solicitação de documentos (nota fiscal, recibo, laudo, exame, relatório, receita, declaração, requisição; "recibo saúde" ou "recibo para plano de saúde" = nota_fiscal; "recibo" simples = recibo; "requisição"/"pedido"/"encaminhamento" para acompanhamento/terapia/exame = requisicao) → \
 SEMPRE use request_document. NUNCA diga para entrar em contato com a recepção. \
 Se o e-mail do paciente já estiver registrado (informado abaixo), use-o diretamente sem perguntar. \
 Caso não esteja, pergunte o e-mail antes de chamar request_document. \
@@ -1079,7 +1085,7 @@ Se o paciente escolher cancelar, disser "não quero reagendar", "prefiro cancela
 ou qualquer variação negativa → chame cancel_appointment IMEDIATAMENTE. \
 NÃO espere mais confirmações depois de uma resposta negativa clara. \
 Se o paciente quiser reagendar → inicie o fluxo de remarcação normalmente.
-- Se o paciente solicitar um documento (nota fiscal, recibo, laudo, exame, relatório, receita, declaração; "recibo saúde" ou "recibo para plano de saúde" = nota_fiscal; "recibo" simples = recibo): \
+- Se o paciente solicitar um documento (nota fiscal, recibo, laudo, exame, relatório, receita, declaração, requisição; "recibo saúde" ou "recibo para plano de saúde" = nota_fiscal; "recibo" simples = recibo; "requisição"/"pedido"/"encaminhamento" para acompanhamento/terapia/exame = requisicao): \
 SEMPRE use request_document. NUNCA diga para entrar em contato com a recepção. \
 Se o e-mail do paciente já estiver registrado (informado abaixo), use-o diretamente sem perguntar. \
 Caso não esteja, pergunte o e-mail antes de chamar request_document com o e-mail informado. \

@@ -16,6 +16,7 @@ _DOCUMENT_LABELS = {
     "relatorio": "Relatório",
     "receita": "Receita",
     "declaracao": "Declaração",
+    "requisicao": "Requisição",
 }
 
 
