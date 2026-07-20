@@ -1601,6 +1601,32 @@ async def test_register_payment_rename_failure_still_succeeds():
     assert "não pôde ser renomeado" in notify_msg
 
 
+async def test_register_payment_sheets_append_failure_notifies_clinic():
+    """A failed write to the Pagamentos sheet must not go unnoticed — the clinic
+    notification should flag that the payment was NOT recorded in the spreadsheet,
+    even though the appointment fields were updated and Eva reports success to the
+    patient (caso Ana Patrícia De Souza, 2026-07-20: three payments processed with
+    booking_fee_paid_at set and event logged, but silently missing from the sheet)."""
+    from app.graph.tools import register_payment
+    client, _, _ = _make_supabase_client_with_appointment()
+    with patch("app.graph.tools.get_supabase", new_callable=AsyncMock, return_value=client), \
+         patch("app.graph.tools.get_users_by_phone", new_callable=AsyncMock, return_value=[{"id": "user-123", "patient_name": "Maria"}]), \
+         patch("app.graph.tools.log_event", new_callable=AsyncMock), \
+         patch("app.graph.tools._notify_clinic", new_callable=AsyncMock) as mock_notify, \
+         patch("app.google_drive.rename_file", new_callable=AsyncMock), \
+         patch("app.google_sheets.append_payment_receipt", new_callable=AsyncMock, side_effect=Exception("Sheets API unavailable")), \
+         patch("app.graph.tools.send_text", new_callable=AsyncMock):
+        result = await register_payment.coroutine(
+            amount="100,00",
+            drive_link="https://drive.google.com/file/d/abc/view",
+            state=_make_state(),
+            config=CONFIG,
+        )
+    assert "✅" in result
+    notify_msg = mock_notify.call_args[0][0]
+    assert "NÃO" in notify_msg and "planilha" in notify_msg
+
+
 async def test_register_payment_rename_uses_no_extension_and_sanitizes_amount():
     """The filename passed to rename_file must have no extension (rename_file now
     preserves whatever extension the file was actually uploaded with) and the

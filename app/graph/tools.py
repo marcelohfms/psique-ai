@@ -2374,6 +2374,7 @@ async def register_payment(
                 "paid_at": now_dt.isoformat(),
                 "booking_fee_paid_at": now_dt.isoformat(),
             })
+        _sheets_append_failed = False
         try:
             await append_payment_receipt(
                 patient_name, patient_phone, doctor_label, appointment_dt,
@@ -2381,10 +2382,15 @@ async def register_payment(
             )
         except Exception:
             _logger.exception("SHEETS_APPEND FAILED patient=%s", patient_name)
+            _sheets_append_failed = True
+        _sheets_warning = (
+            "\n⚠️ O pagamento NÃO foi registrado na planilha Pagamentos — "
+            "registre manualmente."
+        ) if _sheets_append_failed else ""
         await _notify_clinic(
             f"💰 Comprovante recebido!\nPaciente: {patient_name}\nValor: R$ {amount}"
             f"\nTipo: Consulta (cortesia)\nConsulta: {appointment_dt}\nLink: {drive_link}"
-            f"{_rename_warning}",
+            f"{_rename_warning}{_sheets_warning}",
             subject=f"Comprovante recebido — {patient_name}",
         )
         await log_event("payment_receipt_registered", phone, {
@@ -2447,14 +2453,20 @@ async def register_payment(
             )
 
     # ── Record in Google Sheets ────────────────────────────────────────────────
+    _sheets_append_failed = False
     try:
         await append_payment_receipt(patient_name, patient_phone, doctor_label, appointment_dt, amount, drive_link, payment_type=payment_type, payment_method_override=_sheets_payment_method)
     except Exception:
         _logger.exception("SHEETS_APPEND FAILED patient=%s", patient_name)
+        _sheets_append_failed = True
+    _sheets_warning = (
+        "\n⚠️ O pagamento NÃO foi registrado na planilha Pagamentos — "
+        "registre manualmente."
+    ) if _sheets_append_failed else ""
 
     await _notify_clinic(
         f"💰 Comprovante recebido!\nPaciente: {patient_name}\nValor: R$ {amount}\nTipo: {payment_type}\nConsulta: {appointment_dt}\nLink: {drive_link}"
-        f"{_rename_warning}",
+        f"{_rename_warning}{_sheets_warning}",
         subject=f"Comprovante recebido — {patient_name}",
     )
 
