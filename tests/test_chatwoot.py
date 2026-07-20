@@ -177,3 +177,48 @@ async def test_find_or_create_reuses_existing_open_conversation():
 
     assert result == 333
     mock_client.post.assert_not_called()
+
+
+async def test_find_or_create_skips_duplicate_contact_without_conversation():
+    """A stray duplicate Chatwoot contact (e.g. registered with the extra 9 in the
+    phone number, no linked conversation) must not shadow the real contact that
+    matches the other phone-digit variant and has the actual conversation."""
+    from app.chatwoot import find_or_create_conversation, _store
+    _store.clear()
+
+    mock_client = AsyncMock()
+    mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+    mock_client.__aexit__ = AsyncMock(return_value=False)
+
+    def _resp(json_body: dict):
+        r = MagicMock()
+        r.raise_for_status = MagicMock()
+        r.json = MagicMock(return_value=json_body)
+        return r
+
+    async def fake_get(url: str, **kwargs):
+        if "/contacts/search" in url:
+            q = kwargs.get("params", {}).get("q")
+            if q == "5581999735649":
+                return _resp({"payload": [{"id": 89, "contact_inboxes": []}]})
+            if q == "558199735649":
+                return _resp({"payload": [{"id": 90, "contact_inboxes": [{"source_id": "558199735649"}]}]})
+            return _resp({"payload": []})
+        if "/contacts/90/conversations" in url:
+            return _resp({"payload": [{"id": 333, "inbox_id": 1, "status": "open"}]})
+        if "/contacts/89/conversations" in url:
+            return _resp({"payload": []})
+        raise AssertionError(f"unexpected GET {url}")
+
+    mock_client.get = AsyncMock(side_effect=fake_get)
+
+    with patch("httpx.AsyncClient", return_value=mock_client), \
+         patch.dict("os.environ", {
+             "CHATWOOT_BASE_URL": "https://chat.example.com",
+             "CHATWOOT_ACCOUNT_ID": "1",
+             "CHATWOOT_AGENT_BOT_TOKEN": "test-token",
+             "CHATWOOT_INBOX_ID": "1",
+         }):
+        result = await find_or_create_conversation("5581999735649@s.whatsapp.net")
+
+    assert result == 333
