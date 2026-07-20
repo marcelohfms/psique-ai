@@ -144,7 +144,10 @@ async def _send_reminder_to_contacts(client, appt, template_name, sent_col, now,
     doctor_label = DOCTOR_LABELS.get(appt.get("doctor_id", ""), "médico(a)")
     patient_id = appt.get("patient_id")
 
-    contacts = await get_contacts_for_patient(patient_id, "consulta") if patient_id else []
+    # include_inactive=True: lembrete de consulta é transacional e deve chegar
+    # mesmo se o contato estiver com o bot pausado (ex.: transferido para
+    # atendimento humano) — pausa do bot não deve silenciar avisos de horário.
+    contacts = await get_contacts_for_patient(patient_id, "consulta", include_inactive=True) if patient_id else []
     if not contacts:
         print(f"  [SKIP] appt {appointment_id} sem contato de consulta (patient_id={patient_id})")
         return []

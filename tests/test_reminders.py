@@ -52,6 +52,22 @@ async def test_reminder_sent_to_all_agendamento_contacts():
 
 
 @pytest.mark.asyncio
+async def test_reminder_includes_inactive_contacts():
+    # Regression: contato pausado (ex.: transferido p/ atendimento humano) não
+    # pode silenciar o lembrete de consulta — é transacional, não conversacional.
+    client, table = _client()
+    now = datetime(2026, 6, 19, 7, 0, tzinfo=TZ)
+    with patch("scripts.send_appointment_reminders.get_contacts_for_patient",
+               new_callable=AsyncMock, return_value=[{"phone": "5581111"}]) as mock_gcfp, \
+         patch("scripts.send_appointment_reminders.send_reminder_template",
+               new_callable=AsyncMock):
+        await rem._send_reminder_to_contacts(
+            client, _appt(), "lembrete_dia_anteior",
+            "reminder_day_before_sent_at", now, None)
+    mock_gcfp.assert_awaited_once_with("p-joao", "consulta", include_inactive=True)
+
+
+@pytest.mark.asyncio
 async def test_reminder_skips_when_no_agendamento_contact():
     # sem contato agendamento -> não envia nem marca (apenas loga e pula)
     client, table = _client()
