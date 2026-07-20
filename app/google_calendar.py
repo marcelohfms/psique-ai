@@ -235,6 +235,20 @@ def _next_weekday(weekday: int) -> date:
     return today + timedelta(days=days_ahead)
 
 
+# Phrases that mean the patient explicitly wants NEXT week, not just the
+# nearest future occurrence of a weekday (which may still fall this week).
+_NEXT_WEEK_PATTERNS = ("próxima semana", "proxima semana", "semana que vem", "semana seguinte")
+
+
+def _next_week_weekday(weekday: int) -> date:
+    """Date of `weekday` within "próxima semana" — defined as the Monday
+    following the current week through that same week's Friday — even if the
+    nearest raw occurrence of `weekday` would still fall within the current week."""
+    today = datetime.now(TZ).date()
+    next_monday = today + timedelta(days=7 - today.weekday())
+    return next_monday + timedelta(days=weekday)
+
+
 _MONTHS_PT = {
     "janeiro": 1, "fevereiro": 2, "março": 3, "marco": 3,
     "abril": 4, "maio": 5, "junho": 6, "julho": 7,
@@ -272,6 +286,9 @@ def _parse_day(preferred_day: str) -> date | None:
         if date(year, month_num, 1) < date(today.year, today.month, 1):
             year += 1
         return _next_weekday_in_month(wd, year, month_num)
+
+    if _weekday_match and any(p in s for p in _NEXT_WEEK_PATTERNS):
+        return _next_week_weekday(_weekday_match[1])
 
     if _weekday_match:
         return _next_weekday(_weekday_match[1])

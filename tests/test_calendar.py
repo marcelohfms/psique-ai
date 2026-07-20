@@ -59,6 +59,51 @@ def test_parse_day_invalid_returns_none():
     assert _parse_day("bla bla") is None
 
 
+# ── "próxima semana" explicit qualifier ────────────────────────────────────────
+# Regression for Mayri/Matheus case (5581988851971, 2026-07-07): patient said
+# "próxima semana" on a Tuesday about Wednesday, and Eva kept offering the
+# Wednesday of the CURRENT week instead of skipping to next week.
+
+class _FrozenDTTuesday(_real_dt):
+    """'Today' = 2026-07-07, a Tuesday — same weekday as the real bug report."""
+    @classmethod
+    def now(cls, tz=None):
+        return _real_dt(2026, 7, 7, 10, 0, tzinfo=tz) if tz else _real_dt(2026, 7, 7, 10, 0)
+
+
+@pytest.fixture
+def freeze_calendar_tuesday():
+    with patch("app.google_calendar.datetime", _FrozenDTTuesday):
+        yield
+
+
+def test_parse_day_weekday_alone_returns_this_week_occurrence(freeze_calendar_tuesday):
+    """Plain 'quarta' on a Tuesday still means tomorrow (this week) — unchanged."""
+    from app.google_calendar import _parse_day
+    result = _parse_day("quarta")
+    assert result == date(2026, 7, 8)
+
+
+def test_parse_day_explicit_next_week_skips_current_week(freeze_calendar_tuesday):
+    """'quarta-feira da próxima semana' must skip this week's Wednesday (07/07+1)
+    and land on next week's Wednesday instead."""
+    from app.google_calendar import _parse_day
+    result = _parse_day("quarta-feira da próxima semana")
+    assert result == date(2026, 7, 15)
+
+
+def test_parse_day_semana_que_vem_variant(freeze_calendar_tuesday):
+    from app.google_calendar import _parse_day
+    result = _parse_day("quarta semana que vem")
+    assert result == date(2026, 7, 15)
+
+
+def test_parse_day_semana_seguinte_variant(freeze_calendar_tuesday):
+    from app.google_calendar import _parse_day
+    result = _parse_day("quarta da semana seguinte")
+    assert result == date(2026, 7, 15)
+
+
 # ── get_available_slots (with mocked Google API) ──────────────────────────────
 
 def _make_service(busy_periods: list[dict]) -> MagicMock:

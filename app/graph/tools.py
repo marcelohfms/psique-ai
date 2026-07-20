@@ -287,6 +287,12 @@ async def get_available_slots(
     um dia da semana, inclua o mês em preferred_day (ex: "quinta de agosto") para que a busca
     comece a partir daquele mês — NUNCA responda que "a agenda desse mês ainda não está aberta",
     isso não existe; sempre chame a ferramenta com o mês incluído.
+    IMPORTANTE — "próxima semana": se o paciente disser explicitamente "próxima semana", "semana
+    que vem" ou "semana seguinte" (mesmo que o dia da semana já tenha sido combinado em mensagens
+    anteriores), inclua essa expressão JUNTO com o dia em preferred_day (ex: "quarta-feira da
+    próxima semana") — NUNCA passe só o dia sozinho nesse caso. "Próxima semana" significa a
+    segunda-feira seguinte até a sexta-feira daquela semana, e a ferramenta pula qualquer
+    ocorrência do dia que ainda caia na semana atual.
     Use slot_duration_minutes=120 para primeira consulta de paciente menor de 18 anos,
     60 para todos os outros casos.
     Use preferred_shift="qualquer" quando o paciente informar um dia mas ainda não tiver
