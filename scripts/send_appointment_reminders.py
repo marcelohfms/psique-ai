@@ -13,12 +13,17 @@ Requires in Supabase:
   ALTER TABLE appointments ADD COLUMN IF NOT EXISTS reminder_day_of_sent_at timestamptz;
 """
 import asyncio
+import logging
 import os
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
 from dotenv import load_dotenv
 load_dotenv()
+
+# Emite os logs INFO do app.chatwoot (ex.: FIND_CONV) no stdout do cron/CI,
+# para diagnosticar timeouts na resolução de conversa por número.
+logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s %(message)s")
 
 import app.database  # noqa: F401 — carrega database antes de patients (evita import circular)
 from app.patients import get_contacts_for_patient
@@ -170,7 +175,9 @@ async def _send_reminder_to_contacts(client, appt, template_name, sent_col, now,
             print(f"  [{effective_template}] Sent to {phone} — {patient_name} @ {time_str} [{modality or 'sem modalidade'}]")
             sent_phones.append(phone)
         except Exception as e:
-            print(f"  Failed to send to {phone}: {e}")
+            import traceback
+            print(f"  Failed to send to {phone}: {type(e).__name__}: {e!r}")
+            traceback.print_exc()
 
     # Marca sent_col uma vez por agendamento (se ao menos um envio funcionou).
     if sent_phones:

@@ -305,6 +305,44 @@ async def test_existing_patient_agent_syncs_missing_doctor_and_returning():
         gg.chatbot = original
 
 
+@pytest.mark.asyncio
+async def test_patient_agent_sync_uses_active_patient_not_arbitrary_one():
+    """Quando o contato tem múltiplos pacientes (ex: gêmeas), o sync de patient_agent
+    deve usar o paciente já selecionado nesta conversa (snapshot["user_db_id"]) — não a
+    escolha arbitrária de get_user_by_phone (primeiro registro achado, sem relação com
+    o assunto em curso). Caso contrário, patient_name é silenciosamente sobrescrito com
+    o nome do paciente errado no meio de uma conversa em andamento sobre outro paciente
+    (caso Renata Monteiro / Laila+Suzi Viana, 5581996962165, 08/07/2026: no meio do
+    agendamento da Suzi, este sync trocou patient_name de volta para "Laila", e o
+    agendamento seguinte foi gravado no patient_id errado — depois cancelado como
+    "consulta da Laila", cancelando na real a consulta paga da Suzi)."""
+    import app.graph.graph as gg
+    _laila = {**_KNOWN_USER, "id": "laila-id", "patient_name": "Laila Monteiro Viana"}
+    _suzi = {**_KNOWN_USER, "id": "suzi-id", "patient_name": "Suzi Monteiro Viana"}
+    # Conversa já em andamento sobre a Suzi — user_db_id aponta pra ela.
+    existing_state = {
+        "stage": "patient_agent",
+        "messages": [HumanMessage(content="anterior")],
+        "user_db_id": "suzi-id",
+        "patient_name": "Suzi Monteiro Viana",
+        "preferred_doctor": "julio",
+        "is_returning_patient": True,
+    }
+    chatbot = _make_chatbot(snapshot_values=existing_state)
+    original = gg.chatbot
+    gg.chatbot = chatbot
+    try:
+        with patch("app.main.get_user_by_phone", new_callable=AsyncMock, return_value=_laila), \
+             patch("app.main.get_users_by_phone", new_callable=AsyncMock, return_value=[_laila, _suzi]), \
+             patch("app.main.log_event", new_callable=AsyncMock):
+            from app.main import process_message
+            await process_message(PHONE, "9hs presencial")
+            state_update = chatbot.ainvoke.call_args[0][0]
+            assert state_update.get("patient_name") == "Suzi Monteiro Viana"
+    finally:
+        gg.chatbot = original
+
+
 # ── Guardian info collection for minors ──────────────────────────────────────
 
 def _base_minor_state(**kwargs) -> dict:
