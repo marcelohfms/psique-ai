@@ -488,8 +488,11 @@ async def process_message(phone: str, text: str) -> None:
 
         # Recover from orphaned tool_calls: if the last AIMessage has pending
         # tool_calls but no corresponding ToolMessage (happens when the server
-        # restarts mid-execution), inject error ToolMessages so LangGraph can
-        # continue cleanly instead of getting stuck in an invalid state.
+        # restarts mid-execution, or when the model truncates a tool call after
+        # hitting the completion_tokens cap — that lands in invalid_tool_calls,
+        # not tool_calls, since the JSON args never parsed), inject error
+        # ToolMessages so LangGraph can continue cleanly instead of getting
+        # stuck in an invalid state.
         if snapshot and snapshot.values:
             _cp_msgs = snapshot.values.get("messages") or []
             if _cp_msgs:
@@ -498,7 +501,10 @@ async def process_message(phone: str, text: str) -> None:
                      if getattr(m, "type", None) == "ai"),
                     None,
                 )
-                _pending_calls = getattr(_last_ai, "tool_calls", []) if _last_ai else []
+                _pending_calls = (
+                    (getattr(_last_ai, "tool_calls", []) or [])
+                    + (getattr(_last_ai, "invalid_tool_calls", []) or [])
+                ) if _last_ai else []
                 if _pending_calls:
                     # Check that none of these tool_calls have a ToolMessage response
                     _answered_ids = {

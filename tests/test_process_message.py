@@ -113,6 +113,7 @@ def _make_chatbot(snapshot_values=None):
         return_value=MagicMock(values=snapshot_values or {})
     )
     chatbot.ainvoke = AsyncMock(return_value={})
+    chatbot.aupdate_state = AsyncMock()
     return chatbot
 
 
@@ -282,6 +283,80 @@ async def test_existing_snapshot_adds_only_human_message():
 
 
 @pytest.mark.asyncio
+async def test_orphaned_tool_call_recovery_answers_pending_call():
+    """Regression: an AIMessage with an unanswered tool_call (e.g. server
+    restarted mid-execution) must get an error ToolMessage injected so the
+    next OpenAI call doesn't 400."""
+    import app.graph.graph as gg
+    orphan_ai = AIMessage(
+        content="",
+        tool_calls=[{"name": "confirm_attendance", "args": {}, "id": "call_pending", "type": "tool_call"}],
+    )
+    existing_state = {
+        "stage": "patient_agent",
+        "messages": [HumanMessage(content="oi"), orphan_ai],
+        "preferred_doctor": "julio",
+    }
+    chatbot = _make_chatbot(snapshot_values=existing_state)
+    original = gg.chatbot
+    gg.chatbot = chatbot
+    try:
+        with patch("app.main.get_user_by_phone", new_callable=AsyncMock, return_value=_KNOWN_USER), \
+             patch("app.main.get_users_by_phone", new_callable=AsyncMock, return_value=[_KNOWN_USER]), \
+             patch("app.main.log_event", new_callable=AsyncMock):
+            from app.main import process_message
+            await process_message(PHONE, "confirmo")
+            chatbot.aupdate_state.assert_called_once()
+            _, kwargs = chatbot.aupdate_state.call_args
+            injected = chatbot.aupdate_state.call_args[0][1]["messages"]
+            assert len(injected) == 1
+            assert injected[0].tool_call_id == "call_pending"
+    finally:
+        gg.chatbot = original
+
+
+async def test_orphaned_invalid_tool_call_recovery_answers_pending_call():
+    """Same recovery must also cover invalid_tool_calls: when the model hits the
+    completion_tokens cap mid-tool-call, LangChain parses the malformed JSON
+    args as an invalid_tool_call (not tool_calls), which previously bypassed
+    the orphan check entirely and left every subsequent message silently
+    failing with OpenAI's 400 'tool_calls must be followed by tool messages'
+    (caso Kimmy Cavalcanti Mastana, 5581999656460, 2026-07-20)."""
+    import app.graph.graph as gg
+    orphan_ai = AIMessage(
+        content="",
+        invalid_tool_calls=[{
+            "name": "confirm_attendance",
+            "args": '{"appointment_id":"cal_2p7v7v7v...',  # truncated by max_tokens
+            "id": "call_truncated",
+            "error": "unterminated json",
+            "type": "invalid_tool_call",
+        }],
+    )
+    existing_state = {
+        "stage": "patient_agent",
+        "messages": [HumanMessage(content="boa tarde"), orphan_ai],
+        "preferred_doctor": "julio",
+    }
+    chatbot = _make_chatbot(snapshot_values=existing_state)
+    original = gg.chatbot
+    gg.chatbot = chatbot
+    try:
+        with patch("app.main.get_user_by_phone", new_callable=AsyncMock, return_value=_KNOWN_USER), \
+             patch("app.main.get_users_by_phone", new_callable=AsyncMock, return_value=[_KNOWN_USER]), \
+             patch("app.main.log_event", new_callable=AsyncMock):
+            from app.main import process_message
+            await process_message(PHONE, "queria solicitar a receita")
+            chatbot.aupdate_state.assert_called_once()
+            injected = chatbot.aupdate_state.call_args[0][1]["messages"]
+            assert len(injected) == 1
+            assert injected[0].tool_call_id == "call_truncated"
+            # the real message must still go through to the graph afterwards
+            chatbot.ainvoke.assert_called_once()
+    finally:
+        gg.chatbot = original
+
+
 async def test_existing_patient_agent_syncs_missing_doctor_and_returning():
     """When stage=patient_agent but preferred_doctor/is_returning_patient are missing, sync from DB."""
     import app.graph.graph as gg
