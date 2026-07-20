@@ -1321,16 +1321,20 @@ def test_pricing_exception_rule_courtesy():
 
 def test_pricing_exception_rule_fee_waived_standard_price():
     from app.graph.prompts import get_pricing_exception_rule
+    # standard_price (650) already has the PIX discount applied — card price is 650+50.
     block = get_pricing_exception_rule(None, True, 650)
     assert "DISPENSADA" in block
-    assert "R$ 650,00" in block
-    assert "PIX" not in block
+    assert "R$ 650,00" in block  # dinheiro/PIX price
+    assert "R$ 700,00" in block  # card price
+    assert "PIX" in block
 
 
 def test_pricing_exception_rule_custom_price_normal_fee():
     from app.graph.prompts import get_pricing_exception_rule
+    # custom_price (500) is the CARD price — dinheiro/PIX is 500-50=450.
     block = get_pricing_exception_rule(500, False, 650)
-    assert "R$ 500,00" in block
+    assert "R$ 500,00" in block  # card price
+    assert "R$ 450,00" in block  # dinheiro/PIX price
     assert "R$ 100,00" in block  # taxa de reserva still applies
     assert "NÃO mencione" in block  # Eva is instructed not to mention standard prices or reajuste
 
@@ -1338,9 +1342,10 @@ def test_pricing_exception_rule_custom_price_normal_fee():
 def test_pricing_exception_rule_custom_price_fee_waived():
     from app.graph.prompts import get_pricing_exception_rule
     block = get_pricing_exception_rule(500, True, 650)
-    assert "R$ 500,00" in block
+    assert "R$ 500,00" in block  # card price
+    assert "R$ 450,00" in block  # dinheiro/PIX price
     assert "DISPENSADA" in block
-    assert "PIX" not in block
+    assert "PIX" in block
 
 
 @pytest.mark.asyncio

@@ -121,8 +121,14 @@ async def test_compute_pendencias_fallback_telefone_sem_is_self(fake_client):
 
 
 def test_calc_valor_consulta_custom_price_sobrepoe_tudo():
-    # custom_price vence mesmo com médico/idade/tipo que dariam outro valor
-    assert _calc_valor_consulta(JULIO_ID, "2015-05-01", "primeira_consulta", 999) == 999
+    # custom_price (valor no cartão) vence mesmo com médico/idade/tipo que dariam
+    # outro valor — mas o desconto de R$50 dinheiro/PIX ainda se aplica sobre ele.
+    assert _calc_valor_consulta(JULIO_ID, "2015-05-01", "primeira_consulta", 999) == 949
+
+
+def test_calc_valor_consulta_custom_price_courtesy():
+    # custom_price=0 é cortesia — sem desconto, retorna 0.
+    assert _calc_valor_consulta(JULIO_ID, "2015-05-01", "primeira_consulta", 0) == 0
 
 
 def test_calc_valor_consulta_dra_bruna():

@@ -1670,15 +1670,17 @@ def _expected_consultation_amount(
     now_dt,
     price_override: int | None = None,
 ) -> int:
-    """Return the expected full payment amount (with R$50 PIX discount for standard pricing).
+    """Return the expected full payment amount (with R$50 PIX discount).
 
-    price_override: if set, returns that value directly — no standard formula, no PIX discount.
+    price_override: patient's custom card price (patients.custom_price) — the R$50
+        PIX/cash discount still applies on top of it, same as standard pricing.
+        Exception: 0 means a courtesy (free) consultation, returned as-is.
     consultation_type: value stored in appointments.consultation_type at booking time.
         'primeira_consulta' → first visit pricing (higher)
         'acompanhamento' or None → follow-up pricing (default for unknown)
     """
     if price_override is not None:
-        return price_override
+        return price_override - 50 if price_override else price_override
     post_june = (now_dt.year, now_dt.month) >= (2026, 6)
     if doctor_key == "bruna":
         base = 700 if post_june else 600

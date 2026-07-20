@@ -48,9 +48,13 @@ def _calc_valor_consulta(
     consultation_type: str | None,
     custom_price: int | None,
 ) -> int:
-    """Retorna o valor sugerido da consulta (com desconto de R$50 para dinheiro/PIX)."""
+    """Retorna o valor sugerido da consulta (com desconto de R$50 para dinheiro/PIX).
+
+    custom_price é o valor especial no cartão de crédito do paciente — o desconto
+    de R$50 para dinheiro/PIX ainda se aplica sobre ele, exceto cortesia (0).
+    """
     if custom_price is not None:
-        return custom_price
+        return custom_price - 50 if custom_price else custom_price
     age = None
     if birth_date:
         try:

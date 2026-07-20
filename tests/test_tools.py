@@ -1199,16 +1199,17 @@ async def test_confirm_appointment_copies_booking_fee_waived_to_appointment():
 # ── _expected_consultation_amount ────────────────────────────────────────────
 
 def test_expected_consultation_amount_price_override():
-    """price_override bypasses the standard formula and returns the override directly, no PIX discount."""
+    """price_override is the patient's custom CARD price — the R$50 PIX/cash
+    discount still applies on top of it, except for courtesy (0)."""
     from app.graph.tools import _expected_consultation_amount
     from datetime import datetime
     from zoneinfo import ZoneInfo
     now = datetime(2026, 6, 1, tzinfo=ZoneInfo("America/Recife"))
     # Baseline: Dr. Júlio adult post-June → 700 - 50 = 650
     assert _expected_consultation_amount("julio", 35, None, now) == 650
-    # price_override=500: returns exactly 500 (no PIX discount subtracted)
-    assert _expected_consultation_amount("julio", 35, None, now, price_override=500) == 500
-    # price_override=0: returns 0 (courtesy)
+    # price_override=500 (card price): returns 500 - 50 = 450 (PIX/cash discount applies)
+    assert _expected_consultation_amount("julio", 35, None, now, price_override=500) == 450
+    # price_override=0: returns 0 (courtesy, no discount math)
     assert _expected_consultation_amount("julio", 35, None, now, price_override=0) == 0
     # price_override=None: standard formula still applies
     assert _expected_consultation_amount("bruna", 40, None, now, price_override=None) == 650
