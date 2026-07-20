@@ -2136,6 +2136,76 @@ async def test_register_payment_courtesy_zero_price():
     assert "cortesia" in result.lower()
 
 
+# ── waive_booking_fee ─────────────────────────────────────────────────────────
+
+
+async def test_waive_booking_fee_requires_silent_mode():
+    """Eva não pode isentar a taxa por conta própria fora de nota privada da atendente."""
+    from app.graph.tools import waive_booking_fee
+    client, table, execute = _make_supabase_client()
+    with patch("app.graph.tools.get_supabase", new_callable=AsyncMock, return_value=client), \
+         patch("app.graph.tools.log_event", new_callable=AsyncMock) as mock_log:
+        result = await waive_booking_fee.coroutine(
+            state=_make_state(),
+            config=CONFIG,
+        )
+    assert "INSTRUÇÃO INTERNA" in result
+    table.update.assert_not_called()
+    mock_log.assert_not_awaited()
+
+
+async def test_waive_booking_fee_no_user_found():
+    from app.graph.tools import waive_booking_fee
+    client, table, execute = _make_supabase_client()
+    with patch("app.graph.tools.get_supabase", new_callable=AsyncMock, return_value=client), \
+         patch("app.graph.tools.get_user_by_phone", new_callable=AsyncMock, return_value=None):
+        result = await waive_booking_fee.coroutine(
+            state=_make_state(silent_mode=True),
+            config=CONFIG,
+        )
+    assert "Não encontrei cadastro" in result
+
+
+async def test_waive_booking_fee_no_pending_appointment():
+    from app.graph.tools import waive_booking_fee
+    client, table, execute = _make_supabase_client()
+    execute.return_value = MagicMock(data=[])
+    with patch("app.graph.tools.get_supabase", new_callable=AsyncMock, return_value=client), \
+         patch("app.graph.tools.get_user_by_phone", new_callable=AsyncMock, return_value={"id": "patient-1"}):
+        result = await waive_booking_fee.coroutine(
+            state=_make_state(silent_mode=True),
+            config=CONFIG,
+        )
+    assert "Não encontrei consulta agendada" in result
+
+
+async def test_waive_booking_fee_updates_appointment_and_logs():
+    """Caso principal: isenta a taxa gravando booking_fee_waived no agendamento —
+    sem isso, o cancelamento automático por falta de pagamento não reconhece a isenção
+    combinada verbalmente (bug reportado: consulta cancelada apesar da taxa isentada)."""
+    from app.graph.tools import waive_booking_fee
+    client, table, execute = _make_supabase_client()
+    future_start = (datetime.now(TZ) + timedelta(days=3)).isoformat()
+    execute.side_effect = [
+        MagicMock(data=[{"appointment_id": "evt-abc", "start_time": future_start}]),  # select
+        MagicMock(data=[]),  # update
+    ]
+    with patch("app.graph.tools.get_supabase", new_callable=AsyncMock, return_value=client), \
+         patch("app.graph.tools.get_user_by_phone", new_callable=AsyncMock, return_value={"id": "patient-1"}), \
+         patch("app.graph.tools.log_event", new_callable=AsyncMock) as mock_log:
+        result = await waive_booking_fee.coroutine(
+            state=_make_state(silent_mode=True),
+            config=CONFIG,
+        )
+    assert "isentada" in result.lower()
+    table.update.assert_called_once()
+    update_payload = table.update.call_args[0][0]
+    assert update_payload["booking_fee_waived"] is True
+    assert update_payload["booking_fee_paid_at"] is not None
+    mock_log.assert_awaited_once()
+    assert mock_log.call_args[0][0] == "booking_fee_waived"
+
+
 # ── update_patient_ages script logic ─────────────────────────────────────────
 
 def test_age_from_birth_date_dd_mm_yyyy():

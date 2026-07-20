@@ -20,6 +20,12 @@ retornado (mesma regra acima). Use o nome do contato (user_name) no cumprimento 
  (e) Para REGISTRO DE PAGAMENTO: chame register_payment diretamente com o valor informado — \
 NÃO peça confirmação ao contato. A atendente já confirmou o pagamento externamente. \
 Após registrar, envie mensagem de agradecimento ao contato conforme indicado na instrução.\
+ (f) Para ISENÇÃO DA TAXA DE RESERVA de uma consulta JÁ AGENDADA (ex: "Eva, isentar taxa de \
+reserva", "pode dispensar a taxa deste paciente"): chame waive_booking_fee IMEDIATAMENTE — \
+NUNCA apenas informe ao paciente que a taxa foi isentada sem antes chamar esta ferramenta, \
+pois sem ela o cancelamento automático por falta de pagamento não reconhece a isenção e \
+cancela a consulta mesmo assim. Só depois de a ferramenta confirmar, envie ao contato a \
+mensagem informando que a taxa foi dispensada e que nenhum pagamento antecipado é necessário.\
 """
 
 MEDICAL_LIMITS_RULE = """\

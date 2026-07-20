@@ -161,6 +161,7 @@ function pagamentoCard(p) {
       </label>
       <button onclick="buscarComprovanteConversa(this)" class="buscar-conversa-btn text-xs text-gray-500 dark:text-gray-400 underline">Buscar da conversa</button>
       <button onclick="marcarPago(this)" class="bg-wa-green hover:bg-wa-green-dk text-white text-xs px-3 py-1.5 rounded ml-auto">Marcar pago</button>
+      ${isentarBtn}
     </div>
     <div class="comprovante-nome text-xs text-gray-400 dark:text-gray-500 mt-1"></div>
     <div class="comprovante-resultados mt-1 space-y-1"></div>
@@ -249,6 +250,23 @@ async function marcarPago(btn) {
     }),
   });
   if (!r.ok) { alert("Erro ao registrar pagamento."); btn.disabled = false; return; }
+  card.remove();
+}
+
+async function isentarTaxa(btn) {
+  const card = btn.closest("[data-appt]");
+  if (!confirm(`Isentar a taxa de reserva de ${card.dataset.paciente}? Nenhum valor será cobrado.`)) return;
+  btn.disabled = true;
+  const r = await fetch(`/api/atendente/pagamentos/${card.dataset.appt}/isentar?token=${encodeURIComponent(TOKEN)}`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      paciente: card.dataset.paciente, medico: card.dataset.medico,
+      data_hora: card.dataset.dataHora, phone: card.dataset.phone,
+      conversation_id: CONVERSATION_ID,
+    }),
+  });
+  if (!r.ok) { alert("Erro ao isentar taxa."); btn.disabled = false; return; }
   card.remove();
 }
 

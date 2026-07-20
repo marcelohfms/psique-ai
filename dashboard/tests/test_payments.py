@@ -276,6 +276,38 @@ async def test_mark_paid_email_failure_nao_propaga(fake_client, monkeypatch):
     assert row["paid_at"] is not None  # gravação principal não foi afetada pela falha do e-mail
 
 
+# ── mark_fee_waived ───────────────────────────────────────────────────────────
+
+
+async def test_mark_fee_waived_seta_booking_fee_waived(fake_client, monkeypatch):
+    fake_client.store["appointments"] = [{"appointment_id": "a1", "booking_fee_waived": False}]
+    monkeypatch.setattr(payments, "_send_clinic_email", AsyncMock())
+    await payments.mark_fee_waived(fake_client, "a1", "João", "Dr. Júlio", "10/07/2026 14:00")
+    row = fake_client.store["appointments"][0]
+    assert row["booking_fee_waived"] is True
+
+
+async def test_mark_fee_waived_ids_multiplos_atualiza_todas_as_linhas(fake_client, monkeypatch):
+    fake_client.store["appointments"] = [
+        {"appointment_id": "a1", "booking_fee_waived": False},
+        {"appointment_id": "a2", "booking_fee_waived": False},
+    ]
+    monkeypatch.setattr(payments, "_send_clinic_email", AsyncMock())
+    await payments.mark_fee_waived(fake_client, "a1,a2", "Gabriel", "Dr. Júlio", "01/07/2026 09:00")
+    assert all(row["booking_fee_waived"] is True for row in fake_client.store["appointments"])
+
+
+async def test_mark_fee_waived_email_failure_nao_propaga(fake_client, monkeypatch):
+    fake_client.store["appointments"] = [{"appointment_id": "a1", "booking_fee_waived": False}]
+    monkeypatch.setattr(
+        payments, "_send_clinic_email",
+        AsyncMock(side_effect=RuntimeError("email down")),
+    )
+    await payments.mark_fee_waived(fake_client, "a1", "João", "Dr. Júlio", "10/07/2026 14:00")
+    row = fake_client.store["appointments"][0]
+    assert row["booking_fee_waived"] is True
+
+
 # ── find_receipts ─────────────────────────────────────────────────────────────
 
 

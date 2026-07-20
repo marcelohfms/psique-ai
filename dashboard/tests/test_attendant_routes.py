@@ -280,6 +280,99 @@ def test_pagar_falha_no_envio_da_confirmacao_nao_quebra(client, monkeypatch):
     assert r.json() == {"ok": True}
 
 
+# ── Isenção de taxa de reserva ────────────────────────────────────────────────
+
+
+def test_isentar_requires_token(client):
+    r = client.post("/api/atendente/pagamentos/a1/isentar", json={
+        "paciente": "João", "medico": "Dr. Júlio", "data_hora": "10/07/2026 14:00",
+        "phone": "5581999998888",
+    })
+    assert r.status_code == 401
+
+
+def test_isentar_registra_e_envia_confirmacao(client, monkeypatch):
+    calls = {}
+    async def fake_get_client():
+        return object()
+    async def fake_mark_fee_waived(_client, appointment_id, paciente, medico, data_hora):
+        calls["mark_fee_waived"] = (appointment_id, paciente, medico, data_hora)
+    async def fake_send_confirmation(conversation_id, text):
+        calls["confirm"] = (conversation_id, text)
+    async def fake_log(event_type, phone, metadata):
+        calls["log"] = (event_type, phone, metadata)
+
+    monkeypatch.setattr(attendant_routes, "get_client", fake_get_client)
+    monkeypatch.setattr(payments, "mark_fee_waived", fake_mark_fee_waived)
+    monkeypatch.setattr(chatwoot_client, "send_confirmation_message", fake_send_confirmation)
+    monkeypatch.setattr(attendant_db, "log_event", fake_log)
+
+    r = client.post(
+        "/api/atendente/pagamentos/a1/isentar",
+        params={"token": "test-token"},
+        json={"paciente": "João", "medico": "Dr. Júlio", "data_hora": "10/07/2026 14:00",
+              "phone": "5581999998888", "conversation_id": 42},
+    )
+    assert r.status_code == 200
+    assert r.json() == {"ok": True}
+    assert calls["mark_fee_waived"] == ("a1", "João", "Dr. Júlio", "10/07/2026 14:00")
+    assert calls["confirm"][0] == 42
+    assert "isentada" in calls["confirm"][1]
+    assert calls["log"][0] == "attendant_taxa_isentada"
+
+
+def test_isentar_sem_conversation_id_nao_envia_confirmacao(client, monkeypatch):
+    calls = {}
+    async def fake_get_client():
+        return object()
+    async def fake_mark_fee_waived(*args, **kwargs):
+        calls["mark_fee_waived"] = True
+    async def fake_send_confirmation(conversation_id, text):
+        calls["confirm"] = True
+    async def fake_log(event_type, phone, metadata):
+        calls["log"] = True
+
+    monkeypatch.setattr(attendant_routes, "get_client", fake_get_client)
+    monkeypatch.setattr(payments, "mark_fee_waived", fake_mark_fee_waived)
+    monkeypatch.setattr(chatwoot_client, "send_confirmation_message", fake_send_confirmation)
+    monkeypatch.setattr(attendant_db, "log_event", fake_log)
+
+    r = client.post(
+        "/api/atendente/pagamentos/a1/isentar",
+        params={"token": "test-token"},
+        json={"paciente": "Maria", "medico": "Dra. Bruna", "data_hora": "10/07/2026 15:00",
+              "phone": "5581999998888"},
+    )
+    assert r.status_code == 200
+    assert calls["mark_fee_waived"] is True
+    assert "confirm" not in calls  # sem conversation_id, não tenta mandar mensagem
+
+
+def test_isentar_falha_no_envio_da_confirmacao_nao_quebra(client, monkeypatch):
+    async def fake_get_client():
+        return object()
+    async def fake_mark_fee_waived(*args, **kwargs):
+        return None
+    async def fake_send_confirmation(conversation_id, text):
+        raise RuntimeError("chatwoot fora do ar")
+    async def fake_log(event_type, phone, metadata):
+        return None
+
+    monkeypatch.setattr(attendant_routes, "get_client", fake_get_client)
+    monkeypatch.setattr(payments, "mark_fee_waived", fake_mark_fee_waived)
+    monkeypatch.setattr(chatwoot_client, "send_confirmation_message", fake_send_confirmation)
+    monkeypatch.setattr(attendant_db, "log_event", fake_log)
+
+    r = client.post(
+        "/api/atendente/pagamentos/a1/isentar",
+        params={"token": "test-token"},
+        json={"paciente": "João", "medico": "Dr. Júlio", "data_hora": "10/07/2026 14:00",
+              "phone": "5581999998888", "conversation_id": 42},
+    )
+    assert r.status_code == 200
+    assert r.json() == {"ok": True}
+
+
 # ── Upload de comprovante ─────────────────────────────────────────────────────
 
 

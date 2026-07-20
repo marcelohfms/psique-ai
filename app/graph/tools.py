@@ -2954,3 +2954,59 @@ async def extend_payment_deadline(
     })
 
     return f"Prazo de pagamento estendido até {deadline_str}. O lembrete será reenviado automaticamente."
+
+
+@tool
+async def waive_booking_fee(
+    state: Annotated[dict, InjectedState],
+    config: RunnableConfig,
+) -> str:
+    """Isenta a taxa de reserva (R$ 100,00) da consulta agendada mais próxima deste paciente.
+
+    Use APENAS a partir de uma instrução da atendente em nota privada (silent_mode) pedindo
+    para isentar/dispensar a taxa de reserva (ex: "Eva, isentar taxa de reserva", "pode
+    dispensar a taxa deste paciente"). Você NUNCA decide isentar a taxa por conta própria
+    fora desse contexto — é decisão exclusiva da atendente.
+
+    Sem isso, a isenção comunicada verbalmente ao paciente não é reconhecida pelo cancelamento
+    automático por falta de pagamento, que verifica apenas o banco de dados.
+    """
+    if not state.get("silent_mode"):
+        return (
+            "[INSTRUÇÃO INTERNA — NÃO ENVIE AO PACIENTE] Esta ferramenta só pode ser usada "
+            "a partir de uma instrução da atendente em nota privada. Não isente a taxa de "
+            "reserva por conta própria."
+        )
+
+    phone = config["configurable"]["phone"]
+    client = await get_supabase()
+
+    user = await get_user_by_phone(phone)
+    if not user:
+        return "Não encontrei cadastro para este número."
+
+    now_iso = datetime.now(TZ).isoformat()
+
+    appt = await client.from_("appointments").select(
+        "appointment_id, start_time"
+    ).eq("patient_id", user["id"]).eq("status", "scheduled").eq(
+        "booking_fee_waived", False
+    ).is_("booking_fee_paid_at", "null").gte("start_time", now_iso).order("start_time").limit(1).execute()
+
+    if not appt.data:
+        return "Não encontrei consulta agendada com taxa de reserva pendente para este paciente."
+
+    appointment_id = appt.data[0]["appointment_id"]
+    await client.from_("appointments").update({
+        "booking_fee_waived": True,
+        "booking_fee_paid_at": now_iso,
+    }).eq("appointment_id", appointment_id).execute()
+
+    await log_event("booking_fee_waived", phone, {"appointment_id": appointment_id})
+
+    start_dt = datetime.fromisoformat(appt.data[0]["start_time"]).astimezone(TZ)
+    date_str = start_dt.strftime("%d/%m/%Y às %H:%M")
+    return (
+        f"Taxa de reserva isentada para a consulta de {date_str}. Informe ao paciente que a "
+        f"taxa de reserva foi dispensada e que não é necessário nenhum pagamento antecipado."
+    )

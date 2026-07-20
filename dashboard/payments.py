@@ -525,3 +525,35 @@ async def mark_paid(
         )
     except Exception:
         logger.exception("EMAIL_FAILED patient=%s", paciente)
+
+
+async def mark_fee_waived(
+    client,
+    appointment_id: str,
+    paciente: str,
+    medico: str,
+    data_hora: str,
+) -> None:
+    """Isenta a taxa de reserva do agendamento (sem cobrança) e notifica a clínica por e-mail.
+
+    `appointment_id`: um id, ou vários separados por vírgula quando a pendência
+    representa uma 1ª consulta dividida em duas sessões (ver compute_pendencias) —
+    todas as linhas são atualizadas juntas.
+    """
+    for aid in appointment_id.split(","):
+        await client.from_("appointments").update({"booking_fee_waived": True}).eq(
+            "appointment_id", aid
+        ).execute()
+
+    try:
+        await _send_clinic_email(
+            subject=f"Taxa de reserva isentada — {paciente}",
+            body=(
+                f"🆓 Taxa de reserva isentada pelo painel da atendente\n"
+                f"Paciente: {paciente}\n"
+                f"Médico: {medico}\n"
+                f"Consulta: {data_hora}"
+            ),
+        )
+    except Exception:
+        logger.exception("EMAIL_FAILED patient=%s", paciente)
