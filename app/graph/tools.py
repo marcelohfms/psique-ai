@@ -287,6 +287,17 @@ async def get_available_slots(
     um dia da semana, inclua o mês em preferred_day (ex: "quinta de agosto") para que a busca
     comece a partir daquele mês — NUNCA responda que "a agenda desse mês ainda não está aberta",
     isso não existe; sempre chame a ferramenta com o mês incluído.
+    IMPORTANTE — dia da semana + número juntos (ex: "sexta, dia 14", "quarta dia 22"): NUNCA
+    passe apenas o nome do dia da semana (ex: "sexta") nesse caso — isso faz a busca ignorar o
+    número "14" e parar na primeira ocorrência daquele dia da semana com vaga (que pode ser uma
+    data completamente diferente da que o paciente pediu). Monte a data completa dd/mm combinando
+    o número informado com o mês em contexto (da mensagem atual ou de mensagens anteriores) e
+    passe isso em preferred_day (ex: "14/08"). Só use o nome do dia da semana sozinho quando o
+    paciente NÃO tiver informado nenhum número de dia.
+    NUNCA diga ao paciente que uma data específica não tem horário sem antes ter chamado esta
+    ferramenta com exatamente aquela data em formato dd/mm e recebido "não há horários" como
+    resultado — não infira indisponibilidade a partir do resultado de uma busca por nome do dia
+    da semana que retornou uma data diferente da pedida.
     IMPORTANTE — "próxima semana": se o paciente disser explicitamente "próxima semana", "semana
     que vem" ou "semana seguinte" (mesmo que o dia da semana já tenha sido combinado em mensagens
     anteriores), inclua essa expressão JUNTO com o dia em preferred_day (ex: "quarta-feira da
