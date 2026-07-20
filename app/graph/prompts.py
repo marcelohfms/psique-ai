@@ -494,6 +494,13 @@ pergunte antes, em nota privada, qual dos dois casos se aplica (a própria ferra
 pergunta pronta se você chamá-la sem o parâmetro). Isso importa porque uma remarcação "clinic" NÃO \
 consome a remarcação gratuita do paciente nem gera cobrança — o paciente mantém o direito à sua \
 própria remarcação futura.
+- Se mark_reschedule_in_progress recusar por a consulta já ter sido CANCELADA (ex: por falta de \
+pagamento da taxa de reserva no prazo): a vaga JÁ FOI LIBERADA. NUNCA diga ao paciente que a \
+consulta "ainda está reservada" ou "aguardando pagamento" — isso seria falso, já que ela não está \
+mais ativa. Informe com transparência que aquele horário não está mais disponível e ofereça um \
+NOVO agendamento (get_available_slots → confirm_appointment, com nova taxa de reserva de R$ 100,00). \
+Em qualquer recusa de mark_reschedule_in_progress, baseie sua resposta exclusivamente no que a \
+ferramenta de fato informou — nunca presuma ou invente que a consulta segue ativa.
 
 REEMBOLSO DA TAXA DE RESERVA:
 - Se o paciente cancelar DENTRO DO PRAZO E a taxa de reserva foi paga: o reembolso \
@@ -666,16 +673,27 @@ def get_pricing_exception_rule(
             "- Se perguntado sobre preço, diga: \"Para você, esta consulta é cortesia.\""
         )
 
-    consultation_price = custom_price if custom_price is not None else standard_price
-    price_label = f"R$ {consultation_price},00"
+    # custom_price é o valor especial no CARTÃO — dinheiro/PIX tem o mesmo desconto
+    # de R$50 que se aplica aos preços padrão da clínica.
+    if custom_price is not None:
+        card_price = custom_price
+        pix_price = custom_price - 50
+    else:
+        card_price = standard_price + 50
+        pix_price = standard_price
+    price_line = f"R$ {card_price},00 no cartão (R$ {pix_price},00 em dinheiro ou PIX)"
+    price_say = (
+        f"\"O seu valor especial para esta consulta é R$ {card_price},00. "
+        f"No pagamento em dinheiro ou PIX, fica por R$ {pix_price},00.\""
+    )
 
     if custom_price is not None and not booking_fee_waived:
         # Custom price, normal booking fee
         return (
             f"\n\n⚠️ EXCEÇÃO PARA ESTE PACIENTE:\n"
-            f"- Este paciente tem valor especial de {price_label} por consulta.\n"
+            f"- Este paciente tem valor especial de {price_line} por consulta.\n"
             f"- A taxa de reserva de R$ 100,00 se aplica normalmente (abatida do total).\n"
-            f"- Quando informar o preço, diga: \"O seu valor especial para esta consulta é {price_label}.\"\n"
+            f"- Quando informar o preço, diga: {price_say}\n"
             f"- NÃO mencione os valores padrão da clínica nem o reajuste de junho."
         )
 
@@ -686,21 +704,23 @@ def get_pricing_exception_rule(
             f"- A taxa de reserva está DISPENSADA para este paciente.\n"
             f"- Após confirm_appointment, envie EXATAMENTE:\n"
             f"  \"Consulta registrada! ✅ Para você, a taxa de reserva está dispensada 😊\n"
-            f"  O valor integral da consulta ({price_label}) deverá ser pago no dia da consulta.\"\n"
+            f"  O valor integral da consulta (R$ {pix_price},00 em dinheiro/PIX ou R$ {card_price},00 no cartão) "
+            f"deverá ser pago no dia da consulta.\"\n"
             f"- NÃO envie instruções de cobrança de taxa de reserva.\n"
-            f"- Quando informar o preço, diga: \"O seu valor especial para esta consulta é {price_label}.\""
+            f"- Quando informar o preço, diga: {price_say}"
         )
 
     # custom_price > 0 AND booking_fee_waived
     return (
         f"\n\n⚠️ EXCEÇÃO PARA ESTE PACIENTE:\n"
-        f"- Este paciente tem valor especial de {price_label} por consulta.\n"
+        f"- Este paciente tem valor especial de {price_line} por consulta.\n"
         f"- A taxa de reserva está DISPENSADA para este paciente.\n"
         f"- Após confirm_appointment, envie EXATAMENTE:\n"
         f"  \"Consulta registrada! ✅ Para você, a taxa de reserva está dispensada 😊\n"
-        f"  O valor integral da consulta ({price_label}) deverá ser pago no dia da consulta.\"\n"
+        f"  O valor integral da consulta (R$ {pix_price},00 em dinheiro/PIX ou R$ {card_price},00 no cartão) "
+        f"deverá ser pago no dia da consulta.\"\n"
         f"- NÃO envie instruções de cobrança de taxa de reserva.\n"
-        f"- Quando informar o preço, diga: \"O seu valor especial para esta consulta é {price_label}.\"\n"
+        f"- Quando informar o preço, diga: {price_say}\n"
         f"- NÃO mencione os valores padrão da clínica."
     )
 

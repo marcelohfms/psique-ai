@@ -121,8 +121,12 @@ async def pagamentos(phone: str, _: None = Depends(verify_token)):
 
 
 @router.get("/pagamentos/comprovantes")
-async def buscar_comprovantes(phone: str, _: None = Depends(verify_token)):
+async def buscar_comprovantes(
+    phone: str, patient_id: str | None = None, _: None = Depends(verify_token)
+):
     client = await get_client()
+    if patient_id:
+        return await payments.find_receipts_for_patient(client, patient_id)
     return await payments.find_receipts(client, phone)
 
 

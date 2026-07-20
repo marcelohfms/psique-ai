@@ -1,5 +1,6 @@
 from unittest.mock import AsyncMock
 
+import attendant_db
 import payments
 from payments import _calc_valor_consulta
 
@@ -120,8 +121,14 @@ async def test_compute_pendencias_fallback_telefone_sem_is_self(fake_client):
 
 
 def test_calc_valor_consulta_custom_price_sobrepoe_tudo():
-    # custom_price vence mesmo com médico/idade/tipo que dariam outro valor
-    assert _calc_valor_consulta(JULIO_ID, "2015-05-01", "primeira_consulta", 999) == 999
+    # custom_price (valor no cartão) vence mesmo com médico/idade/tipo que dariam
+    # outro valor — mas o desconto de R$50 dinheiro/PIX ainda se aplica sobre ele.
+    assert _calc_valor_consulta(JULIO_ID, "2015-05-01", "primeira_consulta", 999) == 949
+
+
+def test_calc_valor_consulta_custom_price_courtesy():
+    # custom_price=0 é cortesia — sem desconto, retorna 0.
+    assert _calc_valor_consulta(JULIO_ID, "2015-05-01", "primeira_consulta", 0) == 0
 
 
 def test_calc_valor_consulta_dra_bruna():
@@ -168,6 +175,23 @@ async def test_mark_paid_consulta_atualiza_paid_at(fake_client, monkeypatch):
     assert row["paid_at"] is not None
 
 
+async def test_mark_paid_envia_tipo_e_forma_no_vocabulario_da_planilha(fake_client, monkeypatch):
+    # payment_type/payment_method gravados na planilha precisam usar os mesmos
+    # rótulos já usados pelo fluxo da Eva ("Taxa de Reserva"/"Consulta", "PIX",
+    # "Cartão de Crédito"...) e não os códigos internos (tipo="taxa", forma_pagamento="cartao_credito").
+    fake_sheet = AsyncMock()
+    fake_client.store["appointments"] = [{"appointment_id": "a1", "paid_at": None}]
+    monkeypatch.setattr(payments, "_append_payment_sheet", fake_sheet)
+    monkeypatch.setattr(payments, "_send_clinic_email", AsyncMock())
+    await payments.mark_paid(
+        fake_client, "a1", "consulta", 700, "cartao_credito", "João", "Dr. Júlio",
+        "10/07/2026 14:00", "5581999990000",
+    )
+    _, kwargs = fake_sheet.call_args
+    assert kwargs["payment_type"] == "Consulta"
+    assert kwargs["payment_method"] == "Cartão de crédito"
+
+
 async def test_mark_paid_ids_multiplos_atualiza_todas_as_linhas(fake_client, monkeypatch):
     fake_client.store["appointments"] = [
         {"appointment_id": "a1", "paid_at": None},
@@ -189,12 +213,52 @@ async def test_mark_paid_sheet_failure_nao_propaga(fake_client, monkeypatch):
         AsyncMock(side_effect=RuntimeError("sheets down")),
     )
     monkeypatch.setattr(payments, "_send_clinic_email", AsyncMock())
+    monkeypatch.setattr(attendant_db, "log_event", AsyncMock())
     await payments.mark_paid(
         fake_client, "a1", "consulta", 700, "PIX", "João", "Dr. Júlio",
         "10/07/2026 14:00", "5581999990000",
     )
     row = fake_client.store["appointments"][0]
     assert row["paid_at"] is not None  # gravação principal não foi afetada pela falha da planilha
+
+
+async def test_mark_paid_sheet_failure_alerta_clinica_e_loga_evento(fake_client, monkeypatch):
+    # Falha silenciosa na planilha não pode mais passar despercebida: precisa
+    # gerar um evento de auditoria e um e-mail de alerta específico p/ a clínica
+    # lançar manualmente (caso Matheus Silva Mônica Lopes, 2026-07-15).
+    fake_client.store["appointments"] = [{"appointment_id": "a1", "paid_at": None}]
+    monkeypatch.setattr(
+        payments, "_append_payment_sheet",
+        AsyncMock(side_effect=RuntimeError("sheets down")),
+    )
+    fake_log = AsyncMock()
+    monkeypatch.setattr(attendant_db, "log_event", fake_log)
+    fake_email = AsyncMock()
+    monkeypatch.setattr(payments, "_send_clinic_email", fake_email)
+    await payments.mark_paid(
+        fake_client, "a1", "consulta", 700, "PIX", "João", "Dr. Júlio",
+        "10/07/2026 14:00", "5581999990000",
+    )
+    fake_log.assert_awaited_once_with("payment_sheet_append_failed", "5581999990000", {
+        "appointment_id": "a1", "paciente": "João", "tipo": "consulta", "valor": 700,
+    })
+    alert_call = next(
+        c for c in fake_email.await_args_list if "FALHA" in c.kwargs.get("subject", c.args[0] if c.args else "")
+    )
+    assert "João" in alert_call.kwargs.get("body", alert_call.args[1] if len(alert_call.args) > 1 else "")
+
+
+async def test_mark_paid_sheet_ok_nao_alerta(fake_client, monkeypatch):
+    fake_client.store["appointments"] = [{"appointment_id": "a1", "paid_at": None}]
+    monkeypatch.setattr(payments, "_append_payment_sheet", AsyncMock())
+    fake_log = AsyncMock()
+    monkeypatch.setattr(attendant_db, "log_event", fake_log)
+    monkeypatch.setattr(payments, "_send_clinic_email", AsyncMock())
+    await payments.mark_paid(
+        fake_client, "a1", "consulta", 700, "PIX", "João", "Dr. Júlio",
+        "10/07/2026 14:00", "5581999990000",
+    )
+    fake_log.assert_not_awaited()
 
 
 async def test_mark_paid_email_failure_nao_propaga(fake_client, monkeypatch):
@@ -265,3 +329,93 @@ async def test_find_receipts_busca_variante_sem_o_9(fake_client):
     out = await payments.find_receipts(fake_client, "5581999990000")
     assert len(out) == 1
     assert out[0]["drive_link"] == "https://drive.google.com/file/d/abc/view"
+
+
+# ── find_receipts_for_patient ───────────────────────────────────────────────────
+
+
+async def test_find_receipts_for_patient_busca_em_todos_os_contatos(fake_client):
+    # A pendência mostra o telefone do contato is_self (ex: o próprio paciente
+    # menor de idade), mas o comprovante pode ter sido enviado pelo número do
+    # responsável — precisa varrer TODOS os contatos vinculados ao paciente
+    # (caso Matheus Silva Mônica Lopes / mãe Mayri, 2026-07-17).
+    fake_client.store["patient_contacts"] = [
+        {"patient_id": "p1", "contacts": {"phone": "5581996746040"}},  # próprio paciente — sem comprovante
+        {"patient_id": "p1", "contacts": {"phone": "5581988851971"}},  # mãe — enviou o comprovante
+        {"patient_id": "p2", "contacts": {"phone": "5581900000000"}},  # outro paciente — não deve entrar
+    ]
+    fake_client.store["messages"] = [
+        _msg("5581988851971",
+             "[imagem]: COMPROVANTE DE PAGAMENTO: valor R$ 550,00 [drive_link:https://drive.google.com/file/d/mae/view]",
+             "2026-07-15T20:00:00+00:00"),
+    ]
+    out = await payments.find_receipts_for_patient(fake_client, "p1")
+    assert len(out) == 1
+    assert out[0]["drive_link"] == "https://drive.google.com/file/d/mae/view"
+
+
+async def test_find_receipts_for_patient_sem_contatos_retorna_vazio(fake_client):
+    fake_client.store["patient_contacts"] = []
+    out = await payments.find_receipts_for_patient(fake_client, "p1")
+    assert out == []
+
+
+async def test_find_receipts_for_patient_dedupe_drive_link_entre_contatos(fake_client):
+    # Se o mesmo comprovante (drive_link) aparecer nas mensagens de mais de um
+    # contato do paciente (ex: reencaminhado), não deve duplicar no resultado.
+    fake_client.store["patient_contacts"] = [
+        {"patient_id": "p1", "contacts": {"phone": "5581999990000"}},
+        {"patient_id": "p1", "contacts": {"phone": "5581988880000"}},
+    ]
+    fake_client.store["messages"] = [
+        _msg("5581999990000",
+             "[imagem]: COMPROVANTE DE PAGAMENTO: valor R$ 100,00 [drive_link:https://drive.google.com/file/d/abc/view]",
+             "2026-07-01T19:06:45+00:00"),
+        _msg("5581988880000",
+             "[imagem]: COMPROVANTE DE PAGAMENTO: valor R$ 100,00 [drive_link:https://drive.google.com/file/d/abc/view]",
+             "2026-07-01T19:10:00+00:00"),
+    ]
+    out = await payments.find_receipts_for_patient(fake_client, "p1")
+    assert len(out) == 1
+
+
+# ── upload_comprovante ───────────────────────────────────────────────────────
+
+
+async def test_upload_comprovante_preserva_extensao_do_mimetype(monkeypatch):
+    # Bug: o arquivo era criado no Drive sem extensão nenhuma, diferente de todo
+    # o resto do sistema (register_payment sempre preserva .jpg/.pdf — ver skill
+    # payment-receipt-drive-format).
+    captured = {}
+
+    def fake_sync(filename, file_bytes, mimetype):
+        captured["filename"] = filename
+        return "https://drive.google.com/file/d/xyz/view"
+
+    monkeypatch.setattr(payments, "_upload_comprovante_sync", fake_sync)
+    await payments.upload_comprovante("João Silva", "10/07/2026 14:00", "550", b"data", "image/jpeg")
+    assert captured["filename"] == "João_Silva_10-07-2026_R$550.jpg"
+
+
+async def test_upload_comprovante_pdf(monkeypatch):
+    captured = {}
+
+    def fake_sync(filename, file_bytes, mimetype):
+        captured["filename"] = filename
+        return "https://drive.google.com/file/d/xyz/view"
+
+    monkeypatch.setattr(payments, "_upload_comprovante_sync", fake_sync)
+    await payments.upload_comprovante("João Silva", "10/07/2026 14:00", "550", b"data", "application/pdf")
+    assert captured["filename"] == "João_Silva_10-07-2026_R$550.pdf"
+
+
+async def test_upload_comprovante_mimetype_desconhecido_usa_jpg(monkeypatch):
+    captured = {}
+
+    def fake_sync(filename, file_bytes, mimetype):
+        captured["filename"] = filename
+        return "https://drive.google.com/file/d/xyz/view"
+
+    monkeypatch.setattr(payments, "_upload_comprovante_sync", fake_sync)
+    await payments.upload_comprovante("João Silva", "10/07/2026 14:00", "550", b"data", "application/octet-stream")
+    assert captured["filename"].endswith(".jpg")

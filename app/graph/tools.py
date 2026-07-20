@@ -572,6 +572,12 @@ async def confirm_appointment(
         force_encaixe = False
         _logger.warning("confirm_appointment: force_encaixe=True rejected — not in silent_mode (attendant instruction)")
 
+    # Encaixe da Dra. Bruna começando a :20 termina no topo da hora (40min) para
+    # não bloquear o slot regular da hora seguinte no busy-check (ex: sexta 13:20 →
+    # 14:00, mantém o slot das 14h agendável). Só vale para encaixe (force_encaixe).
+    if force_encaixe and doctor == "bruna" and start.minute == 20:
+        slot_duration_minutes = 40
+
     # Reject slots outside the doctor's schedule — skipped for encaixe
     if not force_encaixe:
         from app.google_calendar import SCHEDULE_EXCEPTIONS, DOCTOR_SCHEDULES
@@ -619,6 +625,26 @@ async def confirm_appointment(
                     "Avise o paciente com empatia e chame get_available_slots para buscar outro horário disponível."
                 )
 
+        # Dr. Júlio: além do início, exigir que o slot INTEIRO (início + duração)
+        # caiba numa única janela — senão um bloco de 2h começando no fim da grade
+        # (ex: 19:00 numa quinta que fecha 20:00) seria gravado estourando o
+        # expediente (caso Bernardo/Mônica 5581991320003, 09/07/2026: 1ª consulta
+        # gravada 19:00–21:00). get_available_slots já respeita isso; o confirm não.
+        if doctor == "julio":
+            _slot_end_min = _slot_min + slot_duration_minutes
+            if not any(
+                (sh * 60 + sm) <= _slot_min and _slot_end_min <= (eh * 60 + em)
+                for sh, sm, eh, em, _ in _day_wins
+            ):
+                _dur_h = slot_duration_minutes // 60
+                return (
+                    f"[INSTRUÇÃO INTERNA — NÃO ENVIE AO PACIENTE] "
+                    f"Não há bloco de {_dur_h}h seguidas a partir das {start.strftime('%H:%M')} na grade de "
+                    f"{_doctor_label} no dia {start.strftime('%d/%m/%Y')} — o horário ultrapassaria o fim do expediente. "
+                    "Chame get_available_slots novamente para um horário que comporte a duração, ou ofereça "
+                    "agendar os dois momentos da 1ª consulta em sessões separadas de 1h."
+                )
+
     # Guard 0: block if patient already has a future scheduled OR pending_reschedule
     # appointment (different slot). Forces Eva to use mark_reschedule_in_progress →
     # reschedule_appointment instead. pending_reschedule must be included here — otherwise
@@ -637,16 +663,15 @@ async def confirm_appointment(
         from datetime import timezone as _tz
         _now_iso = datetime.now(_tz.utc).isoformat()
 
-        # Resolve patient_ids via contacts → patient_contacts
-        _contact_r = await _supabase.from_("contacts").select("id").eq("phone", _phone_clean).execute()
-        if _contact_r.data:
-            _contact_id = _contact_r.data[0]["id"]
-            _pc_r = await _supabase.from_("patient_contacts").select("patient_id").eq("contact_id", _contact_id).execute()
-            _patient_ids = [row["patient_id"] for row in (_pc_r.data or [])]
-            if _patient_ids:
-                _future_r = await _supabase.from_("appointments").select("appointment_id, start_time").in_("patient_id", _patient_ids).in_("status", ["scheduled", "pending_reschedule"]).gte("start_time", _now_iso).execute()
-                _other_appts = [a for a in (_future_r.data or []) if a["start_time"] != start.isoformat()]
-                if _other_appts:
+        # Resolve patient_ids via contacts → patient_contacts, then filter to CURRENT patient.
+        # Guard should block only if THIS patient already has a future appointment, not if
+        # another patient in the contact does (caso Daniela/Silvia: Silvia has appointment
+        # on 20/07, but Daniela is free on 26/08 — must allow booking for Daniela).
+        _patient_id = state.get("user_db_id")
+        if _patient_id:
+            _future_r = await _supabase.from_("appointments").select("appointment_id, start_time").eq("patient_id", _patient_id).in_("status", ["scheduled", "pending_reschedule"]).gte("start_time", _now_iso).execute()
+            _other_appts = [a for a in (_future_r.data or []) if a["start_time"] != start.isoformat()]
+            if _other_appts:
                     from zoneinfo import ZoneInfo as _ZI
                     _TZ = _ZI("America/Recife")
                     _existing_dates = ", ".join(
@@ -763,24 +788,41 @@ async def confirm_appointment(
     end = start + timedelta(minutes=slot_duration_minutes)
     client = await get_supabase()
 
-    # When the contact has multiple patients, match by patient_name to get the correct user_id.
+    # When the contact has multiple patients, resolve the correct patient record.
     # get_user_by_phone returns an arbitrary record — wrong when contact has e.g. parent + child.
     all_users = await get_users_by_phone(phone)
     user = None
     if len(all_users) > 1:
-        _target = patient_name.strip().lower()
-        for _u in all_users:
-            _pname = (_u.get("patient_name") or _u.get("name") or "").strip().lower()
-            if _pname == _target:
-                user = _u
-                break
-        if user is None:
-            # Fallback: partial match
+        def _match_by_name(target: str) -> dict | None:
+            target = target.strip().lower()
+            if not target:
+                return None
             for _u in all_users:
                 _pname = (_u.get("patient_name") or _u.get("name") or "").strip().lower()
-                if _target and _target in _pname:
-                    user = _u
-                    break
+                if _pname == target:
+                    return _u
+            for _u in all_users:
+                _pname = (_u.get("patient_name") or _u.get("name") or "").strip().lower()
+                if target in _pname:
+                    return _u
+            return None
+
+        if patient_name_override.strip():
+            # Attendant explicitly named a different patient than the one in
+            # conversation context — honor the override.
+            user = _match_by_name(patient_name_override)
+        if user is None:
+            # Prefer the patient already resolved for this conversation
+            # (state["user_db_id"]) over re-deriving from patient_name — patient_name
+            # is a plain string that can go stale independently of user_db_id (caso
+            # Renata Monteiro / Laila+Suzi Viana, 5581996962165, 08/07/2026: a stale
+            # patient_name silently overwrote by app/main.py's DB-sync made this
+            # matching attach a new appointment to the wrong twin's patient_id).
+            _uid = state.get("user_db_id")
+            if _uid:
+                user = next((_u for _u in all_users if _u["id"] == _uid), None)
+        if user is None:
+            user = _match_by_name(patient_name)
     if user is None:
         user = await get_user_by_phone(phone)
 
@@ -987,8 +1029,25 @@ async def mark_reschedule_in_progress(
     if not appt.data or appt.data.get("patient_id") not in user_ids:
         return "ID de agendamento inválido para este paciente."
 
-    if appt.data.get("status") not in ("scheduled", "pending_reschedule"):
-        return "Esta consulta não está em status que permita reagendamento."
+    appt_status = appt.data.get("status")
+    if appt_status not in ("scheduled", "pending_reschedule"):
+        if appt_status == "canceled":
+            return (
+                "[INSTRUÇÃO INTERNA — NÃO ENVIE AO PACIENTE] Esta consulta já foi CANCELADA — "
+                "a vaga já foi liberada, não está mais reservada nem pendente de pagamento. "
+                "NÃO diga ao paciente que a consulta \"ainda está reservada\" ou qualquer coisa "
+                "parecida — isso seria falso. Informe que essa consulta não está mais ativa e "
+                "ofereça um NOVO agendamento: chame get_available_slots e, ao confirmar o novo "
+                "horário, confirm_appointment (nova consulta, nova taxa de reserva de R$ 100,00)."
+            )
+        return (
+            f"[INSTRUÇÃO INTERNA — NÃO ENVIE AO PACIENTE] Esta consulta está com status "
+            f"\"{appt_status}\" e não permite reagendamento. NÃO afirme que a consulta ainda "
+            "está reservada ou pendente de pagamento se isso não corresponder à realidade. "
+            "Informe o paciente da situação real desta consulta e oriente o próximo passo "
+            "adequado (ex: se \"completed\", a consulta já ocorreu — ofereça um novo "
+            "agendamento se for o caso)."
+        )
 
     # Quando a instrução vem de nota privada da atendente, é preciso saber se a
     # remarcação é a pedido do paciente ou por iniciativa da clínica/médico —
@@ -1299,6 +1358,37 @@ async def reschedule_appointment(
     appt_status_result = await client.from_("appointments").select("status").eq("appointment_id", appointment_id).maybe_single().execute()
     is_pending_reschedule = (appt_status_result.data or {}).get("status") == "pending_reschedule"
 
+    old_dt = None
+    if old_start_time:
+        try:
+            old_dt = datetime.fromisoformat(old_start_time).astimezone(TZ)
+        except ValueError:
+            old_dt = None
+
+    # Guard: check Google Calendar for conflicts on the NEW slot before writing it.
+    # confirm_appointment already had this check, but reschedule_appointment didn't —
+    # a stale slot offer confirmed after someone else took that time slipped through
+    # and double-booked the doctor (caso Raynner/Bernardo, 23/07/2026 19h, Dr. Júlio).
+    # Skipped when old_dt == new_start (pure modality change, no time actually moves —
+    # the appointment's own event already occupies that slot).
+    if confirmed_by_patient and old_dt != new_start:
+        from app.google_calendar import _get_busy, _credentials
+        from googleapiclient.discovery import build as _build
+        new_end_check = new_start + timedelta(minutes=slot_duration_minutes)
+        try:
+            _creds = _credentials()
+            _service = _build("calendar", "v3", credentials=_creds)
+            loop = asyncio.get_running_loop()
+            busy = await loop.run_in_executor(None, _get_busy, _service, calendar_id, new_start, new_end_check)
+            if busy:
+                return (
+                    f"[INSTRUÇÃO INTERNA — NÃO ENVIE AO PACIENTE] "
+                    f"Este horário ({new_start.strftime('%d/%m/%Y às %H:%M')}) já está ocupado por outro agendamento. "
+                    "Avise o paciente com empatia e chame get_available_slots para buscar outro horário disponível."
+                )
+        except Exception:
+            pass  # If check fails, proceed anyway — better to double-book than block
+
     # Only create/update Google Calendar event if patient confirmed
     if confirmed_by_patient:
         from app.google_calendar import create_event
@@ -1368,11 +1458,9 @@ async def reschedule_appointment(
     _weekday_new = _WEEKDAY_LABELS_PT.get(new_start.weekday(), "")
     formatted_new = f"{_weekday_new}, {new_start.strftime('%d/%m/%Y às %H:%M')}" if _weekday_new else new_start.strftime("%d/%m/%Y às %H:%M")
 
-    if old_start_time:
-        old_dt = datetime.fromisoformat(old_start_time).astimezone(TZ)
+    if old_dt is not None:
         formatted_old = old_dt.strftime("%d/%m/%Y às %H:%M")
     else:
-        old_dt = None
         formatted_old = "horário não disponível"
 
     # Se a data/hora não mudou, isto é uma troca de modalidade (ex: chamada por
@@ -1670,15 +1758,17 @@ def _expected_consultation_amount(
     now_dt,
     price_override: int | None = None,
 ) -> int:
-    """Return the expected full payment amount (with R$50 PIX discount for standard pricing).
+    """Return the expected full payment amount (with R$50 PIX discount).
 
-    price_override: if set, returns that value directly — no standard formula, no PIX discount.
+    price_override: patient's custom card price (patients.custom_price) — the R$50
+        PIX/cash discount still applies on top of it, same as standard pricing.
+        Exception: 0 means a courtesy (free) consultation, returned as-is.
     consultation_type: value stored in appointments.consultation_type at booking time.
         'primeira_consulta' → first visit pricing (higher)
         'acompanhamento' or None → follow-up pricing (default for unknown)
     """
     if price_override is not None:
-        return price_override
+        return price_override - 50 if price_override else price_override
     post_june = (now_dt.year, now_dt.month) >= (2026, 6)
     if doctor_key == "bruna":
         base = 700 if post_june else 600

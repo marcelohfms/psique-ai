@@ -17,6 +17,8 @@ from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaIoBaseUpload
 
+import attendant_db
+
 logger = logging.getLogger(__name__)
 
 _TZ = ZoneInfo("America/Recife")
@@ -46,9 +48,13 @@ def _calc_valor_consulta(
     consultation_type: str | None,
     custom_price: int | None,
 ) -> int:
-    """Retorna o valor sugerido da consulta (com desconto de R$50 para dinheiro/PIX)."""
+    """Retorna o valor sugerido da consulta (com desconto de R$50 para dinheiro/PIX).
+
+    custom_price é o valor especial no cartão de crédito do paciente — o desconto
+    de R$50 para dinheiro/PIX ainda se aplica sobre ele, exceto cortesia (0).
+    """
     if custom_price is not None:
-        return custom_price
+        return custom_price - 50 if custom_price else custom_price
     age = None
     if birth_date:
         try:
@@ -152,7 +158,7 @@ async def _append_payment_sheet(
 ) -> None:
     spreadsheet_id = os.environ.get("GOOGLE_SHEETS_PAYMENTS_ID")
     if not spreadsheet_id:
-        return
+        raise RuntimeError("GOOGLE_SHEETS_PAYMENTS_ID não configurado — pagamento NÃO gravado na planilha")
 
     creds = Credentials(
         token=None,
@@ -219,12 +225,28 @@ def _upload_comprovante_sync(filename: str, file_bytes: bytes, mimetype: str) ->
     return file.get("webViewLink", f"https://drive.google.com/file/d/{file_id}/view")
 
 
+_MIME_EXT = {
+    "image/jpeg": "jpg",
+    "image/jpg": "jpg",
+    "image/png": "png",
+    "image/webp": "webp",
+    "application/pdf": "pdf",
+}
+
+
 async def upload_comprovante(patient_name: str, appointment_dt: str, amount: str, file_bytes: bytes, mimetype: str) -> str:
-    """Upload a payment receipt (image or PDF) to the payments Drive folder. Returns the shareable link."""
+    """Upload a payment receipt (image or PDF) to the payments Drive folder. Returns the shareable link.
+
+    Filename follows the same convention register_payment uses (see skill
+    payment-receipt-drive-format): {Nome_Do_Paciente}_{DD-MM-AAAA}_R${valor}.{ext}.
+    The extension is derived from the mimetype — omitting it (as before) left the
+    Drive file without an extension, unlike every other upload path in the codebase.
+    """
     date_clean = appointment_dt.split(" ")[0].replace("/", "-") if appointment_dt else datetime.now(_TZ).strftime("%d-%m-%Y")
     safe_name = patient_name.replace(" ", "_")
     amount_clean = str(amount).replace(",", "-").replace(".", "-")
-    filename = f"{safe_name}_{date_clean}_R${amount_clean}"
+    ext = _MIME_EXT.get(mimetype.lower(), "jpg")
+    filename = f"{safe_name}_{date_clean}_R${amount_clean}.{ext}"
     loop = asyncio.get_running_loop()
     return await loop.run_in_executor(None, _upload_comprovante_sync, filename, file_bytes, mimetype)
 
@@ -277,6 +299,40 @@ async def find_receipts(client, phone: str, limit: int = 5) -> list[dict]:
     return out[:limit]
 
 
+async def find_receipts_for_patient(client, patient_id: str, limit: int = 5) -> list[dict]:
+    """Como find_receipts, mas varre TODOS os contatos vinculados ao paciente —
+    não só o telefone que aparece na pendência (compute_pendencias prioriza o
+    contato is_self, mas o comprovante pode ter sido enviado por um responsável
+    com um número diferente — caso Matheus Silva Mônica Lopes / mãe Mayri, onde a
+    pendência mostrava o número do próprio Matheus mas a conversa/comprovante
+    estavam no número da mãe, 2026-07-17).
+    """
+    result = await (
+        client.from_("patient_contacts")
+        .select("contacts(phone)")
+        .eq("patient_id", patient_id)
+        .execute()
+    )
+    phones: list[str] = []
+    seen_phones: set[str] = set()
+    for row in result.data or []:
+        phone = (row.get("contacts") or {}).get("phone")
+        if phone and phone not in seen_phones:
+            seen_phones.add(phone)
+            phones.append(phone)
+
+    out: list[dict] = []
+    seen_links: set[str] = set()
+    for phone in phones:
+        for receipt in await find_receipts(client, phone, limit=limit):
+            if receipt["drive_link"] in seen_links:
+                continue
+            seen_links.add(receipt["drive_link"])
+            out.append(receipt)
+    out.sort(key=lambda r: r["enviado_em"], reverse=True)
+    return out[:limit]
+
+
 async def compute_pendencias(client, patient_ids: list[str] | None = None) -> list[dict]:
     """Retorna a lista de pendências (taxa/consulta) em aberto.
 
@@ -317,6 +373,7 @@ async def compute_pendencias(client, patient_ids: list[str] | None = None) -> li
     for rows in groups.values():
         rows = sorted(rows, key=lambda r: r.get("start_time") or "")
         first = rows[0]
+        patient_id = first.get("patient_id", "")
         patient = first.get("patients") or {}
         patient_name = patient.get("name") or "Paciente"
         birth_date = patient.get("birth_date")
@@ -349,6 +406,7 @@ async def compute_pendencias(client, patient_ids: list[str] | None = None) -> li
         if not all(row.get("booking_fee_paid_at") or row.get("booking_fee_waived") for row in rows):
             pendencias.append({
                 "appointment_id": appointment_id,
+                "patient_id": patient_id,
                 "paciente": patient_name,
                 "phone": phone,
                 "medico": doctor_display,
@@ -368,6 +426,7 @@ async def compute_pendencias(client, patient_ids: list[str] | None = None) -> li
             )
             pendencias.append({
                 "appointment_id": appointment_id,
+                "patient_id": patient_id,
                 "paciente": patient_name,
                 "phone": phone,
                 "medico": doctor_display,
@@ -406,7 +465,7 @@ async def mark_paid(
     appointment_ids = appointment_id.split(",")
 
     field = "booking_fee_paid_at" if tipo == "taxa" else "paid_at"
-    payment_type = "taxa_reserva" if tipo == "taxa" else "consulta"
+    payment_type = "Taxa de Reserva" if tipo == "taxa" else "Consulta"
     for aid in appointment_ids:
         await client.from_("appointments").update({field: now}).eq("appointment_id", aid).execute()
 
@@ -421,11 +480,32 @@ async def mark_paid(
             appointment_dt=data_hora,
             amount=amount_str,
             payment_type=payment_type,
-            payment_method=forma_pagamento,
+            payment_method=forma_label,
             drive_link=drive_link,
         )
     except Exception:
-        logger.exception("SHEETS_APPEND FAILED patient=%s", paciente)
+        logger.exception("SHEETS_APPEND FAILED patient=%s appointment_id=%s", paciente, appointment_id)
+        await attendant_db.log_event("payment_sheet_append_failed", phone, {
+            "appointment_id": appointment_id, "paciente": paciente, "tipo": tipo, "valor": valor,
+        })
+        try:
+            await _send_clinic_email(
+                subject=f"⚠️ FALHA ao gravar pagamento na planilha — {paciente}",
+                body=(
+                    f"O pagamento foi confirmado no sistema (agendamento marcado como pago), "
+                    f"mas NÃO foi possível gravar a linha na planilha Pagamentos. "
+                    f"Lance manualmente:\n\n"
+                    f"Paciente: {paciente}\n"
+                    f"Médico: {medico}\n"
+                    f"Consulta: {data_hora}\n"
+                    f"Tipo: {payment_type}\n"
+                    f"Valor: R$ {amount_str}\n"
+                    f"Forma: {forma_label}\n"
+                    f"appointment_id: {appointment_id}"
+                ),
+            )
+        except Exception:
+            logger.exception("ALERT_EMAIL_FAILED patient=%s", paciente)
 
     try:
         tipo_label = "Taxa de reserva" if tipo == "taxa" else "Consulta"

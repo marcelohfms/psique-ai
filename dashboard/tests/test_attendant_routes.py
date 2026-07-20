@@ -373,3 +373,30 @@ def test_buscar_comprovantes_retorna_lista(client, monkeypatch):
     assert r.status_code == 200
     body = r.json()
     assert body[0]["drive_link"] == "https://drive.google.com/x"
+
+
+def test_buscar_comprovantes_com_patient_id_usa_busca_por_paciente(client, monkeypatch):
+    # Quando patient_id é informado, deve varrer todos os contatos do paciente
+    # (find_receipts_for_patient) em vez de só o telefone da pendência — o
+    # comprovante pode ter sido enviado por um responsável com outro número
+    # (caso Matheus Silva Mônica Lopes, 2026-07-17).
+    async def fake_get_client():
+        return object()
+
+    async def fake_find_receipts_for_patient(_client, patient_id, limit=5):
+        assert patient_id == "p1"
+        return [{"descricao": "COMPROVANTE DE PAGAMENTO: R$ 550,00",
+                  "drive_link": "https://drive.google.com/y", "enviado_em": "2026-07-15T20:00:00+00:00"}]
+
+    async def fail_find_receipts(*_args, **_kwargs):
+        raise AssertionError("não deveria chamar find_receipts quando patient_id é informado")
+
+    monkeypatch.setattr(attendant_routes, "get_client", fake_get_client)
+    monkeypatch.setattr(payments, "find_receipts_for_patient", fake_find_receipts_for_patient)
+    monkeypatch.setattr(payments, "find_receipts", fail_find_receipts)
+
+    r = client.get("/api/atendente/pagamentos/comprovantes",
+                    params={"phone": "5581996746040", "patient_id": "p1", "token": "test-token"})
+    assert r.status_code == 200
+    body = r.json()
+    assert body[0]["drive_link"] == "https://drive.google.com/y"
