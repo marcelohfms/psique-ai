@@ -1333,6 +1333,28 @@ async def test_request_document_inserts_record_and_returns_success():
     assert "✅" in result
 
 
+async def test_request_document_accepts_requisicao_type():
+    """requisicao é um tipo válido de documento (ex.: requisição de acompanhamento psicológico)."""
+    from app.graph.tools import request_document
+    client, _, _ = _make_supabase_client()
+    with patch("app.graph.tools.get_supabase", new_callable=AsyncMock, return_value=client), \
+         patch("app.graph.tools.log_event", new_callable=AsyncMock), \
+         patch("app.graph.tools._notify_clinic", new_callable=AsyncMock) as mock_notify, \
+         patch("app.google_sheets.append_document_request", new_callable=AsyncMock) as mock_sheets, \
+         patch("app.email_sender.send_document_request_email", new_callable=AsyncMock):
+        result = await request_document.coroutine(
+            document_type="requisicao",
+            patient_email="maria@example.com",
+            state=_make_state(),
+            config=CONFIG,
+        )
+    assert "requisicao" in result
+    assert "✅" in result
+    # planilha recebe o tipo bruto e a clínica é notificada com o rótulo "Requisição"
+    assert mock_sheets.await_args.args[4] == "requisicao"
+    assert "Requisição" in mock_notify.await_args.kwargs["subject"]
+
+
 async def test_request_document_succeeds_even_if_sheets_and_email_fail():
     """Fire-and-forget: sheets/email errors must not surface."""
     from app.graph.tools import request_document

@@ -1501,7 +1501,7 @@ async def reschedule_appointment(
 
 @tool
 async def request_document(
-    document_type: Literal["nota_fiscal", "recibo", "laudo", "exame", "relatorio", "receita", "declaracao"],
+    document_type: Literal["nota_fiscal", "recibo", "laudo", "exame", "relatorio", "receita", "declaracao", "requisicao"],
     patient_email: str,
     state: Annotated[dict, InjectedState],
     config: RunnableConfig,
@@ -1618,6 +1618,7 @@ async def request_document(
     doc_labels = {
         "nota_fiscal": "Nota Fiscal", "recibo": "Recibo", "laudo": "Laudo", "exame": "Exame",
         "relatorio": "Relatório", "receita": "Receita", "declaracao": "Declaração",
+        "requisicao": "Requisição",
     }
     doc_label = doc_labels.get(document_type, document_type)
     doctor_label = {"julio": "Dr. Júlio", "bruna": "Dra. Bruna"}.get(doctor_key, "médico(a)")

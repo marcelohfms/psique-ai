@@ -260,7 +260,8 @@ async def collect_info_node(state: ConversationState, config: RunnableConfig) ->
 
     # Detect document requests (email is only needed for these, not for scheduling)
     _doc_keywords = ["receita", "laudo", "nota fiscal", "declaração", "declaracao",
-                     "relatório", "relatorio", "exame", "atestado"]
+                     "relatório", "relatorio", "exame", "atestado",
+                     "requisição", "requisicao"]
     _is_document = any(kw in _messages_text for kw in _doc_keywords)
 
     # Detect if this is the very first bot response (no prior AIMessages)
@@ -270,6 +271,7 @@ async def collect_info_node(state: ConversationState, config: RunnableConfig) ->
     _request_keywords = [
         "receita", "agendar", "consulta", "laudo", "exame",
         "relatório", "relatorio", "nota fiscal", "declaração", "declaracao",
+        "requisição", "requisicao",
     ]
     _has_request = any(kw in _messages_text for kw in _request_keywords)
 
