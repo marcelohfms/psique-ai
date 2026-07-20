@@ -33,7 +33,7 @@ def _make_supabase_client():
     execute = AsyncMock(return_value=MagicMock(data=[]))
     table = MagicMock()
     for m in ("select", "eq", "in_", "limit", "single", "maybe_single",
-              "gte", "order", "insert", "update", "upsert", "or_", "filter"):
+              "gte", "order", "insert", "update", "upsert", "or_", "filter", "is_"):
         getattr(table, m).return_value = table
     table.execute = execute
     client = MagicMock()
@@ -386,6 +386,60 @@ async def test_confirm_appointment_insert_uses_patient_id_and_contact_id():
     assert "user_id" not in _insert_payload
 
 
+async def test_confirm_appointment_multi_patient_uses_user_db_id_over_stale_patient_name():
+    """Quando o contato tem múltiplos pacientes (ex: gêmeas), o agendamento deve ir para
+    o paciente de state["user_db_id"] — não para quem quer que patient_name aponte.
+    patient_name é uma string solta que pode ficar dessincronizada de user_db_id (caso
+    Renata Monteiro / Laila+Suzi Viana, 5581996962165, 08/07/2026: no meio da conversa
+    sobre a Suzi, app/main.py sincronizou patient_name de volta para "Laila" — a escolha
+    arbitrária de get_user_by_phone — enquanto user_db_id seguia correto (Suzi). O
+    agendamento foi então gravado no patient_id da Laila e depois cancelado como "consulta
+    da Laila", cancelando na real a consulta paga da Suzi)."""
+    from app.graph.tools import confirm_appointment
+    client, table, execute = _make_supabase_client()
+    _laila = {"id": "laila-id", "patient_name": "Laila Monteiro Viana", "name": "Renata Monteiro"}
+    _suzi = {"id": "suzi-id", "patient_name": "Suzi Monteiro Viana", "name": "Renata Monteiro"}
+    with patch("app.graph.tools._get_doctor_calendar_id", new_callable=AsyncMock, return_value="cal123"), \
+         patch("app.google_calendar.create_event", new_callable=AsyncMock, return_value="evt-twins"), \
+         patch("app.graph.tools.get_supabase", new_callable=AsyncMock, return_value=client), \
+         patch("app.graph.tools.get_users_by_phone", new_callable=AsyncMock, return_value=[_laila, _suzi]), \
+         patch("app.graph.tools.log_event", new_callable=AsyncMock), \
+         patch("app.graph.tools._notify_clinic", new_callable=AsyncMock):
+        await confirm_appointment.coroutine(
+            slot_datetime="2026-03-23T09:00:00",
+            slot_duration_minutes=60,
+            # user_db_id corretamente aponta pra Suzi; patient_name ficou "preso" em Laila.
+            state=_make_state(user_db_id="suzi-id", patient_name="Laila Monteiro Viana", patient_email="renata@example.com"),
+            config=CONFIG,
+        )
+    _insert_payload = table.insert.call_args[0][0]
+    assert _insert_payload.get("patient_id") == "suzi-id"
+
+
+async def test_confirm_appointment_multi_patient_override_beats_user_db_id():
+    """patient_name_override (uso da atendente) deve poder mirar num paciente diferente
+    do que está em user_db_id — é o mecanismo explícito para isso, documentado na tool."""
+    from app.graph.tools import confirm_appointment
+    client, table, execute = _make_supabase_client()
+    _laila = {"id": "laila-id", "patient_name": "Laila Monteiro Viana", "name": "Renata Monteiro"}
+    _suzi = {"id": "suzi-id", "patient_name": "Suzi Monteiro Viana", "name": "Renata Monteiro"}
+    with patch("app.graph.tools._get_doctor_calendar_id", new_callable=AsyncMock, return_value="cal123"), \
+         patch("app.google_calendar.create_event", new_callable=AsyncMock, return_value="evt-override"), \
+         patch("app.graph.tools.get_supabase", new_callable=AsyncMock, return_value=client), \
+         patch("app.graph.tools.get_users_by_phone", new_callable=AsyncMock, return_value=[_laila, _suzi]), \
+         patch("app.graph.tools.log_event", new_callable=AsyncMock), \
+         patch("app.graph.tools._notify_clinic", new_callable=AsyncMock):
+        await confirm_appointment.coroutine(
+            slot_datetime="2026-03-23T09:00:00",
+            slot_duration_minutes=60,
+            state=_make_state(user_db_id="suzi-id", patient_name="Suzi Monteiro Viana", patient_email="renata@example.com"),
+            config=CONFIG,
+            patient_name_override="Laila Monteiro Viana",
+        )
+    _insert_payload = table.insert.call_args[0][0]
+    assert _insert_payload.get("patient_id") == "laila-id"
+
+
 async def test_confirm_appointment_with_session_note():
     from app.graph.tools import confirm_appointment
     client, _, _ = _make_supabase_client()
@@ -506,12 +560,12 @@ async def test_confirm_appointment_blocks_when_patient_has_pending_reschedule():
     paciente já está em pending_reschedule (não só 'scheduled'). Caso contrário,
     confirm_appointment escapa da checagem e cria uma linha nova em vez de deixar
     reschedule_appointment atualizar a consulta existente — perdendo a taxa de reserva
-    já paga (caso Tiago Perrelli, 03/07/2026)."""
+    já paga (caso Tiago Perrelli, 03/07/2026). Guard filtra por patient_id específico,
+    não por contato inteiro."""
     from app.graph.tools import confirm_appointment
     client, table, execute = _make_supabase_client()
+    # Agora apenas 1 execute call: appointments.select().eq("patient_id", ...).in_("status", ...)
     execute.side_effect = [
-        MagicMock(data=[{"id": "contact-1"}]),                            # contacts select
-        MagicMock(data=[{"patient_id": "patient-1"}]),                    # patient_contacts select
         MagicMock(data=[{"appointment_id": "old-evt-1",
                           "start_time": "2026-03-25T12:00:00+00:00"}]),   # appointments guard 0
     ]
@@ -521,7 +575,7 @@ async def test_confirm_appointment_blocks_when_patient_has_pending_reschedule():
         result = await confirm_appointment.coroutine(
             slot_datetime="2026-03-23T09:00:00",
             slot_duration_minutes=60,
-            state=_make_state(),
+            state=_make_state(user_db_id="patient-1"),
             config=CONFIG,
         )
     assert "NÃO crie um novo agendamento" in result
@@ -538,9 +592,8 @@ async def test_confirm_appointment_guard0_applies_even_with_force_encaixe():
     o existente (caso Gustavo Lapenda, 06/07/2026 — dois agendamentos ativos)."""
     from app.graph.tools import confirm_appointment
     client, table, execute = _make_supabase_client()
+    # Guard 0 agora filtra por patient_id específico, apenas 1 execute call
     execute.side_effect = [
-        MagicMock(data=[{"id": "contact-1"}]),                            # contacts select
-        MagicMock(data=[{"patient_id": "patient-1"}]),                    # patient_contacts select
         MagicMock(data=[{"appointment_id": "old-evt-1",
                           "start_time": "2026-07-15T18:00:00+00:00"}]),   # appointments guard 0
     ]
@@ -550,7 +603,7 @@ async def test_confirm_appointment_guard0_applies_even_with_force_encaixe():
         result = await confirm_appointment.coroutine(
             slot_datetime="2026-07-08T13:20:00",
             slot_duration_minutes=60,
-            state=_make_state(silent_mode=True),
+            state=_make_state(silent_mode=True, user_db_id="patient-1"),
             config=CONFIG,
             force_encaixe=True,
         )

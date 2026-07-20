@@ -663,16 +663,15 @@ async def confirm_appointment(
         from datetime import timezone as _tz
         _now_iso = datetime.now(_tz.utc).isoformat()
 
-        # Resolve patient_ids via contacts → patient_contacts
-        _contact_r = await _supabase.from_("contacts").select("id").eq("phone", _phone_clean).execute()
-        if _contact_r.data:
-            _contact_id = _contact_r.data[0]["id"]
-            _pc_r = await _supabase.from_("patient_contacts").select("patient_id").eq("contact_id", _contact_id).execute()
-            _patient_ids = [row["patient_id"] for row in (_pc_r.data or [])]
-            if _patient_ids:
-                _future_r = await _supabase.from_("appointments").select("appointment_id, start_time").in_("patient_id", _patient_ids).in_("status", ["scheduled", "pending_reschedule"]).gte("start_time", _now_iso).execute()
-                _other_appts = [a for a in (_future_r.data or []) if a["start_time"] != start.isoformat()]
-                if _other_appts:
+        # Resolve patient_ids via contacts → patient_contacts, then filter to CURRENT patient.
+        # Guard should block only if THIS patient already has a future appointment, not if
+        # another patient in the contact does (caso Daniela/Silvia: Silvia has appointment
+        # on 20/07, but Daniela is free on 26/08 — must allow booking for Daniela).
+        _patient_id = state.get("user_db_id")
+        if _patient_id:
+            _future_r = await _supabase.from_("appointments").select("appointment_id, start_time").eq("patient_id", _patient_id).in_("status", ["scheduled", "pending_reschedule"]).gte("start_time", _now_iso).execute()
+            _other_appts = [a for a in (_future_r.data or []) if a["start_time"] != start.isoformat()]
+            if _other_appts:
                     from zoneinfo import ZoneInfo as _ZI
                     _TZ = _ZI("America/Recife")
                     _existing_dates = ", ".join(
@@ -789,24 +788,41 @@ async def confirm_appointment(
     end = start + timedelta(minutes=slot_duration_minutes)
     client = await get_supabase()
 
-    # When the contact has multiple patients, match by patient_name to get the correct user_id.
+    # When the contact has multiple patients, resolve the correct patient record.
     # get_user_by_phone returns an arbitrary record — wrong when contact has e.g. parent + child.
     all_users = await get_users_by_phone(phone)
     user = None
     if len(all_users) > 1:
-        _target = patient_name.strip().lower()
-        for _u in all_users:
-            _pname = (_u.get("patient_name") or _u.get("name") or "").strip().lower()
-            if _pname == _target:
-                user = _u
-                break
-        if user is None:
-            # Fallback: partial match
+        def _match_by_name(target: str) -> dict | None:
+            target = target.strip().lower()
+            if not target:
+                return None
             for _u in all_users:
                 _pname = (_u.get("patient_name") or _u.get("name") or "").strip().lower()
-                if _target and _target in _pname:
-                    user = _u
-                    break
+                if _pname == target:
+                    return _u
+            for _u in all_users:
+                _pname = (_u.get("patient_name") or _u.get("name") or "").strip().lower()
+                if target in _pname:
+                    return _u
+            return None
+
+        if patient_name_override.strip():
+            # Attendant explicitly named a different patient than the one in
+            # conversation context — honor the override.
+            user = _match_by_name(patient_name_override)
+        if user is None:
+            # Prefer the patient already resolved for this conversation
+            # (state["user_db_id"]) over re-deriving from patient_name — patient_name
+            # is a plain string that can go stale independently of user_db_id (caso
+            # Renata Monteiro / Laila+Suzi Viana, 5581996962165, 08/07/2026: a stale
+            # patient_name silently overwrote by app/main.py's DB-sync made this
+            # matching attach a new appointment to the wrong twin's patient_id).
+            _uid = state.get("user_db_id")
+            if _uid:
+                user = next((_u for _u in all_users if _u["id"] == _uid), None)
+        if user is None:
+            user = _match_by_name(patient_name)
     if user is None:
         user = await get_user_by_phone(phone)
 
