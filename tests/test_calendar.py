@@ -104,6 +104,49 @@ def test_parse_day_semana_seguinte_variant(freeze_calendar_tuesday):
     assert result == date(2026, 7, 15)
 
 
+# ── month name alone, mid-month ────────────────────────────────────────────────
+# Regression for Ana Cláudia/Heitor case (5581987652022, 2026-07-11): patient
+# asked for "horários disponíveis do mês de julho" while already on July 11th.
+# The month-only fallback rolled a full year forward (to 01/07/2027) instead of
+# just continuing to search within the current month from today onward.
+
+class _FrozenDTJulySaturday(_real_dt):
+    """'Today' = 2026-07-11, a Saturday, mid-July."""
+    @classmethod
+    def now(cls, tz=None):
+        return _real_dt(2026, 7, 11, 10, 0, tzinfo=tz) if tz else _real_dt(2026, 7, 11, 10, 0)
+
+
+@pytest.fixture
+def freeze_calendar_mid_july():
+    with patch("app.google_calendar.datetime", _FrozenDTJulySaturday):
+        yield
+
+
+def test_parse_day_month_name_mid_month_stays_in_current_year(freeze_calendar_mid_july):
+    """Asking for 'julho' on July 11 must return a date later in July 2026
+    (next weekday on/after today), not roll forward to July 2027."""
+    from app.google_calendar import _parse_day
+    result = _parse_day("julho")
+    assert result == date(2026, 7, 13)  # next weekday (Monday) on/after today
+
+
+def test_parse_day_month_name_future_month_unaffected(freeze_calendar_tuesday):
+    """Asking for a month that hasn't started yet this year still returns its
+    1st weekday, unchanged (freeze_calendar_tuesday = 2026-07-07)."""
+    from app.google_calendar import _parse_day
+    result = _parse_day("agosto")
+    assert result == date(2026, 8, 3)  # Aug 1 2026 is a Saturday -> first Monday
+
+
+def test_parse_day_month_name_past_month_rolls_to_next_year(freeze_calendar_tuesday):
+    """Asking for a month that's already fully passed this year rolls to next
+    year, unchanged (freeze_calendar_tuesday = 2026-07-07)."""
+    from app.google_calendar import _parse_day
+    result = _parse_day("janeiro")
+    assert result == date(2027, 1, 1)  # Jan 1 2027 is a Friday
+
+
 # ── get_available_slots (with mocked Google API) ──────────────────────────────
 
 def _make_service(busy_periods: list[dict]) -> MagicMock:

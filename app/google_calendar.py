@@ -315,10 +315,17 @@ def _parse_day(preferred_day: str) -> date | None:
     for month_name, month_num in _MONTHS_PT.items():
         if month_name in s:
             year = today.year
-            d = date(year, month_num, 1)
-            if d < today:
-                d = date(year + 1, month_num, 1)
-            # advance to first Monday (weekday 0) of the month
+            if month_num < today.month:
+                # Month already fully passed this year -> next year's occurrence.
+                year += 1
+                d = date(year, month_num, 1)
+            else:
+                d = date(year, month_num, 1)
+                if d < today:
+                    # Same month as today, but day 1 already passed -> continue
+                    # searching from today onward instead of skipping to next year.
+                    d = today
+            # advance to first weekday (Mon-Fri) on/after d
             while d.weekday() >= 5:  # skip weekends
                 d += timedelta(days=1)
             return d
