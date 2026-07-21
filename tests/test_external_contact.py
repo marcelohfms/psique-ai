@@ -78,7 +78,7 @@ async def test_request_external_contact_success():
     )
 
     with patch("app.graph.tools.get_supabase", new_callable=AsyncMock, return_value=mock_client), \
-         patch("app.graph.tools.send_external_contact_request_email", new_callable=AsyncMock) as mock_email, \
+         patch("app.email_sender.send_external_contact_request_email", new_callable=AsyncMock) as mock_email, \
          patch("app.graph.tools.log_event", new_callable=AsyncMock) as mock_log, \
          patch("app.graph.tools._notify_clinic", new_callable=AsyncMock) as mock_notify:
 
@@ -92,7 +92,7 @@ async def test_request_external_contact_success():
         )
 
     # Assertions
-    assert "registrada" in result.lower() or "sucesso" in result.lower()
+    assert "registrado" in result.lower() or "encaminhamos" in result.lower()
 
     # Verify insert was called with correct data
     tables["requests"].insert.assert_called_once()
@@ -152,7 +152,7 @@ async def test_request_external_contact_missing_patient_name():
 
     with patch("app.graph.tools.get_supabase", new_callable=AsyncMock, return_value=mock_client), \
          patch("app.graph.tools.get_user_by_phone", new_callable=AsyncMock, return_value=mock_user) as mock_get_user, \
-         patch("app.graph.tools.send_external_contact_request_email", new_callable=AsyncMock), \
+         patch("app.email_sender.send_external_contact_request_email", new_callable=AsyncMock), \
          patch("app.graph.tools.log_event", new_callable=AsyncMock), \
          patch("app.graph.tools._notify_clinic", new_callable=AsyncMock):
 
@@ -192,7 +192,7 @@ async def test_request_external_contact_without_third_party_contact():
     )
 
     with patch("app.graph.tools.get_supabase", new_callable=AsyncMock, return_value=mock_client), \
-         patch("app.graph.tools.send_external_contact_request_email", new_callable=AsyncMock) as mock_email, \
+         patch("app.email_sender.send_external_contact_request_email", new_callable=AsyncMock) as mock_email, \
          patch("app.graph.tools.log_event", new_callable=AsyncMock), \
          patch("app.graph.tools._notify_clinic", new_callable=AsyncMock):
 
@@ -206,7 +206,7 @@ async def test_request_external_contact_without_third_party_contact():
         )
 
     # Verify it still works without third_party_contact
-    assert "registrada" in result.lower() or "sucesso" in result.lower()
+    assert "registrado" in result.lower() or "encaminhamos" in result.lower()
 
     # Verify metadata handles missing contact gracefully
     call_args = tables["requests"].insert.call_args
@@ -234,7 +234,7 @@ async def test_request_external_contact_handles_missing_doctor_email():
     )
 
     with patch("app.graph.tools.get_supabase", new_callable=AsyncMock, return_value=mock_client), \
-         patch("app.graph.tools.send_external_contact_request_email", new_callable=AsyncMock) as mock_email, \
+         patch("app.email_sender.send_external_contact_request_email", new_callable=AsyncMock) as mock_email, \
          patch("app.graph.tools.log_event", new_callable=AsyncMock), \
          patch("app.graph.tools._notify_clinic", new_callable=AsyncMock):
 
@@ -247,7 +247,7 @@ async def test_request_external_contact_handles_missing_doctor_email():
         )
 
     # Verify request was still registered despite missing email
-    assert "registrada" in result.lower() or "sucesso" in result.lower()
+    assert "registrado" in result.lower() or "encaminhamos" in result.lower()
     tables["requests"].insert.assert_called_once()
 
     # Verify email send was attempted (but caught exception in tool)
@@ -315,7 +315,7 @@ async def test_nudge_external_contact_success():
     mock_client.from_ = MagicMock(side_effect=from_side_effect)
 
     with patch("app.graph.tools.get_supabase", new_callable=AsyncMock, return_value=mock_client), \
-         patch("app.graph.tools.send_external_contact_nudge_email", new_callable=AsyncMock) as mock_email, \
+         patch("app.email_sender.send_external_contact_nudge_email", new_callable=AsyncMock) as mock_email, \
          patch("app.graph.tools.log_event", new_callable=AsyncMock) as mock_log:
 
         result = await nudge_external_contact.coroutine(
@@ -325,7 +325,7 @@ async def test_nudge_external_contact_success():
         )
 
     # Assertions
-    assert "sucesso" in result.lower() or "foi enviado" in result.lower() or "notifica" in result.lower()
+    assert "aviso" in result.lower() or "encaminhamos" in result.lower()
 
     # Verify requests table was queried with correct filters
     mock_requests_table.select.assert_called()
@@ -394,7 +394,7 @@ async def test_nudge_external_contact_no_pending_request():
     mock_client.from_ = MagicMock(side_effect=from_side_effect)
 
     with patch("app.graph.tools.get_supabase", new_callable=AsyncMock, return_value=mock_client), \
-         patch("app.graph.tools.send_external_contact_nudge_email", new_callable=AsyncMock) as mock_email, \
+         patch("app.email_sender.send_external_contact_nudge_email", new_callable=AsyncMock) as mock_email, \
          patch("app.graph.tools.log_event", new_callable=AsyncMock) as mock_log:
 
         result = await nudge_external_contact.coroutine(
