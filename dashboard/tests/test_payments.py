@@ -276,6 +276,41 @@ async def test_mark_paid_email_failure_nao_propaga(fake_client, monkeypatch):
     assert row["paid_at"] is not None  # gravação principal não foi afetada pela falha do e-mail
 
 
+async def test_mark_paid_com_comprovante_fica_visivel_em_find_receipts(fake_client, monkeypatch):
+    # Simetria: um comprovante anexado pela atendente no dashboard deve virar a MESMA
+    # linha "[imagem]: COMPROVANTE DE PAGAMENTO... [drive_link:URL]" no histórico, de modo
+    # que find_receipts (que só lê a tabela `messages`) o enxergue como se tivesse vindo
+    # da conversa — marcado como registrado pela atendente.
+    fake_client.store["appointments"] = [{"appointment_id": "a1", "booking_fee_paid_at": None}]
+    monkeypatch.setattr(payments, "_append_payment_sheet", AsyncMock())
+    monkeypatch.setattr(payments, "_send_clinic_email", AsyncMock())
+    monkeypatch.setattr(attendant_db, "log_event", AsyncMock())
+    await payments.mark_paid(
+        fake_client, "a1", "taxa", 150, "PIX", "João", "Dr. Júlio",
+        "10/07/2026 14:00", "5581999990000",
+        drive_link="https://drive.google.com/file/d/abc/view",
+    )
+    receipts = await payments.find_receipts(fake_client, "5581999990000")
+    assert len(receipts) == 1
+    assert receipts[0]["drive_link"] == "https://drive.google.com/file/d/abc/view"
+    assert "registrado pela atendente" in receipts[0]["descricao"]
+
+
+async def test_mark_paid_sem_drive_link_nao_grava_mensagem(fake_client, monkeypatch):
+    # Pagamento presencial sem comprovante (dinheiro/cartão) não deve poluir o histórico
+    # com uma mensagem de comprovante inexistente.
+    fake_client.store["appointments"] = [{"appointment_id": "a1", "booking_fee_paid_at": None}]
+    monkeypatch.setattr(payments, "_append_payment_sheet", AsyncMock())
+    monkeypatch.setattr(payments, "_send_clinic_email", AsyncMock())
+    monkeypatch.setattr(attendant_db, "log_event", AsyncMock())
+    await payments.mark_paid(
+        fake_client, "a1", "taxa", 150, "dinheiro", "João", "Dr. Júlio",
+        "10/07/2026 14:00", "5581999990000",
+        drive_link="",
+    )
+    assert fake_client.store.get("messages", []) == []
+
+
 # ── mark_fee_waived ───────────────────────────────────────────────────────────
 
 

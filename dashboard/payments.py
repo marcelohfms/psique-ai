@@ -528,7 +528,6 @@ async def mark_paid(
 
     if drive_link:
         try:
-            import attendant_db
             await attendant_db.log_event("payment_receipt_registered", phone, {
                 "patient_name": paciente,
                 "amount": amount_str,
@@ -540,6 +539,24 @@ async def mark_paid(
             })
         except Exception:
             logger.exception("LOG_EVENT_FAILED patient=%s drive_link=%s", paciente, drive_link)
+
+        # Espelha o comprovante no histórico da conversa, no MESMO formato que a Eva
+        # grava quando o paciente envia a imagem pelo WhatsApp (ver app/media.py), para
+        # que find_receipts o enxergue e os dois caminhos fiquem simétricos. O sufixo
+        # "registrado pela atendente" deixa auditável que veio do dashboard, não do paciente.
+        try:
+            phone_clean = phone.replace("@s.whatsapp.net", "")
+            receipt_content = (
+                f"[imagem]: COMPROVANTE DE PAGAMENTO: {payment_type} R$ {amount_str} "
+                f"— registrado pela atendente [drive_link:{drive_link}]"
+            )
+            await client.from_("messages").insert({
+                "phone": phone_clean,
+                "role": "user",
+                "content": receipt_content,
+            }).execute()
+        except Exception:
+            logger.exception("RECEIPT_MSG_INSERT_FAILED patient=%s drive_link=%s", paciente, drive_link)
 
 
 async def mark_fee_waived(
