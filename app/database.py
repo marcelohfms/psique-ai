@@ -326,6 +326,10 @@ async def get_upcoming_appointments(phone: str) -> list[dict]:
     - Completed appointments still owing a balance (paid_at is null) — flagged with
       'already_occurred', regardless of how long ago, so the LLM never talks about
       settling the balance "no dia da consulta" as if it were still upcoming.
+    - pending_reschedule appointments whose original end_time is already outside the
+      48h "recent" window — flagged with 'stale_reschedule', regardless of how long
+      ago, so the LLM never loses track of a pending reschedule just because the
+      patient took weeks to come back.
     """
     client = await get_supabase()
     # Consider ALL patients linked to this contact — a contact may manage several
@@ -380,6 +384,21 @@ async def get_upcoming_appointments(phone: str) -> list[dict]:
         .execute()
     )
 
+    # pending_reschedule older than the "recent" window — its original start_time
+    # recedes into the past the longer the patient waits to rebook, but the
+    # reschedule is still pending. Without this bucket the row is invisible to the
+    # LLM once end_time < cutoff_recent (caso Heitor/Ludmilla, 5581996937559,
+    # 21/07/2026), and Eva treats a returning patient as a brand-new booking.
+    stale_reschedule_result = (
+        await client.from_("appointments")
+        .select(_appt_fields)
+        .eq("status", "pending_reschedule")
+        .in_("patient_id", patient_ids)
+        .lt("end_time", cutoff_recent)
+        .order("start_time")
+        .execute()
+    )
+
     # Attach patient_name to each row so the caller can attribute the appointment
     # to the correct patient when the contact manages more than one.
     future = [dict(r, patient_name=name_by_id.get(r.get("patient_id"), "")) for r in (future_result.data or [])]
@@ -388,7 +407,11 @@ async def get_upcoming_appointments(phone: str) -> list[dict]:
         dict(r, already_occurred=True, patient_name=name_by_id.get(r.get("patient_id"), ""))
         for r in (unpaid_past_result.data or [])
     ]
-    return future + recent + unpaid_past
+    stale_reschedule = [
+        dict(r, stale_reschedule=True, patient_name=name_by_id.get(r.get("patient_id"), ""))
+        for r in (stale_reschedule_result.data or [])
+    ]
+    return future + recent + unpaid_past + stale_reschedule
 
 
 # ── Message persistence ───────────────────────────────────────────────────────
