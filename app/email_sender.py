@@ -203,3 +203,122 @@ async def send_document_request_email(
         subject,
         body,
     )
+
+
+async def send_external_contact_request_email(
+    doctor_key: str,
+    doctor_email: str,
+    patient_name: str,
+    patient_age: int | None,
+    phone: str,
+    third_party_role: str,
+    third_party_name: str,
+    third_party_contact: str,
+    reason: str,
+) -> None:
+    """Send an email to the doctor notifying an external contact request.
+    Does nothing if SMTP credentials or doctor email are not configured.
+    """
+    smtp_host = os.environ.get("SMTP_HOST")
+    smtp_port = int(os.environ.get("SMTP_PORT", "465"))
+    smtp_user = os.environ.get("SMTP_USER")
+    smtp_password = os.environ.get("SMTP_PASSWORD")
+    to_email = doctor_email
+
+    if not all([smtp_host, smtp_user, smtp_password, to_email]):
+        return
+
+    doctor_label = _DOCTOR_LABELS.get(doctor_key, doctor_key)
+    phone_clean = phone.replace("@s.whatsapp.net", "")
+    age_str = f"{patient_age} anos" if patient_age else "não informada"
+    now = datetime.now(TZ).strftime("%d/%m/%Y às %H:%M")
+
+    subject = f"Solicitação de contato com {third_party_role} — {patient_name}"
+    third_party_contact_line = (
+        f"  Contato do {third_party_role}: {third_party_contact}\n"
+        if third_party_contact
+        else ""
+    )
+    body = (
+        f"{doctor_label},\n\n"
+        f"Um paciente solicitou um contato com um(a) {third_party_role} via WhatsApp.\n\n"
+        f"Dados do paciente:\n"
+        f"  Nome: {patient_name}\n"
+        f"  Idade: {age_str}\n"
+        f"  Telefone: {phone_clean}\n\n"
+        f"Detalhes do contato solicitado:\n"
+        f"  {third_party_role}: {third_party_name}\n"
+        f"{third_party_contact_line}"
+        f"  Motivo: {reason}\n"
+        f"  Data da solicitação: {now}\n\n"
+        f"Por favor, entrar em contato com o paciente para providenciar o contato.\n\n"
+        f"— Eva, assistente virtual Psique"
+    )
+
+    loop = asyncio.get_event_loop()
+    await loop.run_in_executor(
+        None,
+        _send_email,
+        smtp_host,
+        smtp_port,
+        smtp_user,
+        smtp_password,
+        to_email,
+        subject,
+        body,
+    )
+
+
+async def send_external_contact_nudge_email(
+    doctor_key: str,
+    doctor_email: str,
+    patient_name: str,
+    patient_age: int | None,
+    phone: str,
+    third_party_role: str,
+    third_party_name: str,
+    patient_message: str,
+    requested_at: str,
+) -> None:
+    """Send a nudge email to doctor when patient follows up on external contact request."""
+    smtp_host = os.environ.get("SMTP_HOST")
+    smtp_port = int(os.environ.get("SMTP_PORT", "465"))
+    smtp_user = os.environ.get("SMTP_USER")
+    smtp_password = os.environ.get("SMTP_PASSWORD")
+    to_email = doctor_email
+
+    if not all([smtp_host, smtp_user, smtp_password, to_email]):
+        return
+
+    doctor_label = _DOCTOR_LABELS.get(doctor_key, doctor_key)
+    phone_clean = phone.replace("@s.whatsapp.net", "")
+    age_str = f"{patient_age} anos" if patient_age else "não informada"
+    now = datetime.now(TZ).strftime("%d/%m/%Y às %H:%M")
+
+    subject = f"⚠️ Cobrança de paciente — Contato com {third_party_role} pendente — {patient_name}"
+    body = (
+        f"{doctor_label},\n\n"
+        f"O(a) paciente {patient_name} está aguardando o contato com {third_party_name} "
+        f"({third_party_role}) solicitado(a) em {requested_at} e enviou a seguinte mensagem agora ({now}):\n\n"
+        f"  \"{patient_message}\"\n\n"
+        f"Dados do paciente:\n"
+        f"  Nome: {patient_name}\n"
+        f"  Idade: {age_str}\n"
+        f"  Telefone: {phone_clean}\n"
+        f"  {third_party_role} solicitado: {third_party_name}\n\n"
+        f"Por favor, providencie o contato com o paciente o mais breve possível.\n\n"
+        f"— Eva, assistente virtual Psique"
+    )
+
+    loop = asyncio.get_event_loop()
+    await loop.run_in_executor(
+        None,
+        _send_email,
+        smtp_host,
+        smtp_port,
+        smtp_user,
+        smtp_password,
+        to_email,
+        subject,
+        body,
+    )
