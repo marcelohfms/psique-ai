@@ -209,14 +209,14 @@ async def send_external_contact_request_email(
     doctor_key: str,
     doctor_email: str,
     patient_name: str,
+    contact_name: str,
+    contact_email: str,
+    contact_relationship: str,
+    contact_phone: str,
     patient_age: int | None,
-    phone: str,
-    third_party_role: str,
-    third_party_name: str,
-    third_party_contact: str,
-    reason: str,
+    patient_phone: str,
 ) -> None:
-    """Send an email to the doctor notifying an external contact request.
+    """Send an email to the doctor requesting contact information for an external contact.
     Does nothing if SMTP credentials or doctor email are not configured.
     """
     smtp_host = os.environ.get("SMTP_HOST")
@@ -229,29 +229,26 @@ async def send_external_contact_request_email(
         return
 
     doctor_label = _DOCTOR_LABELS.get(doctor_key, doctor_key)
-    phone_clean = phone.replace("@s.whatsapp.net", "")
+    patient_phone_clean = patient_phone.replace("@s.whatsapp.net", "")
+    contact_phone_clean = contact_phone.replace("@s.whatsapp.net", "")
     age_str = f"{patient_age} anos" if patient_age else "não informada"
     now = datetime.now(TZ).strftime("%d/%m/%Y às %H:%M")
 
-    subject = f"Solicitação de contato com {third_party_role} — {patient_name}"
-    third_party_contact_line = (
-        f"  Contato do {third_party_role}: {third_party_contact}\n"
-        if third_party_contact
-        else ""
-    )
+    subject = f"Solicitação de contato externo — {patient_name}"
     body = (
         f"{doctor_label},\n\n"
-        f"Um paciente solicitou um contato com um(a) {third_party_role} via WhatsApp.\n\n"
+        f"O(a) paciente {patient_name} solicitou o contato de uma pessoa via WhatsApp.\n\n"
         f"Dados do paciente:\n"
         f"  Nome: {patient_name}\n"
         f"  Idade: {age_str}\n"
-        f"  Telefone: {phone_clean}\n\n"
-        f"Detalhes do contato solicitado:\n"
-        f"  {third_party_role}: {third_party_name}\n"
-        f"{third_party_contact_line}"
-        f"  Motivo: {reason}\n"
+        f"  Telefone: {patient_phone_clean}\n\n"
+        f"Contato solicitado:\n"
+        f"  Nome: {contact_name}\n"
+        f"  Relacionamento: {contact_relationship}\n"
+        f"  Telefone: {contact_phone_clean}\n"
+        f"  E-mail: {contact_email}\n"
         f"  Data da solicitação: {now}\n\n"
-        f"Por favor, entrar em contato com o paciente para providenciar o contato.\n\n"
+        f"Por favor, confirme se podemos compartilhar este contato com o(a) paciente.\n\n"
         f"— Eva, assistente virtual Psique"
     )
 
@@ -273,14 +270,14 @@ async def send_external_contact_nudge_email(
     doctor_key: str,
     doctor_email: str,
     patient_name: str,
+    contact_name: str,
+    contact_relationship: str,
+    contact_phone: str,
     patient_age: int | None,
-    phone: str,
-    third_party_role: str,
-    third_party_name: str,
-    patient_message: str,
+    patient_phone: str,
     requested_at: str,
 ) -> None:
-    """Send a nudge email to doctor when patient follows up on external contact request."""
+    """Send a nudge email to the doctor when a patient follows up on a pending external contact request."""
     smtp_host = os.environ.get("SMTP_HOST")
     smtp_port = int(os.environ.get("SMTP_PORT", "465"))
     smtp_user = os.environ.get("SMTP_USER")
@@ -291,22 +288,26 @@ async def send_external_contact_nudge_email(
         return
 
     doctor_label = _DOCTOR_LABELS.get(doctor_key, doctor_key)
-    phone_clean = phone.replace("@s.whatsapp.net", "")
+    patient_phone_clean = patient_phone.replace("@s.whatsapp.net", "")
+    contact_phone_clean = contact_phone.replace("@s.whatsapp.net", "")
     age_str = f"{patient_age} anos" if patient_age else "não informada"
     now = datetime.now(TZ).strftime("%d/%m/%Y às %H:%M")
 
-    subject = f"⚠️ Cobrança de paciente — Contato com {third_party_role} pendente — {patient_name}"
+    subject = f"⚠️ Acompanhamento de contato externo — {patient_name}"
     body = (
         f"{doctor_label},\n\n"
-        f"O(a) paciente {patient_name} está aguardando o contato com {third_party_name} "
-        f"({third_party_role}) solicitado(a) em {requested_at} e enviou a seguinte mensagem agora ({now}):\n\n"
-        f"  \"{patient_message}\"\n\n"
+        f"O(a) paciente {patient_name} está acompanhando a solicitação de contato "
+        f"realizada em {requested_at}.\n\n"
         f"Dados do paciente:\n"
         f"  Nome: {patient_name}\n"
         f"  Idade: {age_str}\n"
-        f"  Telefone: {phone_clean}\n"
-        f"  {third_party_role} solicitado: {third_party_name}\n\n"
-        f"Por favor, providencie o contato com o paciente o mais breve possível.\n\n"
+        f"  Telefone: {patient_phone_clean}\n"
+        f"  Acompanhamento em: {now}\n\n"
+        f"Contato solicitado:\n"
+        f"  Nome: {contact_name}\n"
+        f"  Relacionamento: {contact_relationship}\n"
+        f"  Telefone: {contact_phone_clean}\n\n"
+        f"Por favor, confirme se podemos compartilhar este contato com o(a) paciente.\n\n"
         f"— Eva, assistente virtual Psique"
     )
 
