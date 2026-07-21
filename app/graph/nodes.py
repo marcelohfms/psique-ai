@@ -1533,20 +1533,27 @@ async def patient_agent_node(state: ConversationState, config: RunnableConfig) -
         future_lines = []
         recent_lines = []
         past_unpaid_lines = []
+        stale_reschedule_lines = []
         for apt in upcoming:
             dt = datetime.fromisoformat(apt["start_time"]).astimezone(_TZ)
             fee_ok = apt.get("booking_fee_paid_at") or apt.get("booking_fee_waived")
             fee_tag = "" if fee_ok else " ⚠️ TAXA DE RESERVA PENDENTE"
+            # Marca o status explicitamente — sem isso, uma consulta pending_reschedule
+            # fica indistinguível de uma scheduled normal no texto, mesmo quando visível
+            # (caso Heitor/Ludmilla, 5581996937559, 21/07/2026).
+            reschedule_tag = " 🔄 REMARCAÇÃO PENDENTE" if apt.get("status") == "pending_reschedule" else ""
             _suffix = date_suffix_pt(dt.date(), _now_recife.date())
             # Prefix with the patient name — the contact may manage several patients,
             # so the LLM must not assume the appointment belongs to the active one.
             _pname = (apt.get("patient_name") or "").strip()
             _who = f"{_pname} — " if _pname else ""
-            label = f"- {_who}{dt.strftime('%d/%m/%Y às %H:%M')} ({_suffix}) (ID: {apt['appointment_id']}){fee_tag}"
+            label = f"- {_who}{dt.strftime('%d/%m/%Y às %H:%M')} ({_suffix}) (ID: {apt['appointment_id']}){fee_tag}{reschedule_tag}"
             if apt.get("already_occurred"):
                 past_unpaid_lines.append(label)
             elif apt.get("recently_ended"):
                 recent_lines.append(label)
+            elif apt.get("stale_reschedule"):
+                stale_reschedule_lines.append(label)
             else:
                 future_lines.append(label)
         if future_lines:
@@ -1559,6 +1566,11 @@ async def patient_agent_node(state: ConversationState, config: RunnableConfig) -
                 + "\n".join(past_unpaid_lines)
                 + "\nATENÇÃO: estas consultas JÁ OCORRERAM — NUNCA diga que o saldo será "
                 "quitado \"no dia da consulta\". Diga que o saldo já pode ser quitado agora."
+            )
+        if stale_reschedule_lines:
+            system_prompt += (
+                "\n\nRemarcação pendente (vaga liberada, aguardando nova data):\n"
+                + "\n".join(stale_reschedule_lines)
             )
 
     import logging as _log
