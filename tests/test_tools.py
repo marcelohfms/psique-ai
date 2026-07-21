@@ -1538,18 +1538,22 @@ def test_expected_consultation_amount_price_override():
 
 # ── register_payment ──────────────────────────────────────────────────────────
 
-def _make_supabase_client_with_appointment():
+def _make_supabase_client_with_appointment(start_time="2026-03-23T09:00:00+00:00", end_time="2026-03-23T10:00:00+00:00"):
     """Supabase client that serves register_payment's two sequential appointment queries.
 
     Call order:
       1. appts_result — appointments joined with users (patient resolution)
       2. appt_result  — full appointment details (payment logic)
       3+. update/upsert/linked-appts → generic empty response
+
+    Defaults to a start_time already in the past relative to the fixed "today"
+    used across these tests, so the default fixture exercises the
+    already-occurred payment-timing branch unless overridden with a future date.
     """
     # Call 1: new appointment-centric query with users join
     appts_with_users = MagicMock(data=[{
         "appointment_id": "apt-1",
-        "start_time": "2026-03-23T09:00:00+00:00",
+        "start_time": start_time,
         "doctor_id": "d5baa58b-a788-4f40-b8c0-512c189150be",
         "status": "scheduled",
         "patients": {"id": "user-123", "name": "Maria"},
@@ -1557,9 +1561,9 @@ def _make_supabase_client_with_appointment():
     # Call 2: full appointment fetch for payment logic
     apt_data = MagicMock(data=[{
         "appointment_id": "apt-1",
-        "start_time": "2026-03-23T09:00:00+00:00",
+        "start_time": start_time,
         "doctor_id": "d5baa58b-a788-4f40-b8c0-512c189150be",
-        "end_time": "2026-03-23T10:00:00+00:00",
+        "end_time": end_time,
         "paid_at": None,
         "booking_fee_paid_at": None,
         "status": "scheduled",
@@ -2042,6 +2046,37 @@ async def test_register_payment_sets_booking_fee_paid_at():
     paid_at_calls = [c for c in table.update.call_args_list if "paid_at" in c[0][0] and "booking_fee_paid_at" not in c[0][0]]
     assert len(paid_at_calls) == 0
     assert "taxa de reserva registrada" in result
+    # The fixture's appointment is already in the past (2026-03-23, before "today"),
+    # so the note must say the balance can be settled now — never "no dia da consulta"
+    # (caso Geórgia, 2026-07-21: Eva told a patient with a past appointment to pay
+    # "no dia da consulta" as if it hadn't happened yet).
+    assert "já ocorreu" in result
+    assert "no dia da consulta" not in result
+
+
+async def test_register_payment_booking_fee_future_appointment_says_no_dia_da_consulta():
+    """When the appointment is still in the future, the balance note should keep
+    saying it's due "no dia da consulta" — only past appointments get the
+    already-occurred wording."""
+    from app.graph.tools import register_payment
+    client, table, execute = _make_supabase_client_with_appointment(
+        start_time="2026-12-23T09:00:00+00:00", end_time="2026-12-23T10:00:00+00:00",
+    )
+    with patch("app.graph.tools.get_supabase", new_callable=AsyncMock, return_value=client), \
+         patch("app.graph.tools.get_users_by_phone", new_callable=AsyncMock, return_value=[{"id": "user-123", "patient_name": "Maria"}]), \
+         patch("app.graph.tools.log_event", new_callable=AsyncMock), \
+         patch("app.graph.tools._notify_clinic", new_callable=AsyncMock), \
+         patch("app.google_drive.rename_file", new_callable=AsyncMock), \
+         patch("app.google_sheets.append_payment_receipt", new_callable=AsyncMock), \
+         patch("app.graph.tools.send_text", new_callable=AsyncMock):
+        result = await register_payment.coroutine(
+            amount="100,00",
+            drive_link="https://drive.google.com/file/d/abc/view",
+            state=_make_state(),
+            config=CONFIG,
+        )
+    assert "no dia da consulta" in result
+    assert "já ocorreu" not in result
 
 
 async def test_register_payment_full_amount_sets_paid_at():

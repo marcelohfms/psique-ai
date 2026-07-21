@@ -1532,6 +1532,7 @@ async def patient_agent_node(state: ConversationState, config: RunnableConfig) -
         _TZ = _ZI("America/Recife")
         future_lines = []
         recent_lines = []
+        past_unpaid_lines = []
         for apt in upcoming:
             dt = datetime.fromisoformat(apt["start_time"]).astimezone(_TZ)
             fee_ok = apt.get("booking_fee_paid_at") or apt.get("booking_fee_waived")
@@ -1542,7 +1543,9 @@ async def patient_agent_node(state: ConversationState, config: RunnableConfig) -
             _pname = (apt.get("patient_name") or "").strip()
             _who = f"{_pname} — " if _pname else ""
             label = f"- {_who}{dt.strftime('%d/%m/%Y às %H:%M')} ({_suffix}) (ID: {apt['appointment_id']}){fee_tag}"
-            if apt.get("recently_ended"):
+            if apt.get("already_occurred"):
+                past_unpaid_lines.append(label)
+            elif apt.get("recently_ended"):
                 recent_lines.append(label)
             else:
                 future_lines.append(label)
@@ -1550,6 +1553,13 @@ async def patient_agent_node(state: ConversationState, config: RunnableConfig) -
             system_prompt += "\n\nConsultas agendadas (por paciente):\n" + "\n".join(future_lines)
         if recent_lines:
             system_prompt += "\n\nConsulta(s) recém-realizada(s) (nas últimas 48h):\n" + "\n".join(recent_lines)
+        if past_unpaid_lines:
+            system_prompt += (
+                "\n\nConsulta(s) já realizada(s) com saldo pendente:\n"
+                + "\n".join(past_unpaid_lines)
+                + "\nATENÇÃO: estas consultas JÁ OCORRERAM — NUNCA diga que o saldo será "
+                "quitado \"no dia da consulta\". Diga que o saldo já pode ser quitado agora."
+            )
 
     import logging as _log
     _logger = _log.getLogger(__name__)
