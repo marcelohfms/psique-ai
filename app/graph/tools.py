@@ -686,8 +686,24 @@ async def confirm_appointment(
         # on 20/07, but Daniela is free on 26/08 — must allow booking for Daniela).
         _patient_id = state.get("user_db_id")
         if _patient_id:
-            _future_r = await _supabase.from_("appointments").select("appointment_id, start_time").eq("patient_id", _patient_id).in_("status", ["scheduled", "pending_reschedule"]).gte("start_time", _now_iso).execute()
-            _other_appts = [a for a in (_future_r.data or []) if a["start_time"] != start.isoformat()]
+            _appts_r = await _supabase.from_("appointments").select("appointment_id, start_time, status").eq("patient_id", _patient_id).in_("status", ["scheduled", "pending_reschedule"]).execute()
+            # Filtro por data feito aqui (não com .gte na query) para diferenciar por status:
+            #   - pending_reschedule bloqueia SEMPRE, independente da data. É o sinal durável
+            #     "remarcação pendente, taxa já paga", e seu start_time é o do slot ANTIGO —
+            #     que fica no passado quanto mais o paciente demora a voltar. Um .gte("start_time",
+            #     now) tornava essa linha invisível e deixava confirm_appointment criar um
+            #     agendamento novo com nova taxa (caso Heitor/Ludmilla, 5581996937559,
+            #     pending_reschedule de 02/07 remarcado semanas depois).
+            #   - scheduled só bloqueia se for FUTURO. Um scheduled no passado é consulta já
+            #     atendida (ainda não marcada completed) e não deve travar um novo agendamento.
+            _other_appts = []
+            for _a in (_appts_r.data or []):
+                if _a["start_time"] == start.isoformat():
+                    continue  # mesmo slot sendo reconfirmado — não é conflito
+                if _a.get("status") == "pending_reschedule":
+                    _other_appts.append(_a)
+                elif _a.get("status") == "scheduled" and _a["start_time"] >= _now_iso:
+                    _other_appts.append(_a)
             if _other_appts:
                     from zoneinfo import ZoneInfo as _ZI
                     _TZ = _ZI("America/Recife")

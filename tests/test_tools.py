@@ -557,17 +557,20 @@ async def test_confirm_appointment_no_restriction_uses_slot_logic():
 
 async def test_confirm_appointment_blocks_when_patient_has_pending_reschedule():
     """Guard 0 deve bloquear confirm_appointment mesmo quando a consulta existente do
-    paciente já está em pending_reschedule (não só 'scheduled'). Caso contrário,
-    confirm_appointment escapa da checagem e cria uma linha nova em vez de deixar
-    reschedule_appointment atualizar a consulta existente — perdendo a taxa de reserva
-    já paga (caso Tiago Perrelli, 03/07/2026). Guard filtra por patient_id específico,
-    não por contato inteiro."""
+    paciente já está em pending_reschedule (não só 'scheduled') E mesmo quando a data
+    original já passou. Caso contrário, confirm_appointment escapa da checagem e cria uma
+    linha nova em vez de deixar reschedule_appointment atualizar a consulta existente —
+    perdendo a taxa de reserva já paga (caso Tiago Perrelli, 03/07/2026; caso Heitor/
+    Ludmilla, 5581996937559, 21/07/2026: pending_reschedule de 02/07 remarcado semanas
+    depois). Guard filtra por patient_id específico, não por contato inteiro."""
+    from datetime import timezone as _tz
     from app.graph.tools import confirm_appointment
     client, table, execute = _make_supabase_client()
+    _past = (datetime.now(_tz.utc) - timedelta(days=60)).strftime("%Y-%m-%dT%H:%M:%S+00:00")
     # Agora apenas 1 execute call: appointments.select().eq("patient_id", ...).in_("status", ...)
     execute.side_effect = [
-        MagicMock(data=[{"appointment_id": "old-evt-1",
-                          "start_time": "2026-03-25T12:00:00+00:00"}]),   # appointments guard 0
+        MagicMock(data=[{"appointment_id": "old-evt-1", "start_time": _past,
+                          "status": "pending_reschedule"}]),   # appointments guard 0
     ]
     with patch("app.graph.tools._get_doctor_calendar_id", new_callable=AsyncMock, return_value="cal123"), \
          patch("app.graph.tools.get_supabase", new_callable=AsyncMock, return_value=client), \
@@ -585,17 +588,53 @@ async def test_confirm_appointment_blocks_when_patient_has_pending_reschedule():
     assert set(_status_call.args[1]) == {"scheduled", "pending_reschedule"}
 
 
+async def test_confirm_appointment_allows_when_only_past_scheduled_not_completed():
+    """Um agendamento 'scheduled' com data no passado (consulta já atendida, ainda não
+    marcada como completed) NÃO deve bloquear um novo agendamento — só pending_reschedule
+    (qualquer data) e scheduled futuro travam o Guard 0. Sem essa distinção, um paciente
+    com uma consulta antiga nunca conseguiria marcar de novo. O filtro de data precisa
+    rodar em Python (não só no .gte da query) para ser testável e correto por status."""
+    from datetime import timezone as _tz
+    from app.graph.tools import confirm_appointment
+    client, table, execute = _make_supabase_client()
+    _past = (datetime.now(_tz.utc) - timedelta(days=90)).strftime("%Y-%m-%dT%H:%M:%S+00:00")
+    _guard0 = MagicMock(data=[{"appointment_id": "old-done", "start_time": _past, "status": "scheduled"}])
+    _calls = {"n": 0}
+
+    def _side(*a, **k):
+        _calls["n"] += 1
+        return _guard0 if _calls["n"] == 1 else MagicMock(data=[])
+    execute.side_effect = _side
+    with patch("app.graph.tools._get_doctor_calendar_id", new_callable=AsyncMock, return_value="cal123"), \
+         patch("app.google_calendar.create_event", new_callable=AsyncMock, return_value="evt-new-ok"), \
+         patch("app.graph.tools.get_supabase", new_callable=AsyncMock, return_value=client), \
+         patch("app.graph.tools.get_users_by_phone", new_callable=AsyncMock, return_value=[{"id": "patient-1"}]), \
+         patch("app.graph.tools.get_user_by_phone", new_callable=AsyncMock, return_value={"id": "patient-1"}), \
+         patch("app.graph.tools.log_event", new_callable=AsyncMock), \
+         patch("app.graph.tools._notify_clinic", new_callable=AsyncMock):
+        result = await confirm_appointment.coroutine(
+            slot_datetime="2026-03-23T09:00:00",
+            slot_duration_minutes=60,
+            state=_make_state(user_db_id="patient-1"),
+            config=CONFIG,
+        )
+    assert "NÃO crie um novo agendamento" not in result
+    assert "evt-new-ok" in result
+
+
 async def test_confirm_appointment_guard0_applies_even_with_force_encaixe():
     """force_encaixe deve pular apenas os guards de janela/conflito de agenda, nunca o
     Guard 0 (paciente já tem consulta futura). Caso contrário, uma atendente pedindo para
     'encaixar' um novo horário faz a Eva criar um segundo agendamento em vez de remarcar
     o existente (caso Gustavo Lapenda, 06/07/2026 — dois agendamentos ativos)."""
+    from datetime import timezone as _tz
     from app.graph.tools import confirm_appointment
     client, table, execute = _make_supabase_client()
+    _future = (datetime.now(_tz.utc) + timedelta(days=30)).strftime("%Y-%m-%dT%H:%M:%S+00:00")
     # Guard 0 agora filtra por patient_id específico, apenas 1 execute call
     execute.side_effect = [
-        MagicMock(data=[{"appointment_id": "old-evt-1",
-                          "start_time": "2026-07-15T18:00:00+00:00"}]),   # appointments guard 0
+        MagicMock(data=[{"appointment_id": "old-evt-1", "start_time": _future,
+                          "status": "scheduled"}]),   # appointments guard 0
     ]
     with patch("app.graph.tools._get_doctor_calendar_id", new_callable=AsyncMock, return_value="cal123"), \
          patch("app.graph.tools.get_supabase", new_callable=AsyncMock, return_value=client), \
