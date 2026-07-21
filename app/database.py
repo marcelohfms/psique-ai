@@ -317,12 +317,15 @@ def is_registration_complete(user: dict) -> bool:
 # ── Appointment helpers ───────────────────────────────────────────────────────
 
 async def get_upcoming_appointments(phone: str) -> list[dict]:
-    """Return scheduled/ongoing/recent appointments for a user, ordered by start_time.
+    """Return scheduled/ongoing/recent/unpaid-past appointments for a user, ordered by start_time.
 
     Includes:
     - Future appointments (end_time >= now)
     - Appointments that ended in the last 48 h but are still marked 'scheduled'
       (complete_appointments script hasn't run yet) — flagged with 'recently_ended'
+    - Completed appointments still owing a balance (paid_at is null) — flagged with
+      'already_occurred', regardless of how long ago, so the LLM never talks about
+      settling the balance "no dia da consulta" as if it were still upcoming.
     """
     client = await get_supabase()
     # Consider ALL patients linked to this contact — a contact may manage several
@@ -339,7 +342,7 @@ async def get_upcoming_appointments(phone: str) -> list[dict]:
     now_iso = now.isoformat()
     cutoff_recent = (now - timedelta(hours=48)).isoformat()
 
-    _appt_fields = "appointment_id, patient_id, start_time, end_time, status, reschedule_requested_at, booking_fee_paid_at, booking_fee_waived"
+    _appt_fields = "appointment_id, patient_id, start_time, end_time, status, reschedule_requested_at, booking_fee_paid_at, booking_fee_waived, paid_at"
 
     # Future + ongoing (end_time has not yet passed)
     future_result = (
@@ -364,11 +367,28 @@ async def get_upcoming_appointments(phone: str) -> list[dict]:
         .execute()
     )
 
+    # Completed appointments still owing a balance (any age — a patient who owes
+    # money from weeks ago must never be discussed as if the payment date is
+    # still ahead of us).
+    unpaid_past_result = (
+        await client.from_("appointments")
+        .select(_appt_fields)
+        .eq("status", "completed")
+        .in_("patient_id", patient_ids)
+        .is_("paid_at", "null")
+        .order("start_time")
+        .execute()
+    )
+
     # Attach patient_name to each row so the caller can attribute the appointment
     # to the correct patient when the contact manages more than one.
     future = [dict(r, patient_name=name_by_id.get(r.get("patient_id"), "")) for r in (future_result.data or [])]
     recent = [dict(r, recently_ended=True, patient_name=name_by_id.get(r.get("patient_id"), "")) for r in (recent_result.data or [])]
-    return future + recent
+    unpaid_past = [
+        dict(r, already_occurred=True, patient_name=name_by_id.get(r.get("patient_id"), ""))
+        for r in (unpaid_past_result.data or [])
+    ]
+    return future + recent + unpaid_past
 
 
 # ── Message persistence ───────────────────────────────────────────────────────

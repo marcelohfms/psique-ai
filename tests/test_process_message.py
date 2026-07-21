@@ -1735,6 +1735,68 @@ async def test_patient_agent_prompt_has_reference_block_and_appointment_labels()
     assert "(amanhã," in system_prompt
 
 
+@pytest.mark.asyncio
+async def test_patient_agent_prompt_flags_past_unpaid_appointment():
+    """A completed appointment with a pending balance must be injected into the
+    system prompt as already-occurred, with an explicit instruction to never say
+    the balance is due "no dia da consulta" (caso Geórgia, 2026-07-21: Eva deu
+    essa resposta para uma consulta que já tinha acontecido)."""
+    import datetime as _dt
+    from zoneinfo import ZoneInfo
+    from unittest.mock import AsyncMock, MagicMock, patch
+    from langchain_core.messages import HumanMessage, AIMessage
+    from tests.conftest import CONFIG
+    from app.graph.nodes import patient_agent_node
+
+    TZ = ZoneInfo("America/Recife")
+    now = _dt.datetime.now(TZ)
+    last_month = (now - _dt.timedelta(days=30)).replace(hour=9, minute=0, second=0, microsecond=0)
+
+    appt = {
+        "appointment_id": "appt-past",
+        "start_time": last_month.isoformat(),
+        "booking_fee_paid_at": (now - _dt.timedelta(days=40)).isoformat(),
+        "booking_fee_waived": False,
+        "already_occurred": True,
+    }
+
+    captured = {}
+
+    class _FakeLLM:
+        async def ainvoke(self, messages):
+            captured["messages"] = messages
+            return AIMessage(content="ok")
+
+    state = {
+        "phone": "5581999999999@s.whatsapp.net",
+        "stage": "patient_agent",
+        "user_name": "Geórgia",
+        "patient_name": "Geórgia",
+        "patient_age": 30,
+        "is_patient": True,
+        "is_returning_patient": True,
+        "preferred_doctor": "bruna",
+        "messages": [HumanMessage(content="vou pagar no pix")],
+    }
+
+    with patch("app.graph.nodes.get_user_by_phone", new_callable=AsyncMock, return_value=None), \
+         patch("app.graph.nodes.get_upcoming_appointments", new_callable=AsyncMock, return_value=[appt]), \
+         patch("app.google_calendar.format_doctor_schedules", return_value=""), \
+         patch("app.graph.nodes._get_agent_llm", return_value=_FakeLLM()), \
+         patch("app.graph.nodes.send_text", new_callable=AsyncMock), \
+         patch("app.graph.nodes.save_message", new_callable=AsyncMock), \
+         patch("app.graph.nodes.get_users_by_phone", new_callable=AsyncMock, return_value=[]), \
+         patch("app.graph.nodes.get_last_assistant_message_time", new_callable=AsyncMock, return_value=None), \
+         patch("app.graph.nodes.is_registration_complete", return_value=True), \
+         patch("app.graph.nodes.upsert_user", new_callable=AsyncMock, return_value=None):
+        await patient_agent_node(state, CONFIG)
+
+    system_prompt = captured["messages"][0].content
+    assert "Consulta(s) já realizada(s) com saldo pendente:" in system_prompt
+    assert "appt-past" in system_prompt
+    assert "NUNCA diga que o saldo será quitado" in system_prompt
+    # Must not be listed as a future/upcoming appointment.
+    assert "Consultas agendadas (por paciente):" not in system_prompt
 
 
 async def test_collect_info_birth_date_leads_to_is_returning_question():

@@ -2609,10 +2609,17 @@ async def register_payment(
         if appt_id_to_pay:
             await _update_appts({"booking_fee_paid_at": now_dt.isoformat()})
         saldo = expected - 100
-        payment_note = (
-            f"Valor pago: R$ {amount} — taxa de reserva registrada. "
-            f"Saldo restante para quitação: R$ {saldo:.0f},00 (com desconto PIX)."
-        )
+        if appt_already_occurred:
+            payment_note = (
+                f"Valor pago: R$ {amount} — taxa de reserva registrada. "
+                f"A consulta já ocorreu — o saldo restante de R$ {saldo:.0f},00 (com desconto PIX) "
+                f"já pode ser quitado agora."
+            )
+        else:
+            payment_note = (
+                f"Valor pago: R$ {amount} — taxa de reserva registrada. "
+                f"Saldo restante para quitação no dia da consulta: R$ {saldo:.0f},00 (com desconto PIX)."
+            )
     elif amount_float >= expected_remaining:
         # Full payment or saldo that settles the consultation
         payment_type = "Consulta"

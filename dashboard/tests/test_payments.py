@@ -296,6 +296,56 @@ async def test_mark_paid_com_comprovante_fica_visivel_em_find_receipts(fake_clie
     assert "registrado pela atendente" in receipts[0]["descricao"]
 
 
+async def test_mark_paid_com_drive_link_envia_email_comprovante_recebido(fake_client, monkeypatch):
+    # Quando há comprovante (drive_link), o e-mail à clínica deve seguir o MESMO padrão
+    # usado quando o comprovante chega pela conversa (register_payment): assunto
+    # "Comprovante recebido — {paciente}" e corpo "💰 Comprovante recebido!...".
+    fake_client.store["appointments"] = [{"appointment_id": "a1", "booking_fee_paid_at": None}]
+    monkeypatch.setattr(payments, "_append_payment_sheet", AsyncMock())
+    fake_email = AsyncMock()
+    monkeypatch.setattr(payments, "_send_clinic_email", fake_email)
+    monkeypatch.setattr(attendant_db, "log_event", AsyncMock())
+    await payments.mark_paid(
+        fake_client, "a1", "taxa", 150, "PIX", "João", "Dr. Júlio",
+        "10/07/2026 14:00", "5581999990000",
+        drive_link="https://drive.google.com/file/d/abc/view",
+    )
+    receipt_call = next(
+        c for c in fake_email.await_args_list
+        if c.kwargs.get("subject", "").startswith("Comprovante recebido")
+    )
+    assert receipt_call.kwargs["subject"] == "Comprovante recebido — João"
+    body = receipt_call.kwargs["body"]
+    assert "💰 Comprovante recebido!" in body
+    assert "Paciente: João" in body
+    assert "Valor: R$ 150" in body
+    assert "Tipo: Taxa de Reserva" in body
+    assert "Consulta: 10/07/2026 14:00" in body
+    assert "Link: https://drive.google.com/file/d/abc/view" in body
+
+
+async def test_mark_paid_sem_drive_link_mantem_email_pagamento_registrado(fake_client, monkeypatch):
+    # Sem comprovante (dinheiro/cartão presencial), não há "comprovante recebido" —
+    # mantém o e-mail genérico já existente ("Pagamento registrado pelo dashboard").
+    fake_client.store["appointments"] = [{"appointment_id": "a1", "booking_fee_paid_at": None}]
+    monkeypatch.setattr(payments, "_append_payment_sheet", AsyncMock())
+    fake_email = AsyncMock()
+    monkeypatch.setattr(payments, "_send_clinic_email", fake_email)
+    await payments.mark_paid(
+        fake_client, "a1", "taxa", 150, "dinheiro", "João", "Dr. Júlio",
+        "10/07/2026 14:00", "5581999990000",
+    )
+    assert not any(
+        c.kwargs.get("subject", "").startswith("Comprovante recebido")
+        for c in fake_email.await_args_list
+    )
+    generic_call = next(
+        c for c in fake_email.await_args_list
+        if c.kwargs.get("subject", "").startswith("Pagamento registrado")
+    )
+    assert "Pagamento registrado pelo dashboard" in generic_call.kwargs["body"]
+
+
 async def test_mark_paid_sem_drive_link_nao_grava_mensagem(fake_client, monkeypatch):
     # Pagamento presencial sem comprovante (dinheiro/cartão) não deve poluir o histórico
     # com uma mensagem de comprovante inexistente.

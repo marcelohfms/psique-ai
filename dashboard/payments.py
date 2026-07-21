@@ -508,21 +508,36 @@ async def mark_paid(
             logger.exception("ALERT_EMAIL_FAILED patient=%s", paciente)
 
     try:
-        tipo_label = "Taxa de reserva" if tipo == "taxa" else "Consulta"
-        comprovante_line = f"\nComprovante: {drive_link}" if drive_link else ""
-        await _send_clinic_email(
-            subject=f"Pagamento registrado — {paciente}",
-            body=(
-                f"💰 Pagamento registrado pelo dashboard\n"
-                f"Paciente: {paciente}\n"
-                f"Médico: {medico}\n"
-                f"Consulta: {data_hora}\n"
-                f"Tipo: {tipo_label}\n"
-                f"Valor: R$ {amount_str}\n"
-                f"Forma: {forma_label}"
-                f"{comprovante_line}"
-            ),
-        )
+        if drive_link:
+            # Há comprovante: mesmo padrão de e-mail usado quando o comprovante chega
+            # pela conversa (register_payment em app/graph/tools.py), para a clínica
+            # não distinguir se o comprovante veio do paciente ou foi anexado pela
+            # atendente no dashboard.
+            await _send_clinic_email(
+                subject=f"Comprovante recebido — {paciente}",
+                body=(
+                    f"💰 Comprovante recebido!\n"
+                    f"Paciente: {paciente}\n"
+                    f"Valor: R$ {amount_str}\n"
+                    f"Tipo: {payment_type}\n"
+                    f"Consulta: {data_hora}\n"
+                    f"Link: {drive_link}"
+                ),
+            )
+        else:
+            tipo_label = "Taxa de reserva" if tipo == "taxa" else "Consulta"
+            await _send_clinic_email(
+                subject=f"Pagamento registrado — {paciente}",
+                body=(
+                    f"💰 Pagamento registrado pelo dashboard\n"
+                    f"Paciente: {paciente}\n"
+                    f"Médico: {medico}\n"
+                    f"Consulta: {data_hora}\n"
+                    f"Tipo: {tipo_label}\n"
+                    f"Valor: R$ {amount_str}\n"
+                    f"Forma: {forma_label}"
+                ),
+            )
     except Exception:
         logger.exception("EMAIL_FAILED patient=%s", paciente)
 
