@@ -26,20 +26,30 @@ e-mail, tanto no pedido inicial quanto em cobranças subsequentes do paciente.
 
 ## Tabela nova: `requests`
 
+Tabela genuinamente genérica: as colunas que **qualquer** solicitação compartilha são
+colunas reais; `metadata` guarda só o que é específico de cada `type`.
+
 ```sql
 create table requests (
   id bigint generated always as identity primary key,
   created_at timestamptz not null default now(),
-  type text not null,             -- ex: "contato_terceiro"
-  content text not null,          -- rótulo curto, ex: "Contato com terceiro: psicóloga"
-  metadata jsonb not null         -- campos específicos do tipo, ver abaixo
+  type text not null,                    -- ex: "contato_terceiro" (e futuros)
+  phone text not null,                   -- toda solicitação vem de um contato
+  patient_name text,                     -- sobre qual paciente
+  doctor_id uuid,                        -- qual médico concerne (nullable)
+  content text not null,                 -- descrição legível do pedido
+  metadata jsonb not null default '{}'   -- só os extras específicos do tipo
 );
 
 alter table requests enable row level security;
 ```
 
-Para `type = "contato_terceiro"`, `metadata` contém: `phone`, `doctor_id`, `patient_name`,
-`third_party_role`, `third_party_name`, `third_party_contact` (opcional), `reason`.
+Para `type = "contato_terceiro"`:
+- `phone`, `patient_name`, `doctor_id` → colunas reais (fazem sentido pra qualquer tipo).
+- `content` → o motivo/resumo do pedido, ex:
+  *"Contato com psicóloga Bruna antes da consulta de 22/07"*.
+- `metadata` → `{ third_party_role, third_party_name, third_party_contact }` — de fato
+  específico deste tipo.
 
 RLS habilitado sem policy, mesmo padrão de
 `supabase/migrations/20260713_enable_rls_patient_tables.sql` (backend usa `service_role`,
@@ -47,9 +57,10 @@ ignora RLS — isso só fecha a porta pra uso futuro/acidental da chave anon).
 
 Diferenças deliberadas em relação à `documents` (que cumpre papel parecido para
 documentos): tem `created_at` real (a `documents` não tem, e o `nudge_doctor_document`
-usa `id` como proxy de ordem); tem `type` desde já pensando em extensão futura, mesmo
-com um único valor por enquanto; sem coluna `status` — não há tool ainda que marque
-conclusão, então essa coluna não é criada agora (adicionar quando houver uso real).
+usa `id` como proxy de ordem); promove as colunas comuns (`phone`/`patient_name`/
+`doctor_id`/`content`) em vez de enterrar tudo em `metadata`; sem coluna `status` — não há
+tool ainda que marque conclusão, então essa coluna não é criada agora (adicionar quando
+houver uso real).
 
 ## Tool 1 — `request_external_contact`
 
@@ -72,7 +83,9 @@ async def request_external_contact(
 Comportamento:
 1. Resolve `patient_name`, `phone`, `doctor_id`/e-mail do médico — mesmo lookup já usado
    por `request_document` (`state` + fallback em `get_user_by_phone` + tabela `doctors`).
-2. Insere linha em `requests` (`type="contato_terceiro"`, `metadata` com os campos acima).
+2. Insere linha em `requests`: `type="contato_terceiro"`, colunas `phone`/`patient_name`/
+   `doctor_id`/`content` preenchidas, `metadata={third_party_role, third_party_name,
+   third_party_contact}`.
 3. `log_event("external_contact_requested", phone, {...})`.
 4. Envia e-mail ao médico via `send_external_contact_request_email` (novo, em
    `app/email_sender.py`).
@@ -96,10 +109,11 @@ async def nudge_external_contact(
 ```
 
 Comportamento: busca a última linha em `requests` para esse telefone
-(`metadata->>phone`, sem precisar filtrar por `type` já que a tabela é dedicada a esse
-propósito) → reenvia e-mail ao médico via `send_external_contact_nudge_email` (novo),
-incluindo `patient_message` e o tempo decorrido desde o pedido original (via
-`created_at`) → `log_event("external_contact_nudge_sent", ...)`.
+(`.eq("phone", ...)` na coluna real, `.eq("type", "contato_terceiro")`,
+`order created_at desc limit 1`) → reenvia e-mail ao médico via
+`send_external_contact_nudge_email` (novo), incluindo `patient_message` e o tempo
+decorrido desde o pedido original (via `created_at`) →
+`log_event("external_contact_nudge_sent", ...)`.
 
 ## E-mails
 
