@@ -1863,6 +1863,19 @@ async def test_patient_agent_prompt_flags_stale_pending_reschedule():
     assert "Consultas agendadas (por paciente):" not in system_prompt
 
 
+def test_cancellation_rules_proactively_directs_stale_reschedule_flow():
+    """A regra deve orientar a Eva a tratar QUALQUER menção a marcar/agendar como
+    continuação de uma remarcação pendente quando a tag 🔄 REMARCAÇÃO PENDENTE
+    estiver presente — proativamente, sem esperar o paciente pedir remarcação
+    explicitamente (caso Heitor/Ludmilla, 5581996937559, 21/07/2026: Eva tratou
+    como agendamento novo por falta desse direcionamento antecipado)."""
+    from app.graph.prompts import CANCELLATION_RULES
+    assert "🔄 REMARCAÇÃO PENDENTE" in CANCELLATION_RULES
+    assert "NUNCA confirm_appointment" in CANCELLATION_RULES
+    assert "mark_reschedule_in_progress" in CANCELLATION_RULES
+    assert "ANTES de get_available_slots" in CANCELLATION_RULES
+
+
 async def test_collect_info_birth_date_leads_to_is_returning_question():
     """Após a data de nascimento, a próxima pergunta é 'já é paciente?'."""
     from app.graph.nodes import collect_info_node

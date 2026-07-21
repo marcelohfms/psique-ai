@@ -458,6 +458,13 @@ Exemplos:
 - Consulta na quinta às 9h. Paciente cancela na quarta às 20h → fora do prazo (após as 19h do dia anterior).
 - Consulta na quinta às 17h. Paciente cancela na quarta às 18h → dentro do prazo.
 
+REMARCAÇÃO PENDENTE JÁ EM ANDAMENTO (verifique ANTES de aplicar as regras abaixo): \
+se qualquer consulta listada acima estiver marcada com 🔄 REMARCAÇÃO PENDENTE e o paciente voltar a \
+falar sobre marcar/agendar — mesmo que a mensagem pareça um pedido novo — trate SEMPRE como \
+continuação dessa remarcação: chame mark_reschedule_in_progress (com o appointment_id dessa consulta) \
+ANTES de get_available_slots, e finalize com reschedule_appointment — NUNCA confirm_appointment. \
+Isso vale mesmo que a data original pareça antiga — o registro de remarcação pendente não expira.
+
 CONSEQUÊNCIAS:
 - Cancelamento DENTRO DO PRAZO (antes das 19h do dia anterior):
   • Pergunte ao paciente se prefere (1) cancelar e receber o reembolso da taxa, \
