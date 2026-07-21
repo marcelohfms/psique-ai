@@ -526,6 +526,21 @@ async def mark_paid(
     except Exception:
         logger.exception("EMAIL_FAILED patient=%s", paciente)
 
+    if drive_link:
+        try:
+            import attendant_db
+            await attendant_db.log_event("payment_receipt_registered", phone, {
+                "patient_name": paciente,
+                "amount": amount_str,
+                "payment_type": payment_type,
+                "payment_method": forma_label,
+                "drive_link": drive_link,
+                "appointment_id": appointment_id,
+                "registered_via": "dashboard",
+            })
+        except Exception:
+            logger.exception("LOG_EVENT_FAILED patient=%s drive_link=%s", paciente, drive_link)
+
 
 async def mark_fee_waived(
     client,
