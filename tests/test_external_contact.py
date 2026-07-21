@@ -255,3 +255,162 @@ async def test_request_external_contact_handles_missing_doctor_email():
     # Tool should pass empty email string if lookup fails
     email_kwargs = mock_email.call_args.kwargs
     assert isinstance(email_kwargs["doctor_email"], (str, type(None)))
+
+
+# ── nudge_external_contact ─────────────────────────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_nudge_external_contact_success():
+    """Test successful nudge when a pending external contact request exists."""
+    from app.graph.tools import nudge_external_contact
+
+    state = _make_state()
+    config = {"configurable": {"phone": PHONE}}
+
+    # Mock doctor data
+    doctor_data = {"agenda_id": "dr.juliogouveia@gmail.com"}
+
+    # Mock existing request row with pending request
+    existing_request = {
+        "id": "req-123",
+        "created_at": "2026-07-20T10:30:00Z",
+        "type": "contato_terceiro",
+        "phone": PHONE,
+        "patient_name": "Suzi Monteiro Viana",
+        "doctor_id": "julio",
+        "metadata": {
+            "third_party_name": "Bruna Psicóloga",
+            "third_party_role": "psicóloga",
+            "third_party_contact": "bruna.psico@example.com",
+        },
+    }
+
+    # Build mock Supabase client with select chain for requests table
+    mock_client = MagicMock()
+
+    # Mock doctors table (single row return)
+    mock_doctors_table = MagicMock()
+    mock_doctors_table.select.return_value = mock_doctors_table
+    mock_doctors_table.eq.return_value = mock_doctors_table
+    mock_doctors_table.single.return_value = mock_doctors_table
+    execute_doctors = AsyncMock(return_value=MagicMock(data=doctor_data))
+    mock_doctors_table.execute = execute_doctors
+
+    # Mock requests table (select chain with filters)
+    mock_requests_table = MagicMock()
+    mock_requests_table.select.return_value = mock_requests_table
+    mock_requests_table.eq.return_value = mock_requests_table
+    mock_requests_table.order.return_value = mock_requests_table
+    mock_requests_table.limit.return_value = mock_requests_table
+    execute_requests = AsyncMock(return_value=MagicMock(data=[existing_request]))
+    mock_requests_table.execute = execute_requests
+
+    def from_side_effect(table_name):
+        if table_name == "doctors":
+            return mock_doctors_table
+        elif table_name == "requests":
+            return mock_requests_table
+        return MagicMock()
+
+    mock_client.from_ = MagicMock(side_effect=from_side_effect)
+
+    with patch("app.graph.tools.get_supabase", new_callable=AsyncMock, return_value=mock_client), \
+         patch("app.graph.tools.send_external_contact_nudge_email", new_callable=AsyncMock) as mock_email, \
+         patch("app.graph.tools.log_event", new_callable=AsyncMock) as mock_log:
+
+        result = await nudge_external_contact.coroutine(
+            patient_message="O Dr. Júlio ainda não falou com a psicóloga?",
+            state=state,
+            config=config,
+        )
+
+    # Assertions
+    assert "sucesso" in result.lower() or "foi enviado" in result.lower() or "notifica" in result.lower()
+
+    # Verify requests table was queried with correct filters
+    mock_requests_table.select.assert_called()
+    # Check that eq was called for both phone and type filters
+    eq_calls = mock_requests_table.eq.call_args_list
+    assert len(eq_calls) >= 2, "Expected at least 2 eq() calls for phone and type filters"
+
+    # Verify order and limit were called for getting latest request
+    mock_requests_table.order.assert_called()
+    mock_requests_table.limit.assert_called()
+
+    # Verify email was sent with correct parameters
+    mock_email.assert_called_once()
+    email_kwargs = mock_email.call_args.kwargs
+    assert email_kwargs["doctor_email"] == "dr.juliogouveia@gmail.com"
+    assert email_kwargs["patient_name"] == "Suzi Monteiro Viana"
+    assert email_kwargs["third_party_name"] == "Bruna Psicóloga"
+    assert email_kwargs["third_party_role"] == "psicóloga"
+    assert email_kwargs["patient_message"] == "O Dr. Júlio ainda não falou com a psicóloga?"
+    assert email_kwargs["created_at"] == "2026-07-20T10:30:00Z"
+
+    # Verify event was logged
+    mock_log.assert_called_once()
+    assert mock_log.call_args[0][0] == "external_contact_nudge_sent"
+    log_data = mock_log.call_args[0][2]
+    assert isinstance(log_data, dict)
+    assert log_data.get("third_party_name") == "Bruna Psicóloga"
+    assert log_data.get("third_party_role") == "psicóloga"
+
+
+@pytest.mark.asyncio
+async def test_nudge_external_contact_no_pending_request():
+    """Test nudge when no pending external contact request exists."""
+    from app.graph.tools import nudge_external_contact
+
+    state = _make_state()
+    config = {"configurable": {"phone": PHONE}}
+
+    # Build mock Supabase client with empty requests
+    mock_client = MagicMock()
+
+    # Mock doctors table (won't be called)
+    mock_doctors_table = MagicMock()
+    mock_doctors_table.select.return_value = mock_doctors_table
+    mock_doctors_table.eq.return_value = mock_doctors_table
+    mock_doctors_table.single.return_value = mock_doctors_table
+    execute_doctors = AsyncMock(return_value=MagicMock(data=None))
+    mock_doctors_table.execute = execute_doctors
+
+    # Mock requests table (return empty list - no pending request)
+    mock_requests_table = MagicMock()
+    mock_requests_table.select.return_value = mock_requests_table
+    mock_requests_table.eq.return_value = mock_requests_table
+    mock_requests_table.order.return_value = mock_requests_table
+    mock_requests_table.limit.return_value = mock_requests_table
+    execute_requests = AsyncMock(return_value=MagicMock(data=[]))
+    mock_requests_table.execute = execute_requests
+
+    def from_side_effect(table_name):
+        if table_name == "doctors":
+            return mock_doctors_table
+        elif table_name == "requests":
+            return mock_requests_table
+        return MagicMock()
+
+    mock_client.from_ = MagicMock(side_effect=from_side_effect)
+
+    with patch("app.graph.tools.get_supabase", new_callable=AsyncMock, return_value=mock_client), \
+         patch("app.graph.tools.send_external_contact_nudge_email", new_callable=AsyncMock) as mock_email, \
+         patch("app.graph.tools.log_event", new_callable=AsyncMock) as mock_log:
+
+        result = await nudge_external_contact.coroutine(
+            patient_message="E o psicólogo que foi pedido?",
+            state=state,
+            config=config,
+        )
+
+    # Assertions
+    assert "não encontramos" in result.lower() or "nenhum pedido" in result.lower()
+
+    # Verify requests table was queried
+    mock_requests_table.select.assert_called()
+
+    # Verify email was NOT sent (no pending request to nudge)
+    mock_email.assert_not_called()
+
+    # Verify event was NOT logged (no action taken)
+    mock_log.assert_not_called()
