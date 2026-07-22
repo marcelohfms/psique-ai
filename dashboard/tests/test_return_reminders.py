@@ -61,6 +61,18 @@ async def test_get_today_appointments_filtra_por_medico_e_dia(fake_client, monke
     assert {a["appointment_id"] for a in out} == {"a1"}
 
 
+async def test_get_today_appointments_fuso_horario_na_virada_do_dia(fake_client):
+    # 2026-07-13T02:30:00+00:00 = 2026-07-12T23:30:00-03:00 em Recife — ainda
+    # é dia 12 no horário local, mesmo com timestamp "13" em UTC. Regression
+    # test pro FakeQuery: comparação de string pura (sem parsear o offset)
+    # incluiria essa consulta erradamente na janela do dia 13.
+    fake_client.store["appointments"] = [
+        _appt("a1", "p1", "João", doctor_id=JULIO_ID, start_time="2026-07-13T02:30:00+00:00"),
+    ]
+    out = await rr.get_today_appointments(fake_client, JULIO_ID, today=date(2026, 7, 13))
+    assert out == []
+
+
 # ── get_pending_classification ────────────────────────────────────────────
 
 
