@@ -301,6 +301,31 @@ def test_minor_returning_still_requires_guardian_name_and_relationship():
     assert is_registration_complete(_complete_minor(guardian_relationship=None)) is False
 
 
+def test_self_messaging_new_minor_without_guardian_is_complete():
+    # Menor NOVO que conversa em nome próprio (is_patient=True) — não há
+    # responsável na conversa para exigir esses campos (caso Clara, 2026-07-21).
+    u = _complete_minor(
+        is_patient=True,
+        is_returning_patient=False,
+        guardian_name=None,
+        guardian_relationship=None,
+        guardian_cpf=None,
+    )
+    assert is_registration_complete(u) is True
+
+
+def test_self_messaging_returning_minor_without_guardian_is_complete():
+    # Mesmo caso, mas paciente já é da clínica.
+    u = _complete_minor(
+        is_patient=True,
+        is_returning_patient=True,
+        guardian_name=None,
+        guardian_relationship=None,
+        guardian_cpf=None,
+    )
+    assert is_registration_complete(u) is True
+
+
 def test_julio_minor_undetermined_returning_status_is_incomplete():
     # Menor do Dr. Júlio sem is_returning_patient → incompleto (define preço/2 momentos).
     assert is_registration_complete(_complete_minor(is_returning_patient=None)) is False
