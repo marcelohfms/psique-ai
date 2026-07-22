@@ -115,6 +115,19 @@ async def test_send_for_row_envia_a_todos_contatos_consulta_e_marca_flag():
     table.update.assert_called_once()
 
 
+async def test_send_for_row_inclui_contatos_pausados():
+    # Acesso a medicação controlada depende de retorno em dia — pausa do bot
+    # não deve silenciar o lembrete (mesmo padrão de
+    # send_appointment_reminders.py / app/patients.py::get_contacts_for_patient).
+    client, _ = _client_returning([])
+    with patch("scripts.send_return_reminders.get_contacts_for_patient",
+               new_callable=AsyncMock, return_value=[]) as mock_get_contacts, \
+         patch("scripts.send_return_reminders.send_return_reminder_template",
+               new_callable=AsyncMock):
+        await srr._send_for_row(client, _row(), "retorno_no_mes", "month_of_sent_at", None)
+    mock_get_contacts.assert_awaited_once_with("p1", "consulta", include_inactive=True)
+
+
 async def test_send_for_row_sem_contato_nao_envia_nem_marca():
     client, table = _client_returning([])
     with patch("scripts.send_return_reminders.get_contacts_for_patient",
