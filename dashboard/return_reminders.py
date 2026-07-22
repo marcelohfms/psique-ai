@@ -30,6 +30,27 @@ def _add_months(d: date, months: int) -> date:
     return date(year, month, day)
 
 
+def _local_date_time(start_time: str | None) -> tuple[str, str]:
+    """Converte start_time (ISO, vem em UTC do Postgres) pro fuso de Recife.
+
+    Retorna (data 'aaaa-mm-dd', hora 'HH:MM') — ambos "" se start_time for
+    None/vazio. Sem isso, tanto a exibição quanto a data enviada ao salvar a
+    classificação ficam erradas perto da virada do dia (uma consulta às 22h
+    em Recife já é dia seguinte em UTC) — mesma classe de bug já corrigida
+    no FakeQuery de teste (ver dashboard/tests/conftest.py).
+    """
+    if not start_time:
+        return "", ""
+    dt = datetime.fromisoformat(start_time.replace("Z", "+00:00")).astimezone(_TZ)
+    return dt.strftime("%Y-%m-%d"), dt.strftime("%H:%M")
+
+
+def _with_local_date_time(appointments: list[dict]) -> list[dict]:
+    for appt in appointments:
+        appt["local_date"], appt["local_time"] = _local_date_time(appt.get("start_time"))
+    return appointments
+
+
 def compute_next_return_date(appointment_date: date, return_interval: str) -> date:
     """Calcula next_return_date a partir da data da consulta e do intervalo escolhido pelo médico."""
     if return_interval == "15_dias":
@@ -58,7 +79,7 @@ async def get_today_appointments(client, doctor_id: str, today: date | None = No
         .order("start_time")
         .execute()
     )
-    return result.data or []
+    return _with_local_date_time(result.data or [])
 
 
 async def get_pending_classification(client, doctor_id: str) -> list[dict]:
@@ -102,7 +123,7 @@ async def get_pending_classification(client, doctor_id: str) -> list[dict]:
         if classified.get(appt["patient_id"]) != appt["appointment_id"]
     ]
     pending.sort(key=lambda a: a["start_time"])
-    return pending
+    return _with_local_date_time(pending)
 
 
 async def save_classification(

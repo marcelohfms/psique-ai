@@ -46,10 +46,10 @@
           <tr id="row-{{ a.appointment_id }}"
               data-patient-id="{{ a.patient_id }}"
               data-appointment-id="{{ a.appointment_id }}"
-              data-appointment-date="{{ a.start_time[:10] if a.start_time else '' }}"
+              data-appointment-date="{{ a.local_date }}"
               class="border-t border-slate-100">
             <td class="px-4 py-2 font-medium text-slate-700">{{ a.patients.name if a.patients else "Paciente" }}</td>
-            <td class="px-4 py-2 text-slate-500 font-mono text-xs">{{ a.start_time[11:16] if a.start_time else "—" }}</td>
+            <td class="px-4 py-2 text-slate-500 font-mono text-xs">{{ a.local_time if a.local_time else "—" }}</td>
             <td class="px-4 py-2">
               <select class="intervalo-select border border-slate-200 rounded-md px-2 py-1 text-sm"
                       aria-label="Intervalo de retorno para {{ a.patients.name if a.patients else 'paciente' }}">
@@ -87,10 +87,10 @@
           <tr id="row-{{ a.appointment_id }}"
               data-patient-id="{{ a.patient_id }}"
               data-appointment-id="{{ a.appointment_id }}"
-              data-appointment-date="{{ a.start_time[:10] if a.start_time else '' }}"
+              data-appointment-date="{{ a.local_date }}"
               class="border-t border-slate-100">
             <td class="px-4 py-2 font-medium text-slate-700">{{ a.patients.name if a.patients else "Paciente" }}</td>
-            <td class="px-4 py-2 text-slate-500 font-mono text-xs">{{ a.start_time[:10] if a.start_time else "—" }}</td>
+            <td class="px-4 py-2 text-slate-500 font-mono text-xs">{{ a.local_date if a.local_date else "—" }}</td>
             <td class="px-4 py-2">
               <select class="intervalo-select border border-slate-200 rounded-md px-2 py-1 text-sm"
                       aria-label="Intervalo de retorno para {{ a.patients.name if a.patients else 'paciente' }}">

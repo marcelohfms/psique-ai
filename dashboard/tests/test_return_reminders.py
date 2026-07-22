@@ -30,6 +30,28 @@ def test_compute_next_return_date_interval_invalido():
         rr.compute_next_return_date(date(2026, 7, 13), "2_meses")
 
 
+# ── _local_date_time ─────────────────────────────────────────────────────
+
+
+def test_local_date_time_converte_utc_pra_recife():
+    # 17:00 UTC = 14:00 em Recife (UTC-3)
+    data, hora = rr._local_date_time("2026-07-13T17:00:00+00:00")
+    assert data == "2026-07-13"
+    assert hora == "14:00"
+
+
+def test_local_date_time_virada_de_dia_no_fuso_de_recife():
+    # 02:30 UTC do dia 13 = 23:30 do dia 12 em Recife — data local é 12, não 13.
+    data, hora = rr._local_date_time("2026-07-13T02:30:00+00:00")
+    assert data == "2026-07-12"
+    assert hora == "23:30"
+
+
+def test_local_date_time_vazio_sem_start_time():
+    assert rr._local_date_time(None) == ("", "")
+    assert rr._local_date_time("") == ("", "")
+
+
 JULIO_ID = "d5baa58b-a788-4f40-b8c0-512c189150be"
 BRUNA_ID = "18b01f87-eacd-4905-bd4a-a8293991e6fd"
 
@@ -71,6 +93,15 @@ async def test_get_today_appointments_fuso_horario_na_virada_do_dia(fake_client)
     ]
     out = await rr.get_today_appointments(fake_client, JULIO_ID, today=date(2026, 7, 13))
     assert out == []
+
+
+async def test_get_today_appointments_enriquece_com_data_hora_local(fake_client):
+    fake_client.store["appointments"] = [
+        _appt("a1", "p1", "João", doctor_id=JULIO_ID, start_time="2026-07-13T17:00:00+00:00"),
+    ]
+    out = await rr.get_today_appointments(fake_client, JULIO_ID, today=date(2026, 7, 13))
+    assert out[0]["local_date"] == "2026-07-13"
+    assert out[0]["local_time"] == "14:00"
 
 
 # ── get_pending_classification ────────────────────────────────────────────
@@ -125,6 +156,17 @@ async def test_get_pending_classification_filtra_por_medico(fake_client):
     ]
     out = await rr.get_pending_classification(fake_client, JULIO_ID)
     assert {a["appointment_id"] for a in out} == {"a1"}
+
+
+async def test_get_pending_classification_data_local_na_virada_do_dia(fake_client):
+    # Consulta às 22h de Recife (01h UTC do dia seguinte) — a data usada pra
+    # classificar (e enviada em data-appointment-date no salvar) precisa ser
+    # a data LOCAL da consulta (dia 13), não a data UTC crua (dia 14).
+    fake_client.store["appointments"] = [
+        _appt("a1", "p1", "João", status="completed", start_time="2026-07-14T01:00:00+00:00"),
+    ]
+    out = await rr.get_pending_classification(fake_client, JULIO_ID)
+    assert out[0]["local_date"] == "2026-07-13"
 
 
 # ── save_classification ───────────────────────────────────────────────────
