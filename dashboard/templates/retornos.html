@@ -39,12 +39,13 @@
           <tr id="row-{{ a.appointment_id }}"
               data-patient-id="{{ a.patient_id }}"
               data-appointment-id="{{ a.appointment_id }}"
-              data-appointment-date="{{ a.start_time[:10] }}"
+              data-appointment-date="{{ a.start_time[:10] if a.start_time else '' }}"
               class="border-t border-slate-100">
             <td class="px-4 py-2 font-medium text-slate-700">{{ a.patients.name if a.patients else "Paciente" }}</td>
-            <td class="px-4 py-2 text-slate-500 font-mono text-xs">{{ a.start_time[11:16] }}</td>
+            <td class="px-4 py-2 text-slate-500 font-mono text-xs">{{ a.start_time[11:16] if a.start_time else "—" }}</td>
             <td class="px-4 py-2">
-              <select class="intervalo-select border border-slate-200 rounded-md px-2 py-1 text-sm">
+              <select class="intervalo-select border border-slate-200 rounded-md px-2 py-1 text-sm"
+                      aria-label="Intervalo de retorno para {{ a.patients.name if a.patients else 'paciente' }}">
                 <option value="">Nenhum</option>
                 {% for value, label in intervalos.items() %}
                 <option value="{{ value }}">{{ label }}</option>
@@ -53,6 +54,7 @@
             </td>
             <td class="px-4 py-2 text-right">
               <button type="button" class="salvar-btn bg-cyan-600 hover:bg-cyan-700 text-white text-xs font-semibold px-3 py-1.5 rounded-md"
+                      aria-label="Salvar retorno para {{ a.patients.name if a.patients else 'paciente' }}"
                       onclick="salvarRetorno('{{ medico_doctor_id }}', this)">Salvar</button>
             </td>
           </tr>
@@ -78,12 +80,13 @@
           <tr id="row-{{ a.appointment_id }}"
               data-patient-id="{{ a.patient_id }}"
               data-appointment-id="{{ a.appointment_id }}"
-              data-appointment-date="{{ a.start_time[:10] }}"
+              data-appointment-date="{{ a.start_time[:10] if a.start_time else '' }}"
               class="border-t border-slate-100">
             <td class="px-4 py-2 font-medium text-slate-700">{{ a.patients.name if a.patients else "Paciente" }}</td>
-            <td class="px-4 py-2 text-slate-500 font-mono text-xs">{{ a.start_time[:10] }}</td>
+            <td class="px-4 py-2 text-slate-500 font-mono text-xs">{{ a.start_time[:10] if a.start_time else "—" }}</td>
             <td class="px-4 py-2">
-              <select class="intervalo-select border border-slate-200 rounded-md px-2 py-1 text-sm">
+              <select class="intervalo-select border border-slate-200 rounded-md px-2 py-1 text-sm"
+                      aria-label="Intervalo de retorno para {{ a.patients.name if a.patients else 'paciente' }}">
                 <option value="">Nenhum</option>
                 {% for value, label in intervalos.items() %}
                 <option value="{{ value }}">{{ label }}</option>
@@ -92,6 +95,7 @@
             </td>
             <td class="px-4 py-2 text-right">
               <button type="button" class="salvar-btn bg-cyan-600 hover:bg-cyan-700 text-white text-xs font-semibold px-3 py-1.5 rounded-md"
+                      aria-label="Salvar retorno para {{ a.patients.name if a.patients else 'paciente' }}"
                       onclick="salvarRetorno('{{ medico_doctor_id }}', this)">Salvar</button>
             </td>
           </tr>
@@ -127,12 +131,21 @@ async function salvarRetorno(doctorId, btn) {
         return_interval: returnInterval,
       }),
     });
-    if (!resp.ok) throw new Error(await resp.text());
+    if (!resp.ok) {
+      const bodyText = await resp.text();
+      let detail = bodyText;
+      try {
+        detail = JSON.parse(bodyText).detail || bodyText;
+      } catch {
+        // corpo não é JSON — usa o texto bruto mesmo
+      }
+      throw new Error(detail);
+    }
     row.style.opacity = '0';
     setTimeout(() => row.remove(), 200);
   } catch (err) {
     console.error(err);
-    alert('Erro ao salvar. Tente novamente.');
+    alert('Erro ao salvar: ' + (err.message || 'tente novamente.'));
     btn.disabled = false;
     btn.textContent = original;
   }
