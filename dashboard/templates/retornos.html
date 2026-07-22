@@ -1,6 +1,13 @@
 {% extends "base.html" %}
 {% block content %}
-<div class="min-h-screen bg-slate-50 overflow-y-auto">
+<style>
+  /* base.html trava o body em h-screen/overflow-hidden pra view de
+     conversas (que gerencia o próprio scroll interno). Esta página é
+     scroll normal de cima a baixo, então precisa liberar o body — mesmo
+     override de pagamentos.html. */
+  body { overflow: auto !important; height: auto !important; }
+</style>
+<div class="min-h-screen bg-slate-50">
   <div class="max-w-5xl mx-auto px-6 py-8">
 
     <div class="flex items-center justify-between mb-6 flex-wrap gap-3">
