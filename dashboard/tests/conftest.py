@@ -50,6 +50,22 @@ class FakeQuery:
         self._filters.append(("in", col, values))
         return self
 
+    def gte(self, col, val):
+        self._filters.append(("gte", col, val))
+        return self
+
+    def lt(self, col, val):
+        self._filters.append(("lt", col, val))
+        return self
+
+    def gt(self, col, val):
+        self._filters.append(("gt", col, val))
+        return self
+
+    def neq(self, col, val):
+        self._filters.append(("neq", col, val))
+        return self
+
     def order(self, col, desc=False):
         self._order_col = col
         self._order_desc = desc
@@ -64,6 +80,14 @@ class FakeQuery:
             if kind == "eq" and row.get(col) != val:
                 return False
             if kind == "in" and row.get(col) not in val:
+                return False
+            if kind == "gte" and not (row.get(col) is not None and row.get(col) >= val):
+                return False
+            if kind == "lt" and not (row.get(col) is not None and row.get(col) < val):
+                return False
+            if kind == "gt" and not (row.get(col) is not None and row.get(col) > val):
+                return False
+            if kind == "neq" and row.get(col) == val:
                 return False
         return True
 
