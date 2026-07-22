@@ -133,8 +133,8 @@ def _plain_message(
             f"previsto para o mês que vem.\n\nManter a regularidade das consultas é fundamental "
             f"para o acompanhamento do tratamento, especialmente considerando que a renovação de "
             f"receitas de medicamentos controlados depende de reavaliação médica periódica, "
-            f"conforme o Art. 37 do Código de Ética Médica. \n\n*Assim {patient_first_name} evita "
-            f"ficar sem acesso à medicação quando chegar a hora.*\n\nSe quiser já deixar reservado "
+            f"conforme o Art. 37 do Código de Ética Médica. Assim {patient_first_name} evita "
+            f"ficar sem acesso à medicação quando chegar a hora.\n\nSe quiser já deixar reservado "
             f"um horário, é só nos avisar por aqui. 😉"
         )
     if template_name == "retorno_no_mes":

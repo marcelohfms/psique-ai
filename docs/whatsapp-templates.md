@@ -127,9 +127,7 @@ Olá, {{1}}! 😊 Aqui é a Eva, secretária virtual da Psiquê.
 
 Passando para avisar que o retorno de {{2}} com {{3}} está previsto para o mês que vem.
 
-Manter a regularidade das consultas é fundamental para o acompanhamento do tratamento, especialmente considerando que a renovação de receitas de medicamentos controlados depende de reavaliação médica periódica, conforme o Art. 37 do Código de Ética Médica. 
-
-*Assim {{4}} evita ficar sem acesso à medicação quando chegar a hora.*
+Manter a regularidade das consultas é fundamental para o acompanhamento do tratamento, especialmente considerando que a renovação de receitas de medicamentos controlados depende de reavaliação médica periódica, conforme o Art. 37 do Código de Ética Médica. Assim {{4}} evita ficar sem acesso à medicação quando chegar a hora.
 
 Se quiser já deixar reservado um horário, é só nos avisar por aqui. 😉
 ```
