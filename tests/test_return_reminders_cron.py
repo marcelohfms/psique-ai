@@ -22,9 +22,9 @@ def _row(**overrides):
     return row
 
 
-def test_pending_template_um_mes_antes():
+def test_pending_template_mes_anterior():
     result = srr.pending_template(date(2026, 9, 15), _row())
-    assert result == ("retorno_um_mes_antes", "month_before_sent_at")
+    assert result == ("retorno_mes_anterior", "month_before_sent_at")
 
 
 def test_pending_template_no_mes():
@@ -68,23 +68,24 @@ def test_pending_template_virada_de_ano_nao_quebra():
     # número do mês (12 != 1 - 1), tem que normalizar por (ano, mês).
     row = _row(next_return_date="2027-01-10")
     result = srr.pending_template(date(2026, 12, 5), row)
-    assert result == ("retorno_um_mes_antes", "month_before_sent_at")
+    assert result == ("retorno_mes_anterior", "month_before_sent_at")
 
 
 # ── _plain_message ───────────────────────────────────────────────────────
 
 
 def test_plain_message_self_sauda_pelo_nome_e_fala_seu_retorno():
-    msg = srr._plain_message("retorno_um_mes_antes", "Maria", "Dr. Júlio")
+    msg = srr._plain_message("retorno_mes_anterior", "Maria", "Dr. Júlio")
     assert "Olá, Maria!" in msg
+    assert "secretária virtual da Psiquê" in msg
     assert "seu retorno com Dr. Júlio" in msg
 
 
 def test_plain_message_terceiro_sauda_contato_e_referencia_paciente():
-    msg = srr._plain_message("retorno_um_mes_antes_terceiro", "Ana", "Dr. Júlio", "Bruno")
+    msg = srr._plain_message("retorno_mes_anterior_terceiro", "Ana", "Dr. Júlio", "Bruno")
     assert "Olá, Ana!" in msg
     assert "o retorno de Bruno com Dr. Júlio" in msg
-    assert "Bruno evita ficar sem acesso" in msg
+    assert "Assim Bruno evita ficar sem acesso" in msg
     # não deve sobrar pronome de 2ª pessoa se dirigindo à Ana como se fosse ela a paciente
     assert "seu retorno" not in msg
 
@@ -104,7 +105,51 @@ def test_plain_message_atrasado_terceiro_referencia_paciente_no_corpo():
     assert "horário para Bruno." in msg
 
 
+# ── _build_body_params ───────────────────────────────────────────────────
+# Testes de regressão pra travar o mapeamento {{N}} -> valor de cada
+# template. A Meta não deixa reusar o número de uma variável, então os
+# "_terceiro" repetem patient_first_name em números extras ({{4}}, {{5}}) —
+# um erro aqui manda o valor errado pra posição errada na mensagem real.
+
+
+def test_build_body_params_self_sem_variavel_de_paciente():
+    params = srr._build_body_params("retorno_mes_anterior", "Maria", "Dr. Júlio", None)
+    assert params == {"1": "Maria", "2": "Dr. Júlio"}
+
+
+def test_build_body_params_mes_anterior_terceiro_repete_paciente_em_4():
+    params = srr._build_body_params("retorno_mes_anterior_terceiro", "Ana", "Dr. Júlio", "Bruno")
+    assert params == {"1": "Ana", "2": "Bruno", "3": "Dr. Júlio", "4": "Bruno"}
+
+
+def test_build_body_params_no_mes_terceiro_repete_paciente_em_4():
+    params = srr._build_body_params("retorno_no_mes_terceiro", "Ana", "Dra. Bruna", "Bruno")
+    assert params == {"1": "Ana", "2": "Bruno", "3": "Dra. Bruna", "4": "Bruno"}
+
+
+def test_build_body_params_atrasado_terceiro_repete_paciente_em_4_e_5():
+    params = srr._build_body_params("retorno_atrasado_terceiro", "Ana", "Dr. Júlio", "Bruno")
+    assert params == {"1": "Ana", "2": "Bruno", "3": "Dr. Júlio", "4": "Bruno", "5": "Bruno"}
+
+
 from unittest.mock import AsyncMock, MagicMock, patch
+
+
+# ── send_return_reminder_template ────────────────────────────────────────
+
+
+async def test_send_return_reminder_template_envia_body_params_montados():
+    with patch("app.chatwoot.find_or_create_conversation",
+               new_callable=AsyncMock, return_value=42) as mock_conv, \
+         patch("app.chatwoot.send_template_message",
+               new_callable=AsyncMock) as mock_send:
+        await srr.send_return_reminder_template(
+            "5581111", "retorno_atrasado_terceiro", "Ana", "Dr. Júlio", "Bruno")
+    mock_conv.assert_awaited_once_with("5581111@s.whatsapp.net")
+    mock_send.assert_awaited_once()
+    _, kwargs = mock_send.call_args
+    assert kwargs["template_name"] == "retorno_atrasado_terceiro"
+    assert kwargs["body_params"] == {"1": "Ana", "2": "Bruno", "3": "Dr. Júlio", "4": "Bruno", "5": "Bruno"}
 
 
 def _client_returning(data):
@@ -287,7 +332,7 @@ async def test_main_processa_em_lotes_com_pausa():
                new_callable=AsyncMock) as mock_sleep, \
          patch.dict(os.environ, {"SUPABASE_URL": "x", "SUPABASE_KEY": "y"}, clear=False):
         os.environ.pop("SUPABASE_CONNECTION_STRING", None)
-        # força "hoje" pra dentro da janela retorno_um_mes_antes (12 candidatos).
+        # força "hoje" pra dentro da janela retorno_mes_anterior (12 candidatos).
         # Só `.now` é sobrescrito — `.fromisoformat` continua a implementação
         # real (usada por pending_template via `date.fromisoformat`, que não é
         # afetado por este patch pois é um símbolo separado).
