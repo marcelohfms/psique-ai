@@ -10,12 +10,14 @@ from payments import DOCTOR_KEY
 
 _TZ = ZoneInfo("America/Recife")
 
-RETURN_INTERVALS = ("15_dias", "1_mes", "3_meses", "6_meses")
+RETURN_INTERVALS = ("15_dias", "1_mes", "2_meses", "3_meses", "4_meses", "6_meses")
 
 RETURN_INTERVAL_LABELS = {
     "15_dias": "15 dias",
     "1_mes": "1 mês",
+    "2_meses": "2 meses",
     "3_meses": "3 meses",
+    "4_meses": "4 meses",
     "6_meses": "6 meses",
 }
 
@@ -57,8 +59,12 @@ def compute_next_return_date(appointment_date: date, return_interval: str) -> da
         return appointment_date + timedelta(days=15)
     if return_interval == "1_mes":
         return _add_months(appointment_date, 1)
+    if return_interval == "2_meses":
+        return _add_months(appointment_date, 2)
     if return_interval == "3_meses":
         return _add_months(appointment_date, 3)
+    if return_interval == "4_meses":
+        return _add_months(appointment_date, 4)
     if return_interval == "6_meses":
         return _add_months(appointment_date, 6)
     raise ValueError(f"return_interval inválido: {return_interval!r}")

@@ -69,7 +69,7 @@ def test_api_salvar_retorno_interval_invalido_retorna_400():
         "/api/retornos/p1",
         auth=AUTH,
         json={"doctor_id": JULIO_ID, "appointment_id": "a1",
-              "appointment_date": "2026-07-13", "return_interval": "2_meses"},
+              "appointment_date": "2026-07-13", "return_interval": "5_meses"},
     )
     assert r.status_code == 400
 

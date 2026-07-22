@@ -11,8 +11,16 @@ def test_compute_next_return_date_1_mes():
     assert rr.compute_next_return_date(date(2026, 7, 13), "1_mes") == date(2026, 8, 13)
 
 
+def test_compute_next_return_date_2_meses():
+    assert rr.compute_next_return_date(date(2026, 7, 13), "2_meses") == date(2026, 9, 13)
+
+
 def test_compute_next_return_date_3_meses():
     assert rr.compute_next_return_date(date(2026, 7, 13), "3_meses") == date(2026, 10, 13)
+
+
+def test_compute_next_return_date_4_meses():
+    assert rr.compute_next_return_date(date(2026, 7, 13), "4_meses") == date(2026, 11, 13)
 
 
 def test_compute_next_return_date_6_meses():
@@ -27,7 +35,7 @@ def test_compute_next_return_date_dia_31_cai_pro_ultimo_dia_do_mes_curto():
 def test_compute_next_return_date_interval_invalido():
     import pytest
     with pytest.raises(ValueError):
-        rr.compute_next_return_date(date(2026, 7, 13), "2_meses")
+        rr.compute_next_return_date(date(2026, 7, 13), "5_meses")
 
 
 # ── _local_date_time ─────────────────────────────────────────────────────
@@ -228,5 +236,5 @@ async def test_save_classification_interval_invalido_levanta_erro(fake_client):
     with pytest.raises(ValueError):
         await rr.save_classification(
             fake_client, patient_id="p1", doctor_id=JULIO_ID, appointment_id="a1",
-            appointment_date=date(2026, 7, 13), return_interval="2_meses",
+            appointment_date=date(2026, 7, 13), return_interval="5_meses",
         )
