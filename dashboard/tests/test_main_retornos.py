@@ -72,3 +72,32 @@ def test_api_salvar_retorno_interval_invalido_retorna_400():
               "appointment_date": "2026-07-13", "return_interval": "2_meses"},
     )
     assert r.status_code == 400
+
+
+def test_api_salvar_retorno_data_malformada_retorna_422():
+    r = _client().post(
+        "/api/retornos/p1",
+        auth=AUTH,
+        json={"doctor_id": JULIO_ID, "appointment_id": "a1",
+              "appointment_date": "not-a-date", "return_interval": "3_meses"},
+    )
+    assert r.status_code == 422
+
+
+def test_retornos_page_medico_desconhecido_cai_para_julio(monkeypatch):
+    calls = {}
+
+    async def fake_today(client, doctor_id, today=None):
+        calls["doctor_id"] = doctor_id
+        return []
+
+    async def fake_pending(client, doctor_id):
+        return []
+
+    monkeypatch.setattr(dashboard_main, "get_supabase", lambda: object())
+    monkeypatch.setattr(return_reminders, "get_today_appointments", fake_today)
+    monkeypatch.setattr(return_reminders, "get_pending_classification", fake_pending)
+
+    r = _client().get("/retornos", auth=AUTH, params={"medico": "julioo"})
+    assert r.status_code == 200
+    assert calls["doctor_id"] == JULIO_ID

@@ -2,7 +2,7 @@ import asyncio
 import logging
 import os
 from contextlib import asynccontextmanager
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from secrets import compare_digest
 
 from dotenv import load_dotenv
@@ -264,20 +264,19 @@ async def api_upload_comprovante(
     return {"drive_link": drive_link}
 
 
-from datetime import date as _date
-
-
 class RetornoBody(BaseModel):
     doctor_id: str
     appointment_id: str
-    appointment_date: str  # 'YYYY-MM-DD'
+    appointment_date: date
     return_interval: str
 
 
 @app.get("/retornos")
 async def retornos_page(request: Request, medico: str = "julio", username: str = Depends(verify_credentials)):
     client = get_supabase()
-    doctor_id = return_reminders.DOCTOR_ID_BY_KEY.get(medico, return_reminders.DOCTOR_ID_BY_KEY["julio"])
+    if medico not in return_reminders.DOCTOR_ID_BY_KEY:
+        medico = "julio"
+    doctor_id = return_reminders.DOCTOR_ID_BY_KEY[medico]
     hoje = await return_reminders.get_today_appointments(client, doctor_id)
     pendentes = await return_reminders.get_pending_classification(client, doctor_id)
     return templates.TemplateResponse(request, "retornos.html", {
@@ -295,9 +294,8 @@ async def api_salvar_retorno(patient_id: str, body: RetornoBody, username: str =
     if body.return_interval not in return_reminders.RETURN_INTERVALS:
         raise HTTPException(status_code=400, detail="return_interval inválido")
     client = get_supabase()
-    appointment_date = _date.fromisoformat(body.appointment_date)
     saved = await return_reminders.save_classification(
-        client, patient_id, body.doctor_id, body.appointment_id, appointment_date, body.return_interval,
+        client, patient_id, body.doctor_id, body.appointment_id, body.appointment_date, body.return_interval,
     )
     return {"ok": True, "return_reminder": saved}
 
