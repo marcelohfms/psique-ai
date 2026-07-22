@@ -91,6 +91,18 @@ async def test_get_today_appointments_filtra_por_medico_e_dia(fake_client, monke
     assert {a["appointment_id"] for a in out} == {"a1"}
 
 
+async def test_get_today_appointments_exclui_cancelada(fake_client):
+    # Paciente reagendou: o slot antigo fica 'canceled', o novo 'scheduled',
+    # ambos no mesmo dia. Só o novo deve aparecer em "Hoje" — mostrar os dois
+    # duplica o paciente na lista (caso Jonas Leonardo, 2026-07-22).
+    fake_client.store["appointments"] = [
+        _appt("old", "p1", "Jonas", doctor_id=JULIO_ID, start_time="2026-07-13T14:00:00+00:00", status="canceled"),
+        _appt("new", "p1", "Jonas", doctor_id=JULIO_ID, start_time="2026-07-13T14:00:00+00:00", status="scheduled"),
+    ]
+    out = await rr.get_today_appointments(fake_client, JULIO_ID, today=date(2026, 7, 13))
+    assert {a["appointment_id"] for a in out} == {"new"}
+
+
 async def test_get_today_appointments_fuso_horario_na_virada_do_dia(fake_client):
     # 2026-07-13T02:30:00+00:00 = 2026-07-12T23:30:00-03:00 em Recife — ainda
     # é dia 12 no horário local, mesmo com timestamp "13" em UTC. Regression

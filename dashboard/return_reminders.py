@@ -71,7 +71,12 @@ def compute_next_return_date(appointment_date: date, return_interval: str) -> da
 
 
 async def get_today_appointments(client, doctor_id: str, today: date | None = None) -> list[dict]:
-    """Pacientes com consulta hoje para o médico — sempre visível, para classificar na hora."""
+    """Pacientes com consulta hoje para o médico — sempre visível, para classificar na hora.
+
+    Exclui `status = 'canceled'`: um reagendamento no mesmo dia deixa o slot
+    antigo cancelado e cria um novo — sem esse filtro, os dois aparecem e o
+    paciente fica duplicado na lista (caso Jonas Leonardo, 2026-07-22).
+    """
     if today is None:
         today = datetime.now(_TZ).date()
     start = datetime(today.year, today.month, today.day, tzinfo=_TZ)
@@ -80,6 +85,7 @@ async def get_today_appointments(client, doctor_id: str, today: date | None = No
         client.from_("appointments")
         .select("appointment_id, start_time, patient_id, patients(name)")
         .eq("doctor_id", doctor_id)
+        .neq("status", "canceled")
         .gte("start_time", start.isoformat())
         .lt("start_time", end.isoformat())
         .order("start_time")
