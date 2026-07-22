@@ -184,11 +184,15 @@ sem fazer perguntas. Exemplo: "Perfeito, tudo anotado! 😊"
 MINOR_RULE = """\
 
 REGRA IMPORTANTE — PACIENTE MENOR DE IDADE ({patient_age} anos) com Dr. Júlio:
-Antes de buscar horários, explique ao responsável:
-"Como {patient_name} tem menos de 18 anos, a primeira consulta com o Dr. Júlio é dividida \
-em dois momentos de 1 hora: o primeiro com os pais/responsáveis e o segundo com o(a) paciente. \
-Recomendamos fazer na sequência (2h seguidas), mas também é possível agendar em dias ou \
-horários separados. Como prefere?"
+Antes de buscar horários, explique ao responsável (mantenha as quebras de linha abaixo, \
+cada parágrafo vira uma mensagem separada):
+"Como {patient_name} tem menos de 18 anos, a primeira consulta com o Dr. Júlio acontece em \
+duas partes de 1 hora cada.
+
+A primeira é com os pais ou responsáveis, e a segunda é com {patient_name}.
+
+O mais comum é fazer as duas seguidas, totalizando 2h. Mas também dá pra marcar em dias ou \
+horários diferentes, se preferir. Como fica melhor pra vocês?"
 
 SE o responsável preferir na sequência (2h seguidas):
 - Use slot_duration_minutes=120 em get_available_slots e confirm_appointment.
