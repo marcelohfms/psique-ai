@@ -118,6 +118,16 @@ async def send_return_reminder_template(phone: str, template_name: str, first_na
 
 
 async def save_to_checkpoint(graph, phone: str, message: str, patient_name: str, doctor_key: str) -> None:
+    """Injeta o lembrete no checkpoint do LangGraph.
+
+    Só inicializa stage/is_patient/preferred_doctor para conversa NOVA — ao
+    contrário de send_appointment_reminders.py, que sempre reescreve esses
+    campos. Escolha deliberada: este lembrete é um nudge informativo mensal,
+    não um evento crítico do fluxo de agendamento, e sobrescrever o estado de
+    uma conversa já em andamento (ex: paciente no meio de um cadastro) arrisca
+    corromper esse fluxo à toa — o mesmo tipo de bug já visto quando uma nota
+    da atendente forçava stage e quebrava collect_info.
+    """
     from langchain_core.messages import AIMessage
     thread_phone = f"{phone}@s.whatsapp.net"
     config = {"configurable": {"thread_id": thread_phone, "phone": thread_phone}}
@@ -150,6 +160,13 @@ async def _has_future_appointment(client, patient_id: str, doctor_id: str, now_i
 
 
 async def _send_for_row(client, row: dict, template_name: str, sent_col: str, graph) -> None:
+    """Envia `template_name` a todos os contatos 'consulta' do paciente.
+
+    Marca `sent_col` UMA vez, só se ao menos um envio teve sucesso (retries
+    do cron permanecem seguros). Sem contato de consulta: não envia, não
+    marca — a linha continua candidata nos próximos dias (visível via print
+    de [SKIP], sem retry automático de outra natureza).
+    """
     patient_id = row.get("patient_id")
     patient = row.get("patients") or {}
     patient_name = patient.get("name") or "paciente"
