@@ -3,7 +3,7 @@
 Autocontido: não importa app/ (a imagem Docker do dashboard não contém app/).
 """
 from calendar import monthrange
-from datetime import date, datetime, timedelta, timezone
+from datetime import date, datetime, timedelta
 from zoneinfo import ZoneInfo
 
 from payments import DOCTOR_KEY
@@ -125,7 +125,7 @@ async def save_classification(
         raise ValueError(f"return_interval inválido: {return_interval!r}")
 
     next_return_date = compute_next_return_date(appointment_date, return_interval)
-    now = datetime.now(timezone.utc).isoformat()
+    now = datetime.now(_TZ).isoformat()
 
     payload = {
         "patient_id": patient_id,
