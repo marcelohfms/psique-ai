@@ -351,7 +351,7 @@ async def compute_pendencias(client, patient_ids: list[str] | None = None) -> li
             "patients(name, birth_date, custom_price, "
             "patient_contacts(is_self, contacts(phone, name)))"
         )
-        .eq("status", "completed")  # Apenas consultas já realizadas
+        .in_("status", ["scheduled", "completed"])
     )
     if patient_ids is not None:
         query = query.in_("patient_id", patient_ids)
@@ -417,7 +417,8 @@ async def compute_pendencias(client, patient_ids: list[str] | None = None) -> li
                 "valor": 100,
             })
 
-        if not all(row.get("paid_at") for row in rows):
+        # Consultas só aparecem se já foram realizadas (status=completed)
+        if first.get("status") == "completed" and not all(row.get("paid_at") for row in rows):
             valor = _calc_valor_consulta(
                 first.get("doctor_id", ""),
                 birth_date,

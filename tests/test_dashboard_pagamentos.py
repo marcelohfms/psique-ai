@@ -26,7 +26,7 @@ def mock_supabase():
 async def test_pagamentos_page_returns_html(mock_supabase):
     """GET /pagamentos deve retornar 200 com HTML."""
     from fastapi.responses import HTMLResponse
-    mock_supabase.from_.return_value.select.return_value.eq.return_value\
+    mock_supabase.from_.return_value.select.return_value.in_.return_value\
         .execute = AsyncMock(return_value=MagicMock(data=[]))
 
     html_content = "<html><body>Pagamentos Pendentes</body></html>"

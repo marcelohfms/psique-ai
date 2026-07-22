@@ -18,7 +18,7 @@ def _appt(appointment_id, patient_id, patient_name, phone, **overrides):
         "booking_fee_paid_at": None,
         "booking_fee_waived": False,
         "consultation_type": None,
-        "status": "completed",
+        "status": "scheduled",  # Default: scheduled (show booking fees for future appointments)
         "patients": {
             "name": patient_name,
             "birth_date": "1990-01-01",
@@ -37,13 +37,15 @@ def _appt(appointment_id, patient_id, patient_name, phone, **overrides):
 
 async def test_compute_pendencias_sem_filtro_retorna_tudo(fake_client):
     fake_client.store["appointments"] = [
-        _appt("a1", "p1", "João", "5581999990000"),
-        _appt("a2", "p2", "Maria", "5581999991111"),
+        _appt("a1", "p1", "João", "5581999990000"),  # scheduled: taxa
+        _appt("a2", "p2", "Maria", "5581999991111", status="completed"),  # completed: taxa + consulta
     ]
     out = await payments.compute_pendencias(fake_client)
     assert {p["appointment_id"] for p in out} == {"a1", "a2"}
-    # cada agendamento sem taxa nem consulta paga gera 2 pendências
-    assert len(out) == 4
+    # a1: taxa (scheduled) | a2: taxa + consulta (completed) = 3 pendências
+    assert len(out) == 3
+    # a1 só tem taxa, a2 tem taxa + consulta
+    assert [p["tipo"] for p in sorted(out, key=lambda x: x["appointment_id"])] == ["taxa", "taxa", "consulta"]
 
 
 async def test_compute_pendencias_filtra_por_patient_ids(fake_client):
@@ -65,7 +67,8 @@ async def test_compute_pendencias_patient_ids_vazio_nao_consulta(fake_client):
 async def test_compute_pendencias_taxa_ja_paga_nao_aparece(fake_client):
     fake_client.store["appointments"] = [
         _appt("a1", "p1", "João", "5581999990000",
-              booking_fee_paid_at="2026-07-01T00:00:00+00:00"),
+              booking_fee_paid_at="2026-07-01T00:00:00+00:00",
+              status="completed"),  # Consulta só aparece para completed
     ]
     out = await payments.compute_pendencias(fake_client)
     assert {p["tipo"] for p in out} == {"consulta"}
