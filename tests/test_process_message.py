@@ -640,6 +640,71 @@ async def test_collect_info_asks_guardian_cpf_after_guardian_name():
     assert "cpf" in sent.lower()
 
 
+async def test_collect_info_self_messaging_new_minor_skips_guardian_name_preview():
+    """A self-messaging minor (is_patient=True, no guardian contact) answering
+    'não' to 'já é paciente?' must be asked about the doctor next, NOT the
+    guardian's name — that question can never be resolved for this case
+    (caso Clara, 5581999249242, 2026-07-21)."""
+    from app.graph.nodes import collect_info_node
+    from langchain_core.messages import HumanMessage, AIMessage
+
+    state = _base_minor_state(
+        user_name="Clara",
+        patient_name="Clara",
+        patient_cpf="111.222.333-00",
+        patient_age=16,
+        birth_date="08/09/2009",
+        is_patient=True,  # self-messaging — no guardian contact exists
+        messages=[
+            HumanMessage(content="quero pedir uma receita"),
+            AIMessage(content="É a primeira consulta ou o paciente já está em acompanhamento na clínica?"),
+            HumanMessage(content="não"),
+        ],
+    )
+    with patch("app.graph.nodes.send_text", new_callable=AsyncMock) as mock_send, \
+         patch("app.graph.nodes.save_message", new_callable=AsyncMock), \
+         patch("app.graph.nodes.get_users_by_phone", new_callable=AsyncMock, return_value=[]), \
+         patch("app.graph.nodes.upsert_user", new_callable=AsyncMock, return_value="new-id"):
+        result = await collect_info_node(state, {})
+
+    assert result.get("is_returning_patient") is False
+    assert result.get("guardian_name") is None
+    sent = mock_send.call_args[0][1].lower()
+    assert "responsável" not in sent
+    assert "júlio" in sent or "bruna" in sent
+
+
+async def test_collect_info_self_messaging_returning_minor_skips_guardian_name_preview():
+    """Same as above, but the minor is already a patient of the clinic."""
+    from app.graph.nodes import collect_info_node
+    from langchain_core.messages import HumanMessage, AIMessage
+
+    state = _base_minor_state(
+        user_name="Clara",
+        patient_name="Clara",
+        patient_cpf="111.222.333-00",
+        patient_age=16,
+        birth_date="08/09/2009",
+        is_patient=True,
+        messages=[
+            HumanMessage(content="quero pedir uma receita"),
+            AIMessage(content="É a primeira consulta ou o paciente já está em acompanhamento na clínica?"),
+            HumanMessage(content="já sou paciente"),
+        ],
+    )
+    with patch("app.graph.nodes.send_text", new_callable=AsyncMock) as mock_send, \
+         patch("app.graph.nodes.save_message", new_callable=AsyncMock), \
+         patch("app.graph.nodes.get_users_by_phone", new_callable=AsyncMock, return_value=[]), \
+         patch("app.graph.nodes.upsert_user", new_callable=AsyncMock, return_value="new-id"):
+        result = await collect_info_node(state, {})
+
+    assert result.get("is_returning_patient") is True
+    assert result.get("guardian_name") is None
+    sent = mock_send.call_args[0][1].lower()
+    assert "responsável" not in sent
+    assert "júlio" in sent or "bruna" in sent
+
+
 async def test_collect_info_persists_doctor_when_mentioned():
     """Mentioning a doctor sets preferred_doctor in state.
 

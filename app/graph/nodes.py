@@ -452,9 +452,10 @@ async def collect_info_node(state: ConversationState, config: RunnableConfig) ->
             return _PATIENT_Q
         if is_new and not s.get("patient_cpf"):
             return _CPF_Q
-        if minor and not s.get("guardian_name"):
+        is_third_party = s.get("is_patient") is False
+        if minor and is_third_party and not s.get("guardian_name"):
             return _GUARDIAN_NAME_Q
-        if minor and is_new and not s.get("guardian_cpf"):
+        if minor and is_third_party and is_new and not s.get("guardian_cpf"):
             return _GUARDIAN_CPF_Q
         if not s.get("preferred_doctor"):
             return _DOCTOR_Q
