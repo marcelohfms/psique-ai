@@ -420,16 +420,24 @@
     </div>
     {% else %}
 
-    <!-- Table -->
+    {% set taxas = pendencias | selectattr("tipo", "equalto", "taxa") | list %}
+    {% set consultas = pendencias | selectattr("tipo", "equalto", "consulta") | list %}
+
+    <!-- Taxas de Reserva -->
+    {% if taxas %}
     <div class="pag-card">
+      <div style="padding: 1rem 1rem 0;">
+        <h3 style="font-size: 0.95rem; font-weight: 600; color: var(--color-foreground); margin: 0 0 0.75rem;">
+          Taxas de Reserva Pendentes
+        </h3>
+      </div>
       <div class="pag-table-scroll">
-      <table class="pag-table" id="tabela-pendencias" aria-label="Pagamentos pendentes">
+      <table class="pag-table" id="tabela-taxas">
         <thead>
           <tr>
             <th scope="col">Paciente</th>
             <th scope="col">Médico</th>
             <th scope="col">Data e hora</th>
-            <th scope="col">Tipo</th>
             <th scope="col">Valor</th>
             <th scope="col" class="th-wrap">Forma de<br>pagamento</th>
             <th scope="col">Comprovante</th>
@@ -437,7 +445,7 @@
           </tr>
         </thead>
         <tbody>
-          {% for p in pendencias %}
+          {% for p in taxas %}
           <tr id="row-{{ p.appointment_id }}-{{ p.tipo }}"
               data-paciente="{{ p.paciente }}"
               data-phone="{{ p.phone }}"
@@ -447,17 +455,6 @@
             <td class="cell-paciente">{{ p.paciente }}</td>
             <td class="cell-medico">{{ p.medico }}</td>
             <td class="cell-data">{{ p.data_hora }}</td>
-            <td>
-              {% if p.tipo == "taxa" %}
-              <span class="badge badge-taxa" aria-label="Taxa de reserva">
-                <span class="badge-dot" aria-hidden="true"></span>Taxa de reserva
-              </span>
-              {% else %}
-              <span class="badge badge-consulta" aria-label="Consulta">
-                <span class="badge-dot" aria-hidden="true"></span>Consulta
-              </span>
-              {% endif %}
-            </td>
             <td>
               <div class="valor-wrap">
                 <span class="valor-prefix" aria-hidden="true">R$</span>
@@ -502,12 +499,100 @@
         </tbody>
       </table>
       </div>
+    </div>
+    {% endif %}
 
-      <div class="pag-footer">
-        <span>Pendências:</span>
-        <span class="pag-footer-count" id="contagem">{{ pendencias | length }}</span>
+    <!-- Consultas em Aberto -->
+    {% if consultas %}
+    <div class="pag-card" style="margin-top: 2rem;">
+      <div style="padding: 1rem 1rem 0;">
+        <h3 style="font-size: 0.95rem; font-weight: 600; color: var(--color-foreground); margin: 0 0 0.75rem;">
+          Consultas em Aberto
+        </h3>
+      </div>
+      <div class="pag-table-scroll">
+      <table class="pag-table" id="tabela-consultas">
+        <thead>
+          <tr>
+            <th scope="col">Paciente</th>
+            <th scope="col">Médico</th>
+            <th scope="col">Data e hora</th>
+            <th scope="col">Valor</th>
+            <th scope="col" class="th-wrap">Forma de<br>pagamento</th>
+            <th scope="col">Comprovante</th>
+            <th scope="col"><span class="sr-only">Ação</span></th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for p in consultas %}
+          <tr id="row-{{ p.appointment_id }}-{{ p.tipo }}"
+              data-paciente="{{ p.paciente }}"
+              data-phone="{{ p.phone }}"
+              data-medico="{{ p.medico }}"
+              data-data-hora="{{ p.data_hora }}"
+              data-tipo="{{ p.tipo }}">
+            <td class="cell-paciente">{{ p.paciente }}</td>
+            <td class="cell-medico">{{ p.medico }}</td>
+            <td class="cell-data">{{ p.data_hora }}</td>
+            <td>
+              <div class="valor-wrap">
+                <span class="valor-prefix" aria-hidden="true">R$</span>
+                <input
+                  type="number"
+                  value="{{ p.valor }}"
+                  min="0"
+                  class="valor-input"
+                  aria-label="Valor em reais"
+                />
+              </div>
+            </td>
+            <td>
+              <select class="forma-input" aria-label="Forma de pagamento">
+                <option value="PIX">PIX</option>
+                <option value="cartao_credito">Cartão de crédito</option>
+                <option value="cartao_debito">Cartão de débito</option>
+                <option value="dinheiro">Dinheiro</option>
+              </select>
+            </td>
+            <td>
+              <label class="comprovante-label" style="font-size:0.78rem;color:var(--color-muted-text);text-decoration:underline;cursor:pointer;white-space:nowrap;">
+                Anexar
+                <input type="file" accept="image/*,.pdf" class="comprovante-input" style="display:none;">
+              </label>
+              <div class="comprovante-nome" style="font-size:0.72rem;color:var(--color-muted-text);"></div>
+            </td>
+            <td>
+              <button
+                onclick="marcarPago('{{ p.appointment_id }}', '{{ p.tipo }}', this)"
+                class="btn-pago"
+                aria-label="Marcar como pago para {{ p.paciente }}"
+              >
+                <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                  <polyline points="20 6 9 17 4 12"/>
+                </svg>
+                <span class="btn-pago-text"><span>Marcar</span><span>pago</span></span>
+              </button>
+            </td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
       </div>
     </div>
+    {% endif %}
+
+    {% if not taxas and not consultas %}
+    <div class="pag-empty">
+      <div class="pag-empty-icon">
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/>
+        </svg>
+      </div>
+      <div class="pag-empty-title">Tudo em dia!</div>
+      <div class="pag-empty-desc">Nenhum pagamento pendente no momento.</div>
+    </div>
+    {% endif %}
+
     {% endif %}
 
   </div>
