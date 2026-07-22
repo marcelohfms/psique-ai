@@ -1,6 +1,6 @@
 """Unit tests for app/chatwoot.py."""
 import pytest
-from unittest.mock import AsyncMock, patch, MagicMock
+from unittest.mock import AsyncMock, patch, MagicMock, call
 import httpx
 
 
@@ -90,6 +90,48 @@ async def test_send_text_resolves_via_chatwoot_when_unknown():
 
         mock_resolve.assert_awaited_once_with("5583998566516@s.whatsapp.net")
         mock_send.assert_awaited_once_with(123, "Notificação interna")
+
+
+def test_split_into_messages_splits_on_blank_lines():
+    from app.whatsapp import _split_into_messages
+    text = "Oi! Tudo bem?\n\nVou te ajudar com o agendamento.\n\nQual dia prefere?"
+    assert _split_into_messages(text) == [
+        "Oi! Tudo bem?",
+        "Vou te ajudar com o agendamento.",
+        "Qual dia prefere?",
+    ]
+
+
+def test_split_into_messages_drops_empty_segments():
+    from app.whatsapp import _split_into_messages
+    text = "Primeira parte\n\n\n\nSegunda parte\n\n   \n\nTerceira parte"
+    assert _split_into_messages(text) == ["Primeira parte", "Segunda parte", "Terceira parte"]
+
+
+def test_split_into_messages_single_paragraph_unchanged():
+    from app.whatsapp import _split_into_messages
+    assert _split_into_messages("Só uma linha, sem quebra.") == ["Só uma linha, sem quebra."]
+
+
+async def test_send_text_splits_multi_paragraph_reply_into_separate_messages():
+    """A reply with blank-line-separated paragraphs is sent as multiple bubbles."""
+    from app.chatwoot import register_conversation, _store
+    _store.clear()
+    register_conversation("5511999999999@s.whatsapp.net", 99)
+
+    with patch("app.chatwoot.send_message", new_callable=AsyncMock) as mock_send, \
+         patch("app.whatsapp.asyncio.sleep", new_callable=AsyncMock) as mock_sleep:
+        from app.whatsapp import send_text
+        await send_text(
+            "5511999999999@s.whatsapp.net",
+            "Oi! Tudo bem?\n\nVou verificar os horários disponíveis para você.",
+        )
+
+        assert mock_send.await_args_list == [
+            call(99, "Oi! Tudo bem?"),
+            call(99, "Vou verificar os horários disponíveis para você."),
+        ]
+        mock_sleep.assert_awaited_once()
 
 
 async def test_find_or_create_returns_cached_conversation():
