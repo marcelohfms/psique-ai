@@ -112,6 +112,19 @@ async def test_get_contacts_for_patient_skips_inactive():
 
 
 @pytest.mark.asyncio
+async def test_get_contacts_for_patient_include_inactive_returns_all():
+    # Lembretes de consulta são transacionais e devem chegar mesmo se o bot
+    # estiver pausado para o contato (ex.: transferido para atendimento humano).
+    client, table, execute = _client_returning([
+        {"contact_id": "cpai", "contacts": {"id": "cpai", "phone": "5583111", "active": True}},
+        {"contact_id": "cold", "contacts": {"id": "cold", "phone": "5583999", "active": False}},
+    ])
+    with patch("app.patients.get_supabase", new_callable=AsyncMock, return_value=client):
+        result = await patients.get_contacts_for_patient("p1", role="agendamento", include_inactive=True)
+    assert {c["phone"] for c in result} == {"5583111", "5583999"}
+
+
+@pytest.mark.asyncio
 async def test_upsert_contact_inserts_when_absent():
     insert_exec = AsyncMock(return_value=MagicMock(data=[{"id": "c-new", "phone": "5583988887777"}]))
     select_exec = AsyncMock(return_value=MagicMock(data=[]))

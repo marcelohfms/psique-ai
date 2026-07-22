@@ -261,9 +261,12 @@ def is_registration_complete(user: dict) -> bool:
       everyone else it does not matter whether it is the first visit, so it is
       not required.
 
-    Additional requirements for MINORS (age < 18):
-    - guardian_name         (required for ALL minors)
-    - guardian_relationship (required for ALL minors)
+    Additional requirements for MINORS (age < 18) — only when a THIRD PARTY
+    (a guardian, is_patient=False) is the one messaging. A minor messaging
+    about themselves (is_patient=True) has no guardian contact linked, so
+    these fields can never be filled and are not required:
+    - guardian_name         (required for ALL minors with a guardian messaging)
+    - guardian_relationship (required for ALL minors with a guardian messaging)
     - guardian_cpf          (required ONLY for new patients, is_returning_patient is False;
                              returning patients already have the guardian's CPF on file)
 
@@ -299,11 +302,15 @@ def is_registration_complete(user: dict) -> bool:
         if not user.get("patient_name"):
             return False
 
-    # Minor-specific requirements
-    if age is not None and age < 18:
-        # guardian_name e guardian_relationship são obrigatórios para todo menor.
-        # guardian_cpf é obrigatório apenas para pacientes NOVOS — pacientes que
-        # já são da clínica já têm o CPF do responsável no cadastro.
+    # Minor-specific requirements — only apply when a THIRD PARTY (a guardian)
+    # is the one messaging (is_patient=False). A minor messaging about
+    # themselves (is_patient=True) has no guardian contact linked, so these
+    # fields can never be filled.
+    if age is not None and age < 18 and user.get("is_patient") is False:
+        # guardian_name e guardian_relationship são obrigatórios para todo menor
+        # com um terceiro conversando. guardian_cpf é obrigatório apenas para
+        # pacientes NOVOS — pacientes que já são da clínica já têm o CPF do
+        # responsável no cadastro.
         required_minor = ["guardian_name", "guardian_relationship"]
         if user.get("is_returning_patient") is False:
             required_minor.append("guardian_cpf")
@@ -317,12 +324,19 @@ def is_registration_complete(user: dict) -> bool:
 # ── Appointment helpers ───────────────────────────────────────────────────────
 
 async def get_upcoming_appointments(phone: str) -> list[dict]:
-    """Return scheduled/ongoing/recent appointments for a user, ordered by start_time.
+    """Return scheduled/ongoing/recent/unpaid-past appointments for a user, ordered by start_time.
 
     Includes:
     - Future appointments (end_time >= now)
     - Appointments that ended in the last 48 h but are still marked 'scheduled'
       (complete_appointments script hasn't run yet) — flagged with 'recently_ended'
+    - Completed appointments still owing a balance (paid_at is null) — flagged with
+      'already_occurred', regardless of how long ago, so the LLM never talks about
+      settling the balance "no dia da consulta" as if it were still upcoming.
+    - pending_reschedule appointments whose original end_time is already outside the
+      48h "recent" window — flagged with 'stale_reschedule', regardless of how long
+      ago, so the LLM never loses track of a pending reschedule just because the
+      patient took weeks to come back.
     """
     client = await get_supabase()
     # Consider ALL patients linked to this contact — a contact may manage several
@@ -339,7 +353,7 @@ async def get_upcoming_appointments(phone: str) -> list[dict]:
     now_iso = now.isoformat()
     cutoff_recent = (now - timedelta(hours=48)).isoformat()
 
-    _appt_fields = "appointment_id, patient_id, start_time, end_time, status, reschedule_requested_at, booking_fee_paid_at, booking_fee_waived"
+    _appt_fields = "appointment_id, patient_id, start_time, end_time, status, reschedule_requested_at, booking_fee_paid_at, booking_fee_waived, paid_at"
 
     # Future + ongoing (end_time has not yet passed)
     future_result = (
@@ -364,11 +378,47 @@ async def get_upcoming_appointments(phone: str) -> list[dict]:
         .execute()
     )
 
+    # Completed appointments still owing a balance (any age — a patient who owes
+    # money from weeks ago must never be discussed as if the payment date is
+    # still ahead of us).
+    unpaid_past_result = (
+        await client.from_("appointments")
+        .select(_appt_fields)
+        .eq("status", "completed")
+        .in_("patient_id", patient_ids)
+        .is_("paid_at", "null")
+        .order("start_time")
+        .execute()
+    )
+
+    # pending_reschedule older than the "recent" window — its original start_time
+    # recedes into the past the longer the patient waits to rebook, but the
+    # reschedule is still pending. Without this bucket the row is invisible to the
+    # LLM once end_time < cutoff_recent (caso Heitor/Ludmilla, 5581996937559,
+    # 21/07/2026), and Eva treats a returning patient as a brand-new booking.
+    stale_reschedule_result = (
+        await client.from_("appointments")
+        .select(_appt_fields)
+        .eq("status", "pending_reschedule")
+        .in_("patient_id", patient_ids)
+        .lt("end_time", cutoff_recent)
+        .order("start_time")
+        .execute()
+    )
+
     # Attach patient_name to each row so the caller can attribute the appointment
     # to the correct patient when the contact manages more than one.
     future = [dict(r, patient_name=name_by_id.get(r.get("patient_id"), "")) for r in (future_result.data or [])]
     recent = [dict(r, recently_ended=True, patient_name=name_by_id.get(r.get("patient_id"), "")) for r in (recent_result.data or [])]
-    return future + recent
+    unpaid_past = [
+        dict(r, already_occurred=True, patient_name=name_by_id.get(r.get("patient_id"), ""))
+        for r in (unpaid_past_result.data or [])
+    ]
+    stale_reschedule = [
+        dict(r, stale_reschedule=True, patient_name=name_by_id.get(r.get("patient_id"), ""))
+        for r in (stale_reschedule_result.data or [])
+    ]
+    return future + recent + unpaid_past + stale_reschedule
 
 
 # ── Message persistence ───────────────────────────────────────────────────────

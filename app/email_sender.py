@@ -16,6 +16,7 @@ _DOCUMENT_LABELS = {
     "relatorio": "Relatório",
     "receita": "Receita",
     "declaracao": "Declaração",
+    "requisicao": "Requisição",
 }
 
 
@@ -187,6 +188,126 @@ async def send_document_request_email(
         f"  E-mail para envio: {billing_email}\n"
         f"{referencia_line}\n"
         f"Por favor, providencie a emissão e envie no e-mail acima.\n\n"
+        f"— Eva, assistente virtual Psique"
+    )
+
+    loop = asyncio.get_event_loop()
+    await loop.run_in_executor(
+        None,
+        _send_email,
+        smtp_host,
+        smtp_port,
+        smtp_user,
+        smtp_password,
+        to_email,
+        subject,
+        body,
+    )
+
+
+async def send_external_contact_request_email(
+    doctor_key: str,
+    doctor_email: str,
+    patient_name: str,
+    contact_name: str,
+    contact_email: str,
+    contact_relationship: str,
+    contact_phone: str,
+    patient_age: int | None,
+    patient_phone: str,
+) -> None:
+    """Send an email to the doctor requesting contact information for an external contact.
+    Does nothing if SMTP credentials or doctor email are not configured.
+    """
+    smtp_host = os.environ.get("SMTP_HOST")
+    smtp_port = int(os.environ.get("SMTP_PORT", "465"))
+    smtp_user = os.environ.get("SMTP_USER")
+    smtp_password = os.environ.get("SMTP_PASSWORD")
+    to_email = doctor_email
+
+    if not all([smtp_host, smtp_user, smtp_password, to_email]):
+        return
+
+    doctor_label = _DOCTOR_LABELS.get(doctor_key, doctor_key)
+    patient_phone_clean = patient_phone.replace("@s.whatsapp.net", "")
+    contact_phone_clean = contact_phone.replace("@s.whatsapp.net", "")
+    age_str = f"{patient_age} anos" if patient_age else "não informada"
+    now = datetime.now(TZ).strftime("%d/%m/%Y às %H:%M")
+
+    subject = f"Solicitação de contato externo — {patient_name}"
+    body = (
+        f"{doctor_label},\n\n"
+        f"O(a) paciente {patient_name} solicitou o contato de uma pessoa via WhatsApp.\n\n"
+        f"Dados do paciente:\n"
+        f"  Nome: {patient_name}\n"
+        f"  Idade: {age_str}\n"
+        f"  Telefone: {patient_phone_clean}\n\n"
+        f"Contato solicitado:\n"
+        f"  Nome: {contact_name}\n"
+        f"  Relacionamento: {contact_relationship}\n"
+        f"  Telefone: {contact_phone_clean}\n"
+        f"  E-mail: {contact_email}\n"
+        f"  Data da solicitação: {now}\n\n"
+        f"Por favor, confirme se podemos compartilhar este contato com o(a) paciente.\n\n"
+        f"— Eva, assistente virtual Psique"
+    )
+
+    loop = asyncio.get_event_loop()
+    await loop.run_in_executor(
+        None,
+        _send_email,
+        smtp_host,
+        smtp_port,
+        smtp_user,
+        smtp_password,
+        to_email,
+        subject,
+        body,
+    )
+
+
+async def send_external_contact_nudge_email(
+    doctor_key: str,
+    doctor_email: str,
+    patient_name: str,
+    contact_name: str,
+    contact_relationship: str,
+    contact_phone: str,
+    patient_age: int | None,
+    patient_phone: str,
+    requested_at: str,
+) -> None:
+    """Send a nudge email to the doctor when a patient follows up on a pending external contact request."""
+    smtp_host = os.environ.get("SMTP_HOST")
+    smtp_port = int(os.environ.get("SMTP_PORT", "465"))
+    smtp_user = os.environ.get("SMTP_USER")
+    smtp_password = os.environ.get("SMTP_PASSWORD")
+    to_email = doctor_email
+
+    if not all([smtp_host, smtp_user, smtp_password, to_email]):
+        return
+
+    doctor_label = _DOCTOR_LABELS.get(doctor_key, doctor_key)
+    patient_phone_clean = patient_phone.replace("@s.whatsapp.net", "")
+    contact_phone_clean = contact_phone.replace("@s.whatsapp.net", "")
+    age_str = f"{patient_age} anos" if patient_age else "não informada"
+    now = datetime.now(TZ).strftime("%d/%m/%Y às %H:%M")
+
+    subject = f"⚠️ Acompanhamento de contato externo — {patient_name}"
+    body = (
+        f"{doctor_label},\n\n"
+        f"O(a) paciente {patient_name} está acompanhando a solicitação de contato "
+        f"realizada em {requested_at}.\n\n"
+        f"Dados do paciente:\n"
+        f"  Nome: {patient_name}\n"
+        f"  Idade: {age_str}\n"
+        f"  Telefone: {patient_phone_clean}\n"
+        f"  Acompanhamento em: {now}\n\n"
+        f"Contato solicitado:\n"
+        f"  Nome: {contact_name}\n"
+        f"  Relacionamento: {contact_relationship}\n"
+        f"  Telefone: {contact_phone_clean}\n\n"
+        f"Por favor, confirme se podemos compartilhar este contato com o(a) paciente.\n\n"
         f"— Eva, assistente virtual Psique"
     )
 

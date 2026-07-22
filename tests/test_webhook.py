@@ -222,6 +222,33 @@ async def test_unrecognized_document_mime_notifies_clinic_only():
     mock_email.assert_called_once()
 
 
+# ── _handle_payload dedup ordering ────────────────────────────────────────────
+# Regression coverage for PR #77 (C2): dedup must run BEFORE extract_message,
+# since extract_message has side effects (OpenAI vision, PDF description, the
+# audio-not-supported auto-reply) that must not run twice on a Meta retry.
+
+async def test_duplicate_image_webhook_processes_media_only_once():
+    """A retried image webhook (same msg_id) must not run OpenAI vision twice."""
+    from app.main import _handle_payload
+    payload = _meta_payload(msg_type="image")  # id == "wamid.test"
+    with patch("app.media.process_media", new_callable=AsyncMock, return_value="[imagem]: x") as mock_media, \
+         patch("app.main.save_message", new_callable=AsyncMock), \
+         patch("app.main.buffer_push", new_callable=AsyncMock):
+        await _handle_payload(payload)
+        await _handle_payload(payload)  # duplicate retry from Meta
+    assert mock_media.call_count == 1
+
+
+async def test_duplicate_audio_webhook_sends_notice_only_once():
+    """A retried audio webhook (same msg_id) must not send the notice twice."""
+    from app.main import _handle_payload
+    payload = _meta_payload(msg_type="audio")  # id == "wamid.test"
+    with patch("app.main.send_text", new_callable=AsyncMock) as mock_send:
+        await _handle_payload(payload)
+        await _handle_payload(payload)  # duplicate retry from Meta
+    assert mock_send.call_count == 1
+
+
 # ── /webhook endpoint tests ───────────────────────────────────────────────────
 
 def _signed(body: bytes) -> str:
@@ -296,6 +323,52 @@ def _chatwoot_payload(
         },
         "sender": {"phone_number": phone, "type": "contact"},
     }
+
+
+# ── Chatwoot webhook signature validation ─────────────────────────────────────
+# Unlike /webhook (Meta), this validation is CONDITIONAL: only enforced when
+# CHATWOOT_WEBHOOK_SECRET is set. It's unset in tests (see conftest.py), so the
+# ten existing /chatwoot-webhook tests above and below keep working unsigned.
+
+def _chatwoot_signed(body: bytes, secret: str) -> str:
+    return hmac.new(secret.encode(), body, hashlib.sha256).hexdigest()
+
+
+async def test_chatwoot_webhook_skips_signature_check_when_secret_unset(async_client):
+    """Backward-compat: no CHATWOOT_WEBHOOK_SECRET configured → accept without signature."""
+    response = await async_client.post("/chatwoot-webhook", json=_chatwoot_payload())
+    assert response.status_code == 200
+
+
+async def test_chatwoot_webhook_rejects_missing_signature_when_secret_set(async_client, monkeypatch):
+    monkeypatch.setenv("CHATWOOT_WEBHOOK_SECRET", "cw-test-secret")
+    response = await async_client.post("/chatwoot-webhook", json=_chatwoot_payload())
+    assert response.status_code == 403
+
+
+async def test_chatwoot_webhook_rejects_invalid_signature_when_secret_set(async_client, monkeypatch):
+    monkeypatch.setenv("CHATWOOT_WEBHOOK_SECRET", "cw-test-secret")
+    body = json.dumps(_chatwoot_payload()).encode()
+    response = await async_client.post(
+        "/chatwoot-webhook", content=body,
+        headers={"X-Chatwoot-Signature": "deadbeef", "Content-Type": "application/json"},
+    )
+    assert response.status_code == 403
+
+
+async def test_chatwoot_webhook_accepts_valid_signature_when_secret_set(async_client, monkeypatch):
+    monkeypatch.setenv("CHATWOOT_WEBHOOK_SECRET", "cw-test-secret")
+    body = json.dumps(_chatwoot_payload()).encode()
+    with patch("app.main.buffer_push"), patch("app.main.save_message"), \
+         patch("app.chatwoot.register_conversation"):
+        response = await async_client.post(
+            "/chatwoot-webhook", content=body,
+            headers={
+                "X-Chatwoot-Signature": _chatwoot_signed(body, "cw-test-secret"),
+                "Content-Type": "application/json",
+            },
+        )
+    assert response.status_code == 200
 
 
 async def test_chatwoot_webhook_processes_incoming_message(async_client):

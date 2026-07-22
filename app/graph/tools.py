@@ -1,6 +1,6 @@
 import asyncio
 import os
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, date
 from typing import Annotated, Literal
 from zoneinfo import ZoneInfo
 
@@ -93,6 +93,180 @@ _MOD_LABELS = {
     "presencial_sob_consulta": "online ou presencial",
 }
 
+_ANY_DAY_MAX_DAYS_CURRENT_WEEK = 3
+_ANY_DAY_MIN_DISTINCT_DAYS = 2
+_ANY_DAY_MAX_WEEKS = 8
+
+
+def _week_range(offset_weeks: int) -> tuple[date, date]:
+    """Retorna (início, fim) da janela de busca: offset_weeks=0 é "esta semana"
+    (de hoje até domingo); offset_weeks>=1 é uma semana cheia (segunda a
+    domingo), offset_weeks semanas após a atual."""
+    today = datetime.now(TZ).date()
+    if offset_weeks == 0:
+        start = today
+    else:
+        next_monday = today + timedelta(days=7 - today.weekday())
+        start = next_monday + timedelta(weeks=offset_weeks - 1)
+    end = start + timedelta(days=6 - start.weekday())
+    return start, end
+
+
+def _business_days(start: date, end: date):
+    """Percorre cada dia útil (segunda a sexta) de start a end, inclusive."""
+    day = start
+    while day <= end:
+        if day.weekday() < 5:
+            yield day
+        day += timedelta(days=1)
+
+
+async def _slots_for_any_day(
+    day: date, calendar_id: str, doctor: str, preferred_shift: str,
+    slot_duration_minutes: int, _get_slots,
+) -> dict:
+    """Retorna {turno: slots} para o dia informado. Consulta apenas o turno
+    pedido, ou os três turnos quando preferred_shift == "qualquer"."""
+    if preferred_shift != "qualquer":
+        slots = await _get_slots(
+            calendar_id=calendar_id,
+            preferred_day=day.isoformat(),
+            preferred_shift=preferred_shift,
+            slot_minutes=slot_duration_minutes,
+            doctor_key=doctor,
+        )
+        return {preferred_shift: slots} if slots else {}
+    result: dict = {}
+    for shift_key in ("manha", "tarde", "noite"):
+        slots = await _get_slots(
+            calendar_id=calendar_id,
+            preferred_day=day.isoformat(),
+            preferred_shift=shift_key,
+            slot_minutes=slot_duration_minutes,
+            doctor_key=doctor,
+        )
+        if slots:
+            result[shift_key] = slots
+    return result
+
+
+def _format_any_day_section(day: date, day_shifts: dict, preferred_shift: str) -> str:
+    day_label = _WEEKDAY_LABELS_PT.get(day.weekday(), "")
+    date_label = day.strftime("%d/%m")
+    header = f"{day_label}, dia {date_label}" if day_label else date_label
+    if preferred_shift == "qualquer":
+        lines = [f"{header}:"]
+        for shift_key, shift_label in [("manha", "manhã"), ("tarde", "tarde"), ("noite", "noite")]:
+            slots = day_shifts.get(shift_key)
+            if slots:
+                times = ", ".join(s[0].strftime("%H:%M") for s in slots)
+                lines.append(f"  - {shift_label.capitalize()}: {times}")
+        return "\n".join(lines)
+    slots = day_shifts.get(preferred_shift, [])
+    lines = [f"{header} ({preferred_shift}):"]
+    for i, (slot, modality) in enumerate(slots, 1):
+        lines.append(f"  {i}. {slot.strftime('%H:%M')} [{_MOD_LABELS.get(modality, modality)}]")
+    return "\n".join(lines)
+
+
+async def _earliest_slot_dt(calendar_id: str, doctor: str, slot_duration_minutes: int) -> datetime | None:
+    """Retorna o datetime do slot disponível mais cedo para o médico, varrendo os
+    dias úteis futuros (até _ANY_DAY_MAX_WEEKS semanas). Como os dias são
+    percorridos em ordem cronológica, o primeiro dia com vaga contém o slot mais
+    cedo. None se nada for encontrado dentro do horizonte."""
+    from app.google_calendar import get_available_slots as _get_slots
+
+    for offset in range(0, _ANY_DAY_MAX_WEEKS + 1):
+        start, end = _week_range(offset)
+        for day in _business_days(start, end):
+            day_shifts = await _slots_for_any_day(
+                day, calendar_id, doctor, "qualquer", slot_duration_minutes, _get_slots
+            )
+            slots = [s[0] for lst in day_shifts.values() for s in lst]
+            if slots:
+                return min(slots)
+    return None
+
+
+async def pick_doctor_by_earliest_availability(
+    candidates: list[str], slot_duration_minutes: int = 60,
+) -> str | None:
+    """Entre os médicos candidatos (já filtrados por idade), retorna o que tem o
+    slot disponível mais cedo — a "agenda mais próxima". A Dra. Bruna sempre usa
+    slots de 60min (mesmo em 1ª consulta de menor). Empate ou falha de agenda →
+    primeiro candidato (fallback determinístico, nunca deixa sem médico)."""
+    best_doctor: str | None = None
+    best_dt: datetime | None = None
+    for doctor in candidates:
+        calendar_id = await _get_doctor_calendar_id(doctor)
+        if not calendar_id:
+            continue
+        dur = 60 if doctor == "bruna" else slot_duration_minutes
+        dt = await _earliest_slot_dt(calendar_id, doctor, dur)
+        if dt is None:
+            continue
+        if best_dt is None or dt < best_dt:
+            best_dt, best_doctor = dt, doctor
+    return best_doctor or (candidates[0] if candidates else None)
+
+
+async def _search_any_day(calendar_id: str, doctor: str, preferred_shift: str, slot_duration_minutes: int) -> str:
+    """Busca dias úteis futuros (qualquer dia da semana) quando o paciente não
+    tem preferência de dia (ex: "qualquer dia"). Busca primeiro a semana atual
+    (até 3 dias distintos com vaga); se encontrar menos de 2 dias distintos,
+    também busca a semana seguinte inteira; se ainda assim não achar nada,
+    continua expandindo semana a semana (limite de segurança) até achar algo —
+    nunca informa ao paciente que "não encontrou"."""
+    from app.google_calendar import get_available_slots as _get_slots
+
+    found: list[tuple[date, dict]] = []
+
+    start, end = _week_range(0)
+    for day in _business_days(start, end):
+        day_shifts = await _slots_for_any_day(
+            day, calendar_id, doctor, preferred_shift, slot_duration_minutes, _get_slots
+        )
+        if day_shifts:
+            found.append((day, day_shifts))
+            if len(found) >= _ANY_DAY_MAX_DAYS_CURRENT_WEEK:
+                break
+
+    extended = False
+    if len(found) < _ANY_DAY_MIN_DISTINCT_DAYS:
+        extended = True
+        start, end = _week_range(1)
+        for day in _business_days(start, end):
+            day_shifts = await _slots_for_any_day(
+                day, calendar_id, doctor, preferred_shift, slot_duration_minutes, _get_slots
+            )
+            if day_shifts:
+                found.append((day, day_shifts))
+
+    week_offset = 2
+    while not found and week_offset <= _ANY_DAY_MAX_WEEKS:
+        extended = True
+        start, end = _week_range(week_offset)
+        for day in _business_days(start, end):
+            day_shifts = await _slots_for_any_day(
+                day, calendar_id, doctor, preferred_shift, slot_duration_minutes, _get_slots
+            )
+            if day_shifts:
+                found.append((day, day_shifts))
+        week_offset += 1
+
+    if not found:
+        return (
+            "Não encontrei horários disponíveis nas próximas semanas. "
+            "Use transfer_to_human para encaminhar ao atendente humano verificar outras opções."
+        )
+
+    sections = [_format_any_day_section(day, day_shifts, preferred_shift) for day, day_shifts in found]
+    prefix = (
+        "Poucos horários disponíveis na semana atual — incluí também outras semanas:\n\n"
+        if extended else ""
+    )
+    return prefix + "\n\n".join(sections)
+
 
 @tool
 async def get_available_slots(
@@ -113,6 +287,23 @@ async def get_available_slots(
     um dia da semana, inclua o mês em preferred_day (ex: "quinta de agosto") para que a busca
     comece a partir daquele mês — NUNCA responda que "a agenda desse mês ainda não está aberta",
     isso não existe; sempre chame a ferramenta com o mês incluído.
+    IMPORTANTE — dia da semana + número juntos (ex: "sexta, dia 14", "quarta dia 22"): NUNCA
+    passe apenas o nome do dia da semana (ex: "sexta") nesse caso — isso faz a busca ignorar o
+    número "14" e parar na primeira ocorrência daquele dia da semana com vaga (que pode ser uma
+    data completamente diferente da que o paciente pediu). Monte a data completa dd/mm combinando
+    o número informado com o mês em contexto (da mensagem atual ou de mensagens anteriores) e
+    passe isso em preferred_day (ex: "14/08"). Só use o nome do dia da semana sozinho quando o
+    paciente NÃO tiver informado nenhum número de dia.
+    NUNCA diga ao paciente que uma data específica não tem horário sem antes ter chamado esta
+    ferramenta com exatamente aquela data em formato dd/mm e recebido "não há horários" como
+    resultado — não infira indisponibilidade a partir do resultado de uma busca por nome do dia
+    da semana que retornou uma data diferente da pedida.
+    IMPORTANTE — "próxima semana": se o paciente disser explicitamente "próxima semana", "semana
+    que vem" ou "semana seguinte" (mesmo que o dia da semana já tenha sido combinado em mensagens
+    anteriores), inclua essa expressão JUNTO com o dia em preferred_day (ex: "quarta-feira da
+    próxima semana") — NUNCA passe só o dia sozinho nesse caso. "Próxima semana" significa a
+    segunda-feira seguinte até a sexta-feira daquela semana, e a ferramenta pula qualquer
+    ocorrência do dia que ainda caia na semana atual.
     Use slot_duration_minutes=120 para primeira consulta de paciente menor de 18 anos,
     60 para todos os outros casos.
     Use preferred_shift="qualquer" quando o paciente informar um dia mas ainda não tiver
@@ -152,22 +343,37 @@ async def get_available_slots(
     if doctor == "bruna":
         slot_duration_minutes = 60
 
+    now = datetime.now(TZ)
+    shift_norm = preferred_shift.lower().replace("ã", "a").replace("manhã", "manha").strip()
+    shift_start_h, shift_end_h = SHIFT_HOURS.get(shift_norm, (8, 18))
+
+    # ── Detect weekday name so the branches below only run for real day values ─
+    preferred_day_norm = preferred_day.lower().strip()
+    weekday_key = next(
+        (wd for name, wd in _WEEKDAYS_PT.items() if name in preferred_day_norm),
+        None,
+    )
+
+    # ── No day preference (e.g. "qualquer dia", "tanto faz") → search upcoming
+    # business days regardless of weekday, expanding to later weeks if needed ──
+    _no_day_pref_patterns = ("qualquer", "tanto faz")
+    if weekday_key is None and any(p in preferred_day_norm for p in _no_day_pref_patterns):
+        return await _search_any_day(
+            calendar_id=calendar_id,
+            doctor=doctor,
+            preferred_shift=preferred_shift,
+            slot_duration_minutes=slot_duration_minutes,
+        )
+
     # ── "qualquer" shift: check all shifts and return summary ─────────────────
     if preferred_shift == "qualquer":
-        # Detect whether preferred_day is a weekday name so we can do multi-week
-        # search — the same logic used below for specific shifts.
-        preferred_day_norm_q = preferred_day.lower().strip()
-        weekday_key_q = next(
-            (wd for name, wd in _WEEKDAYS_PT.items() if name in preferred_day_norm_q),
-            None,
-        )
         base_date_q = _parse_day(preferred_day)
         if base_date_q is None:
             return "Não entendi a data. Por favor informe um dia específico (ex: segunda, 19/05, amanhã)."
 
         # For weekday names: try up to 4 weeks until we find a date with slots.
         # For specific dates: single attempt only.
-        max_weeks = 4 if weekday_key_q is not None else 1
+        max_weeks = 4 if weekday_key is not None else 1
         for week_offset in range(max_weeks):
             try_date = base_date_q + timedelta(weeks=week_offset)
             day_of_week = _WEEKDAY_LABELS_PT.get(try_date.weekday(), "")
@@ -212,19 +418,8 @@ async def get_available_slots(
             # No slots at all this week — try the next occurrence (only for weekday names)
         return f"Não há horários disponíveis para {header}. Deseja tentar outro dia?"
 
-    now = datetime.now(TZ)
-    shift_norm = preferred_shift.lower().replace("ã", "a").replace("manhã", "manha").strip()
-    shift_start_h, shift_end_h = SHIFT_HOURS.get(shift_norm, (8, 18))
-
-    # ── Detect weekday name → multi-week search ───────────────────────────────
-    preferred_day_norm = preferred_day.lower().strip()
-    weekday_key = next(
-        (wd for name, wd in _WEEKDAYS_PT.items() if name in preferred_day_norm),
-        None,
-    )
-
     # ── Vague expressions (e.g. "próxima semana") → ask for specific day ─────
-    _vague_patterns = ("semana", "mês", "mes", "em breve", "qualquer", "tanto faz")
+    _vague_patterns = ("semana", "mês", "mes", "em breve")
     if weekday_key is None and any(p in preferred_day_norm for p in _vague_patterns):
         return (
             "CLARIFICAÇÃO NECESSÁRIA: O paciente disse uma expressão vaga (ex: 'próxima semana'). "
@@ -394,6 +589,12 @@ async def confirm_appointment(
         force_encaixe = False
         _logger.warning("confirm_appointment: force_encaixe=True rejected — not in silent_mode (attendant instruction)")
 
+    # Encaixe da Dra. Bruna começando a :20 termina no topo da hora (40min) para
+    # não bloquear o slot regular da hora seguinte no busy-check (ex: sexta 13:20 →
+    # 14:00, mantém o slot das 14h agendável). Só vale para encaixe (force_encaixe).
+    if force_encaixe and doctor == "bruna" and start.minute == 20:
+        slot_duration_minutes = 40
+
     # Reject slots outside the doctor's schedule — skipped for encaixe
     if not force_encaixe:
         from app.google_calendar import SCHEDULE_EXCEPTIONS, DOCTOR_SCHEDULES
@@ -441,6 +642,26 @@ async def confirm_appointment(
                     "Avise o paciente com empatia e chame get_available_slots para buscar outro horário disponível."
                 )
 
+        # Dr. Júlio: além do início, exigir que o slot INTEIRO (início + duração)
+        # caiba numa única janela — senão um bloco de 2h começando no fim da grade
+        # (ex: 19:00 numa quinta que fecha 20:00) seria gravado estourando o
+        # expediente (caso Bernardo/Mônica 5581991320003, 09/07/2026: 1ª consulta
+        # gravada 19:00–21:00). get_available_slots já respeita isso; o confirm não.
+        if doctor == "julio":
+            _slot_end_min = _slot_min + slot_duration_minutes
+            if not any(
+                (sh * 60 + sm) <= _slot_min and _slot_end_min <= (eh * 60 + em)
+                for sh, sm, eh, em, _ in _day_wins
+            ):
+                _dur_h = slot_duration_minutes // 60
+                return (
+                    f"[INSTRUÇÃO INTERNA — NÃO ENVIE AO PACIENTE] "
+                    f"Não há bloco de {_dur_h}h seguidas a partir das {start.strftime('%H:%M')} na grade de "
+                    f"{_doctor_label} no dia {start.strftime('%d/%m/%Y')} — o horário ultrapassaria o fim do expediente. "
+                    "Chame get_available_slots novamente para um horário que comporte a duração, ou ofereça "
+                    "agendar os dois momentos da 1ª consulta em sessões separadas de 1h."
+                )
+
     # Guard 0: block if patient already has a future scheduled OR pending_reschedule
     # appointment (different slot). Forces Eva to use mark_reschedule_in_progress →
     # reschedule_appointment instead. pending_reschedule must be included here — otherwise
@@ -459,16 +680,31 @@ async def confirm_appointment(
         from datetime import timezone as _tz
         _now_iso = datetime.now(_tz.utc).isoformat()
 
-        # Resolve patient_ids via contacts → patient_contacts
-        _contact_r = await _supabase.from_("contacts").select("id").eq("phone", _phone_clean).execute()
-        if _contact_r.data:
-            _contact_id = _contact_r.data[0]["id"]
-            _pc_r = await _supabase.from_("patient_contacts").select("patient_id").eq("contact_id", _contact_id).execute()
-            _patient_ids = [row["patient_id"] for row in (_pc_r.data or [])]
-            if _patient_ids:
-                _future_r = await _supabase.from_("appointments").select("appointment_id, start_time").in_("patient_id", _patient_ids).in_("status", ["scheduled", "pending_reschedule"]).gte("start_time", _now_iso).execute()
-                _other_appts = [a for a in (_future_r.data or []) if a["start_time"] != start.isoformat()]
-                if _other_appts:
+        # Resolve patient_ids via contacts → patient_contacts, then filter to CURRENT patient.
+        # Guard should block only if THIS patient already has a future appointment, not if
+        # another patient in the contact does (caso Daniela/Silvia: Silvia has appointment
+        # on 20/07, but Daniela is free on 26/08 — must allow booking for Daniela).
+        _patient_id = state.get("user_db_id")
+        if _patient_id:
+            _appts_r = await _supabase.from_("appointments").select("appointment_id, start_time, status").eq("patient_id", _patient_id).in_("status", ["scheduled", "pending_reschedule"]).execute()
+            # Filtro por data feito aqui (não com .gte na query) para diferenciar por status:
+            #   - pending_reschedule bloqueia SEMPRE, independente da data. É o sinal durável
+            #     "remarcação pendente, taxa já paga", e seu start_time é o do slot ANTIGO —
+            #     que fica no passado quanto mais o paciente demora a voltar. Um .gte("start_time",
+            #     now) tornava essa linha invisível e deixava confirm_appointment criar um
+            #     agendamento novo com nova taxa (caso Heitor/Ludmilla, 5581996937559,
+            #     pending_reschedule de 02/07 remarcado semanas depois).
+            #   - scheduled só bloqueia se for FUTURO. Um scheduled no passado é consulta já
+            #     atendida (ainda não marcada completed) e não deve travar um novo agendamento.
+            _other_appts = []
+            for _a in (_appts_r.data or []):
+                if _a["start_time"] == start.isoformat():
+                    continue  # mesmo slot sendo reconfirmado — não é conflito
+                if _a.get("status") == "pending_reschedule":
+                    _other_appts.append(_a)
+                elif _a.get("status") == "scheduled" and _a["start_time"] >= _now_iso:
+                    _other_appts.append(_a)
+            if _other_appts:
                     from zoneinfo import ZoneInfo as _ZI
                     _TZ = _ZI("America/Recife")
                     _existing_dates = ", ".join(
@@ -585,24 +821,41 @@ async def confirm_appointment(
     end = start + timedelta(minutes=slot_duration_minutes)
     client = await get_supabase()
 
-    # When the contact has multiple patients, match by patient_name to get the correct user_id.
+    # When the contact has multiple patients, resolve the correct patient record.
     # get_user_by_phone returns an arbitrary record — wrong when contact has e.g. parent + child.
     all_users = await get_users_by_phone(phone)
     user = None
     if len(all_users) > 1:
-        _target = patient_name.strip().lower()
-        for _u in all_users:
-            _pname = (_u.get("patient_name") or _u.get("name") or "").strip().lower()
-            if _pname == _target:
-                user = _u
-                break
-        if user is None:
-            # Fallback: partial match
+        def _match_by_name(target: str) -> dict | None:
+            target = target.strip().lower()
+            if not target:
+                return None
             for _u in all_users:
                 _pname = (_u.get("patient_name") or _u.get("name") or "").strip().lower()
-                if _target and _target in _pname:
-                    user = _u
-                    break
+                if _pname == target:
+                    return _u
+            for _u in all_users:
+                _pname = (_u.get("patient_name") or _u.get("name") or "").strip().lower()
+                if target in _pname:
+                    return _u
+            return None
+
+        if patient_name_override.strip():
+            # Attendant explicitly named a different patient than the one in
+            # conversation context — honor the override.
+            user = _match_by_name(patient_name_override)
+        if user is None:
+            # Prefer the patient already resolved for this conversation
+            # (state["user_db_id"]) over re-deriving from patient_name — patient_name
+            # is a plain string that can go stale independently of user_db_id (caso
+            # Renata Monteiro / Laila+Suzi Viana, 5581996962165, 08/07/2026: a stale
+            # patient_name silently overwrote by app/main.py's DB-sync made this
+            # matching attach a new appointment to the wrong twin's patient_id).
+            _uid = state.get("user_db_id")
+            if _uid:
+                user = next((_u for _u in all_users if _u["id"] == _uid), None)
+        if user is None:
+            user = _match_by_name(patient_name)
     if user is None:
         user = await get_user_by_phone(phone)
 
@@ -809,8 +1062,25 @@ async def mark_reschedule_in_progress(
     if not appt.data or appt.data.get("patient_id") not in user_ids:
         return "ID de agendamento inválido para este paciente."
 
-    if appt.data.get("status") not in ("scheduled", "pending_reschedule"):
-        return "Esta consulta não está em status que permita reagendamento."
+    appt_status = appt.data.get("status")
+    if appt_status not in ("scheduled", "pending_reschedule"):
+        if appt_status == "canceled":
+            return (
+                "[INSTRUÇÃO INTERNA — NÃO ENVIE AO PACIENTE] Esta consulta já foi CANCELADA — "
+                "a vaga já foi liberada, não está mais reservada nem pendente de pagamento. "
+                "NÃO diga ao paciente que a consulta \"ainda está reservada\" ou qualquer coisa "
+                "parecida — isso seria falso. Informe que essa consulta não está mais ativa e "
+                "ofereça um NOVO agendamento: chame get_available_slots e, ao confirmar o novo "
+                "horário, confirm_appointment (nova consulta, nova taxa de reserva de R$ 100,00)."
+            )
+        return (
+            f"[INSTRUÇÃO INTERNA — NÃO ENVIE AO PACIENTE] Esta consulta está com status "
+            f"\"{appt_status}\" e não permite reagendamento. NÃO afirme que a consulta ainda "
+            "está reservada ou pendente de pagamento se isso não corresponder à realidade. "
+            "Informe o paciente da situação real desta consulta e oriente o próximo passo "
+            "adequado (ex: se \"completed\", a consulta já ocorreu — ofereça um novo "
+            "agendamento se for o caso)."
+        )
 
     # Quando a instrução vem de nota privada da atendente, é preciso saber se a
     # remarcação é a pedido do paciente ou por iniciativa da clínica/médico —
@@ -1121,6 +1391,37 @@ async def reschedule_appointment(
     appt_status_result = await client.from_("appointments").select("status").eq("appointment_id", appointment_id).maybe_single().execute()
     is_pending_reschedule = (appt_status_result.data or {}).get("status") == "pending_reschedule"
 
+    old_dt = None
+    if old_start_time:
+        try:
+            old_dt = datetime.fromisoformat(old_start_time).astimezone(TZ)
+        except ValueError:
+            old_dt = None
+
+    # Guard: check Google Calendar for conflicts on the NEW slot before writing it.
+    # confirm_appointment already had this check, but reschedule_appointment didn't —
+    # a stale slot offer confirmed after someone else took that time slipped through
+    # and double-booked the doctor (caso Raynner/Bernardo, 23/07/2026 19h, Dr. Júlio).
+    # Skipped when old_dt == new_start (pure modality change, no time actually moves —
+    # the appointment's own event already occupies that slot).
+    if confirmed_by_patient and old_dt != new_start:
+        from app.google_calendar import _get_busy, _credentials
+        from googleapiclient.discovery import build as _build
+        new_end_check = new_start + timedelta(minutes=slot_duration_minutes)
+        try:
+            _creds = _credentials()
+            _service = _build("calendar", "v3", credentials=_creds)
+            loop = asyncio.get_running_loop()
+            busy = await loop.run_in_executor(None, _get_busy, _service, calendar_id, new_start, new_end_check)
+            if busy:
+                return (
+                    f"[INSTRUÇÃO INTERNA — NÃO ENVIE AO PACIENTE] "
+                    f"Este horário ({new_start.strftime('%d/%m/%Y às %H:%M')}) já está ocupado por outro agendamento. "
+                    "Avise o paciente com empatia e chame get_available_slots para buscar outro horário disponível."
+                )
+        except Exception:
+            pass  # If check fails, proceed anyway — better to double-book than block
+
     # Only create/update Google Calendar event if patient confirmed
     if confirmed_by_patient:
         from app.google_calendar import create_event
@@ -1190,11 +1491,9 @@ async def reschedule_appointment(
     _weekday_new = _WEEKDAY_LABELS_PT.get(new_start.weekday(), "")
     formatted_new = f"{_weekday_new}, {new_start.strftime('%d/%m/%Y às %H:%M')}" if _weekday_new else new_start.strftime("%d/%m/%Y às %H:%M")
 
-    if old_start_time:
-        old_dt = datetime.fromisoformat(old_start_time).astimezone(TZ)
+    if old_dt is not None:
         formatted_old = old_dt.strftime("%d/%m/%Y às %H:%M")
     else:
-        old_dt = None
         formatted_old = "horário não disponível"
 
     # Se a data/hora não mudou, isto é uma troca de modalidade (ex: chamada por
@@ -1229,7 +1528,7 @@ async def reschedule_appointment(
 
 @tool
 async def request_document(
-    document_type: Literal["nota_fiscal", "recibo", "laudo", "exame", "relatorio", "receita", "declaracao"],
+    document_type: Literal["nota_fiscal", "recibo", "laudo", "exame", "relatorio", "receita", "declaracao", "requisicao"],
     patient_email: str,
     state: Annotated[dict, InjectedState],
     config: RunnableConfig,
@@ -1346,6 +1645,7 @@ async def request_document(
     doc_labels = {
         "nota_fiscal": "Nota Fiscal", "recibo": "Recibo", "laudo": "Laudo", "exame": "Exame",
         "relatorio": "Relatório", "receita": "Receita", "declaracao": "Declaração",
+        "requisicao": "Requisição",
     }
     doc_label = doc_labels.get(document_type, document_type)
     doctor_label = {"julio": "Dr. Júlio", "bruna": "Dra. Bruna"}.get(doctor_key, "médico(a)")
@@ -1448,6 +1748,174 @@ async def nudge_doctor_document(
 
 
 @tool
+async def request_external_contact(
+    third_party_role: str,
+    third_party_name: str,
+    reason: str,
+    state: Annotated[dict, InjectedState],
+    config: RunnableConfig,
+    third_party_contact: str = "",
+) -> str:
+    """Registra um pedido do paciente para que o médico entre em contato com um terceiro
+    externo ligado ao cuidado do paciente (psicólogo, terapeuta, outro médico, escola etc.)
+    antes ou em torno de uma consulta. Chame na primeira vez que o paciente pedir isso.
+    """
+    from app.email_sender import send_external_contact_request_email
+
+    phone = config["configurable"]["phone"]
+    patient_name = state.get("patient_name") or state.get("user_name") or ""
+    if not patient_name:
+        _u = await get_user_by_phone(phone)
+        patient_name = (_u or {}).get("patient_name") or (_u or {}).get("name") or "Paciente"
+    patient_age = state.get("patient_age")
+    doctor_key = state.get("preferred_doctor", "")
+    doctor_id = DOCTOR_IDS.get(doctor_key)
+
+    client = await get_supabase()
+
+    # Fetch doctor email from doctors table (agenda_id = email)
+    doctor_email = ""
+    if doctor_id:
+        result = await client.from_("doctors").select("agenda_id").eq("doctor_id", doctor_id).single().execute()
+        doctor_email = result.data.get("agenda_id", "") if result.data else ""
+
+    # Build content string for human-readable summary
+    content = f"Contato com {third_party_role.lower()}: {third_party_name}"
+    if reason:
+        content += f" — {reason}"
+
+    # Insert row into requests table
+    await client.from_("requests").insert({
+        "type": "contato_terceiro",
+        "phone": phone,
+        "patient_name": patient_name,
+        "doctor_id": doctor_id,
+        "content": content,
+        "metadata": {
+            "third_party_role": third_party_role,
+            "third_party_name": third_party_name,
+            "third_party_contact": third_party_contact,
+        },
+    }).execute()
+
+    await log_event("external_contact_requested", phone, {
+        "third_party_role": third_party_role,
+        "third_party_name": third_party_name,
+        "reason": reason,
+        "patient_name": patient_name,
+    })
+
+    # Send email to doctor — fire-and-forget
+    try:
+        await send_external_contact_request_email(
+            doctor_key=doctor_key,
+            doctor_email=doctor_email,
+            patient_name=patient_name,
+            patient_age=patient_age,
+            phone=phone,
+            third_party_role=third_party_role,
+            third_party_name=third_party_name,
+            third_party_contact=third_party_contact,
+            reason=reason,
+        )
+    except Exception:
+        pass
+
+    # Notify clinic
+    phone_clean = phone.replace("@s.whatsapp.net", "")
+    doctor_label = {"julio": "Dr. Júlio", "bruna": "Dra. Bruna"}.get(doctor_key, "médico(a)")
+    notify_msg = (
+        f"📞 Pedido de contato com {third_party_role}\n"
+        f"Paciente: {patient_name}\n"
+        f"Médico(a): {doctor_label}\n"
+        f"Terceiro: {third_party_name}"
+    )
+    if third_party_contact:
+        notify_msg += f"\nContato do terceiro: {third_party_contact}"
+    if reason:
+        notify_msg += f"\nMotivo: {reason}"
+    await _notify_clinic(notify_msg, phone=phone_clean, subject=f"Pedido de contato — {patient_name}")
+
+    return (
+        f"Pedido registrado! ✅\n"
+        f"Encaminhamos para o {doctor_label} para que entre em contato com {third_party_name}."
+    )
+
+
+@tool
+async def nudge_external_contact(
+    patient_message: str,
+    state: Annotated[dict, InjectedState],
+    config: RunnableConfig,
+) -> str:
+    """Notifica o médico por e-mail quando o paciente cobra sobre um pedido de contato com
+    terceiro externo (psicólogo, terapeuta etc.) já registrado anteriormente.
+    Chame SOMENTE quando o paciente reforçar/cobrar sobre um pedido já feito
+    (ex: 'o Dr. Júlio ainda não falou com a psicóloga'). NÃO use para criar um pedido novo.
+    """
+    from app.email_sender import send_external_contact_nudge_email
+
+    phone = config["configurable"]["phone"]
+    patient_name = state.get("patient_name") or state.get("user_name") or "Paciente"
+    patient_age = state.get("patient_age")
+    patient_email = state.get("patient_email") or ""
+    doctor_key = state.get("preferred_doctor", "")
+    doctor_id = DOCTOR_IDS.get(doctor_key)
+
+    client = await get_supabase()
+
+    # Find most recent external contact request for this patient
+    phone_clean = phone.replace("@s.whatsapp.net", "")
+    requests = await client.from_("requests").select("*").eq("phone", phone).eq(
+        "type", "contato_terceiro"
+    ).order("created_at", desc=True).limit(1).execute()
+
+    if not requests.data:
+        return "Não encontramos um pedido anterior de contato com terceiro. Você gostaria de fazer um novo pedido?"
+
+    request = requests.data[0]
+    created_at = request.get("created_at", "data não registrada")
+    metadata = request.get("metadata") or {}
+    third_party_name = metadata.get("third_party_name", "")
+    third_party_role = metadata.get("third_party_role", "")
+
+    # Fetch doctor email
+    doctor_email = ""
+    if doctor_id:
+        res = await client.from_("doctors").select("agenda_id").eq("doctor_id", doctor_id).single().execute()
+        doctor_email = res.data.get("agenda_id", "") if res.data else ""
+
+    try:
+        await send_external_contact_nudge_email(
+            doctor_key=doctor_key,
+            doctor_email=doctor_email,
+            patient_name=patient_name,
+            patient_age=patient_age,
+            phone=phone_clean,
+            patient_email=patient_email,
+            third_party_name=third_party_name,
+            third_party_role=third_party_role,
+            patient_message=patient_message,
+            created_at=created_at,
+        )
+    except Exception:
+        logger.exception("nudge_external_contact: email failed phone=%s", phone)
+
+    await log_event("external_contact_nudge_sent", phone_clean, {
+        "third_party_name": third_party_name,
+        "third_party_role": third_party_role,
+        "patient_name": patient_name,
+        "patient_message": patient_message,
+    })
+
+    doctor_label = {"julio": "Dr. Júlio", "bruna": "Dra. Bruna"}.get(doctor_key, "médico(a)")
+    return (
+        f"Aviso enviado! ✅\n"
+        f"Encaminhamos sua cobrança para o {doctor_label} sobre o contato com {third_party_name}."
+    )
+
+
+@tool
 async def confirm_attendance(
     appointment_id: str,
     state: Annotated[dict, InjectedState],
@@ -1492,15 +1960,17 @@ def _expected_consultation_amount(
     now_dt,
     price_override: int | None = None,
 ) -> int:
-    """Return the expected full payment amount (with R$50 PIX discount for standard pricing).
+    """Return the expected full payment amount (with R$50 PIX discount).
 
-    price_override: if set, returns that value directly — no standard formula, no PIX discount.
+    price_override: patient's custom card price (patients.custom_price) — the R$50
+        PIX/cash discount still applies on top of it, same as standard pricing.
+        Exception: 0 means a courtesy (free) consultation, returned as-is.
     consultation_type: value stored in appointments.consultation_type at booking time.
         'primeira_consulta' → first visit pricing (higher)
         'acompanhamento' or None → follow-up pricing (default for unknown)
     """
     if price_override is not None:
-        return price_override
+        return price_override - 50 if price_override else price_override
     post_june = (now_dt.year, now_dt.month) >= (2026, 6)
     if doctor_key == "bruna":
         base = 700 if post_june else 600
@@ -2088,6 +2558,7 @@ async def register_payment(
                 "paid_at": now_dt.isoformat(),
                 "booking_fee_paid_at": now_dt.isoformat(),
             })
+        _sheets_append_failed = False
         try:
             await append_payment_receipt(
                 patient_name, patient_phone, doctor_label, appointment_dt,
@@ -2095,10 +2566,15 @@ async def register_payment(
             )
         except Exception:
             _logger.exception("SHEETS_APPEND FAILED patient=%s", patient_name)
+            _sheets_append_failed = True
+        _sheets_warning = (
+            "\n⚠️ O pagamento NÃO foi registrado na planilha Pagamentos — "
+            "registre manualmente."
+        ) if _sheets_append_failed else ""
         await _notify_clinic(
             f"💰 Comprovante recebido!\nPaciente: {patient_name}\nValor: R$ {amount}"
             f"\nTipo: Consulta (cortesia)\nConsulta: {appointment_dt}\nLink: {drive_link}"
-            f"{_rename_warning}",
+            f"{_rename_warning}{_sheets_warning}",
             subject=f"Comprovante recebido — {patient_name}",
         )
         await log_event("payment_receipt_registered", phone, {
@@ -2133,10 +2609,17 @@ async def register_payment(
         if appt_id_to_pay:
             await _update_appts({"booking_fee_paid_at": now_dt.isoformat()})
         saldo = expected - 100
-        payment_note = (
-            f"Valor pago: R$ {amount} — taxa de reserva registrada. "
-            f"Saldo restante para quitação: R$ {saldo:.0f},00 (com desconto PIX)."
-        )
+        if appt_already_occurred:
+            payment_note = (
+                f"Valor pago: R$ {amount} — taxa de reserva registrada. "
+                f"A consulta já ocorreu — o saldo restante de R$ {saldo:.0f},00 (com desconto PIX) "
+                f"já pode ser quitado agora."
+            )
+        else:
+            payment_note = (
+                f"Valor pago: R$ {amount} — taxa de reserva registrada. "
+                f"Saldo restante para quitação no dia da consulta: R$ {saldo:.0f},00 (com desconto PIX)."
+            )
     elif amount_float >= expected_remaining:
         # Full payment or saldo that settles the consultation
         payment_type = "Consulta"
@@ -2161,14 +2644,20 @@ async def register_payment(
             )
 
     # ── Record in Google Sheets ────────────────────────────────────────────────
+    _sheets_append_failed = False
     try:
         await append_payment_receipt(patient_name, patient_phone, doctor_label, appointment_dt, amount, drive_link, payment_type=payment_type, payment_method_override=_sheets_payment_method)
     except Exception:
         _logger.exception("SHEETS_APPEND FAILED patient=%s", patient_name)
+        _sheets_append_failed = True
+    _sheets_warning = (
+        "\n⚠️ O pagamento NÃO foi registrado na planilha Pagamentos — "
+        "registre manualmente."
+    ) if _sheets_append_failed else ""
 
     await _notify_clinic(
         f"💰 Comprovante recebido!\nPaciente: {patient_name}\nValor: R$ {amount}\nTipo: {payment_type}\nConsulta: {appointment_dt}\nLink: {drive_link}"
-        f"{_rename_warning}",
+        f"{_rename_warning}{_sheets_warning}",
         subject=f"Comprovante recebido — {patient_name}",
     )
 
@@ -2680,3 +3169,59 @@ async def extend_payment_deadline(
     })
 
     return f"Prazo de pagamento estendido até {deadline_str}. O lembrete será reenviado automaticamente."
+
+
+@tool
+async def waive_booking_fee(
+    state: Annotated[dict, InjectedState],
+    config: RunnableConfig,
+) -> str:
+    """Isenta a taxa de reserva (R$ 100,00) da consulta agendada mais próxima deste paciente.
+
+    Use APENAS a partir de uma instrução da atendente em nota privada (silent_mode) pedindo
+    para isentar/dispensar a taxa de reserva (ex: "Eva, isentar taxa de reserva", "pode
+    dispensar a taxa deste paciente"). Você NUNCA decide isentar a taxa por conta própria
+    fora desse contexto — é decisão exclusiva da atendente.
+
+    Sem isso, a isenção comunicada verbalmente ao paciente não é reconhecida pelo cancelamento
+    automático por falta de pagamento, que verifica apenas o banco de dados.
+    """
+    if not state.get("silent_mode"):
+        return (
+            "[INSTRUÇÃO INTERNA — NÃO ENVIE AO PACIENTE] Esta ferramenta só pode ser usada "
+            "a partir de uma instrução da atendente em nota privada. Não isente a taxa de "
+            "reserva por conta própria."
+        )
+
+    phone = config["configurable"]["phone"]
+    client = await get_supabase()
+
+    user = await get_user_by_phone(phone)
+    if not user:
+        return "Não encontrei cadastro para este número."
+
+    now_iso = datetime.now(TZ).isoformat()
+
+    appt = await client.from_("appointments").select(
+        "appointment_id, start_time"
+    ).eq("patient_id", user["id"]).eq("status", "scheduled").eq(
+        "booking_fee_waived", False
+    ).is_("booking_fee_paid_at", "null").gte("start_time", now_iso).order("start_time").limit(1).execute()
+
+    if not appt.data:
+        return "Não encontrei consulta agendada com taxa de reserva pendente para este paciente."
+
+    appointment_id = appt.data[0]["appointment_id"]
+    await client.from_("appointments").update({
+        "booking_fee_waived": True,
+        "booking_fee_paid_at": now_iso,
+    }).eq("appointment_id", appointment_id).execute()
+
+    await log_event("booking_fee_waived", phone, {"appointment_id": appointment_id})
+
+    start_dt = datetime.fromisoformat(appt.data[0]["start_time"]).astimezone(TZ)
+    date_str = start_dt.strftime("%d/%m/%Y às %H:%M")
+    return (
+        f"Taxa de reserva isentada para a consulta de {date_str}. Informe ao paciente que a "
+        f"taxa de reserva foi dispensada e que não é necessário nenhum pagamento antecipado."
+    )

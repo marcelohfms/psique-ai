@@ -488,8 +488,11 @@ async def process_message(phone: str, text: str) -> None:
 
         # Recover from orphaned tool_calls: if the last AIMessage has pending
         # tool_calls but no corresponding ToolMessage (happens when the server
-        # restarts mid-execution), inject error ToolMessages so LangGraph can
-        # continue cleanly instead of getting stuck in an invalid state.
+        # restarts mid-execution, or when the model truncates a tool call after
+        # hitting the completion_tokens cap — that lands in invalid_tool_calls,
+        # not tool_calls, since the JSON args never parsed), inject error
+        # ToolMessages so LangGraph can continue cleanly instead of getting
+        # stuck in an invalid state.
         if snapshot and snapshot.values:
             _cp_msgs = snapshot.values.get("messages") or []
             if _cp_msgs:
@@ -498,7 +501,10 @@ async def process_message(phone: str, text: str) -> None:
                      if getattr(m, "type", None) == "ai"),
                     None,
                 )
-                _pending_calls = getattr(_last_ai, "tool_calls", []) if _last_ai else []
+                _pending_calls = (
+                    (getattr(_last_ai, "tool_calls", []) or [])
+                    + (getattr(_last_ai, "invalid_tool_calls", []) or [])
+                ) if _last_ai else []
                 if _pending_calls:
                     # Check that none of these tool_calls have a ToolMessage response
                     _answered_ids = {
@@ -677,19 +683,22 @@ async def _reset_conversation(phone: str) -> None:
 
 async def _handle_payload(payload: dict) -> None:
     try:
-        result = await extract_message(payload)
-        if result is None:
-            return
-        phone, text = result
-
-        # Deduplicate: same message may arrive via /webhook AND /chatwoot-webhook
+        # Deduplicate BEFORE extract_message. The same message may arrive via both
+        # /webhook and /chatwoot-webhook, and Meta retries on timeout. extract_message
+        # has side effects that must NOT run twice: OpenAI vision (process_media),
+        # PDF description and the audio-not-supported auto-reply.
         try:
             msg_id = payload["entry"][0]["changes"][0]["value"]["messages"][0]["id"]
             if _is_duplicate(msg_id):
                 logger.info("Duplicate msg_id %s from /webhook — skipping", msg_id)
                 return
         except (KeyError, IndexError):
-            pass
+            pass  # status/reaction payloads have no message id — let extract_message filter them
+
+        result = await extract_message(payload)
+        if result is None:
+            return
+        phone, text = result
 
         logger.info("Incoming message from %s: %.80s", phone, text)
 
@@ -1212,9 +1221,29 @@ async def _handle_chatwoot_payload(payload: dict) -> None:
         logger.exception("Error handling Chatwoot webhook payload")
 
 
+def _valid_chatwoot_signature(raw_body: bytes, signature_header: str | None) -> bool:
+    """Verify Chatwoot's X-Chatwoot-Signature (HMAC-SHA256 of the raw body with the
+    webhook secret). Unlike Meta's signature, this is enforced CONDITIONALLY: only
+    when CHATWOOT_WEBHOOK_SECRET is configured, so the bot keeps working until the
+    secret is provisioned in the Chatwoot webhook settings."""
+    if not signature_header:
+        return False
+    secret = os.environ["CHATWOOT_WEBHOOK_SECRET"]
+    expected = hmac.new(secret.encode(), raw_body, hashlib.sha256).hexdigest()
+    return hmac.compare_digest(signature_header, expected)
+
+
 @app.post("/chatwoot-webhook")
-async def chatwoot_webhook(request: Request):
-    payload = await request.json()
+async def chatwoot_webhook(request: Request, x_chatwoot_signature: str | None = Header(default=None)):
+    raw_body = await request.body()
+    secret = os.getenv("CHATWOOT_WEBHOOK_SECRET", "")
+    if secret:
+        if not _valid_chatwoot_signature(raw_body, x_chatwoot_signature):
+            logger.warning("Chatwoot webhook signature validation failed — rejecting request.")
+            raise HTTPException(status_code=403, detail="Invalid signature")
+    else:
+        logger.warning("CHATWOOT_WEBHOOK_SECRET not set — skipping Chatwoot webhook signature validation")
+    payload = json.loads(raw_body)
     asyncio.create_task(_handle_chatwoot_payload(payload))
     return {"status": "ok"}
 

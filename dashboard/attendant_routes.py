@@ -121,8 +121,12 @@ async def pagamentos(phone: str, _: None = Depends(verify_token)):
 
 
 @router.get("/pagamentos/comprovantes")
-async def buscar_comprovantes(phone: str, _: None = Depends(verify_token)):
+async def buscar_comprovantes(
+    phone: str, patient_id: str | None = None, _: None = Depends(verify_token)
+):
     client = await get_client()
+    if patient_id:
+        return await payments.find_receipts_for_patient(client, patient_id)
     return await payments.find_receipts(client, phone)
 
 
@@ -166,5 +170,37 @@ async def pagar(appointment_id: str, body: AtendentePagarBody, _: None = Depends
 
     await attendant_db.log_event("attendant_pagamento_registrado", body.phone, {
         "appointment_id": appointment_id, "tipo": body.tipo, "valor": body.valor,
+    })
+    return {"ok": True}
+
+
+class AtendenteIsentarBody(BaseModel):
+    paciente: str
+    medico: str
+    data_hora: str
+    phone: str
+    conversation_id: int | None = None
+
+
+@router.post("/pagamentos/{appointment_id}/isentar")
+async def isentar(appointment_id: str, body: AtendenteIsentarBody, _: None = Depends(verify_token)):
+    """Isenta a taxa de reserva pendente — evita o cancelamento automático por falta de
+    pagamento quando a atendente decide dispensar a taxa (ex: cortesia, acordo com o paciente)."""
+    client = await get_client()
+    await payments.mark_fee_waived(client, appointment_id, body.paciente, body.medico, body.data_hora)
+
+    if body.conversation_id is not None:
+        try:
+            text = (
+                f"Olá, {body.paciente}! 👋 A taxa de reserva da sua consulta com {body.medico} "
+                f"foi isentada. Não é necessário nenhum pagamento antecipado. 😊"
+            )
+            await chatwoot_client.send_confirmation_message(body.conversation_id, text)
+        except Exception:
+            logger.exception("CONFIRM_MSG_FAILED appt=%s conversation_id=%s",
+                             appointment_id, body.conversation_id)
+
+    await attendant_db.log_event("attendant_taxa_isentada", body.phone, {
+        "appointment_id": appointment_id,
     })
     return {"ok": True}

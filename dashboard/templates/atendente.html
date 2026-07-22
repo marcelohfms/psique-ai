@@ -98,6 +98,15 @@ function initPhone() {
 
 function setStatus(t) { document.getElementById("status").textContent = t; }
 
+function formatEnviadoEm(iso) {
+  if (!iso) return "";
+  try {
+    return new Date(iso).toLocaleString("pt-BR", { timeZone: "America/Recife" });
+  } catch {
+    return iso;
+  }
+}
+
 function escapeHtml(s) {
   return String(s ?? "")
     .replace(/&/g, "&amp;")
@@ -127,8 +136,12 @@ function pagamentoCard(p) {
   const badgeClass = p.tipo === "taxa"
     ? "bg-green-100 text-green-700 dark:bg-green-900 dark:text-green-200"
     : "bg-blue-100 text-blue-700 dark:bg-blue-900 dark:text-blue-200";
+  const isentarBtn = p.tipo === "taxa"
+    ? `<button onclick="isentarTaxa(this)" class="bg-gray-500 hover:bg-gray-600 text-white text-xs px-3 py-1.5 rounded">Isentar taxa</button>`
+    : "";
   return `<div class="bg-white dark:bg-gray-800 rounded-lg shadow p-3" data-appt="${escapeHtml(p.appointment_id)}" data-tipo="${escapeHtml(p.tipo)}"
-       data-paciente="${escapeHtml(p.paciente)}" data-medico="${escapeHtml(p.medico)}" data-data-hora="${escapeHtml(p.data_hora)}" data-phone="${escapeHtml(p.phone)}">
+       data-paciente="${escapeHtml(p.paciente)}" data-medico="${escapeHtml(p.medico)}" data-data-hora="${escapeHtml(p.data_hora)}" data-phone="${escapeHtml(p.phone)}"
+       data-patient-id="${escapeHtml(p.patient_id)}">
     <div class="flex justify-between items-start mb-1">
       <span class="text-sm font-medium text-gray-700 dark:text-gray-100">${escapeHtml(p.paciente)}</span>
       <span class="text-xs px-2 py-0.5 rounded-full ${badgeClass}">${tipoLabel}</span>
@@ -148,6 +161,7 @@ function pagamentoCard(p) {
       </label>
       <button onclick="buscarComprovanteConversa(this)" class="buscar-conversa-btn text-xs text-gray-500 dark:text-gray-400 underline">Buscar da conversa</button>
       <button onclick="marcarPago(this)" class="bg-wa-green hover:bg-wa-green-dk text-white text-xs px-3 py-1.5 rounded ml-auto">Marcar pago</button>
+      ${isentarBtn}
     </div>
     <div class="comprovante-nome text-xs text-gray-400 dark:text-gray-500 mt-1"></div>
     <div class="comprovante-resultados mt-1 space-y-1"></div>
@@ -168,7 +182,7 @@ async function buscarComprovanteConversa(btn) {
   btn.disabled = true;
   box.innerHTML = `<span class="text-xs text-gray-400">Buscando…</span>`;
   try {
-    const r = await fetch(`/api/atendente/pagamentos/comprovantes?phone=${encodeURIComponent(card.dataset.phone)}&token=${encodeURIComponent(TOKEN)}`);
+    const r = await fetch(`/api/atendente/pagamentos/comprovantes?phone=${encodeURIComponent(card.dataset.phone)}&patient_id=${encodeURIComponent(card.dataset.patientId)}&token=${encodeURIComponent(TOKEN)}`);
     if (!r.ok) throw new Error();
     const candidatos = await r.json();
     if (!candidatos.length) {
@@ -176,9 +190,15 @@ async function buscarComprovanteConversa(btn) {
       return;
     }
     box.innerHTML = candidatos.map((c, i) => `
-      <div class="flex items-center gap-2 border border-gray-200 dark:border-gray-600 rounded px-2 py-1">
-        <span class="text-xs text-gray-600 dark:text-gray-300 flex-1">${escapeHtml(c.descricao)}</span>
-        <button data-idx="${i}" class="usar-comprovante-btn text-xs text-wa-green underline">Usar este</button>
+      <div class="border border-gray-200 dark:border-gray-600 rounded px-2 py-1.5">
+        <div class="flex items-center justify-between gap-2 mb-1">
+          <span class="text-xs text-gray-400 dark:text-gray-500">${formatEnviadoEm(c.enviado_em)}</span>
+          <a href="${escapeHtml(c.drive_link)}" target="_blank" rel="noopener" class="text-xs text-blue-600 dark:text-blue-400 underline">Ver comprovante</a>
+        </div>
+        <div class="flex items-center gap-2">
+          <span class="text-xs text-gray-600 dark:text-gray-300 flex-1">${escapeHtml(c.descricao)}</span>
+          <button data-idx="${i}" class="usar-comprovante-btn text-xs text-wa-green underline shrink-0">Usar este</button>
+        </div>
       </div>`).join("");
     box.querySelectorAll(".usar-comprovante-btn").forEach((b) => {
       b.addEventListener("click", () => {
@@ -230,6 +250,23 @@ async function marcarPago(btn) {
     }),
   });
   if (!r.ok) { alert("Erro ao registrar pagamento."); btn.disabled = false; return; }
+  card.remove();
+}
+
+async function isentarTaxa(btn) {
+  const card = btn.closest("[data-appt]");
+  if (!confirm(`Isentar a taxa de reserva de ${card.dataset.paciente}? Nenhum valor será cobrado.`)) return;
+  btn.disabled = true;
+  const r = await fetch(`/api/atendente/pagamentos/${card.dataset.appt}/isentar?token=${encodeURIComponent(TOKEN)}`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      paciente: card.dataset.paciente, medico: card.dataset.medico,
+      data_hora: card.dataset.dataHora, phone: card.dataset.phone,
+      conversation_id: CONVERSATION_ID,
+    }),
+  });
+  if (!r.ok) { alert("Erro ao isentar taxa."); btn.disabled = false; return; }
   card.remove();
 }
 

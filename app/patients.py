@@ -75,10 +75,13 @@ async def get_patients_by_contact(contact_id: str, role: str | None = None) -> l
     return out
 
 
-async def get_contacts_for_patient(patient_id: str, role: str) -> list[dict]:
-    """Retorna os contatos ATIVOS com o papel `role` para um paciente.
+async def get_contacts_for_patient(patient_id: str, role: str, include_inactive: bool = False) -> list[dict]:
+    """Retorna os contatos com o papel `role` para um paciente.
 
-    Usado para disparar lembretes/confirmações a todos os responsáveis.
+    Por padrão retorna só contatos ATIVOS. Passe `include_inactive=True` para
+    lembretes/confirmações transacionais de consulta, que devem chegar mesmo
+    com o contato pausado (ex.: transferido para atendimento humano) — pausa
+    do bot não deve silenciar avisos de horário de consulta.
     """
     client = await get_supabase()
     result = (
@@ -92,7 +95,7 @@ async def get_contacts_for_patient(patient_id: str, role: str) -> list[dict]:
     out: list[dict] = []
     for row in (result.data or []):
         contact = row.get("contacts")
-        if contact and contact.get("active") and contact["id"] not in seen:
+        if contact and (include_inactive or contact.get("active")) and contact["id"] not in seen:
             seen.add(contact["id"])
             out.append(contact)
     return out

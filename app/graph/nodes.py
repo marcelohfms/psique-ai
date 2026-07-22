@@ -14,7 +14,8 @@ from app.graph.tools import (
     register_payment, update_preferred_doctor, save_patient_email,
     register_refund_request, confirm_refund_completed,
     request_registration_update, nudge_doctor_document,
-    consultar_data, extend_payment_deadline,
+    consultar_data, extend_payment_deadline, waive_booking_fee,
+    request_external_contact, nudge_external_contact,
     _expected_consultation_amount,
 )
 from app.graph.prompts import COLLECT_SYSTEM, MINOR_RULE, MINOR_RETURNING_RULE, ADULT_RULE, GUARDIAN_RULE, EXISTING_PATIENT_SYSTEM, NEW_PATIENT_SYSTEM, CANCELLATION_RULES, CLINIC_ADDRESS, CLINIC_ADDRESS_TEXT, DOCTORS_INFO, get_booking_fee_rule, MEDICAL_LIMITS_RULE, AGE_EXCEPTION_RULE, DOCTOR_CORRECTION_RULE, EMAIL_RULE, get_pricing_rules, ATTENDANT_INSTRUCTION_RULE, get_pricing_exception_rule, CORRECT_PIX_KEY
@@ -31,7 +32,8 @@ TOOLS = [
     register_payment, update_preferred_doctor, save_patient_email,
     register_refund_request, confirm_refund_completed,
     request_registration_update, nudge_doctor_document,
-    consultar_data, extend_payment_deadline,
+    consultar_data, extend_payment_deadline, waive_booking_fee,
+    request_external_contact, nudge_external_contact,
 ]
 
 _collect_llm = None
@@ -260,7 +262,8 @@ async def collect_info_node(state: ConversationState, config: RunnableConfig) ->
 
     # Detect document requests (email is only needed for these, not for scheduling)
     _doc_keywords = ["receita", "laudo", "nota fiscal", "declaração", "declaracao",
-                     "relatório", "relatorio", "exame", "atestado"]
+                     "relatório", "relatorio", "exame", "atestado",
+                     "requisição", "requisicao"]
     _is_document = any(kw in _messages_text for kw in _doc_keywords)
 
     # Detect if this is the very first bot response (no prior AIMessages)
@@ -270,6 +273,7 @@ async def collect_info_node(state: ConversationState, config: RunnableConfig) ->
     _request_keywords = [
         "receita", "agendar", "consulta", "laudo", "exame",
         "relatório", "relatorio", "nota fiscal", "declaração", "declaracao",
+        "requisição", "requisicao",
     ]
     _has_request = any(kw in _messages_text for kw in _request_keywords)
 
@@ -448,9 +452,10 @@ async def collect_info_node(state: ConversationState, config: RunnableConfig) ->
             return _PATIENT_Q
         if is_new and not s.get("patient_cpf"):
             return _CPF_Q
-        if minor and not s.get("guardian_name"):
+        is_third_party = s.get("is_patient") is False
+        if minor and is_third_party and not s.get("guardian_name"):
             return _GUARDIAN_NAME_Q
-        if minor and is_new and not s.get("guardian_cpf"):
+        if minor and is_third_party and is_new and not s.get("guardian_cpf"):
             return _GUARDIAN_CPF_Q
         if not s.get("preferred_doctor"):
             return _DOCTOR_Q
@@ -463,6 +468,31 @@ async def collect_info_node(state: ConversationState, config: RunnableConfig) ->
         merged.update(extra)
         return _next_question(merged)
 
+    def _is_info_question(text: str) -> bool:
+        """True quando o paciente interrompe o cadastro com uma pergunta de
+        informação (valor, endereço, convênio, pagamento, duração). Nesses casos a
+        Eva deve RESPONDER e repetir a pergunta pendente — nunca tratar o texto como
+        resposta do campo atual (caso Arthur/Lúcio: 'Qual valor da consulta?' era
+        engolido como CPF inválido, 2026-07-20)."""
+        tl = (text or "").lower()
+        _info_kws = [
+            "valor", "valores", "preço", "preco", "quanto custa", "quanto é",
+            "quanto e", "quanto fica", "custa", "custo", "endereço", "endereco",
+            "onde fica", "onde é", "onde e", "como funciona", "convênio", "convenio",
+            "plano de saúde", "plano de saude", "aceita plano", "quanto tempo",
+            "duração", "duracao", "forma de pagamento", "formas de pagamento",
+            "aceita cartão", "aceita cartao", "parcela",
+        ]
+        return any(kw in tl for kw in _info_kws)
+
+    # Uma pergunta de informação durante o cadastro (FASE 2) é roteada ao LLM, que
+    # tem as regras de preço/endereço e responde antes de retomar a pergunta pendente.
+    _is_interruption = (
+        _has_request
+        and _nq() is not None
+        and _is_info_question(_last_human())
+    )
+
     # Step 1: greeting + first MISSING question (skip fields already in state)
     if not _has_greeted and _has_request:
         first_q = _nq()
@@ -474,8 +504,9 @@ async def collect_info_node(state: ConversationState, config: RunnableConfig) ->
             )
             return await _ask(greeting)
 
-    # Steps 2-8 only run when user has made a specific request
-    if _has_request:
+    # Steps 2-8 only run when user has made a specific request — but NOT when the
+    # patient interrupted with an info question (that turn is answered by the LLM).
+    if _has_request and not _is_interruption:
         from app.graph.schemas import _parse_birth_date
         last_ai = _last_ai()
         last_human = _last_human().strip()
@@ -659,7 +690,13 @@ async def collect_info_node(state: ConversationState, config: RunnableConfig) ->
 
         # Step 5: CPF do paciente — apenas para pacientes NOVOS; opcional p/ estrangeiros
         if state.get("is_returning_patient") is False and not state.get("patient_cpf"):
-            if last_ai and _CPF_Q in last_ai and last_human:
+            # O guard reconhece tanto a pergunta original quanto o reprompt
+            # "CPF inválido..." — senão o CPF válido enviado logo após o reprompt
+            # cai no re-ask e é ignorado (caso Arthur/Lúcio, 2026-07-20).
+            _last_ai_asked_cpf = last_ai and (
+                _CPF_Q in last_ai or "cpf inválido" in last_ai.lower()
+            )
+            if _last_ai_asked_cpf and last_human:
                 import re as _re
                 _foreign_kws = [
                     "não tenho", "nao tenho", "estrangeiro", "estrangeira",
@@ -677,8 +714,11 @@ async def collect_info_node(state: ConversationState, config: RunnableConfig) ->
                     )
             return await _ask(_CPF_Q)
 
-        # Step 6: guardian name (todos os menores)
-        if (state.get("patient_age") or 99) < 18 and not state.get("guardian_name"):
+        # Step 6: guardian name (menores com um terceiro conversando —
+        # is_patient=False; um menor autoatendido não tem responsável na
+        # conversa para exigir isso, ver caso Clara 2026-07-21)
+        if (state.get("patient_age") or 99) < 18 and state.get("is_patient") is False \
+                and not state.get("guardian_name"):
             _last_ai_asked_guardian_name = last_ai and (
                 _GUARDIAN_NAME_Q in last_ai
                 or "responsável" in last_ai.lower()
@@ -691,8 +731,10 @@ async def collect_info_node(state: ConversationState, config: RunnableConfig) ->
                 )
             return await _ask(_GUARDIAN_NAME_Q)
 
-        # Step 7: guardian CPF (menores) — apenas para pacientes NOVOS; opcional p/ estrangeiros
+        # Step 7: guardian CPF (menores com terceiro conversando) — apenas
+        # para pacientes NOVOS; opcional p/ estrangeiros
         if (state.get("patient_age") or 99) < 18 \
+                and state.get("is_patient") is False \
                 and state.get("is_returning_patient") is False \
                 and not state.get("guardian_cpf"):
             _last_ai_asked_guardian_cpf = last_ai and (
@@ -723,14 +765,51 @@ async def collect_info_node(state: ConversationState, config: RunnableConfig) ->
             )
             if _last_ai_asked_doctor and last_human:
                 h = last_human.lower()
+                # "sem preferência" → escolher automaticamente respeitando a regra
+                # de idade e a agenda mais próxima (caso Arthur/Lúcio, 2026-07-20).
+                _no_pref_kws = [
+                    "qualquer", "tanto faz", "indiferente", "sem preferência",
+                    "sem preferencia", "não tenho pref", "nao tenho pref",
+                    "nenhum", "os dois", "vocês escolh", "voces escolh",
+                    "o que tiver", "mais cedo", "mais rápido", "mais rapido",
+                    "mais próximo", "mais proximo", "pode ser qualquer",
+                ]
+                _auto_picked = False
                 if "julio" in h or "júlio" in h:
                     doctor = "julio"
                 elif "bruna" in h:
                     doctor = "bruna"
+                elif any(kw in h for kw in _no_pref_kws):
+                    from app.graph.tools import pick_doctor_by_earliest_availability
+                    age = state.get("patient_age") or 99
+                    age_exception = state.get("age_exception")
+                    # Júlio atende até 65 (sem limite superior se age_exception);
+                    # Bruna atende a partir de 12 anos, sem limite superior.
+                    candidates = []
+                    if age <= 65 or age_exception:
+                        candidates.append("julio")
+                    if age >= 12:
+                        candidates.append("bruna")
+                    if not candidates:
+                        candidates = ["julio"]  # fallback defensivo
+                    if len(candidates) == 1:
+                        doctor = candidates[0]
+                    else:
+                        _minor_first = age < 18 and state.get("is_returning_patient") is False
+                        _slot_dur = 120 if _minor_first else 60
+                        doctor = await pick_doctor_by_earliest_availability(candidates, _slot_dur)
+                    _auto_picked = bool(doctor)
                 else:
                     doctor = None
                 if doctor:
                     next_email_q = _EMAIL_Q if _is_document else _EMAIL_Q_CADASTRO
+                    if _auto_picked:
+                        _doctor_label = "o Dr. Júlio" if doctor == "julio" else "a Dra. Bruna"
+                        next_email_q = (
+                            f"Sem problemas! Como você não tem preferência, seguirei com "
+                            f"{_doctor_label}, que tem a agenda mais próxima. 😊\n\n"
+                            + next_email_q
+                        )
                     return await _extract_and_ask({"preferred_doctor": doctor}, next_email_q)
             return await _ask(_DOCTOR_Q)
 
@@ -770,6 +849,18 @@ async def collect_info_node(state: ConversationState, config: RunnableConfig) ->
         pricing_rules=get_pricing_rules(datetime.now()),
         medical_limits_rule=MEDICAL_LIMITS_RULE,
     )
+    # Interrupção com pergunta de informação: instrua o LLM a responder a dúvida e
+    # retomar exatamente a pergunta pendente do cadastro, sem pular etapas.
+    if _is_interruption:
+        _pending_q = _nq()
+        _collect_system += (
+            f"\n\nO paciente interrompeu o cadastro com uma pergunta: "
+            f"\"{_last_human()}\". Responda a dúvida de forma clara e objetiva usando "
+            f"as regras acima (preços, endereço, formas de pagamento, etc.). "
+            f"EM SEGUIDA, na MESMA mensagem, retome o cadastro repetindo exatamente "
+            f"esta pergunta pendente, sem pular etapas: \"{_pending_q}\". "
+            f"NÃO marque is_complete=true e NÃO extraia nenhum campo deste turno."
+        )
     # Inject contact-vs-patient rule when already known during collect phase
     _ci_is_third_party = state.get("is_patient") is False
     _ci_user_name = state.get("user_name")
@@ -1447,24 +1538,46 @@ async def patient_agent_node(state: ConversationState, config: RunnableConfig) -
         _TZ = _ZI("America/Recife")
         future_lines = []
         recent_lines = []
+        past_unpaid_lines = []
+        stale_reschedule_lines = []
         for apt in upcoming:
             dt = datetime.fromisoformat(apt["start_time"]).astimezone(_TZ)
             fee_ok = apt.get("booking_fee_paid_at") or apt.get("booking_fee_waived")
             fee_tag = "" if fee_ok else " ⚠️ TAXA DE RESERVA PENDENTE"
+            # Marca o status explicitamente — sem isso, uma consulta pending_reschedule
+            # fica indistinguível de uma scheduled normal no texto, mesmo quando visível
+            # (caso Heitor/Ludmilla, 5581996937559, 21/07/2026).
+            reschedule_tag = " 🔄 REMARCAÇÃO PENDENTE" if apt.get("status") == "pending_reschedule" else ""
             _suffix = date_suffix_pt(dt.date(), _now_recife.date())
             # Prefix with the patient name — the contact may manage several patients,
             # so the LLM must not assume the appointment belongs to the active one.
             _pname = (apt.get("patient_name") or "").strip()
             _who = f"{_pname} — " if _pname else ""
-            label = f"- {_who}{dt.strftime('%d/%m/%Y às %H:%M')} ({_suffix}) (ID: {apt['appointment_id']}){fee_tag}"
-            if apt.get("recently_ended"):
+            label = f"- {_who}{dt.strftime('%d/%m/%Y às %H:%M')} ({_suffix}) (ID: {apt['appointment_id']}){fee_tag}{reschedule_tag}"
+            if apt.get("already_occurred"):
+                past_unpaid_lines.append(label)
+            elif apt.get("recently_ended"):
                 recent_lines.append(label)
+            elif apt.get("stale_reschedule"):
+                stale_reschedule_lines.append(label)
             else:
                 future_lines.append(label)
         if future_lines:
             system_prompt += "\n\nConsultas agendadas (por paciente):\n" + "\n".join(future_lines)
         if recent_lines:
             system_prompt += "\n\nConsulta(s) recém-realizada(s) (nas últimas 48h):\n" + "\n".join(recent_lines)
+        if past_unpaid_lines:
+            system_prompt += (
+                "\n\nConsulta(s) já realizada(s) com saldo pendente:\n"
+                + "\n".join(past_unpaid_lines)
+                + "\nATENÇÃO: estas consultas JÁ OCORRERAM — NUNCA diga que o saldo será "
+                "quitado \"no dia da consulta\". Diga que o saldo já pode ser quitado agora."
+            )
+        if stale_reschedule_lines:
+            system_prompt += (
+                "\n\nRemarcação pendente (vaga liberada, aguardando nova data):\n"
+                + "\n".join(stale_reschedule_lines)
+            )
 
     import logging as _log
     _logger = _log.getLogger(__name__)

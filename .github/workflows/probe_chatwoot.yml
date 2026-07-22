@@ -1,0 +1,36 @@
+name: Probe Chatwoot number
+
+# Diagnóstico manual: resolve a conversa de UM número no Chatwoot e mede o tempo
+# de cada chamada. NÃO envia mensagem. Use para investigar timeouts do cron de
+# lembrete em números específicos.
+
+on:
+  workflow_dispatch:
+    inputs:
+      phone:
+        description: "Número (só dígitos, ex.: 5581988054825)"
+        required: true
+        type: string
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v5
+
+      - name: Install dependencies
+        run: uv sync --frozen --no-dev
+
+      - name: Probe Chatwoot conversation resolution
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+          CHATWOOT_BASE_URL: ${{ secrets.CHATWOOT_BASE_URL }}
+          CHATWOOT_ACCOUNT_ID: ${{ secrets.CHATWOOT_ACCOUNT_ID }}
+          CHATWOOT_AGENT_BOT_TOKEN: ${{ secrets.CHATWOOT_AGENT_BOT_TOKEN }}
+          CHATWOOT_USER_TOKEN: ${{ secrets.CHATWOOT_USER_TOKEN }}
+          CHATWOOT_INBOX_ID: ${{ secrets.CHATWOOT_INBOX_ID }}
+          PROBE_PHONE: ${{ inputs.phone }}
+        run: uv run python scripts/_probe_chatwoot_number.py

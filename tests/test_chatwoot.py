@@ -1,6 +1,6 @@
 """Unit tests for app/chatwoot.py."""
 import pytest
-from unittest.mock import AsyncMock, patch, MagicMock
+from unittest.mock import AsyncMock, patch, MagicMock, call
 import httpx
 
 
@@ -92,6 +92,48 @@ async def test_send_text_resolves_via_chatwoot_when_unknown():
         mock_send.assert_awaited_once_with(123, "Notificação interna")
 
 
+def test_split_into_messages_splits_on_blank_lines():
+    from app.whatsapp import _split_into_messages
+    text = "Oi! Tudo bem?\n\nVou te ajudar com o agendamento.\n\nQual dia prefere?"
+    assert _split_into_messages(text) == [
+        "Oi! Tudo bem?",
+        "Vou te ajudar com o agendamento.",
+        "Qual dia prefere?",
+    ]
+
+
+def test_split_into_messages_drops_empty_segments():
+    from app.whatsapp import _split_into_messages
+    text = "Primeira parte\n\n\n\nSegunda parte\n\n   \n\nTerceira parte"
+    assert _split_into_messages(text) == ["Primeira parte", "Segunda parte", "Terceira parte"]
+
+
+def test_split_into_messages_single_paragraph_unchanged():
+    from app.whatsapp import _split_into_messages
+    assert _split_into_messages("Só uma linha, sem quebra.") == ["Só uma linha, sem quebra."]
+
+
+async def test_send_text_splits_multi_paragraph_reply_into_separate_messages():
+    """A reply with blank-line-separated paragraphs is sent as multiple bubbles."""
+    from app.chatwoot import register_conversation, _store
+    _store.clear()
+    register_conversation("5511999999999@s.whatsapp.net", 99)
+
+    with patch("app.chatwoot.send_message", new_callable=AsyncMock) as mock_send, \
+         patch("app.whatsapp.asyncio.sleep", new_callable=AsyncMock) as mock_sleep:
+        from app.whatsapp import send_text
+        await send_text(
+            "5511999999999@s.whatsapp.net",
+            "Oi! Tudo bem?\n\nVou verificar os horários disponíveis para você.",
+        )
+
+        assert mock_send.await_args_list == [
+            call(99, "Oi! Tudo bem?"),
+            call(99, "Vou verificar os horários disponíveis para você."),
+        ]
+        mock_sleep.assert_awaited_once()
+
+
 async def test_find_or_create_returns_cached_conversation():
     """find_or_create_conversation short-circuits to the cached id without calling Chatwoot."""
     from app.chatwoot import find_or_create_conversation, register_conversation, _store
@@ -177,3 +219,48 @@ async def test_find_or_create_reuses_existing_open_conversation():
 
     assert result == 333
     mock_client.post.assert_not_called()
+
+
+async def test_find_or_create_skips_duplicate_contact_without_conversation():
+    """A stray duplicate Chatwoot contact (e.g. registered with the extra 9 in the
+    phone number, no linked conversation) must not shadow the real contact that
+    matches the other phone-digit variant and has the actual conversation."""
+    from app.chatwoot import find_or_create_conversation, _store
+    _store.clear()
+
+    mock_client = AsyncMock()
+    mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+    mock_client.__aexit__ = AsyncMock(return_value=False)
+
+    def _resp(json_body: dict):
+        r = MagicMock()
+        r.raise_for_status = MagicMock()
+        r.json = MagicMock(return_value=json_body)
+        return r
+
+    async def fake_get(url: str, **kwargs):
+        if "/contacts/search" in url:
+            q = kwargs.get("params", {}).get("q")
+            if q == "5581999735649":
+                return _resp({"payload": [{"id": 89, "contact_inboxes": []}]})
+            if q == "558199735649":
+                return _resp({"payload": [{"id": 90, "contact_inboxes": [{"source_id": "558199735649"}]}]})
+            return _resp({"payload": []})
+        if "/contacts/90/conversations" in url:
+            return _resp({"payload": [{"id": 333, "inbox_id": 1, "status": "open"}]})
+        if "/contacts/89/conversations" in url:
+            return _resp({"payload": []})
+        raise AssertionError(f"unexpected GET {url}")
+
+    mock_client.get = AsyncMock(side_effect=fake_get)
+
+    with patch("httpx.AsyncClient", return_value=mock_client), \
+         patch.dict("os.environ", {
+             "CHATWOOT_BASE_URL": "https://chat.example.com",
+             "CHATWOOT_ACCOUNT_ID": "1",
+             "CHATWOOT_AGENT_BOT_TOKEN": "test-token",
+             "CHATWOOT_INBOX_ID": "1",
+         }):
+        result = await find_or_create_conversation("5581999735649@s.whatsapp.net")
+
+    assert result == 333

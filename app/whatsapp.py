@@ -8,10 +8,15 @@ Environment variables required:
   WHATSAPP_TOKEN            — Meta permanent access token
   WHATSAPP_PHONE_NUMBER_ID  — Meta phone number ID (for template messages)
 """
+import asyncio
 import os
 import httpx
 
 _GRAPH_URL = "https://graph.facebook.com/v22.0"
+
+# Delay between bubbles when a reply is split into multiple messages, to
+# mimic a person typing separate messages instead of dumping a wall of text.
+_MESSAGE_SPLIT_DELAY_SECONDS = 1.2
 
 
 def _phone_number_id() -> str:
@@ -26,11 +31,25 @@ def _headers() -> dict:
     }
 
 
+def _split_into_messages(text: str) -> list[str]:
+    """Split a reply on blank lines into separate WhatsApp bubbles."""
+    parts = [p.strip() for p in text.split("\n\n")]
+    return [p for p in parts if p]
+
+
 async def send_text(phone: str, text: str) -> None:
-    """Send a plain text message via Chatwoot, creating a conversation if needed."""
+    """Send a plain text message via Chatwoot, creating a conversation if needed.
+
+    Replies with blank-line-separated paragraphs are sent as separate WhatsApp
+    bubbles, one per paragraph, instead of a single wall of text.
+    """
     from app.chatwoot import find_or_create_conversation, send_message
     conversation_id = await find_or_create_conversation(phone)
-    await send_message(conversation_id, text)
+    parts = _split_into_messages(text) or [text]
+    for i, part in enumerate(parts):
+        if i > 0:
+            await asyncio.sleep(_MESSAGE_SPLIT_DELAY_SECONDS)
+        await send_message(conversation_id, part)
 
 
 async def send_template(phone: str, template_name: str, language: str, components: list) -> None:

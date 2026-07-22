@@ -113,6 +113,7 @@ def _make_chatbot(snapshot_values=None):
         return_value=MagicMock(values=snapshot_values or {})
     )
     chatbot.ainvoke = AsyncMock(return_value={})
+    chatbot.aupdate_state = AsyncMock()
     return chatbot
 
 
@@ -282,6 +283,80 @@ async def test_existing_snapshot_adds_only_human_message():
 
 
 @pytest.mark.asyncio
+async def test_orphaned_tool_call_recovery_answers_pending_call():
+    """Regression: an AIMessage with an unanswered tool_call (e.g. server
+    restarted mid-execution) must get an error ToolMessage injected so the
+    next OpenAI call doesn't 400."""
+    import app.graph.graph as gg
+    orphan_ai = AIMessage(
+        content="",
+        tool_calls=[{"name": "confirm_attendance", "args": {}, "id": "call_pending", "type": "tool_call"}],
+    )
+    existing_state = {
+        "stage": "patient_agent",
+        "messages": [HumanMessage(content="oi"), orphan_ai],
+        "preferred_doctor": "julio",
+    }
+    chatbot = _make_chatbot(snapshot_values=existing_state)
+    original = gg.chatbot
+    gg.chatbot = chatbot
+    try:
+        with patch("app.main.get_user_by_phone", new_callable=AsyncMock, return_value=_KNOWN_USER), \
+             patch("app.main.get_users_by_phone", new_callable=AsyncMock, return_value=[_KNOWN_USER]), \
+             patch("app.main.log_event", new_callable=AsyncMock):
+            from app.main import process_message
+            await process_message(PHONE, "confirmo")
+            chatbot.aupdate_state.assert_called_once()
+            _, kwargs = chatbot.aupdate_state.call_args
+            injected = chatbot.aupdate_state.call_args[0][1]["messages"]
+            assert len(injected) == 1
+            assert injected[0].tool_call_id == "call_pending"
+    finally:
+        gg.chatbot = original
+
+
+async def test_orphaned_invalid_tool_call_recovery_answers_pending_call():
+    """Same recovery must also cover invalid_tool_calls: when the model hits the
+    completion_tokens cap mid-tool-call, LangChain parses the malformed JSON
+    args as an invalid_tool_call (not tool_calls), which previously bypassed
+    the orphan check entirely and left every subsequent message silently
+    failing with OpenAI's 400 'tool_calls must be followed by tool messages'
+    (caso Kimmy Cavalcanti Mastana, 5581999656460, 2026-07-20)."""
+    import app.graph.graph as gg
+    orphan_ai = AIMessage(
+        content="",
+        invalid_tool_calls=[{
+            "name": "confirm_attendance",
+            "args": '{"appointment_id":"cal_2p7v7v7v...',  # truncated by max_tokens
+            "id": "call_truncated",
+            "error": "unterminated json",
+            "type": "invalid_tool_call",
+        }],
+    )
+    existing_state = {
+        "stage": "patient_agent",
+        "messages": [HumanMessage(content="boa tarde"), orphan_ai],
+        "preferred_doctor": "julio",
+    }
+    chatbot = _make_chatbot(snapshot_values=existing_state)
+    original = gg.chatbot
+    gg.chatbot = chatbot
+    try:
+        with patch("app.main.get_user_by_phone", new_callable=AsyncMock, return_value=_KNOWN_USER), \
+             patch("app.main.get_users_by_phone", new_callable=AsyncMock, return_value=[_KNOWN_USER]), \
+             patch("app.main.log_event", new_callable=AsyncMock):
+            from app.main import process_message
+            await process_message(PHONE, "queria solicitar a receita")
+            chatbot.aupdate_state.assert_called_once()
+            injected = chatbot.aupdate_state.call_args[0][1]["messages"]
+            assert len(injected) == 1
+            assert injected[0].tool_call_id == "call_truncated"
+            # the real message must still go through to the graph afterwards
+            chatbot.ainvoke.assert_called_once()
+    finally:
+        gg.chatbot = original
+
+
 async def test_existing_patient_agent_syncs_missing_doctor_and_returning():
     """When stage=patient_agent but preferred_doctor/is_returning_patient are missing, sync from DB."""
     import app.graph.graph as gg
@@ -301,6 +376,44 @@ async def test_existing_patient_agent_syncs_missing_doctor_and_returning():
             # Missing critical fields should be synced from DB
             assert state_update.get("preferred_doctor") == "julio"
             assert state_update.get("is_returning_patient") is True
+    finally:
+        gg.chatbot = original
+
+
+@pytest.mark.asyncio
+async def test_patient_agent_sync_uses_active_patient_not_arbitrary_one():
+    """Quando o contato tem múltiplos pacientes (ex: gêmeas), o sync de patient_agent
+    deve usar o paciente já selecionado nesta conversa (snapshot["user_db_id"]) — não a
+    escolha arbitrária de get_user_by_phone (primeiro registro achado, sem relação com
+    o assunto em curso). Caso contrário, patient_name é silenciosamente sobrescrito com
+    o nome do paciente errado no meio de uma conversa em andamento sobre outro paciente
+    (caso Renata Monteiro / Laila+Suzi Viana, 5581996962165, 08/07/2026: no meio do
+    agendamento da Suzi, este sync trocou patient_name de volta para "Laila", e o
+    agendamento seguinte foi gravado no patient_id errado — depois cancelado como
+    "consulta da Laila", cancelando na real a consulta paga da Suzi)."""
+    import app.graph.graph as gg
+    _laila = {**_KNOWN_USER, "id": "laila-id", "patient_name": "Laila Monteiro Viana"}
+    _suzi = {**_KNOWN_USER, "id": "suzi-id", "patient_name": "Suzi Monteiro Viana"}
+    # Conversa já em andamento sobre a Suzi — user_db_id aponta pra ela.
+    existing_state = {
+        "stage": "patient_agent",
+        "messages": [HumanMessage(content="anterior")],
+        "user_db_id": "suzi-id",
+        "patient_name": "Suzi Monteiro Viana",
+        "preferred_doctor": "julio",
+        "is_returning_patient": True,
+    }
+    chatbot = _make_chatbot(snapshot_values=existing_state)
+    original = gg.chatbot
+    gg.chatbot = chatbot
+    try:
+        with patch("app.main.get_user_by_phone", new_callable=AsyncMock, return_value=_laila), \
+             patch("app.main.get_users_by_phone", new_callable=AsyncMock, return_value=[_laila, _suzi]), \
+             patch("app.main.log_event", new_callable=AsyncMock):
+            from app.main import process_message
+            await process_message(PHONE, "9hs presencial")
+            state_update = chatbot.ainvoke.call_args[0][0]
+            assert state_update.get("patient_name") == "Suzi Monteiro Viana"
     finally:
         gg.chatbot = original
 
@@ -525,6 +638,71 @@ async def test_collect_info_asks_guardian_cpf_after_guardian_name():
     assert result.get("guardian_name") == "Maria Souza"
     sent = mock_send.call_args[0][1]
     assert "cpf" in sent.lower()
+
+
+async def test_collect_info_self_messaging_new_minor_skips_guardian_name_preview():
+    """A self-messaging minor (is_patient=True, no guardian contact) answering
+    'não' to 'já é paciente?' must be asked about the doctor next, NOT the
+    guardian's name — that question can never be resolved for this case
+    (caso Clara, 5581999249242, 2026-07-21)."""
+    from app.graph.nodes import collect_info_node
+    from langchain_core.messages import HumanMessage, AIMessage
+
+    state = _base_minor_state(
+        user_name="Clara",
+        patient_name="Clara",
+        patient_cpf="111.222.333-00",
+        patient_age=16,
+        birth_date="08/09/2009",
+        is_patient=True,  # self-messaging — no guardian contact exists
+        messages=[
+            HumanMessage(content="quero pedir uma receita"),
+            AIMessage(content="É a primeira consulta ou o paciente já está em acompanhamento na clínica?"),
+            HumanMessage(content="não"),
+        ],
+    )
+    with patch("app.graph.nodes.send_text", new_callable=AsyncMock) as mock_send, \
+         patch("app.graph.nodes.save_message", new_callable=AsyncMock), \
+         patch("app.graph.nodes.get_users_by_phone", new_callable=AsyncMock, return_value=[]), \
+         patch("app.graph.nodes.upsert_user", new_callable=AsyncMock, return_value="new-id"):
+        result = await collect_info_node(state, {})
+
+    assert result.get("is_returning_patient") is False
+    assert result.get("guardian_name") is None
+    sent = mock_send.call_args[0][1].lower()
+    assert "responsável" not in sent
+    assert "júlio" in sent or "bruna" in sent
+
+
+async def test_collect_info_self_messaging_returning_minor_skips_guardian_name_preview():
+    """Same as above, but the minor is already a patient of the clinic."""
+    from app.graph.nodes import collect_info_node
+    from langchain_core.messages import HumanMessage, AIMessage
+
+    state = _base_minor_state(
+        user_name="Clara",
+        patient_name="Clara",
+        patient_cpf="111.222.333-00",
+        patient_age=16,
+        birth_date="08/09/2009",
+        is_patient=True,
+        messages=[
+            HumanMessage(content="quero pedir uma receita"),
+            AIMessage(content="É a primeira consulta ou o paciente já está em acompanhamento na clínica?"),
+            HumanMessage(content="já sou paciente"),
+        ],
+    )
+    with patch("app.graph.nodes.send_text", new_callable=AsyncMock) as mock_send, \
+         patch("app.graph.nodes.save_message", new_callable=AsyncMock), \
+         patch("app.graph.nodes.get_users_by_phone", new_callable=AsyncMock, return_value=[]), \
+         patch("app.graph.nodes.upsert_user", new_callable=AsyncMock, return_value="new-id"):
+        result = await collect_info_node(state, {})
+
+    assert result.get("is_returning_patient") is True
+    assert result.get("guardian_name") is None
+    sent = mock_send.call_args[0][1].lower()
+    assert "responsável" not in sent
+    assert "júlio" in sent or "bruna" in sent
 
 
 async def test_collect_info_persists_doctor_when_mentioned():
@@ -970,6 +1148,40 @@ async def test_collect_info_adult_skips_guardian_steps():
     assert result.get("guardian_cpf") is None
 
 
+async def test_collect_info_self_messaging_minor_skips_guardian_steps():
+    """A self-messaging minor (is_patient=True, already answered
+    is_returning_patient) must skip Steps 6/7 (guardian name/CPF) entirely and
+    fall through to the next unanswered field (preferred_doctor) — otherwise
+    the guardian question fires on every turn with no way to ever resolve it
+    (caso Clara, 5581999249242, 2026-07-21)."""
+    from app.graph.nodes import collect_info_node
+    from langchain_core.messages import HumanMessage, AIMessage
+
+    state = _base_minor_state(
+        patient_age=16,
+        birth_date="08/09/2009",
+        is_patient=True,  # self-messaging minor — no guardian contact exists
+        is_returning_patient=True,
+        messages=[
+            AIMessage(content="É a primeira consulta ou o paciente já está em acompanhamento na clínica?"),
+            HumanMessage(content="sim"),
+        ],
+    )
+    with patch("app.graph.nodes.send_text", new_callable=AsyncMock) as mock_send, \
+         patch("app.graph.nodes.save_message", new_callable=AsyncMock), \
+         patch("app.graph.nodes.get_users_by_phone", new_callable=AsyncMock, return_value=[]):
+        result = await collect_info_node(state, {})
+
+    # Guardian fields must NOT have been set, and the message actually sent
+    # must be the doctor question, not the guardian one (Steps 6/7 must not
+    # have intercepted this turn).
+    assert result.get("guardian_name") is None
+    assert result.get("guardian_cpf") is None
+    sent = mock_send.call_args[0][1].lower()
+    assert "responsável" not in sent
+    assert "júlio" in sent or "bruna" in sent
+
+
 async def test_collect_info_final_flush_persists_is_returning_patient():
     """Reproduces the Dammyres bug: email is the last field collected, so Step 10
     (email) intentionally falls through to the LLM in the same turn instead of
@@ -1321,16 +1533,20 @@ def test_pricing_exception_rule_courtesy():
 
 def test_pricing_exception_rule_fee_waived_standard_price():
     from app.graph.prompts import get_pricing_exception_rule
+    # standard_price (650) already has the PIX discount applied — card price is 650+50.
     block = get_pricing_exception_rule(None, True, 650)
     assert "DISPENSADA" in block
-    assert "R$ 650,00" in block
-    assert "PIX" not in block
+    assert "R$ 650,00" in block  # dinheiro/PIX price
+    assert "R$ 700,00" in block  # card price
+    assert "PIX" in block
 
 
 def test_pricing_exception_rule_custom_price_normal_fee():
     from app.graph.prompts import get_pricing_exception_rule
+    # custom_price (500) is the CARD price — dinheiro/PIX is 500-50=450.
     block = get_pricing_exception_rule(500, False, 650)
-    assert "R$ 500,00" in block
+    assert "R$ 500,00" in block  # card price
+    assert "R$ 450,00" in block  # dinheiro/PIX price
     assert "R$ 100,00" in block  # taxa de reserva still applies
     assert "NÃO mencione" in block  # Eva is instructed not to mention standard prices or reajuste
 
@@ -1338,9 +1554,10 @@ def test_pricing_exception_rule_custom_price_normal_fee():
 def test_pricing_exception_rule_custom_price_fee_waived():
     from app.graph.prompts import get_pricing_exception_rule
     block = get_pricing_exception_rule(500, True, 650)
-    assert "R$ 500,00" in block
+    assert "R$ 500,00" in block  # card price
+    assert "R$ 450,00" in block  # dinheiro/PIX price
     assert "DISPENSADA" in block
-    assert "PIX" not in block
+    assert "PIX" in block
 
 
 @pytest.mark.asyncio
@@ -1617,6 +1834,145 @@ async def test_patient_agent_prompt_has_reference_block_and_appointment_labels()
     assert "(amanhã," in system_prompt
 
 
+@pytest.mark.asyncio
+async def test_patient_agent_prompt_flags_past_unpaid_appointment():
+    """A completed appointment with a pending balance must be injected into the
+    system prompt as already-occurred, with an explicit instruction to never say
+    the balance is due "no dia da consulta" (caso Geórgia, 2026-07-21: Eva deu
+    essa resposta para uma consulta que já tinha acontecido)."""
+    import datetime as _dt
+    from zoneinfo import ZoneInfo
+    from unittest.mock import AsyncMock, MagicMock, patch
+    from langchain_core.messages import HumanMessage, AIMessage
+    from tests.conftest import CONFIG
+    from app.graph.nodes import patient_agent_node
+
+    TZ = ZoneInfo("America/Recife")
+    now = _dt.datetime.now(TZ)
+    last_month = (now - _dt.timedelta(days=30)).replace(hour=9, minute=0, second=0, microsecond=0)
+
+    appt = {
+        "appointment_id": "appt-past",
+        "start_time": last_month.isoformat(),
+        "booking_fee_paid_at": (now - _dt.timedelta(days=40)).isoformat(),
+        "booking_fee_waived": False,
+        "already_occurred": True,
+    }
+
+    captured = {}
+
+    class _FakeLLM:
+        async def ainvoke(self, messages):
+            captured["messages"] = messages
+            return AIMessage(content="ok")
+
+    state = {
+        "phone": "5581999999999@s.whatsapp.net",
+        "stage": "patient_agent",
+        "user_name": "Geórgia",
+        "patient_name": "Geórgia",
+        "patient_age": 30,
+        "is_patient": True,
+        "is_returning_patient": True,
+        "preferred_doctor": "bruna",
+        "messages": [HumanMessage(content="vou pagar no pix")],
+    }
+
+    with patch("app.graph.nodes.get_user_by_phone", new_callable=AsyncMock, return_value=None), \
+         patch("app.graph.nodes.get_upcoming_appointments", new_callable=AsyncMock, return_value=[appt]), \
+         patch("app.google_calendar.format_doctor_schedules", return_value=""), \
+         patch("app.graph.nodes._get_agent_llm", return_value=_FakeLLM()), \
+         patch("app.graph.nodes.send_text", new_callable=AsyncMock), \
+         patch("app.graph.nodes.save_message", new_callable=AsyncMock), \
+         patch("app.graph.nodes.get_users_by_phone", new_callable=AsyncMock, return_value=[]), \
+         patch("app.graph.nodes.get_last_assistant_message_time", new_callable=AsyncMock, return_value=None), \
+         patch("app.graph.nodes.is_registration_complete", return_value=True), \
+         patch("app.graph.nodes.upsert_user", new_callable=AsyncMock, return_value=None):
+        await patient_agent_node(state, CONFIG)
+
+    system_prompt = captured["messages"][0].content
+    assert "Consulta(s) já realizada(s) com saldo pendente:" in system_prompt
+    assert "appt-past" in system_prompt
+    assert "NUNCA diga que o saldo será quitado" in system_prompt
+    # Must not be listed as a future/upcoming appointment.
+    assert "Consultas agendadas (por paciente):" not in system_prompt
+
+
+async def test_patient_agent_prompt_flags_stale_pending_reschedule():
+    """Uma consulta com stale_reschedule=True deve aparecer no prompt com a tag
+    🔄 REMARCAÇÃO PENDENTE e sob seu próprio cabeçalho — não junto de 'Consultas
+    agendadas', que sugere consulta futura confirmada (caso Heitor/Ludmilla,
+    5581996937559, 21/07/2026)."""
+    import datetime as _dt
+    from zoneinfo import ZoneInfo
+    from unittest.mock import AsyncMock, MagicMock, patch
+    from langchain_core.messages import HumanMessage, AIMessage
+    from tests.conftest import CONFIG
+    from app.graph.nodes import patient_agent_node
+
+    TZ = ZoneInfo("America/Recife")
+    now = _dt.datetime.now(TZ)
+    weeks_ago = (now - _dt.timedelta(days=19)).replace(hour=18, minute=0, second=0, microsecond=0)
+
+    appt = {
+        "appointment_id": "a-stale",
+        "start_time": weeks_ago.isoformat(),
+        "status": "pending_reschedule",
+        "booking_fee_paid_at": (weeks_ago - _dt.timedelta(days=5)).isoformat(),
+        "booking_fee_waived": False,
+        "stale_reschedule": True,
+    }
+
+    captured = {}
+
+    class _FakeLLM:
+        async def ainvoke(self, messages):
+            captured["messages"] = messages
+            return AIMessage(content="ok")
+
+    state = {
+        "phone": "5581996937559@s.whatsapp.net",
+        "stage": "patient_agent",
+        "user_name": "Ludmilla",
+        "patient_name": "Heitor",
+        "patient_age": 11,
+        "is_patient": False,
+        "is_returning_patient": False,
+        "preferred_doctor": "julio",
+        "messages": [HumanMessage(content="oi, quero remarcar")],
+    }
+
+    with patch("app.graph.nodes.get_user_by_phone", new_callable=AsyncMock, return_value=None), \
+         patch("app.graph.nodes.get_upcoming_appointments", new_callable=AsyncMock, return_value=[appt]), \
+         patch("app.google_calendar.format_doctor_schedules", return_value=""), \
+         patch("app.graph.nodes._get_agent_llm", return_value=_FakeLLM()), \
+         patch("app.graph.nodes.send_text", new_callable=AsyncMock), \
+         patch("app.graph.nodes.save_message", new_callable=AsyncMock), \
+         patch("app.graph.nodes.get_users_by_phone", new_callable=AsyncMock, return_value=[]), \
+         patch("app.graph.nodes.get_last_assistant_message_time", new_callable=AsyncMock, return_value=None), \
+         patch("app.graph.nodes.is_registration_complete", return_value=True), \
+         patch("app.graph.nodes.upsert_user", new_callable=AsyncMock, return_value=None):
+        await patient_agent_node(state, CONFIG)
+
+    system_prompt = captured["messages"][0].content
+    assert "Remarcação pendente (vaga liberada, aguardando nova data):" in system_prompt
+    assert "🔄 REMARCAÇÃO PENDENTE" in system_prompt
+    assert "a-stale" in system_prompt
+    # Must not be listed under the future-appointments header.
+    assert "Consultas agendadas (por paciente):" not in system_prompt
+
+
+def test_cancellation_rules_proactively_directs_stale_reschedule_flow():
+    """A regra deve orientar a Eva a tratar QUALQUER menção a marcar/agendar como
+    continuação de uma remarcação pendente quando a tag 🔄 REMARCAÇÃO PENDENTE
+    estiver presente — proativamente, sem esperar o paciente pedir remarcação
+    explicitamente (caso Heitor/Ludmilla, 5581996937559, 21/07/2026: Eva tratou
+    como agendamento novo por falta desse direcionamento antecipado)."""
+    from app.graph.prompts import CANCELLATION_RULES
+    assert "🔄 REMARCAÇÃO PENDENTE" in CANCELLATION_RULES
+    assert "NUNCA confirm_appointment" in CANCELLATION_RULES
+    assert "mark_reschedule_in_progress" in CANCELLATION_RULES
+    assert "ANTES de get_available_slots" in CANCELLATION_RULES
 
 
 async def test_collect_info_birth_date_leads_to_is_returning_question():
@@ -1758,6 +2114,182 @@ async def test_collect_info_cpf_strips_attendant_note_prefix():
         result = await collect_info_node(state, {})
 
     assert result.get("patient_cpf") == "010.022.724-40"
+
+
+async def test_collect_info_qualquer_um_doctor_picks_by_availability():
+    """Regressão (Arthur/Lúcio, 2026-07-20): 'qualquer um' na escolha de médico não
+    pode virar loop de re-pergunta. Para 12–65 anos (ambos válidos), a Eva escolhe
+    automaticamente o médico com a agenda mais próxima."""
+    from app.graph.nodes import collect_info_node
+    from langchain_core.messages import HumanMessage, AIMessage
+
+    _DOCTOR_Q = "Você tem preferência pelo Dr. Júlio ou pela Dra. Bruna?"
+    state = _base_minor_state(
+        user_name="Ana", patient_name="Ana", patient_cpf="111.222.333-00",
+        is_patient=True, patient_age=30, birth_date="22/08/1996",
+        is_returning_patient=False, preferred_doctor=None,
+        messages=[
+            HumanMessage(content="quero agendar"),
+            AIMessage(content=_DOCTOR_Q),
+            HumanMessage(content="qualquer um"),
+        ],
+    )
+    with patch("app.graph.nodes.send_text", new_callable=AsyncMock) as mock_send, \
+         patch("app.graph.nodes.save_message", new_callable=AsyncMock), \
+         patch("app.graph.nodes.get_users_by_phone", new_callable=AsyncMock, return_value=[]), \
+         patch("app.graph.nodes.upsert_user", new_callable=AsyncMock, return_value="id"), \
+         patch("app.graph.tools.pick_doctor_by_earliest_availability",
+               new_callable=AsyncMock, return_value="bruna") as mock_pick:
+        result = await collect_info_node(state, {})
+
+    assert result.get("preferred_doctor") == "bruna"
+    mock_pick.assert_awaited_once()
+    # candidatos passados = ambos os médicos (12–65 anos)
+    assert set(mock_pick.await_args[0][0]) == {"julio", "bruna"}
+    # a Eva reconhece o médico escolhido antes de seguir para o e-mail
+    sent = mock_send.call_args[0][1].lower()
+    assert "bruna" in sent
+    assert "agenda mais próxima" in sent
+
+
+async def test_collect_info_qualquer_um_under_12_forces_julio_without_availability():
+    """Menor de 12 anos: 'qualquer um' deve resultar em Dr. Júlio (único válido)
+    sem consultar disponibilidade — a regra de idade decide sozinha."""
+    from app.graph.nodes import collect_info_node
+    from langchain_core.messages import HumanMessage, AIMessage
+
+    _DOCTOR_Q = "Você tem preferência pelo Dr. Júlio ou pela Dra. Bruna?"
+    state = _base_minor_state(
+        user_name="Ana", patient_name="Joãozinho", patient_cpf="111.222.333-00",
+        is_patient=False, patient_age=10, birth_date="22/08/2016",
+        is_returning_patient=False, preferred_doctor=None,
+        guardian_name="Ana", guardian_cpf="111.222.333-44",
+        messages=[
+            HumanMessage(content="quero agendar"),
+            AIMessage(content=_DOCTOR_Q),
+            HumanMessage(content="qualquer um"),
+        ],
+    )
+    with patch("app.graph.nodes.send_text", new_callable=AsyncMock), \
+         patch("app.graph.nodes.save_message", new_callable=AsyncMock), \
+         patch("app.graph.nodes.get_users_by_phone", new_callable=AsyncMock, return_value=[]), \
+         patch("app.graph.nodes.upsert_user", new_callable=AsyncMock, return_value="id"), \
+         patch("app.graph.tools.pick_doctor_by_earliest_availability",
+               new_callable=AsyncMock) as mock_pick:
+        result = await collect_info_node(state, {})
+
+    assert result.get("preferred_doctor") == "julio"
+    mock_pick.assert_not_awaited()
+
+
+async def test_collect_info_unrecognized_doctor_answer_still_reasks():
+    """Guard de regressão: uma resposta que não é médico nem 'qualquer um'
+    (ex: 'oi') deve continuar re-perguntando, não escolher médico à toa."""
+    from app.graph.nodes import collect_info_node
+    from langchain_core.messages import HumanMessage, AIMessage
+
+    _DOCTOR_Q = "Você tem preferência pelo Dr. Júlio ou pela Dra. Bruna?"
+    state = _base_minor_state(
+        user_name="Ana", patient_name="Ana", patient_cpf="111.222.333-00",
+        is_patient=True, patient_age=30, birth_date="22/08/1996",
+        is_returning_patient=False, preferred_doctor=None,
+        messages=[
+            HumanMessage(content="quero agendar"),
+            AIMessage(content=_DOCTOR_Q),
+            HumanMessage(content="oi"),
+        ],
+    )
+    with patch("app.graph.nodes.send_text", new_callable=AsyncMock) as mock_send, \
+         patch("app.graph.nodes.save_message", new_callable=AsyncMock), \
+         patch("app.graph.nodes.get_users_by_phone", new_callable=AsyncMock, return_value=[]), \
+         patch("app.graph.nodes.upsert_user", new_callable=AsyncMock, return_value="id"), \
+         patch("app.graph.tools.pick_doctor_by_earliest_availability",
+               new_callable=AsyncMock) as mock_pick:
+        result = await collect_info_node(state, {})
+
+    assert result.get("preferred_doctor") is None
+    assert "júlio" in mock_send.call_args[0][1].lower()
+    mock_pick.assert_not_awaited()
+
+
+async def test_collect_info_answers_info_question_without_consuming_field():
+    """Regressão (Arthur/Lúcio, 2026-07-20): durante o cadastro, uma pergunta de
+    informação do paciente (ex: 'Qual valor da consulta?') NÃO pode ser tratada
+    como resposta do campo atual (CPF). A Eva deve responder a pergunta e repetir a
+    pergunta pendente — sem 'CPF inválido' e sem avançar o campo. O turno é roteado
+    ao LLM (que tem as regras de preço) com a pergunta pendente injetada."""
+    from app.graph.nodes import collect_info_node
+    from app.graph.schemas import CollectInfoOutput
+    from langchain_core.messages import HumanMessage, AIMessage
+
+    llm_result = CollectInfoOutput(
+        reply="A primeira consulta infantil com o Dr. Júlio é R$ 850,00. "
+              "Voltando ao cadastro: qual o CPF do paciente?",
+        is_complete=False,
+    )
+    state = _base_minor_state(
+        user_name="Lúcio", patient_name="Arthur", patient_cpf=None,
+        is_patient=False, patient_age=15, birth_date="21/07/2010",
+        is_returning_patient=False, guardian_name=None,
+        messages=[
+            HumanMessage(content="quero agendar"),
+            AIMessage(content="Qual o CPF do paciente?"),
+            HumanMessage(content="Qual valor da consulta?"),
+        ],
+    )
+    with patch("app.graph.nodes._get_collect_llm") as mock_llm_fn, \
+         patch("app.graph.nodes.send_text", new_callable=AsyncMock) as mock_send, \
+         patch("app.graph.nodes.save_message", new_callable=AsyncMock), \
+         patch("app.graph.nodes.get_users_by_phone", new_callable=AsyncMock, return_value=[]), \
+         patch("app.graph.nodes.upsert_user", new_callable=AsyncMock, return_value="id"):
+        mock_llm = MagicMock()
+        mock_llm.ainvoke = AsyncMock(return_value=llm_result)
+        mock_llm_fn.return_value = mock_llm
+        result = await collect_info_node(state, {})
+
+    # roteou ao LLM (não caiu no reprompt programático de CPF)
+    mock_llm.ainvoke.assert_awaited_once()
+    # a pergunta pendente (CPF) foi injetada como instrução de retomada
+    system_content = mock_llm.ainvoke.call_args[0][0][0].content
+    assert "Qual o CPF do paciente?" in system_content
+    # o CPF não foi consumido nem falsamente marcado inválido
+    assert result.get("patient_cpf") is None
+    assert "inválido" not in mock_send.call_args[0][1].lower()
+
+
+async def test_collect_info_accepts_cpf_after_invalid_reprompt():
+    """Regressão (Arthur/Lúcio, 2026-07-20): depois que a Eva manda o reprompt
+    'CPF inválido...' (porque a resposta anterior não tinha dígitos), o próximo
+    CPF válido enviado pelo paciente DEVE ser aceito. O bug: o guard do Step 5
+    exigia _CPF_Q exato em last_ai, e o reprompt não contém esse texto, então o
+    CPF válido caía no re-ask e era ignorado — travando o cadastro em cascata
+    (patient_cpf, guardian_name e guardian_cpf ficaram todos None)."""
+    from app.graph.nodes import collect_info_node
+    from langchain_core.messages import HumanMessage, AIMessage
+
+    _REPROMPT = (
+        "CPF inválido. Por favor, informe o CPF do paciente com os números (ex: 123.456.789-10).\n"
+        "Caso o paciente não tenha CPF (estrangeiro), responda \"não tenho CPF\"."
+    )
+    state = _base_minor_state(
+        user_name="Lúcio", patient_name="Arthur Guilherme", patient_cpf=None,
+        is_patient=False, patient_age=35, birth_date="21/07/2010",
+        is_returning_patient=False,
+        messages=[
+            HumanMessage(content="quero agendar"),
+            AIMessage(content="Qual o CPF do paciente?"),
+            HumanMessage(content="Qual valor da consulta?"),  # sem dígitos → reprompt
+            AIMessage(content=_REPROMPT),
+            HumanMessage(content="059.554.043-09"),  # CPF válido logo após o reprompt
+        ],
+    )
+    with patch("app.graph.nodes.send_text", new_callable=AsyncMock), \
+         patch("app.graph.nodes.save_message", new_callable=AsyncMock), \
+         patch("app.graph.nodes.get_users_by_phone", new_callable=AsyncMock, return_value=[]), \
+         patch("app.graph.nodes.upsert_user", new_callable=AsyncMock, return_value="id"):
+        result = await collect_info_node(state, {})
+
+    assert result.get("patient_cpf") == "059.554.043-09"
 
 
 async def test_collect_info_returning_minor_guardian_name_skips_guardian_cpf():

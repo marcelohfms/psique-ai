@@ -175,15 +175,25 @@ def _phone_variants(digits: str) -> list[str]:
 
 
 async def _search_contact(client: httpx.AsyncClient, phone_digits: str) -> dict | None:
-    """Return the first matching Chatwoot contact for a phone, trying both 9-digit and 8-digit variants."""
+    """Return the matching Chatwoot contact for a phone, trying both 9-digit and 8-digit variants.
+
+    A phone number can have a stray duplicate contact (e.g. created once with the
+    extra 9 and once without) with no linked conversation. Prefer a contact that
+    already has a contact_inbox over an empty duplicate, regardless of which
+    variant matched it first.
+    """
     url = f"{_base_url()}/api/v1/accounts/{_account_id()}/contacts/search"
+    candidates = []
     for variant in _phone_variants(phone_digits):
         resp = await client.get(url, params={"q": variant, "include": "contact_inboxes"}, headers=_headers())
         resp.raise_for_status()
         payload = resp.json().get("payload") or []
         if payload:
-            return payload[0]
-    return None
+            candidates.append(payload[0])
+    if not candidates:
+        return None
+    with_inbox = [c for c in candidates if c.get("contact_inboxes")]
+    return (with_inbox or candidates)[0]
 
 
 async def _create_contact(client: httpx.AsyncClient, phone_digits: str) -> dict:
