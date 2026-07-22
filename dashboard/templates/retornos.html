@@ -1,0 +1,12 @@
+{# dashboard/templates/retornos.html — placeholder, substituído na Task 6 #}
+{% extends "base.html" %}
+{% block content %}
+<div>
+  retornos
+  <ul>
+  {% for item in hoje %}
+    <li>{{ item.patients.name }}</li>
+  {% endfor %}
+  </ul>
+</div>
+{% endblock %}
