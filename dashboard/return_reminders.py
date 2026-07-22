@@ -6,7 +6,7 @@ from calendar import monthrange
 from datetime import date, datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
-from payments import DOCTOR_DISPLAY, DOCTOR_KEY
+from payments import DOCTOR_KEY
 
 _TZ = ZoneInfo("America/Recife")
 
