@@ -71,6 +71,39 @@ def test_pending_template_virada_de_ano_nao_quebra():
     assert result == ("retorno_um_mes_antes", "month_before_sent_at")
 
 
+# ── _plain_message ───────────────────────────────────────────────────────
+
+
+def test_plain_message_self_sauda_pelo_nome_e_fala_seu_retorno():
+    msg = srr._plain_message("retorno_um_mes_antes", "Maria", "Dr. Júlio")
+    assert "Olá, Maria!" in msg
+    assert "seu retorno com Dr. Júlio" in msg
+
+
+def test_plain_message_terceiro_sauda_contato_e_referencia_paciente():
+    msg = srr._plain_message("retorno_um_mes_antes_terceiro", "Ana", "Dr. Júlio", "Bruno")
+    assert "Olá, Ana!" in msg
+    assert "o retorno de Bruno com Dr. Júlio" in msg
+    assert "Bruno evita ficar sem acesso" in msg
+    # não deve sobrar pronome de 2ª pessoa se dirigindo à Ana como se fosse ela a paciente
+    assert "seu retorno" not in msg
+
+
+def test_plain_message_no_mes_terceiro_referencia_paciente_no_corpo():
+    msg = srr._plain_message("retorno_no_mes_terceiro", "Ana", "Dra. Bruna", "Bruno")
+    assert "Olá, Ana!" in msg
+    assert "Bruno está no período indicado" in msg
+    assert "Bruno não fique sem acesso" in msg
+
+
+def test_plain_message_atrasado_terceiro_referencia_paciente_no_corpo():
+    msg = srr._plain_message("retorno_atrasado_terceiro", "Ana", "Dr. Júlio", "Bruno")
+    assert "Olá, Ana!" in msg
+    assert "retorno de Bruno com Dr. Júlio já passou" in msg
+    assert "risco de Bruno ficar sem acesso" in msg
+    assert "horário para Bruno." in msg
+
+
 from unittest.mock import AsyncMock, MagicMock, patch
 
 
@@ -113,6 +146,45 @@ async def test_send_for_row_envia_a_todos_contatos_consulta_e_marca_flag():
         await srr._send_for_row(client, _row(), "retorno_no_mes", "month_of_sent_at", None)
     assert mock_send.await_count == 2
     table.update.assert_called_once()
+
+
+async def test_send_for_row_contato_igual_paciente_usa_template_self():
+    # _row() tem patients.name == "João"; contato com o mesmo nome -> é o
+    # próprio paciente, usa o template base (sem {{3}}).
+    client, _ = _client_returning([])
+    contacts = [{"phone": "5581111", "name": "João"}]
+    with patch("scripts.send_return_reminders.get_contacts_for_patient",
+               new_callable=AsyncMock, return_value=contacts), \
+         patch("scripts.send_return_reminders.send_return_reminder_template",
+               new_callable=AsyncMock) as mock_send:
+        await srr._send_for_row(client, _row(), "retorno_no_mes", "month_of_sent_at", None)
+    mock_send.assert_awaited_once_with("5581111", "retorno_no_mes", "João", "Dr. Júlio", None)
+
+
+async def test_send_for_row_contato_diferente_paciente_usa_template_terceiro():
+    # Contato "Mãe" != paciente "João" -> variante _terceiro, com o primeiro
+    # nome do paciente como 4º argumento (vira {{3}} no template).
+    client, _ = _client_returning([])
+    contacts = [{"phone": "5581222", "name": "Carla Souza"}]
+    with patch("scripts.send_return_reminders.get_contacts_for_patient",
+               new_callable=AsyncMock, return_value=contacts), \
+         patch("scripts.send_return_reminders.send_return_reminder_template",
+               new_callable=AsyncMock) as mock_send:
+        await srr._send_for_row(client, _row(), "retorno_no_mes", "month_of_sent_at", None)
+    mock_send.assert_awaited_once_with("5581222", "retorno_no_mes_terceiro", "Carla", "Dr. Júlio", "João")
+
+
+async def test_send_for_row_sem_nome_de_contato_usa_template_self():
+    # Contato sem nome cadastrado -> cai no nome do paciente (_dn(None or
+    # patient_name)), então não é tratado como terceiro.
+    client, _ = _client_returning([])
+    contacts = [{"phone": "5581333", "name": None}]
+    with patch("scripts.send_return_reminders.get_contacts_for_patient",
+               new_callable=AsyncMock, return_value=contacts), \
+         patch("scripts.send_return_reminders.send_return_reminder_template",
+               new_callable=AsyncMock) as mock_send:
+        await srr._send_for_row(client, _row(), "retorno_no_mes", "month_of_sent_at", None)
+    mock_send.assert_awaited_once_with("5581333", "retorno_no_mes", "João", "Dr. Júlio", None)
 
 
 async def test_send_for_row_inclui_contatos_pausados():

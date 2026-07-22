@@ -69,10 +69,18 @@ def pending_template(today: date, row: dict) -> tuple[str, str] | None:
     return None
 
 
-def _plain_message(template_name: str, first_name: str, doctor_label: str) -> str:
+def _plain_message(
+    template_name: str, first_name: str, doctor_label: str, patient_first_name: str | None = None
+) -> str:
+    """Corpo do template. Variantes `_terceiro` (contato ≠ paciente, ex: mãe
+    agendando pelo filho) usam `patient_first_name` no lugar de "seu"/"você" —
+    mesma distinção de send_payment_reminders.py::payment_reminder_message,
+    só que aqui precisa de template Meta separado (texto de template
+    aprovado é fixo, não dá pra ter frase condicional dentro de um só).
+    """
     if template_name == "retorno_um_mes_antes":
         return (
-            f"Olá! Tudo bem? 😊\n\nAqui é a Eva, secretária da Psiquê. Passando para avisar que "
+            f"Olá, {first_name}! 😊\n\nAqui é a Eva, secretária da Psiquê. Passando para avisar que "
             f"seu retorno com {doctor_label} está previsto para o mês que vem.\n\n"
             f"Manter a regularidade das consultas é fundamental para o acompanhamento do seu "
             f"tratamento, especialmente considerando que a renovação de receitas de medicamentos "
@@ -80,9 +88,19 @@ def _plain_message(template_name: str, first_name: str, doctor_label: str) -> st
             f"de Ética Médica. Assim você evita ficar sem acesso à medicação quando chegar a hora."
             f"\n\nSe quiser já deixar reservado um horário, é só nos avisar por aqui!"
         )
+    if template_name == "retorno_um_mes_antes_terceiro":
+        return (
+            f"Olá, {first_name}! 😊\n\nAqui é a Eva, secretária da Psiquê. Passando para avisar que "
+            f"o retorno de {patient_first_name} com {doctor_label} está previsto para o mês que vem.\n\n"
+            f"Manter a regularidade das consultas é fundamental para o acompanhamento do "
+            f"tratamento, especialmente considerando que a renovação de receitas de medicamentos "
+            f"controlados depende de reavaliação médica periódica, conforme o Art. 37 do Código "
+            f"de Ética Médica. Assim {patient_first_name} evita ficar sem acesso à medicação quando "
+            f"chegar a hora.\n\nSe quiser já deixar reservado um horário, é só nos avisar por aqui!"
+        )
     if template_name == "retorno_no_mes":
         return (
-            f"Olá! Tudo bem? 😊\n\nAqui é a Eva, secretária da Psiquê. Verificamos que você está "
+            f"Olá, {first_name}! 😊\n\nAqui é a Eva, secretária da Psiquê. Verificamos que você está "
             f"no período indicado para a sua próxima consulta com {doctor_label}, gostaria de "
             f"agendar?\n\nManter a regularidade das consultas é fundamental para o acompanhamento "
             f"do seu tratamento. Além disso, a renovação de receitas de medicamentos controlados "
@@ -90,29 +108,56 @@ def _plain_message(template_name: str, first_name: str, doctor_label: str) -> st
             f"agendar em dia é importante para que você não fique sem acesso à medicação."
             f"\n\nEstamos à disposição para agendar o horário que melhor se encaixa para você!"
         )
+    if template_name == "retorno_no_mes_terceiro":
+        return (
+            f"Olá, {first_name}! 😊\n\nAqui é a Eva, secretária da Psiquê. Verificamos que "
+            f"{patient_first_name} está no período indicado para a próxima consulta com {doctor_label}, "
+            f"gostaria de agendar?\n\nManter a regularidade das consultas é fundamental para o "
+            f"acompanhamento do tratamento. Além disso, a renovação de receitas de medicamentos "
+            f"controlados depende de reavaliação médica periódica (Art. 37 do Código de Ética Médica), "
+            f"então agendar em dia é importante para que {patient_first_name} não fique sem acesso à "
+            f"medicação.\n\nEstamos à disposição para agendar o horário que melhor se encaixa!"
+        )
+    if template_name == "retorno_atrasado":
+        return (
+            f"Olá, {first_name}! 😊\n\nAqui é a Eva, secretária da Psiquê. Notamos que o período indicado "
+            f"para o seu retorno com {doctor_label} já passou. Como o acompanhamento regular é "
+            f"importante para a continuidade do seu tratamento, ficamos à disposição para remarcar o "
+            f"quanto antes.\n\nVale lembrar também que a renovação de receitas de medicamentos "
+            f"controlados depende de reavaliação médica periódica (Art. 37 do Código de Ética Médica), "
+            f"então quanto antes retomarmos as consultas, menor o risco de você ficar sem acesso à "
+            f"medicação.\n\nSe puder nos responder com sua disponibilidade, já organizamos um horário "
+            f"para você."
+        )
+    # retorno_atrasado_terceiro
     return (
-        f"Olá! Tudo bem? 😊\n\nAqui é a Eva, secretária da Psiquê. Notamos que o período indicado "
-        f"para o seu retorno com {doctor_label} já passou. Como o acompanhamento regular é "
-        f"importante para a continuidade do seu tratamento, ficamos à disposição para remarcar o "
-        f"quanto antes.\n\nVale lembrar também que a renovação de receitas de medicamentos "
+        f"Olá, {first_name}! 😊\n\nAqui é a Eva, secretária da Psiquê. Notamos que o período indicado "
+        f"para o retorno de {patient_first_name} com {doctor_label} já passou. Como o acompanhamento "
+        f"regular é importante para a continuidade do tratamento, ficamos à disposição para remarcar "
+        f"o quanto antes.\n\nVale lembrar também que a renovação de receitas de medicamentos "
         f"controlados depende de reavaliação médica periódica (Art. 37 do Código de Ética Médica), "
-        f"então quanto antes retomarmos as consultas, menor o risco de você ficar sem acesso à "
-        f"medicação.\n\nSe puder nos responder com sua disponibilidade, já organizamos um horário "
-        f"para você."
+        f"então quanto antes retomarmos as consultas, menor o risco de {patient_first_name} ficar sem "
+        f"acesso à medicação.\n\nSe puder nos responder com sua disponibilidade, já organizamos um "
+        f"horário para {patient_first_name}."
     )
 
 
-async def send_return_reminder_template(phone: str, template_name: str, first_name: str, doctor_label: str) -> None:
+async def send_return_reminder_template(
+    phone: str, template_name: str, first_name: str, doctor_label: str, patient_first_name: str | None = None
+) -> None:
     from app.chatwoot import find_or_create_conversation, send_template_message
     phone_wpp = phone if "@s.whatsapp.net" in phone else f"{phone}@s.whatsapp.net"
     conv_id = await find_or_create_conversation(phone_wpp)
-    plain = _plain_message(template_name, first_name, doctor_label)
+    plain = _plain_message(template_name, first_name, doctor_label, patient_first_name)
+    body_params = {"1": first_name, "2": doctor_label}
+    if patient_first_name:
+        body_params["3"] = patient_first_name
     await send_template_message(
         conv_id,
         template_name=template_name,
         language="pt_BR",
         category="UTILITY",
-        body_params={"1": first_name, "2": doctor_label},
+        body_params=body_params,
         content=plain,
     )
 
@@ -190,13 +235,21 @@ async def _send_for_row(client, row: dict, template_name: str, sent_col: str, gr
         phone = contact.get("phone")
         if not phone:
             continue
-        first_name = _dn(contact.get("name") or patient_name)
+        contact_name = contact.get("name")
+        first_name = _dn(contact_name or patient_name)
+        # Contato diferente do paciente (ex: mãe agendando pelo filho) usa a
+        # variante "_terceiro" do template, com {{3}} = nome do paciente —
+        # mesma distinção de send_payment_reminders.py, só que via template
+        # Meta separado (não dá pra ter frase condicional num template aprovado).
+        is_terceiro = bool(contact_name and contact_name != patient_name)
+        effective_template = f"{template_name}_terceiro" if is_terceiro else template_name
+        patient_first_name = _dn(patient_name) if is_terceiro else None
         try:
-            await send_return_reminder_template(phone, template_name, first_name, doctor_label)
-            message = _plain_message(template_name, first_name, doctor_label)
+            await send_return_reminder_template(phone, effective_template, first_name, doctor_label, patient_first_name)
+            message = _plain_message(effective_template, first_name, doctor_label, patient_first_name)
             if graph:
                 await save_to_checkpoint(graph, phone, message, patient_name, doctor_key)
-            print(f"  [{template_name}] Sent to {phone} — {patient_name}")
+            print(f"  [{effective_template}] Sent to {phone} — {patient_name}")
             sent_any = True
         except Exception as e:
             print(f"  Failed to send to {phone}: {e}")
