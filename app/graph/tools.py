@@ -813,83 +813,92 @@ async def confirm_appointment(
         _logger.error("CONFIRM_DEBUG create_event FAILED: %s", e, exc_info=True)
         return f"Erro ao criar evento no Google Calendar: {e}"
 
-    _weekday_name = _WEEKDAY_LABELS_PT.get(start.weekday(), "")
-    formatted = f"{_weekday_name}, {start.strftime('%d/%m/%Y às %H:%M')}" if _weekday_name else start.strftime("%d/%m/%Y às %H:%M")
     phone = config["configurable"]["phone"]
 
-    # Persist to appointments table; roll back calendar event on failure
-    end = start + timedelta(minutes=slot_duration_minutes)
-    client = await get_supabase()
-
-    # When the contact has multiple patients, resolve the correct patient record.
-    # get_user_by_phone returns an arbitrary record — wrong when contact has e.g. parent + child.
-    all_users = await get_users_by_phone(phone)
-    user = None
-    if len(all_users) > 1:
-        def _match_by_name(target: str) -> dict | None:
-            target = target.strip().lower()
-            if not target:
-                return None
-            for _u in all_users:
-                _pname = (_u.get("patient_name") or _u.get("name") or "").strip().lower()
-                if _pname == target:
-                    return _u
-            for _u in all_users:
-                _pname = (_u.get("patient_name") or _u.get("name") or "").strip().lower()
-                if target in _pname:
-                    return _u
-            return None
-
-        if patient_name_override.strip():
-            # Attendant explicitly named a different patient than the one in
-            # conversation context — honor the override.
-            user = _match_by_name(patient_name_override)
-        if user is None:
-            # Prefer the patient already resolved for this conversation
-            # (state["user_db_id"]) over re-deriving from patient_name — patient_name
-            # is a plain string that can go stale independently of user_db_id (caso
-            # Renata Monteiro / Laila+Suzi Viana, 5581996962165, 08/07/2026: a stale
-            # patient_name silently overwrote by app/main.py's DB-sync made this
-            # matching attach a new appointment to the wrong twin's patient_id).
-            _uid = state.get("user_db_id")
-            if _uid:
-                user = next((_u for _u in all_users if _u["id"] == _uid), None)
-        if user is None:
-            user = _match_by_name(patient_name)
-    if user is None:
-        user = await get_user_by_phone(phone)
-
-    # Determine consultation_type for minor patients with Dr. Júlio.
-    # Two signals are combined:
-    # 1. state["is_returning_patient"]=True → guardian said the child is already a patient
-    # 2. Patient has prior completed appointments in the DB (excluding split-session slots)
-    # Either signal being True → "acompanhamento"; neither → "primeira_consulta".
-    #
-    # EXCEPTION — split primeira_consulta (session_note set, e.g. "1ª hora — responsáveis"):
-    # Skip the prior_completed check entirely. When the 2nd split slot is booked after the
-    # 1st slot has already been completed, the prior_completed check would wrongly tag it as
-    # "acompanhamento", breaking the linked-payment logic in register_payment.
-    consultation_type: str | None = None
-    if patient_age < 18 and doctor == "julio":
-        state_says_returning = bool(state.get("is_returning_patient"))
-        _is_split_slot = bool(session_note)  # any session_note means it's a split primeira_consulta slot
-        prior_completed = False
-        if user and not _is_split_slot:
-            try:
-                prior = await client.from_("appointments") \
-                    .select("id") \
-                    .eq("patient_id", user["id"]) \
-                    .eq("status", "completed") \
-                    .limit(1) \
-                    .execute()
-                prior_completed = bool(prior.data)
-            except Exception:
-                _logger.exception("CONSULTATION_TYPE_CHECK FAILED patient=%s", patient_name)
-        consultation_type = "acompanhamento" if (state_says_returning or prior_completed) else "primeira_consulta"
-
-    _bfw = bool((user or {}).get("booking_fee_waived", False))
-    _bfp_at = datetime.now(TZ).isoformat() if _bfw else None
+    # Everything below persists the booking (Supabase). ANY failure in this block —
+    # not just the final insert — must roll back the Calendar event created above.
+    # Previously only the insert() call was guarded, so an exception raised while
+    # resolving the patient (get_users_by_phone/_match_by_name, both hit Supabase)
+    # left the Calendar event orphaned with no appointments row and no guard against
+    # recreation, so retries kept creating duplicate events indefinitely (caso Silvia
+    # De Souza Passos, 5581998483157, 5 eventos órfãos criados em ~3min30s no
+    # calendário do Dr. Júlio em 10/07/2026, dia 24/07 11h, sem nenhuma linha
+    # correspondente em appointments/events/messages).
     try:
+        _weekday_name = _WEEKDAY_LABELS_PT.get(start.weekday(), "")
+        formatted = f"{_weekday_name}, {start.strftime('%d/%m/%Y às %H:%M')}" if _weekday_name else start.strftime("%d/%m/%Y às %H:%M")
+
+        end = start + timedelta(minutes=slot_duration_minutes)
+        client = await get_supabase()
+
+        # When the contact has multiple patients, resolve the correct patient record.
+        # get_user_by_phone returns an arbitrary record — wrong when contact has e.g. parent + child.
+        all_users = await get_users_by_phone(phone)
+        user = None
+        if len(all_users) > 1:
+            def _match_by_name(target: str) -> dict | None:
+                target = target.strip().lower()
+                if not target:
+                    return None
+                for _u in all_users:
+                    _pname = (_u.get("patient_name") or _u.get("name") or "").strip().lower()
+                    if _pname == target:
+                        return _u
+                for _u in all_users:
+                    _pname = (_u.get("patient_name") or _u.get("name") or "").strip().lower()
+                    if target in _pname:
+                        return _u
+                return None
+
+            if patient_name_override.strip():
+                # Attendant explicitly named a different patient than the one in
+                # conversation context — honor the override.
+                user = _match_by_name(patient_name_override)
+            if user is None:
+                # Prefer the patient already resolved for this conversation
+                # (state["user_db_id"]) over re-deriving from patient_name — patient_name
+                # is a plain string that can go stale independently of user_db_id (caso
+                # Renata Monteiro / Laila+Suzi Viana, 5581996962165, 08/07/2026: a stale
+                # patient_name silently overwrote by app/main.py's DB-sync made this
+                # matching attach a new appointment to the wrong twin's patient_id).
+                _uid = state.get("user_db_id")
+                if _uid:
+                    user = next((_u for _u in all_users if _u["id"] == _uid), None)
+            if user is None:
+                user = _match_by_name(patient_name)
+        if user is None:
+            user = await get_user_by_phone(phone)
+
+        # Determine consultation_type for minor patients with Dr. Júlio.
+        # Two signals are combined:
+        # 1. state["is_returning_patient"]=True → guardian said the child is already a patient
+        # 2. Patient has prior completed appointments in the DB (excluding split-session slots)
+        # Either signal being True → "acompanhamento"; neither → "primeira_consulta".
+        #
+        # EXCEPTION — split primeira_consulta (session_note set, e.g. "1ª hora — responsáveis"):
+        # Skip the prior_completed check entirely. When the 2nd split slot is booked after the
+        # 1st slot has already been completed, the prior_completed check would wrongly tag it as
+        # "acompanhamento", breaking the linked-payment logic in register_payment.
+        consultation_type: str | None = None
+        if patient_age < 18 and doctor == "julio":
+            state_says_returning = bool(state.get("is_returning_patient"))
+            _is_split_slot = bool(session_note)  # any session_note means it's a split primeira_consulta slot
+            prior_completed = False
+            if user and not _is_split_slot:
+                try:
+                    prior = await client.from_("appointments") \
+                        .select("id") \
+                        .eq("patient_id", user["id"]) \
+                        .eq("status", "completed") \
+                        .limit(1) \
+                        .execute()
+                    prior_completed = bool(prior.data)
+                except Exception:
+                    _logger.exception("CONSULTATION_TYPE_CHECK FAILED patient=%s", patient_name)
+            consultation_type = "acompanhamento" if (state_says_returning or prior_completed) else "primeira_consulta"
+
+        _bfw = bool((user or {}).get("booking_fee_waived", False))
+        _bfp_at = datetime.now(TZ).isoformat() if _bfw else None
         await client.from_("appointments").insert({
             "patient_id": user["id"] if user else None,
             "contact_id": user.get("_contact_id") if user else None,
@@ -903,12 +912,13 @@ async def confirm_appointment(
             "booking_fee_waived": _bfw,
             "booking_fee_paid_at": _bfp_at,
         }).execute()
-    except Exception:
+    except Exception as e:
+        _logger.error("CONFIRM_DEBUG persist FAILED (rolling back calendar event): %s", e, exc_info=True)
         from app.google_calendar import cancel_event
         try:
             await cancel_event(calendar_id, event_id)
         except Exception:
-            pass
+            _logger.exception("CONFIRM_DEBUG cancel_event rollback ALSO FAILED event_id=%s", event_id)
         return "Houve um erro ao salvar o agendamento. Por favor, tente novamente."
 
     await log_event("appointment_booked", phone, {

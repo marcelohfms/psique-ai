@@ -120,16 +120,6 @@ async def pagamentos(phone: str, _: None = Depends(verify_token)):
     return await payments.compute_pendencias(client, patient_ids=patient_ids)
 
 
-@router.get("/pagamentos/comprovantes")
-async def buscar_comprovantes(
-    phone: str, patient_id: str | None = None, _: None = Depends(verify_token)
-):
-    client = await get_client()
-    if patient_id:
-        return await payments.find_receipts_for_patient(client, patient_id)
-    return await payments.find_receipts(client, phone)
-
-
 @router.post("/pagamentos/{appointment_id}/comprovante")
 async def upload_comprovante(
     paciente: str = Form(...),

@@ -238,12 +238,6 @@ class PagarBody(BaseModel):
     drive_link: str = ""  # link do comprovante já enviado ao Drive (ver /pagamentos/{id}/comprovante)
 
 
-@app.get("/api/pagamentos/comprovantes")
-async def api_buscar_comprovantes(phone: str, username: str = Depends(verify_credentials)):
-    client = get_supabase()
-    return await payments.find_receipts(client, phone)
-
-
 @app.post("/api/pagamentos/{appointment_id}/comprovante")
 async def api_upload_comprovante(
     appointment_id: str,
