@@ -351,7 +351,7 @@ async def compute_pendencias(client, patient_ids: list[str] | None = None) -> li
             "patients(name, birth_date, custom_price, "
             "patient_contacts(is_self, contacts(phone, name)))"
         )
-        .in_("status", ["scheduled", "completed"])
+        .eq("status", "completed")  # Apenas consultas já realizadas
     )
     if patient_ids is not None:
         query = query.in_("patient_id", patient_ids)

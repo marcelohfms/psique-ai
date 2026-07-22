@@ -18,7 +18,7 @@ def _appt(appointment_id, patient_id, patient_name, phone, **overrides):
         "booking_fee_paid_at": None,
         "booking_fee_waived": False,
         "consultation_type": None,
-        "status": "scheduled",
+        "status": "completed",
         "patients": {
             "name": patient_name,
             "birth_date": "1990-01-01",
