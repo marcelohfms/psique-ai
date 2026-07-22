@@ -452,9 +452,10 @@ async def collect_info_node(state: ConversationState, config: RunnableConfig) ->
             return _PATIENT_Q
         if is_new and not s.get("patient_cpf"):
             return _CPF_Q
-        if minor and not s.get("guardian_name"):
+        is_third_party = s.get("is_patient") is False
+        if minor and is_third_party and not s.get("guardian_name"):
             return _GUARDIAN_NAME_Q
-        if minor and is_new and not s.get("guardian_cpf"):
+        if minor and is_third_party and is_new and not s.get("guardian_cpf"):
             return _GUARDIAN_CPF_Q
         if not s.get("preferred_doctor"):
             return _DOCTOR_Q
@@ -713,8 +714,11 @@ async def collect_info_node(state: ConversationState, config: RunnableConfig) ->
                     )
             return await _ask(_CPF_Q)
 
-        # Step 6: guardian name (todos os menores)
-        if (state.get("patient_age") or 99) < 18 and not state.get("guardian_name"):
+        # Step 6: guardian name (menores com um terceiro conversando —
+        # is_patient=False; um menor autoatendido não tem responsável na
+        # conversa para exigir isso, ver caso Clara 2026-07-21)
+        if (state.get("patient_age") or 99) < 18 and state.get("is_patient") is False \
+                and not state.get("guardian_name"):
             _last_ai_asked_guardian_name = last_ai and (
                 _GUARDIAN_NAME_Q in last_ai
                 or "responsável" in last_ai.lower()
@@ -727,8 +731,10 @@ async def collect_info_node(state: ConversationState, config: RunnableConfig) ->
                 )
             return await _ask(_GUARDIAN_NAME_Q)
 
-        # Step 7: guardian CPF (menores) — apenas para pacientes NOVOS; opcional p/ estrangeiros
+        # Step 7: guardian CPF (menores com terceiro conversando) — apenas
+        # para pacientes NOVOS; opcional p/ estrangeiros
         if (state.get("patient_age") or 99) < 18 \
+                and state.get("is_patient") is False \
                 and state.get("is_returning_patient") is False \
                 and not state.get("guardian_cpf"):
             _last_ai_asked_guardian_cpf = last_ai and (

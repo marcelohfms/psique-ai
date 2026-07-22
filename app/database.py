@@ -261,9 +261,12 @@ def is_registration_complete(user: dict) -> bool:
       everyone else it does not matter whether it is the first visit, so it is
       not required.
 
-    Additional requirements for MINORS (age < 18):
-    - guardian_name         (required for ALL minors)
-    - guardian_relationship (required for ALL minors)
+    Additional requirements for MINORS (age < 18) — only when a THIRD PARTY
+    (a guardian, is_patient=False) is the one messaging. A minor messaging
+    about themselves (is_patient=True) has no guardian contact linked, so
+    these fields can never be filled and are not required:
+    - guardian_name         (required for ALL minors with a guardian messaging)
+    - guardian_relationship (required for ALL minors with a guardian messaging)
     - guardian_cpf          (required ONLY for new patients, is_returning_patient is False;
                              returning patients already have the guardian's CPF on file)
 
@@ -299,11 +302,15 @@ def is_registration_complete(user: dict) -> bool:
         if not user.get("patient_name"):
             return False
 
-    # Minor-specific requirements
-    if age is not None and age < 18:
-        # guardian_name e guardian_relationship são obrigatórios para todo menor.
-        # guardian_cpf é obrigatório apenas para pacientes NOVOS — pacientes que
-        # já são da clínica já têm o CPF do responsável no cadastro.
+    # Minor-specific requirements — only apply when a THIRD PARTY (a guardian)
+    # is the one messaging (is_patient=False). A minor messaging about
+    # themselves (is_patient=True) has no guardian contact linked, so these
+    # fields can never be filled.
+    if age is not None and age < 18 and user.get("is_patient") is False:
+        # guardian_name e guardian_relationship são obrigatórios para todo menor
+        # com um terceiro conversando. guardian_cpf é obrigatório apenas para
+        # pacientes NOVOS — pacientes que já são da clínica já têm o CPF do
+        # responsável no cadastro.
         required_minor = ["guardian_name", "guardian_relationship"]
         if user.get("is_returning_patient") is False:
             required_minor.append("guardian_cpf")
