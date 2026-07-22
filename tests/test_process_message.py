@@ -1148,6 +1148,40 @@ async def test_collect_info_adult_skips_guardian_steps():
     assert result.get("guardian_cpf") is None
 
 
+async def test_collect_info_self_messaging_minor_skips_guardian_steps():
+    """A self-messaging minor (is_patient=True, already answered
+    is_returning_patient) must skip Steps 6/7 (guardian name/CPF) entirely and
+    fall through to the next unanswered field (preferred_doctor) — otherwise
+    the guardian question fires on every turn with no way to ever resolve it
+    (caso Clara, 5581999249242, 2026-07-21)."""
+    from app.graph.nodes import collect_info_node
+    from langchain_core.messages import HumanMessage, AIMessage
+
+    state = _base_minor_state(
+        patient_age=16,
+        birth_date="08/09/2009",
+        is_patient=True,  # self-messaging minor — no guardian contact exists
+        is_returning_patient=True,
+        messages=[
+            AIMessage(content="É a primeira consulta ou o paciente já está em acompanhamento na clínica?"),
+            HumanMessage(content="sim"),
+        ],
+    )
+    with patch("app.graph.nodes.send_text", new_callable=AsyncMock) as mock_send, \
+         patch("app.graph.nodes.save_message", new_callable=AsyncMock), \
+         patch("app.graph.nodes.get_users_by_phone", new_callable=AsyncMock, return_value=[]):
+        result = await collect_info_node(state, {})
+
+    # Guardian fields must NOT have been set, and the message actually sent
+    # must be the doctor question, not the guardian one (Steps 6/7 must not
+    # have intercepted this turn).
+    assert result.get("guardian_name") is None
+    assert result.get("guardian_cpf") is None
+    sent = mock_send.call_args[0][1].lower()
+    assert "responsável" not in sent
+    assert "júlio" in sent or "bruna" in sent
+
+
 async def test_collect_info_final_flush_persists_is_returning_patient():
     """Reproduces the Dammyres bug: email is the last field collected, so Step 10
     (email) intentionally falls through to the LLM in the same turn instead of
