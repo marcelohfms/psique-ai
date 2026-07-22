@@ -1,10 +1,29 @@
 import os
+from datetime import datetime
+
 import pytest
 
 # Env mínimo para importar os módulos do dashboard sem inicializar nada real.
 os.environ.setdefault("SUPABASE_URL", "http://fake.local")
 os.environ.setdefault("SUPABASE_KEY", "fake-key")
 os.environ.setdefault("ATTENDANT_PANEL_TOKEN", "test-token")
+
+
+def _comparable(val):
+    """Normaliza strings ISO 8601 pra datetime antes de comparar (gte/lt/gt).
+
+    Comparação de string pura quebra entre timestamps com offsets de fuso
+    diferentes (ex: "+00:00" vs "-03:00") mesmo quando representam o mesmo
+    instante — não é garantido que a ordem lexicográfica bata com a ordem
+    cronológica real. Valores não-string (ou que não são ISO datetime)
+    passam direto.
+    """
+    if isinstance(val, str):
+        try:
+            return datetime.fromisoformat(val)
+        except ValueError:
+            return val
+    return val
 
 
 class FakeResult:
@@ -50,6 +69,22 @@ class FakeQuery:
         self._filters.append(("in", col, values))
         return self
 
+    def gte(self, col, val):
+        self._filters.append(("gte", col, val))
+        return self
+
+    def lt(self, col, val):
+        self._filters.append(("lt", col, val))
+        return self
+
+    def gt(self, col, val):
+        self._filters.append(("gt", col, val))
+        return self
+
+    def neq(self, col, val):
+        self._filters.append(("neq", col, val))
+        return self
+
     def order(self, col, desc=False):
         self._order_col = col
         self._order_desc = desc
@@ -64,6 +99,14 @@ class FakeQuery:
             if kind == "eq" and row.get(col) != val:
                 return False
             if kind == "in" and row.get(col) not in val:
+                return False
+            if kind == "gte" and not (row.get(col) is not None and _comparable(row.get(col)) >= _comparable(val)):
+                return False
+            if kind == "lt" and not (row.get(col) is not None and _comparable(row.get(col)) < _comparable(val)):
+                return False
+            if kind == "gt" and not (row.get(col) is not None and _comparable(row.get(col)) > _comparable(val)):
+                return False
+            if kind == "neq" and row.get(col) == val:
                 return False
         return True
 

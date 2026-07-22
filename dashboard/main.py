@@ -2,7 +2,7 @@ import asyncio
 import logging
 import os
 from contextlib import asynccontextmanager
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from secrets import compare_digest
 
 from dotenv import load_dotenv
@@ -129,6 +129,7 @@ templates = Jinja2Templates(directory="templates")
 
 import attendant_routes
 import payments
+import return_reminders
 
 app.include_router(attendant_routes.router)
 
@@ -255,6 +256,42 @@ async def api_upload_comprovante(
         logger.exception("UPLOAD_COMPROVANTE_FAILED appt=%s paciente=%s", appointment_id, paciente)
         raise HTTPException(status_code=502, detail="Falha ao enviar comprovante ao Drive")
     return {"drive_link": drive_link}
+
+
+class RetornoBody(BaseModel):
+    doctor_id: str
+    appointment_id: str
+    appointment_date: date
+    return_interval: str
+
+
+@app.get("/retornos")
+async def retornos_page(request: Request, medico: str = "julio", username: str = Depends(verify_credentials)):
+    client = get_supabase()
+    if medico not in return_reminders.DOCTOR_ID_BY_KEY:
+        medico = "julio"
+    doctor_id = return_reminders.DOCTOR_ID_BY_KEY[medico]
+    hoje = await return_reminders.get_today_appointments(client, doctor_id)
+    pendentes = await return_reminders.get_pending_classification(client, doctor_id)
+    return templates.TemplateResponse(request, "retornos.html", {
+        "username": username,
+        "medico": medico,
+        "hoje": hoje,
+        "pendentes": pendentes,
+        "intervalos": return_reminders.RETURN_INTERVAL_LABELS,
+        "medico_doctor_id": doctor_id,
+    })
+
+
+@app.post("/api/retornos/{patient_id}")
+async def api_salvar_retorno(patient_id: str, body: RetornoBody, username: str = Depends(verify_credentials)):
+    if body.return_interval not in return_reminders.RETURN_INTERVALS:
+        raise HTTPException(status_code=400, detail="return_interval inválido")
+    client = get_supabase()
+    saved = await return_reminders.save_classification(
+        client, patient_id, body.doctor_id, body.appointment_id, body.appointment_date, body.return_interval,
+    )
+    return {"ok": True, "return_reminder": saved}
 
 
 @app.post("/api/pagamentos/{appointment_id}/pagar")
