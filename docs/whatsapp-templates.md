@@ -58,3 +58,62 @@ Variáveis do corpo: `{{1}}` = primeiro nome, `{{2}}` = médico(a), `{{3}}` = ho
 | `lembrete_dia_anterior_online` | véspera, consulta online | |
 | `lembrete_dia_consulta` | dia da consulta | |
 | `lembrete_dia_consulta_online` | dia da consulta, online | |
+
+---
+
+## Templates de retorno periódico
+
+Enviados por [`scripts/send_return_reminders.py`](../scripts/send_return_reminders.py),
+1x/dia, conforme a classificação feita pelo médico no dashboard `/retornos`
+(ver [`dashboard/return_reminders.py`](../dashboard/return_reminders.py)).
+Variáveis do corpo: `{{1}}` = primeiro nome do contato, `{{2}}` = médico(a).
+
+Categoria: **Utility (Utilidade)**. Idioma: `pt_BR`. Sem cabeçalho/rodapé/botões.
+
+**Precisam ser criados e aprovados no Meta Business Manager antes do cron
+conseguir enviá-los.**
+
+### `retorno_um_mes_antes`
+
+Disparado quando o mês atual é o mês anterior ao de `next_return_date`. Nunca
+disparado para `return_interval = 15_dias` ou `1_mes` (ver
+`dashboard/return_reminders.py::save_classification`).
+
+```
+Olá! Tudo bem? 😊
+
+Aqui é a Eva, secretária da Psiquê. Passando para avisar que seu retorno com {{2}} está previsto para o mês que vem.
+
+Manter a regularidade das consultas é fundamental para o acompanhamento do seu tratamento, especialmente considerando que a renovação de receitas de medicamentos controlados depende de reavaliação médica periódica, conforme o Art. 37 do Código de Ética Médica. Assim você evita ficar sem acesso à medicação quando chegar a hora.
+
+Se quiser já deixar reservado um horário, é só nos avisar por aqui!
+```
+
+### `retorno_no_mes`
+
+Disparado quando o mês atual é o mesmo mês de `next_return_date`.
+
+```
+Olá! Tudo bem? 😊
+
+Aqui é a Eva, secretária da Psiquê. Verificamos que você está no período indicado para a sua próxima consulta com {{2}}, gostaria de agendar?
+
+Manter a regularidade das consultas é fundamental para o acompanhamento do seu tratamento. Além disso, a renovação de receitas de medicamentos controlados depende de reavaliação médica periódica (Art. 37 do Código de Ética Médica), então agendar em dia é importante para que você não fique sem acesso à medicação.
+
+Estamos à disposição para agendar o horário que melhor se encaixa para você!
+```
+
+### `retorno_atrasado`
+
+Disparado uma única vez quando o mês atual é posterior ao mês de
+`next_return_date` (sem repetição mensal).
+
+```
+Olá! Tudo bem? 😊
+
+Aqui é a Eva, secretária da Psiquê. Notamos que o período indicado para o seu retorno com {{2}} já passou. Como o acompanhamento regular é importante para a continuidade do seu tratamento, ficamos à disposição para remarcar o quanto antes.
+
+Vale lembrar também que a renovação de receitas de medicamentos controlados depende de reavaliação médica periódica (Art. 37 do Código de Ética Médica), então quanto antes retomarmos as consultas, menor o risco de você ficar sem acesso à medicação.
+
+Se puder nos responder com sua disponibilidade, já organizamos um horário para você.
+```
