@@ -68,3 +68,74 @@ def test_pending_template_virada_de_ano_nao_quebra():
     row = _row(next_return_date="2027-01-10")
     result = srr.pending_template(date(2026, 12, 5), row)
     assert result == ("retorno_um_mes_antes", "month_before_sent_at")
+
+
+from unittest.mock import AsyncMock, MagicMock, patch
+
+
+def _client_returning(data):
+    execute = AsyncMock(return_value=MagicMock(data=data))
+    table = MagicMock()
+    for m in ("select", "eq", "gt", "limit", "update"):
+        getattr(table, m).return_value = table
+    table.execute = execute
+    client = MagicMock()
+    client.from_.return_value = table
+    return client, table
+
+
+# ── _has_future_appointment ───────────────────────────────────────────────
+
+
+async def test_has_future_appointment_true_quando_existe():
+    client, _ = _client_returning([{"id": "a9"}])
+    out = await srr._has_future_appointment(client, "p1", JULIO_ID, "2026-07-13T00:00:00+00:00")
+    assert out is True
+
+
+async def test_has_future_appointment_false_quando_vazio():
+    client, _ = _client_returning([])
+    out = await srr._has_future_appointment(client, "p1", JULIO_ID, "2026-07-13T00:00:00+00:00")
+    assert out is False
+
+
+# ── _send_for_row ─────────────────────────────────────────────────────────
+
+
+async def test_send_for_row_envia_a_todos_contatos_consulta_e_marca_flag():
+    client, table = _client_returning([])
+    contacts = [{"phone": "5581111", "name": "João"}, {"phone": "5581222", "name": "Mãe"}]
+    with patch("scripts.send_return_reminders.get_contacts_for_patient",
+               new_callable=AsyncMock, return_value=contacts), \
+         patch("scripts.send_return_reminders.send_return_reminder_template",
+               new_callable=AsyncMock) as mock_send:
+        await srr._send_for_row(client, _row(), "retorno_no_mes", "month_of_sent_at", None)
+    assert mock_send.await_count == 2
+    table.update.assert_called_once()
+
+
+async def test_send_for_row_sem_contato_nao_envia_nem_marca():
+    client, table = _client_returning([])
+    with patch("scripts.send_return_reminders.get_contacts_for_patient",
+               new_callable=AsyncMock, return_value=[]), \
+         patch("scripts.send_return_reminders.send_return_reminder_template",
+               new_callable=AsyncMock) as mock_send:
+        await srr._send_for_row(client, _row(), "retorno_no_mes", "month_of_sent_at", None)
+    mock_send.assert_not_awaited()
+    table.update.assert_not_called()
+
+
+async def test_send_for_row_marca_flag_mesmo_se_um_contato_falhar():
+    client, table = _client_returning([])
+    contacts = [{"phone": "5581111", "name": "João"}, {"phone": "5581222", "name": "Mãe"}]
+
+    async def flaky(phone, *a, **k):
+        if phone == "5581111":
+            raise RuntimeError("falha transitória")
+
+    with patch("scripts.send_return_reminders.get_contacts_for_patient",
+               new_callable=AsyncMock, return_value=contacts), \
+         patch("scripts.send_return_reminders.send_return_reminder_template",
+               side_effect=flaky):
+        await srr._send_for_row(client, _row(), "retorno_no_mes", "month_of_sent_at", None)
+    table.update.assert_called_once()

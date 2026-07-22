@@ -24,7 +24,7 @@ supabase/migrations/20260714_create_return_reminders.sql).
 """
 import asyncio
 import os
-from datetime import date, datetime, timezone
+from datetime import date, datetime
 from zoneinfo import ZoneInfo
 
 from dotenv import load_dotenv
@@ -67,3 +67,118 @@ def pending_template(today: date, row: dict) -> tuple[str, str] | None:
     if row.get("overdue_sent_at") is None and current_key > target_key:
         return ("retorno_atrasado", "overdue_sent_at")
     return None
+
+
+def _plain_message(template_name: str, first_name: str, doctor_label: str) -> str:
+    if template_name == "retorno_um_mes_antes":
+        return (
+            f"Olá! Tudo bem? 😊\n\nAqui é a Eva, secretária da Psiquê. Passando para avisar que "
+            f"seu retorno com {doctor_label} está previsto para o mês que vem.\n\n"
+            f"Manter a regularidade das consultas é fundamental para o acompanhamento do seu "
+            f"tratamento, especialmente considerando que a renovação de receitas de medicamentos "
+            f"controlados depende de reavaliação médica periódica, conforme o Art. 37 do Código "
+            f"de Ética Médica. Assim você evita ficar sem acesso à medicação quando chegar a hora."
+            f"\n\nSe quiser já deixar reservado um horário, é só nos avisar por aqui!"
+        )
+    if template_name == "retorno_no_mes":
+        return (
+            f"Olá! Tudo bem? 😊\n\nAqui é a Eva, secretária da Psiquê. Verificamos que você está "
+            f"no período indicado para a sua próxima consulta com {doctor_label}, gostaria de "
+            f"agendar?\n\nManter a regularidade das consultas é fundamental para o acompanhamento "
+            f"do seu tratamento. Além disso, a renovação de receitas de medicamentos controlados "
+            f"depende de reavaliação médica periódica (Art. 37 do Código de Ética Médica), então "
+            f"agendar em dia é importante para que você não fique sem acesso à medicação."
+            f"\n\nEstamos à disposição para agendar o horário que melhor se encaixa para você!"
+        )
+    return (
+        f"Olá! Tudo bem? 😊\n\nAqui é a Eva, secretária da Psiquê. Notamos que o período indicado "
+        f"para o seu retorno com {doctor_label} já passou. Como o acompanhamento regular é "
+        f"importante para a continuidade do seu tratamento, ficamos à disposição para remarcar o "
+        f"quanto antes.\n\nVale lembrar também que a renovação de receitas de medicamentos "
+        f"controlados depende de reavaliação médica periódica (Art. 37 do Código de Ética Médica), "
+        f"então quanto antes retomarmos as consultas, menor o risco de você ficar sem acesso à "
+        f"medicação.\n\nSe puder nos responder com sua disponibilidade, já organizamos um horário "
+        f"para você."
+    )
+
+
+async def send_return_reminder_template(phone: str, template_name: str, first_name: str, doctor_label: str) -> None:
+    from app.chatwoot import find_or_create_conversation, send_template_message
+    phone_wpp = phone if "@s.whatsapp.net" in phone else f"{phone}@s.whatsapp.net"
+    conv_id = await find_or_create_conversation(phone_wpp)
+    plain = _plain_message(template_name, first_name, doctor_label)
+    await send_template_message(
+        conv_id,
+        template_name=template_name,
+        language="pt_BR",
+        category="UTILITY",
+        body_params={"1": first_name, "2": doctor_label},
+        content=plain,
+    )
+
+
+async def save_to_checkpoint(graph, phone: str, message: str, patient_name: str, doctor_key: str) -> None:
+    from langchain_core.messages import AIMessage
+    thread_phone = f"{phone}@s.whatsapp.net"
+    config = {"configurable": {"thread_id": thread_phone, "phone": thread_phone}}
+    snapshot = await graph.aget_state(config)
+    update: dict = {"messages": [AIMessage(content=message)]}
+    if not snapshot.values:
+        update.update({
+            "phone": thread_phone,
+            "stage": "patient_agent",
+            "user_name": patient_name,
+            "patient_name": patient_name,
+            "is_patient": True,
+            "preferred_doctor": doctor_key,
+        })
+    await graph.aupdate_state(config, update, as_node="patient_agent")
+
+
+async def _has_future_appointment(client, patient_id: str, doctor_id: str, now_iso: str) -> bool:
+    result = await (
+        client.from_("appointments")
+        .select("id")
+        .eq("patient_id", patient_id)
+        .eq("doctor_id", doctor_id)
+        .eq("status", "scheduled")
+        .gt("end_time", now_iso)
+        .limit(1)
+        .execute()
+    )
+    return bool(result.data)
+
+
+async def _send_for_row(client, row: dict, template_name: str, sent_col: str, graph) -> None:
+    patient_id = row.get("patient_id")
+    patient = row.get("patients") or {}
+    patient_name = patient.get("name") or "paciente"
+    from app.utils import display_name as _dn
+    doctor_label = DOCTOR_LABELS.get(row.get("doctor_id", ""), "médico(a)")
+    doctor_key = DOCTOR_KEYS.get(row.get("doctor_id", ""), "")
+
+    contacts = await get_contacts_for_patient(patient_id, "consulta") if patient_id else []
+    if not contacts:
+        print(f"  [SKIP] return_reminder {row.get('id')} sem contato de consulta (patient_id={patient_id})")
+        return
+
+    sent_any = False
+    for contact in contacts:
+        phone = contact.get("phone")
+        if not phone:
+            continue
+        first_name = _dn(contact.get("name") or patient_name)
+        try:
+            await send_return_reminder_template(phone, template_name, first_name, doctor_label)
+            message = _plain_message(template_name, first_name, doctor_label)
+            if graph:
+                await save_to_checkpoint(graph, phone, message, patient_name, doctor_key)
+            print(f"  [{template_name}] Sent to {phone} — {patient_name}")
+            sent_any = True
+        except Exception as e:
+            print(f"  Failed to send to {phone}: {e}")
+
+    if sent_any:
+        await client.from_("return_reminders").update({
+            sent_col: datetime.now(TZ).isoformat(),
+        }).eq("id", row["id"]).execute()
