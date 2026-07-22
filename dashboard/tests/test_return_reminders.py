@@ -125,3 +125,66 @@ async def test_get_pending_classification_filtra_por_medico(fake_client):
     ]
     out = await rr.get_pending_classification(fake_client, JULIO_ID)
     assert {a["appointment_id"] for a in out} == {"a1"}
+
+
+# ── save_classification ───────────────────────────────────────────────────
+
+
+async def test_save_classification_cria_linha_nova(fake_client):
+    saved = await rr.save_classification(
+        fake_client, patient_id="p1", doctor_id=JULIO_ID, appointment_id="a1",
+        appointment_date=date(2026, 7, 13), return_interval="3_meses",
+    )
+    assert saved["patient_id"] == "p1"
+    assert saved["return_interval"] == "3_meses"
+    assert saved["next_return_date"] == "2026-10-13"
+    assert saved["last_classified_appointment_id"] == "a1"
+    assert saved["month_before_sent_at"] is None
+    assert fake_client.store["return_reminders"][0]["patient_id"] == "p1"
+
+
+async def test_save_classification_atualiza_linha_existente(fake_client):
+    fake_client.store["return_reminders"] = [{
+        "patient_id": "p1", "doctor_id": JULIO_ID, "return_interval": "1_mes",
+        "next_return_date": "2026-06-01", "last_classified_appointment_id": "a0",
+        "month_before_sent_at": "2026-05-01T00:00:00+00:00",
+        "month_of_sent_at": None, "overdue_sent_at": None,
+    }]
+    saved = await rr.save_classification(
+        fake_client, patient_id="p1", doctor_id=JULIO_ID, appointment_id="a1",
+        appointment_date=date(2026, 7, 13), return_interval="6_meses",
+    )
+    assert len(fake_client.store["return_reminders"]) == 1  # não duplica linha
+    assert saved["return_interval"] == "6_meses"
+    assert saved["last_classified_appointment_id"] == "a1"
+    # novo ciclo -> flags zeradas
+    assert saved["month_before_sent_at"] is None
+
+
+async def test_save_classification_15_dias_marca_as_3_flags_como_enviadas(fake_client):
+    saved = await rr.save_classification(
+        fake_client, patient_id="p1", doctor_id=JULIO_ID, appointment_id="a1",
+        appointment_date=date(2026, 7, 13), return_interval="15_dias",
+    )
+    assert saved["month_before_sent_at"] is not None
+    assert saved["month_of_sent_at"] is not None
+    assert saved["overdue_sent_at"] is not None
+
+
+async def test_save_classification_1_mes_marca_so_month_before_como_enviada(fake_client):
+    saved = await rr.save_classification(
+        fake_client, patient_id="p1", doctor_id=JULIO_ID, appointment_id="a1",
+        appointment_date=date(2026, 7, 13), return_interval="1_mes",
+    )
+    assert saved["month_before_sent_at"] is not None
+    assert saved["month_of_sent_at"] is None
+    assert saved["overdue_sent_at"] is None
+
+
+async def test_save_classification_interval_invalido_levanta_erro(fake_client):
+    import pytest
+    with pytest.raises(ValueError):
+        await rr.save_classification(
+            fake_client, patient_id="p1", doctor_id=JULIO_ID, appointment_id="a1",
+            appointment_date=date(2026, 7, 13), return_interval="2_meses",
+        )

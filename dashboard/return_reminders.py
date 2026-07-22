@@ -103,3 +103,55 @@ async def get_pending_classification(client, doctor_id: str) -> list[dict]:
     ]
     pending.sort(key=lambda a: a["start_time"])
     return pending
+
+
+async def save_classification(
+    client,
+    patient_id: str,
+    doctor_id: str,
+    appointment_id: str,
+    appointment_date: date,
+    return_interval: str,
+) -> dict:
+    """Grava/atualiza a classificação de retorno de um paciente (1 linha por paciente).
+
+    Zera as flags de envio (novo ciclo). Casos especiais: `15_dias` já marca
+    as 3 flags como enviadas (intervalo curto demais para os lembretes
+    mensais fazerem sentido); `1_mes` já marca `month_before_sent_at` (o
+    mês-alvo é sempre o mês seguinte à própria classificação, então "um mês
+    antes" sairia colado na consulta que acabou de acontecer).
+    """
+    if return_interval not in RETURN_INTERVALS:
+        raise ValueError(f"return_interval inválido: {return_interval!r}")
+
+    next_return_date = compute_next_return_date(appointment_date, return_interval)
+    now = datetime.now(timezone.utc).isoformat()
+
+    payload = {
+        "patient_id": patient_id,
+        "doctor_id": doctor_id,
+        "return_interval": return_interval,
+        "next_return_date": next_return_date.isoformat(),
+        "last_classified_appointment_id": appointment_id,
+        "month_before_sent_at": None,
+        "month_of_sent_at": None,
+        "overdue_sent_at": None,
+        "updated_at": now,
+    }
+    if return_interval == "15_dias":
+        payload["month_before_sent_at"] = now
+        payload["month_of_sent_at"] = now
+        payload["overdue_sent_at"] = now
+    elif return_interval == "1_mes":
+        payload["month_before_sent_at"] = now
+
+    existing = await (
+        client.from_("return_reminders").select("id").eq("patient_id", patient_id).execute()
+    )
+    if existing.data:
+        result = await (
+            client.from_("return_reminders").update(payload).eq("patient_id", patient_id).execute()
+        )
+    else:
+        result = await client.from_("return_reminders").insert(payload).execute()
+    return (result.data or [payload])[0]
