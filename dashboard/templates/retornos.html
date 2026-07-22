@@ -1,12 +1,141 @@
-{# dashboard/templates/retornos.html — placeholder, substituído na Task 6 #}
 {% extends "base.html" %}
 {% block content %}
-<div>
-  retornos
-  <ul>
-  {% for item in hoje %}
-    <li>{{ item.patients.name }}</li>
-  {% endfor %}
-  </ul>
+<div class="min-h-screen bg-slate-50 overflow-y-auto">
+  <div class="max-w-5xl mx-auto px-6 py-8">
+
+    <div class="flex items-center justify-between mb-6 flex-wrap gap-3">
+      <div>
+        <h1 class="text-xl font-bold text-slate-800">Classificação de Retorno</h1>
+        <p class="text-sm text-slate-500">Defina de quanto em quanto tempo cada paciente deve retornar.</p>
+      </div>
+      <a href="/" class="text-sm text-cyan-700 hover:text-cyan-900 font-medium">&larr; Conversas</a>
+    </div>
+
+    <!-- Abas por médico -->
+    <div class="flex gap-2 mb-6">
+      <a href="/retornos?medico=julio"
+         class="px-4 py-2 rounded-lg text-sm font-semibold {{ 'bg-cyan-600 text-white' if medico == 'julio' else 'bg-white text-slate-600 border border-slate-200' }}">
+        Dr. Júlio
+      </a>
+      <a href="/retornos?medico=bruna"
+         class="px-4 py-2 rounded-lg text-sm font-semibold {{ 'bg-cyan-600 text-white' if medico == 'bruna' else 'bg-white text-slate-600 border border-slate-200' }}">
+        Dra. Bruna
+      </a>
+    </div>
+
+    <!-- Seção Hoje -->
+    <h2 class="text-sm font-bold uppercase tracking-wide text-slate-500 mb-2">Hoje</h2>
+    <div class="bg-white rounded-xl border border-slate-200 shadow-sm mb-8 overflow-hidden">
+      {% if not hoje %}
+      <div class="p-6 text-sm text-slate-400">Nenhuma consulta hoje.</div>
+      {% else %}
+      <table class="w-full text-sm" id="tabela-hoje">
+        <thead class="bg-slate-50 text-slate-500 uppercase text-xs">
+          <tr><th class="text-left px-4 py-2">Paciente</th><th class="text-left px-4 py-2">Horário</th>
+              <th class="text-left px-4 py-2">Intervalo de retorno</th><th class="px-4 py-2"></th></tr>
+        </thead>
+        <tbody>
+          {% for a in hoje %}
+          <tr id="row-{{ a.appointment_id }}"
+              data-patient-id="{{ a.patient_id }}"
+              data-appointment-id="{{ a.appointment_id }}"
+              data-appointment-date="{{ a.start_time[:10] }}"
+              class="border-t border-slate-100">
+            <td class="px-4 py-2 font-medium text-slate-700">{{ a.patients.name if a.patients else "Paciente" }}</td>
+            <td class="px-4 py-2 text-slate-500 font-mono text-xs">{{ a.start_time[11:16] }}</td>
+            <td class="px-4 py-2">
+              <select class="intervalo-select border border-slate-200 rounded-md px-2 py-1 text-sm">
+                <option value="">Nenhum</option>
+                {% for value, label in intervalos.items() %}
+                <option value="{{ value }}">{{ label }}</option>
+                {% endfor %}
+              </select>
+            </td>
+            <td class="px-4 py-2 text-right">
+              <button type="button" class="salvar-btn bg-cyan-600 hover:bg-cyan-700 text-white text-xs font-semibold px-3 py-1.5 rounded-md"
+                      onclick="salvarRetorno('{{ medico_doctor_id }}', this)">Salvar</button>
+            </td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+      {% endif %}
+    </div>
+
+    <!-- Seção Pendentes -->
+    <h2 class="text-sm font-bold uppercase tracking-wide text-slate-500 mb-2">Pendentes de classificação</h2>
+    <div class="bg-white rounded-xl border border-slate-200 shadow-sm overflow-hidden">
+      {% if not pendentes %}
+      <div class="p-6 text-sm text-slate-400">Nenhuma pendência — tudo classificado.</div>
+      {% else %}
+      <table class="w-full text-sm" id="tabela-pendentes">
+        <thead class="bg-slate-50 text-slate-500 uppercase text-xs">
+          <tr><th class="text-left px-4 py-2">Paciente</th><th class="text-left px-4 py-2">Consulta</th>
+              <th class="text-left px-4 py-2">Intervalo de retorno</th><th class="px-4 py-2"></th></tr>
+        </thead>
+        <tbody>
+          {% for a in pendentes %}
+          <tr id="row-{{ a.appointment_id }}"
+              data-patient-id="{{ a.patient_id }}"
+              data-appointment-id="{{ a.appointment_id }}"
+              data-appointment-date="{{ a.start_time[:10] }}"
+              class="border-t border-slate-100">
+            <td class="px-4 py-2 font-medium text-slate-700">{{ a.patients.name if a.patients else "Paciente" }}</td>
+            <td class="px-4 py-2 text-slate-500 font-mono text-xs">{{ a.start_time[:10] }}</td>
+            <td class="px-4 py-2">
+              <select class="intervalo-select border border-slate-200 rounded-md px-2 py-1 text-sm">
+                <option value="">Nenhum</option>
+                {% for value, label in intervalos.items() %}
+                <option value="{{ value }}">{{ label }}</option>
+                {% endfor %}
+              </select>
+            </td>
+            <td class="px-4 py-2 text-right">
+              <button type="button" class="salvar-btn bg-cyan-600 hover:bg-cyan-700 text-white text-xs font-semibold px-3 py-1.5 rounded-md"
+                      onclick="salvarRetorno('{{ medico_doctor_id }}', this)">Salvar</button>
+            </td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+      {% endif %}
+    </div>
+
+  </div>
 </div>
+
+<script>
+async function salvarRetorno(doctorId, btn) {
+  const row = btn.closest('tr');
+  const select = row.querySelector('.intervalo-select');
+  const returnInterval = select.value;
+  if (!returnInterval) {
+    alert('Escolha um intervalo de retorno.');
+    return;
+  }
+  btn.disabled = true;
+  const original = btn.textContent;
+  btn.textContent = 'Salvando…';
+  try {
+    const resp = await fetch(`/api/retornos/${row.dataset.patientId}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        doctor_id: doctorId,
+        appointment_id: row.dataset.appointmentId,
+        appointment_date: row.dataset.appointmentDate,
+        return_interval: returnInterval,
+      }),
+    });
+    if (!resp.ok) throw new Error(await resp.text());
+    row.style.opacity = '0';
+    setTimeout(() => row.remove(), 200);
+  } catch (err) {
+    console.error(err);
+    alert('Erro ao salvar. Tente novamente.');
+    btn.disabled = false;
+    btn.textContent = original;
+  }
+}
+</script>
 {% endblock %}
