@@ -199,3 +199,72 @@ async def _send_for_row(client, row: dict, template_name: str, sent_col: str, gr
         await client.from_("return_reminders").update({
             sent_col: datetime.now(TZ).isoformat(),
         }).eq("id", row["id"]).execute()
+
+
+async def main():
+    from supabase import acreate_client
+
+    client = await acreate_client(
+        os.environ["SUPABASE_URL"],
+        os.environ["SUPABASE_KEY"],
+    )
+
+    today = datetime.now(TZ).date()
+    now_iso = datetime.now(TZ).isoformat()
+
+    result = await (
+        client.from_("return_reminders")
+        .select(
+            "id, patient_id, doctor_id, return_interval, next_return_date, "
+            "month_before_sent_at, month_of_sent_at, overdue_sent_at, patients(name)"
+        )
+        .neq("return_interval", "15_dias")
+        .execute()
+    )
+    rows = result.data or []
+
+    candidates = []
+    for row in rows:
+        pending = pending_template(today, row)
+        if not pending:
+            continue
+        patient_id = row.get("patient_id")
+        doctor_id = row.get("doctor_id")
+        if patient_id and doctor_id and await _has_future_appointment(client, patient_id, doctor_id, now_iso):
+            print(f"  [SKIP] return_reminder {row.get('id')} — já tem consulta futura com o mesmo médico.")
+            continue
+        template_name, sent_col = pending
+        candidates.append((row, template_name, sent_col))
+
+    print(f"Return reminders to send today: {len(candidates)}")
+
+    conn_string = os.environ.get("SUPABASE_CONNECTION_STRING")
+    graph = None
+    pg_conn = None
+    if conn_string:
+        from psycopg import AsyncConnection
+        from psycopg.rows import dict_row
+        from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
+        from app.graph.graph import build_graph
+        pg_conn = await AsyncConnection.connect(
+            conn_string, autocommit=True, prepare_threshold=None, row_factory=dict_row,
+        )
+        checkpointer = AsyncPostgresSaver(pg_conn)
+        graph = build_graph(checkpointer=checkpointer)
+    else:
+        print("SUPABASE_CONNECTION_STRING not set — reminders won't be saved to LangGraph checkpoint.")
+
+    try:
+        for i in range(0, len(candidates), BATCH_SIZE):
+            batch = candidates[i:i + BATCH_SIZE]
+            for row, template_name, sent_col in batch:
+                await _send_for_row(client, row, template_name, sent_col, graph)
+            if i + BATCH_SIZE < len(candidates):
+                await asyncio.sleep(BATCH_PAUSE_SECONDS)
+    finally:
+        if pg_conn:
+            await pg_conn.close()
+
+
+if __name__ == "__main__":
+    asyncio.run(main())

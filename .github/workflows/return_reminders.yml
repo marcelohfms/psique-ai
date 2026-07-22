@@ -1,0 +1,31 @@
+name: Send return reminders
+
+on:
+  schedule:
+    - cron: "0 11 * * *"  # ~8h Recife (UTC-3)
+  workflow_dispatch:        # allow manual runs for testing
+
+jobs:
+  return-reminders:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v5
+
+      - name: Install dependencies
+        run: uv sync --frozen --no-dev
+
+      - name: Send return reminders
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+          SUPABASE_CONNECTION_STRING: ${{ secrets.SUPABASE_CONNECTION_STRING }}
+          WHATSAPP_TOKEN: ${{ secrets.WHATSAPP_TOKEN }}
+          WHATSAPP_PHONE_NUMBER_ID: ${{ secrets.WHATSAPP_PHONE_NUMBER_ID }}
+          CHATWOOT_BASE_URL: ${{ secrets.CHATWOOT_BASE_URL }}
+          CHATWOOT_ACCOUNT_ID: ${{ secrets.CHATWOOT_ACCOUNT_ID }}
+          CHATWOOT_AGENT_BOT_TOKEN: ${{ secrets.CHATWOOT_AGENT_BOT_TOKEN }}
+          CHATWOOT_USER_TOKEN: ${{ secrets.CHATWOOT_USER_TOKEN }}
+          CHATWOOT_INBOX_ID: ${{ secrets.CHATWOOT_INBOX_ID }}
+        run: uv run python scripts/send_return_reminders.py

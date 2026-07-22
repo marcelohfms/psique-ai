@@ -1,4 +1,5 @@
-from datetime import date
+import os
+from datetime import date, datetime
 
 import scripts.send_return_reminders as srr
 
@@ -139,3 +140,75 @@ async def test_send_for_row_marca_flag_mesmo_se_um_contato_falhar():
                side_effect=flaky):
         await srr._send_for_row(client, _row(), "retorno_no_mes", "month_of_sent_at", None)
     table.update.assert_called_once()
+
+
+# ── main ─────────────────────────────────────────────────────────────────
+
+
+async def test_main_pula_linha_com_consulta_futura_do_mesmo_medico():
+    # next_return_date no mesmo mês de "hoje" (mockado) -> pending_template
+    # garantidamente dá match em retorno_no_mes; o único motivo pra
+    # _send_for_row não ser chamado deve ser o skip por consulta futura.
+    rr_table = MagicMock()
+    for m in ("select", "neq"):
+        getattr(rr_table, m).return_value = rr_table
+    rr_table.execute = AsyncMock(return_value=MagicMock(data=[_row(next_return_date="2026-09-13")]))
+
+    appt_table = MagicMock()
+    for m in ("select", "eq", "gt", "limit"):
+        getattr(appt_table, m).return_value = appt_table
+    appt_table.execute = AsyncMock(return_value=MagicMock(data=[{"id": "a-future"}]))
+
+    def from_(table_name):
+        return rr_table if table_name == "return_reminders" else appt_table
+
+    client = MagicMock()
+    client.from_.side_effect = from_
+
+    with patch("supabase.acreate_client", new_callable=AsyncMock, return_value=client), \
+         patch("scripts.send_return_reminders._send_for_row",
+               new_callable=AsyncMock) as mock_send, \
+         patch.dict(os.environ, {"SUPABASE_URL": "x", "SUPABASE_KEY": "y"}, clear=False):
+        os.environ.pop("SUPABASE_CONNECTION_STRING", None)
+        with patch("scripts.send_return_reminders.datetime") as mock_dt:
+            mock_dt.now.return_value = datetime(2026, 9, 15, tzinfo=srr.TZ)
+            await srr.main()
+
+    mock_send.assert_not_awaited()
+
+
+async def test_main_processa_em_lotes_com_pausa():
+    rows = [_row(id=f"rr{i}", next_return_date="2026-10-13") for i in range(12)]
+    rr_table = MagicMock()
+    for m in ("select", "neq"):
+        getattr(rr_table, m).return_value = rr_table
+    rr_table.execute = AsyncMock(return_value=MagicMock(data=rows))
+
+    appt_table = MagicMock()
+    for m in ("select", "eq", "gt", "limit"):
+        getattr(appt_table, m).return_value = appt_table
+    appt_table.execute = AsyncMock(return_value=MagicMock(data=[]))  # sem consulta futura
+
+    def from_(table_name):
+        return rr_table if table_name == "return_reminders" else appt_table
+
+    client = MagicMock()
+    client.from_.side_effect = from_
+
+    with patch("supabase.acreate_client", new_callable=AsyncMock, return_value=client), \
+         patch("scripts.send_return_reminders._send_for_row",
+               new_callable=AsyncMock) as mock_send, \
+         patch("scripts.send_return_reminders.asyncio.sleep",
+               new_callable=AsyncMock) as mock_sleep, \
+         patch.dict(os.environ, {"SUPABASE_URL": "x", "SUPABASE_KEY": "y"}, clear=False):
+        os.environ.pop("SUPABASE_CONNECTION_STRING", None)
+        # força "hoje" pra dentro da janela retorno_um_mes_antes (12 candidatos).
+        # Só `.now` é sobrescrito — `.fromisoformat` continua a implementação
+        # real (usada por pending_template via `date.fromisoformat`, que não é
+        # afetado por este patch pois é um símbolo separado).
+        with patch("scripts.send_return_reminders.datetime") as mock_dt:
+            mock_dt.now.return_value = datetime(2026, 9, 15, tzinfo=srr.TZ)
+            await srr.main()
+
+    assert mock_send.await_count == 12  # 12 linhas, todas elegíveis (nada enviado ainda)
+    mock_sleep.assert_awaited_once_with(srr.BATCH_PAUSE_SECONDS)  # 2 lotes de 10 -> 1 pausa
