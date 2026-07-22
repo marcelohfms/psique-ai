@@ -9,7 +9,10 @@ CREATE TABLE IF NOT EXISTS return_reminders (
     doctor_id                       UUID NOT NULL REFERENCES doctors(doctor_id),
     return_interval                 TEXT NOT NULL CHECK (return_interval IN ('15_dias','1_mes','3_meses','6_meses')),
     next_return_date                DATE NOT NULL,
-    last_classified_appointment_id  UUID REFERENCES appointments(appointment_id),
+    -- TEXT, não UUID: appointments.appointment_id é o ID do evento do Google
+    -- Calendar (TEXT), sem constraint de unicidade — não dá pra referenciar
+    -- com FK. Só indexado, guarda o valor sem integridade referencial.
+    last_classified_appointment_id  TEXT,
     month_before_sent_at            TIMESTAMPTZ,
     month_of_sent_at                TIMESTAMPTZ,
     overdue_sent_at                 TIMESTAMPTZ,
