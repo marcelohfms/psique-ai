@@ -483,6 +483,34 @@ async def test_confirm_appointment_rolls_back_calendar_on_db_failure():
     mock_cancel.assert_awaited_once_with("cal123", "evt-rollback")
 
 
+async def test_confirm_appointment_rolls_back_calendar_on_patient_resolution_failure():
+    """Falha ANTES do insert (ex.: get_users_by_phone explode por instabilidade do
+    Supabase) também deve desfazer o evento do Calendar. Antes dessa correção, o
+    try/except só envolvia o insert final — uma exceção em get_users_by_phone/
+    _match_by_name deixava o evento órfão no Calendar sem nenhuma linha em
+    appointments, e sem essa linha o guard de duplicata nunca disparava, então cada
+    retry criava um evento novo (caso Silvia De Souza Passos, 5581998483157: 5
+    eventos órfãos no calendário do Dr. Júlio em 10/07/2026 para o dia 24/07 11h)."""
+    from app.graph.tools import confirm_appointment
+    client, table, execute = _make_supabase_client()
+    with patch("app.graph.tools._get_doctor_calendar_id", new_callable=AsyncMock, return_value="cal123"), \
+         patch("app.google_calendar.create_event", new_callable=AsyncMock, return_value="evt-orphan"), \
+         patch("app.google_calendar.cancel_event", new_callable=AsyncMock) as mock_cancel, \
+         patch("app.graph.tools.get_supabase", new_callable=AsyncMock, return_value=client), \
+         patch("app.graph.tools.get_users_by_phone", new_callable=AsyncMock, side_effect=Exception("Supabase down")), \
+         patch("app.graph.tools.log_event", new_callable=AsyncMock), \
+         patch("app.graph.tools.send_text", new_callable=AsyncMock):
+        result = await confirm_appointment.coroutine(
+            slot_datetime="2026-03-23T09:00:00",
+            slot_duration_minutes=60,
+            state=_make_state(),
+            config=CONFIG,
+        )
+    assert "erro" in result.lower()
+    mock_cancel.assert_awaited_once_with("cal123", "evt-orphan")
+    table.insert.assert_not_called()
+
+
 async def test_confirm_appointment_respects_online_modality_restriction():
     """Se modality_restriction="online" no state, confirm_appointment ignora o modality arg."""
     from app.graph.tools import confirm_appointment

@@ -6,36 +6,37 @@
   body { overflow: auto !important; height: auto !important; }
 
   :root {
-    --color-primary: #0891B2;
-    --color-primary-dark: #0e7490;
-    --color-primary-light: #e0f2fe;
-    --color-accent: #059669;
-    --color-accent-dark: #047857;
-    --color-accent-light: #d1fae5;
-    --color-background: #f0f9ff;
+    --color-primary: #6d5b8f;
+    --color-primary-dark: #4a3a5c;
+    --color-primary-light: #f3f0f8;
+    --color-accent: #9b7db8;
+    --color-accent-dark: #7a5fa0;
+    --color-accent-light: #f0e8f7;
+    --color-background: #faf8fc;
     --color-surface: #ffffff;
-    --color-foreground: #164E63;
-    --color-muted: #E8F1F6;
-    --color-muted-text: #64748b;
-    --color-border: #bae6fd;
-    --color-taxa-bg: #dcfce7;
-    --color-taxa-text: #166534;
-    --color-consulta-bg: #dbeafe;
-    --color-consulta-text: #1e40af;
-    --radius: 10px;
-    --shadow: 0 1px 3px 0 rgb(0 0 0 / 0.07), 0 1px 2px -1px rgb(0 0 0 / 0.07);
-    --shadow-md: 0 4px 6px -1px rgb(0 0 0 / 0.08), 0 2px 4px -2px rgb(0 0 0 / 0.08);
+    --color-foreground: #2d1f42;
+    --color-muted: #f1ecf7;
+    --color-muted-text: #7b6d8d;
+    --color-border: #e8daf5;
+    --color-taxa-bg: #f5ede7;
+    --color-taxa-text: #6b4423;
+    --color-consulta-bg: #e8dff7;
+    --color-consulta-text: #5a3f7f;
+    --radius: 8px;
+    --shadow: 0 1px 2px 0 rgb(0 0 0 / 0.04);
+    --shadow-md: 0 2px 4px 0 rgb(0 0 0 / 0.06), 0 1px 2px -1px rgb(0 0 0 / 0.04);
   }
 
   .pag-page {
     min-height: 100vh;
     background: var(--color-background);
-    padding: 2rem 1.5rem 3rem;
-    font-family: 'Fira Sans', system-ui, sans-serif;
+    padding: 3rem 2rem 4rem;
+    font-family: 'Fira Sans', -apple-system, BlinkMacSystemFont, sans-serif;
+    letter-spacing: -0.01em;
   }
 
   .pag-container {
-    max-width: 1140px;
+    max-width: 1200px;
     margin: 0 auto;
   }
 
@@ -44,35 +45,37 @@
     display: flex;
     align-items: center;
     justify-content: space-between;
-    margin-bottom: 1.75rem;
+    margin-bottom: 2.5rem;
     flex-wrap: wrap;
-    gap: 0.75rem;
+    gap: 1rem;
   }
 
-  .pag-header-left { display: flex; align-items: center; gap: 0.875rem; }
+  .pag-header-left { display: flex; align-items: center; gap: 1.25rem; }
 
   .pag-icon {
-    width: 42px; height: 42px;
+    width: 44px; height: 44px;
     background: var(--color-primary);
-    border-radius: 10px;
+    border-radius: 8px;
     display: flex; align-items: center; justify-content: center;
     flex-shrink: 0;
+    box-shadow: var(--shadow-md);
   }
-  .pag-icon svg { width: 22px; height: 22px; color: #fff; }
+  .pag-icon svg { width: 24px; height: 24px; color: #fff; }
 
   .pag-title {
-    font-size: 1.35rem;
-    font-weight: 700;
+    font-size: 1.5rem;
+    font-weight: 600;
     color: var(--color-foreground);
-    letter-spacing: -0.02em;
-    line-height: 1.2;
+    letter-spacing: -0.015em;
+    line-height: 1.3;
   }
 
   .pag-subtitle {
-    font-size: 0.8rem;
+    font-size: 0.85rem;
     color: var(--color-muted-text);
-    margin-top: 2px;
+    margin-top: 0.25rem;
     font-weight: 400;
+    letter-spacing: 0.01em;
   }
 
   .pag-back {
@@ -88,8 +91,8 @@
   /* ── Stats bar ── */
   .pag-stats {
     display: flex;
-    gap: 0.75rem;
-    margin-bottom: 1.5rem;
+    gap: 1.25rem;
+    margin-bottom: 2.5rem;
     flex-wrap: wrap;
   }
 
@@ -97,23 +100,25 @@
     background: var(--color-surface);
     border: 1px solid var(--color-border);
     border-radius: var(--radius);
-    padding: 0.875rem 1.25rem;
+    padding: 1.5rem 1.75rem;
     box-shadow: var(--shadow);
-    min-width: 130px;
+    min-width: 160px;
+    flex: 1;
+    min-width: 140px;
   }
 
   .pag-stat-label {
-    font-size: 0.72rem;
+    font-size: 0.68rem;
     font-weight: 600;
     text-transform: uppercase;
-    letter-spacing: 0.06em;
+    letter-spacing: 0.08em;
     color: var(--color-muted-text);
-    margin-bottom: 0.3rem;
+    margin-bottom: 0.6rem;
   }
 
   .pag-stat-value {
-    font-size: 1.55rem;
-    font-weight: 700;
+    font-size: 1.75rem;
+    font-weight: 600;
     color: var(--color-foreground);
     font-family: 'Fira Code', monospace;
     line-height: 1;
@@ -151,6 +156,7 @@
   }
 
   /* ── Table ── */
+  .pag-table-scroll { overflow-x: auto; }
   .pag-table { width: 100%; border-collapse: collapse; }
 
   .pag-table thead tr {
@@ -159,56 +165,59 @@
   }
 
   .pag-table th {
-    padding: 0.75rem 1rem;
+    padding: 1rem 1.25rem;
     text-align: left;
-    font-size: 0.7rem;
+    font-size: 0.68rem;
     font-weight: 600;
     text-transform: uppercase;
-    letter-spacing: 0.06em;
+    letter-spacing: 0.08em;
     color: var(--color-muted-text);
     white-space: nowrap;
   }
 
   .pag-table tbody tr {
-    border-bottom: 1px solid #f1f5f9;
+    border-bottom: 1px solid #f3f6fa;
     transition: background 150ms;
   }
   .pag-table tbody tr:last-child { border-bottom: none; }
-  .pag-table tbody tr:hover { background: #f8fbff; }
+  .pag-table tbody tr:hover { background: #fafbfd; }
 
   .pag-table td {
-    padding: 0.875rem 1rem;
+    padding: 1rem 1.25rem;
     vertical-align: middle;
     font-size: 0.875rem;
+    color: var(--color-foreground);
   }
 
   /* ── Cell variants ── */
-  .cell-paciente { font-weight: 600; color: var(--color-foreground); }
-  .cell-medico { color: #475569; }
+  .cell-paciente { font-weight: 600; color: var(--color-foreground); white-space: nowrap; }
+  .cell-medico { color: #475569; white-space: nowrap; }
   .cell-data {
     color: #475569;
     font-family: 'Fira Code', monospace;
     font-size: 0.82rem;
-    white-space: nowrap;
+    max-width: 80px;
+    line-height: 1.3;
   }
+  .th-wrap { white-space: normal; line-height: 1.25; }
 
   /* ── Badge ── */
   .badge {
     display: inline-flex;
     align-items: center;
-    gap: 0.3rem;
-    padding: 0.25rem 0.6rem;
-    border-radius: 99px;
-    font-size: 0.72rem;
-    font-weight: 600;
-    letter-spacing: 0.02em;
+    gap: 0.35rem;
+    padding: 0.3rem 0.75rem;
+    border-radius: 6px;
+    font-size: 0.7rem;
+    font-weight: 500;
+    letter-spacing: 0.025em;
     white-space: nowrap;
   }
-  .badge-dot { width: 6px; height: 6px; border-radius: 50%; }
-  .badge-taxa { background: var(--color-taxa-bg); color: var(--color-taxa-text); }
-  .badge-taxa .badge-dot { background: var(--color-taxa-text); }
-  .badge-consulta { background: var(--color-consulta-bg); color: var(--color-consulta-text); }
-  .badge-consulta .badge-dot { background: var(--color-consulta-text); }
+  .badge-dot { width: 5px; height: 5px; border-radius: 50%; flex-shrink: 0; }
+  .badge-taxa { background: #fef5e7; color: #8b6914; }
+  .badge-taxa .badge-dot { background: #d4a574; }
+  .badge-consulta { background: #e0f2fe; color: #0c4a6e; }
+  .badge-consulta .badge-dot { background: #0284c7; }
 
   /* ── Valor input ── */
   .valor-wrap {
@@ -269,11 +278,11 @@
   .btn-pago {
     display: inline-flex;
     align-items: center;
-    gap: 0.4rem;
-    padding: 0.45rem 0.9rem;
+    gap: 0.35rem;
+    padding: 0.4rem 0.65rem;
     background: var(--color-accent);
     color: #fff;
-    font-size: 0.8rem;
+    font-size: 0.75rem;
     font-weight: 600;
     font-family: 'Fira Sans', sans-serif;
     border: none;
@@ -286,29 +295,30 @@
   .btn-pago:hover { background: var(--color-accent-dark); box-shadow: 0 2px 6px rgba(5,150,105,0.3); }
   .btn-pago:active { transform: scale(0.97); }
   .btn-pago:disabled { opacity: 0.55; cursor: not-allowed; transform: none; }
-  .btn-pago svg { width: 14px; height: 14px; }
+  .btn-pago svg { width: 14px; height: 14px; flex-shrink: 0; }
+  .btn-pago-text { display: flex; flex-direction: column; line-height: 1.2; text-align: left; }
 
   /* ── Footer ── */
   .pag-footer {
-    padding: 0.75rem 1rem;
+    padding: 1rem 1.25rem;
     background: var(--color-muted);
     border-top: 1px solid var(--color-border);
     display: flex;
     align-items: center;
     justify-content: flex-end;
-    gap: 0.4rem;
-    font-size: 0.78rem;
+    gap: 0.6rem;
+    font-size: 0.8rem;
     color: var(--color-muted-text);
     font-weight: 500;
   }
   .pag-footer-count {
     background: var(--color-primary-light);
     color: var(--color-primary);
-    font-weight: 700;
-    padding: 0.1rem 0.5rem;
-    border-radius: 99px;
+    font-weight: 600;
+    padding: 0.15rem 0.6rem;
+    border-radius: 4px;
     font-family: 'Fira Code', monospace;
-    font-size: 0.78rem;
+    font-size: 0.8rem;
   }
 
   /* ── Toast ── */
@@ -348,7 +358,6 @@
 
   @media (max-width: 768px) {
     .pag-page { padding: 1rem; }
-    .pag-table { display: block; overflow-x: auto; }
     .pag-stats { flex-direction: column; }
     .pag-stat { min-width: unset; }
   }
@@ -414,6 +423,7 @@
 
     <!-- Table -->
     <div class="pag-card">
+      <div class="pag-table-scroll">
       <table class="pag-table" id="tabela-pendencias" aria-label="Pagamentos pendentes">
         <thead>
           <tr>
@@ -422,7 +432,7 @@
             <th scope="col">Data e hora</th>
             <th scope="col">Tipo</th>
             <th scope="col">Valor</th>
-            <th scope="col">Forma de pagamento</th>
+            <th scope="col" class="th-wrap">Forma de<br>pagamento</th>
             <th scope="col">Comprovante</th>
             <th scope="col"><span class="sr-only">Ação</span></th>
           </tr>
@@ -470,17 +480,11 @@
               </select>
             </td>
             <td>
-              <label class="comprovante-label" style="font-size:0.78rem;color:var(--color-muted-text);text-decoration:underline;cursor:pointer;">
+              <label class="comprovante-label" style="font-size:0.78rem;color:var(--color-muted-text);text-decoration:underline;cursor:pointer;white-space:nowrap;">
                 Anexar
                 <input type="file" accept="image/*,.pdf" class="comprovante-input" style="display:none;">
               </label>
-              <br>
-              <button type="button" class="buscar-conversa-btn" onclick="buscarComprovanteConversa(this)"
-                      style="font-size:0.78rem;color:var(--color-muted-text);text-decoration:underline;background:none;border:none;cursor:pointer;padding:0;">
-                Buscar da conversa
-              </button>
               <div class="comprovante-nome" style="font-size:0.72rem;color:var(--color-muted-text);"></div>
-              <div class="comprovante-resultados" style="display:flex;flex-direction:column;gap:2px;margin-top:2px;"></div>
             </td>
             <td>
               <button
@@ -491,13 +495,14 @@
                 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
                   <polyline points="20 6 9 17 4 12"/>
                 </svg>
-                Marcar pago
+                <span class="btn-pago-text"><span>Marcar</span><span>pago</span></span>
               </button>
             </td>
           </tr>
           {% endfor %}
         </tbody>
       </table>
+      </div>
 
       <div class="pag-footer">
         <span>Pendências:</span>
@@ -529,53 +534,12 @@ function showToast(msg, isError = false) {
   }, 3500);
 }
 
-function escapeHtml(s) {
-  return String(s ?? '')
-    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
-}
-
 document.addEventListener('change', (e) => {
   if (!e.target.matches('.comprovante-input')) return;
   const row = e.target.closest('tr');
   const file = e.target.files[0];
-  delete row.dataset.selectedDriveLink;
   row.querySelector('.comprovante-nome').textContent = file ? file.name : '';
 });
-
-async function buscarComprovanteConversa(btn) {
-  const row = btn.closest('tr');
-  const box = row.querySelector('.comprovante-resultados');
-  btn.disabled = true;
-  box.innerHTML = `<span style="font-size:0.72rem;color:var(--color-muted-text);">Buscando…</span>`;
-  try {
-    const r = await fetch(`/api/pagamentos/comprovantes?phone=${encodeURIComponent(row.dataset.phone)}`);
-    if (!r.ok) throw new Error();
-    const candidatos = await r.json();
-    if (!candidatos.length) {
-      box.innerHTML = `<span style="font-size:0.72rem;color:var(--color-muted-text);">Nenhum comprovante encontrado na conversa.</span>`;
-      return;
-    }
-    box.innerHTML = candidatos.map((c, i) => `
-      <div style="display:flex;align-items:center;gap:6px;border:1px solid var(--color-border);border-radius:6px;padding:2px 6px;">
-        <span style="font-size:0.72rem;color:var(--color-foreground);flex:1;">${escapeHtml(c.descricao)}</span>
-        <button type="button" data-idx="${i}" class="usar-comprovante-btn" style="font-size:0.72rem;color:var(--color-accent);text-decoration:underline;background:none;border:none;cursor:pointer;">Usar este</button>
-      </div>`).join('');
-    box.querySelectorAll('.usar-comprovante-btn').forEach((b) => {
-      b.addEventListener('click', () => {
-        const c = candidatos[parseInt(b.dataset.idx, 10)];
-        row.dataset.selectedDriveLink = c.drive_link;
-        row.querySelector('.comprovante-nome').textContent = `Da conversa: ${c.descricao}`;
-        row.querySelector('.comprovante-input').value = '';
-        box.innerHTML = '';
-      });
-    });
-  } catch {
-    box.innerHTML = `<span style="font-size:0.72rem;color:#dc2626;">Erro ao buscar comprovantes.</span>`;
-  } finally {
-    btn.disabled = false;
-  }
-}
 
 async function marcarPago(appointmentId, tipo, btn) {
   const row = document.getElementById(`row-${appointmentId}-${tipo}`);
@@ -593,8 +557,8 @@ async function marcarPago(appointmentId, tipo, btn) {
   btn.innerHTML = `<svg class="" style="width:14px;height:14px;animation:spin 0.8s linear infinite" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M21 12a9 9 0 1 1-6.219-8.56"/></svg>Aguarde…`;
 
   try {
-    let drive_link = row.dataset.selectedDriveLink || '';
-    if (!drive_link && file) {
+    let drive_link = '';
+    if (file) {
       const form = new FormData();
       form.append('paciente', row.dataset.paciente);
       form.append('data_hora', row.dataset.dataHora);

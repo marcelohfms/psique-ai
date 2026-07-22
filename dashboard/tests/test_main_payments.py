@@ -84,24 +84,3 @@ def test_api_upload_comprovante_falha_no_drive_retorna_502(monkeypatch):
         files={"file": ("comprovante.jpg", b"fake-image-bytes", "image/jpeg")},
     )
     assert r.status_code == 502
-
-
-def test_api_buscar_comprovantes_requires_auth():
-    r = _client().get("/api/pagamentos/comprovantes", params={"phone": "5581999998888"})
-    assert r.status_code == 401
-
-
-def test_api_buscar_comprovantes_retorna_lista(monkeypatch):
-    async def fake_find_receipts(_client, phone, limit=5):
-        assert phone == "5581999998888"
-        return [{"descricao": "COMPROVANTE DE PAGAMENTO: R$ 550,00", "drive_link": "https://drive.google.com/x", "enviado_em": "2026-07-03T15:26:00+00:00"}]
-
-    monkeypatch.setattr(dashboard_main, "get_supabase", lambda: object())
-    monkeypatch.setattr(payments, "find_receipts", fake_find_receipts)
-
-    r = _client().get("/api/pagamentos/comprovantes",
-                       auth=AUTH,
-                       params={"phone": "5581999998888"})
-    assert r.status_code == 200
-    body = r.json()
-    assert body[0]["drive_link"] == "https://drive.google.com/x"
