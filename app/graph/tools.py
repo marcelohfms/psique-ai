@@ -188,6 +188,80 @@ async def _earliest_slot_dt(calendar_id: str, doctor: str, slot_duration_minutes
     return None
 
 
+async def _search_month_shift(
+    calendar_id: str,
+    doctor: str,
+    preferred_month_str: str,
+    preferred_shift: str,
+    slot_duration_minutes: int,
+    _get_slots,
+) -> str:
+    """Busca os primeiros dias de um mês com slots disponíveis para um turno específico.
+    Retorna formatado ou mensagem de indisponibilidade."""
+    from app.google_calendar import _MONTHS_PT, get_available_slots as _inner_get_slots
+
+    # Extract month from preferred_month_str
+    month_num = None
+    for month_name, num in _MONTHS_PT.items():
+        if month_name in preferred_month_str.lower():
+            month_num = num
+            break
+
+    if month_num is None:
+        return f"Não entendi qual mês. Por favor informe (ex: 'agosto', 'setembro')."
+
+    # Determine year
+    today = datetime.now(TZ).date()
+    year = today.year
+    if month_num < today.month:
+        year += 1
+
+    # Iterate through all days of that month, collecting available slots
+    from calendar import monthrange
+    _, days_in_month = monthrange(year, month_num)
+
+    slots_by_day = {}
+    for day_num in range(1, days_in_month + 1):
+        try_date = date(year, month_num, day_num)
+        # Skip weekends and past dates
+        if try_date.weekday() >= 5 or try_date < today:
+            continue
+
+        slots = await _get_slots(
+            calendar_id=calendar_id,
+            preferred_day=try_date.isoformat(),
+            preferred_shift=preferred_shift,
+            slot_minutes=slot_duration_minutes,
+            doctor_key=doctor,
+        )
+
+        if slots:
+            slots_by_day[try_date] = slots
+            # Return first 3 days with available slots
+            if len(slots_by_day) >= 3:
+                break
+
+    if not slots_by_day:
+        month_name_pt = ["", "Janeiro", "Fevereiro", "Março", "Abril", "Maio", "Junho",
+                         "Julho", "Agosto", "Setembro", "Outubro", "Novembro", "Dezembro"][month_num]
+        return (
+            f"Não há horários disponíveis em {month_name_pt} para o turno da {preferred_shift}. "
+            "Deseja tentar outro turno ou outro mês?"
+        )
+
+    # Format the response
+    lines = [f"Primeiros horários disponíveis em {preferred_shift}:"]
+    for day, day_slots in sorted(slots_by_day.items())[:3]:
+        day_label = _WEEKDAY_LABELS_PT.get(day.weekday(), "")
+        date_label = day.strftime("%d/%m")
+        header = f"{day_label}, dia {date_label}" if day_label else date_label
+        for i, (slot, modality) in enumerate(day_slots[:2], 1):  # Show max 2 slots per day
+            lines.append(f"  {slot.strftime('%H:%M')} em {header} [{_MOD_LABELS.get(modality, modality)}]")
+
+    lines.append("\nQual horário o paciente prefere?")
+    return "\n".join(lines)
+
+
 async def pick_doctor_by_earliest_availability(
     candidates: list[str], slot_duration_minutes: int = 60,
 ) -> str | None:
@@ -418,8 +492,26 @@ async def get_available_slots(
             # No slots at all this week — try the next occurrence (only for weekday names)
         return f"Não há horários disponíveis para {header}. Deseja tentar outro dia?"
 
+    # ── Month name only + specific shift: search that month for available slots ─────
+    from app.google_calendar import _MONTHS_PT
+    if weekday_key is None and preferred_shift != "qualquer":
+        month_match = next(
+            ((name, num) for name, num in _MONTHS_PT.items() if name in preferred_day_norm),
+            None,
+        )
+        if month_match:
+            # Has month + specific shift → search that month automatically
+            return await _search_month_shift(
+                calendar_id=calendar_id,
+                doctor=doctor,
+                preferred_month_str=preferred_day,
+                preferred_shift=preferred_shift,
+                slot_duration_minutes=slot_duration_minutes,
+                _get_slots=_get_slots,
+            )
+
     # ── Vague expressions (e.g. "próxima semana") → ask for specific day ─────
-    _vague_patterns = ("semana", "mês", "mes", "em breve")
+    _vague_patterns = ("semana", "em breve")
     if weekday_key is None and any(p in preferred_day_norm for p in _vague_patterns):
         return (
             "CLARIFICAÇÃO NECESSÁRIA: O paciente disse uma expressão vaga (ex: 'próxima semana'). "

@@ -80,3 +80,7 @@ class ConversationState(TypedDict):
     # confirm_appointment directly (bypassing the LLM) to prevent double-booking.
     # Keys: slot_datetime (ISO), slot_duration_minutes, modality, doctor
     pending_appointment: dict | None
+
+    # Stores pending booking fee info when a receipt is expected.
+    # Keys: amount (R$), pix_key, sent_at (ISO), appointment_datetime
+    pending_booking_fee: dict | None
