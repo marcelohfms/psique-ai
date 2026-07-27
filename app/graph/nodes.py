@@ -1578,12 +1578,21 @@ async def patient_agent_node(state: ConversationState, config: RunnableConfig) -
             # fica indistinguível de uma scheduled normal no texto, mesmo quando visível
             # (caso Heitor/Ludmilla, 5581996937559, 21/07/2026).
             reschedule_tag = " 🔄 REMARCAÇÃO PENDENTE" if apt.get("status") == "pending_reschedule" else ""
+            # Modalidade explícita ao lado de cada consulta — necessária para a Eva saber,
+            # na CONFIRMAÇÃO DE PRESENÇA do lembrete do dia anterior, se deve enviar o
+            # endereço da clínica (presencial) ou falar do link (online).
+            _modality = apt.get("modality")
+            modality_tag = (
+                " — Presencial" if _modality == "presencial"
+                else " — Online" if _modality == "online"
+                else ""
+            )
             _suffix = date_suffix_pt(dt.date(), _now_recife.date())
             # Prefix with the patient name — the contact may manage several patients,
             # so the LLM must not assume the appointment belongs to the active one.
             _pname = (apt.get("patient_name") or "").strip()
             _who = f"{_pname} — " if _pname else ""
-            label = f"- {_who}{dt.strftime('%d/%m/%Y às %H:%M')} ({_suffix}) (ID: {apt['appointment_id']}){fee_tag}{reschedule_tag}"
+            label = f"- {_who}{dt.strftime('%d/%m/%Y às %H:%M')} ({_suffix}){modality_tag} (ID: {apt['appointment_id']}){fee_tag}{reschedule_tag}"
             if apt.get("already_occurred"):
                 past_unpaid_lines.append(label)
             elif apt.get("recently_ended"):

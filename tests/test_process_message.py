@@ -1898,6 +1898,82 @@ async def test_patient_agent_prompt_flags_past_unpaid_appointment():
     assert "Consultas agendadas (por paciente):" not in system_prompt
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "modality,expected_tag",
+    [
+        ("presencial", "— Presencial"),
+        ("online", "— Online"),
+        (None, None),
+    ],
+)
+async def test_patient_agent_prompt_tags_appointment_modality(modality, expected_tag):
+    """Cada consulta em 'Consultas agendadas' carrega sua modalidade (— Presencial /
+    — Online), para a Eva saber, na CONFIRMAÇÃO DE PRESENÇA do lembrete do dia
+    anterior, se deve enviar o endereço da clínica (presencial) ou falar do link
+    (online). Sem modalidade informada (legado/encaixe), nenhuma tag é exibida."""
+    import datetime as _dt
+    from zoneinfo import ZoneInfo
+    from unittest.mock import AsyncMock, MagicMock, patch
+    from langchain_core.messages import HumanMessage, AIMessage
+    from tests.conftest import CONFIG
+    from app.graph.nodes import patient_agent_node
+
+    TZ = ZoneInfo("America/Recife")
+    now = _dt.datetime.now(TZ)
+    tomorrow = (now + _dt.timedelta(days=1)).replace(hour=15, minute=0, second=0, microsecond=0)
+
+    appt = {
+        "appointment_id": "appt-modality",
+        "start_time": tomorrow.isoformat(),
+        "booking_fee_paid_at": now.isoformat(),
+        "booking_fee_waived": False,
+        "recently_ended": False,
+        "modality": modality,
+    }
+
+    captured = {}
+
+    class _FakeLLM:
+        async def ainvoke(self, messages):
+            captured["messages"] = messages
+            return AIMessage(content="ok")
+
+    state = {
+        "phone": "5581999999999@s.whatsapp.net",
+        "stage": "patient_agent",
+        "user_name": "Maria Silva",
+        "patient_name": "Maria Silva",
+        "patient_age": 30,
+        "is_patient": True,
+        "is_returning_patient": True,
+        "preferred_doctor": "julio",
+        "messages": [HumanMessage(content="oi")],
+    }
+
+    with patch("app.graph.nodes.get_user_by_phone", new_callable=AsyncMock, return_value=None), \
+         patch("app.graph.nodes.get_upcoming_appointments", new_callable=AsyncMock, return_value=[appt]), \
+         patch("app.google_calendar.format_doctor_schedules", return_value=""), \
+         patch("app.graph.nodes._get_agent_llm", return_value=_FakeLLM()), \
+         patch("app.graph.nodes.send_text", new_callable=AsyncMock), \
+         patch("app.graph.nodes.save_message", new_callable=AsyncMock), \
+         patch("app.graph.nodes.get_users_by_phone", new_callable=AsyncMock, return_value=[]), \
+         patch("app.graph.nodes.get_last_assistant_message_time", new_callable=AsyncMock, return_value=None), \
+         patch("app.graph.nodes.is_registration_complete", return_value=True), \
+         patch("app.graph.nodes.upsert_user", new_callable=AsyncMock, return_value=None):
+        await patient_agent_node(state, CONFIG)
+
+    system_prompt = captured["messages"][0].content
+    appt_line = next(
+        line for line in system_prompt.splitlines() if "appt-modality" in line
+    )
+    if expected_tag is None:
+        assert "— Presencial" not in appt_line
+        assert "— Online" not in appt_line
+    else:
+        assert expected_tag in appt_line
+
+
 async def test_patient_agent_prompt_flags_stale_pending_reschedule():
     """Uma consulta com stale_reschedule=True deve aparecer no prompt com a tag
     🔄 REMARCAÇÃO PENDENTE e sob seu próprio cabeçalho — não junto de 'Consultas
