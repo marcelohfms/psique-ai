@@ -90,6 +90,29 @@ def _get_doctor_schedule(doctor_key: str, target_date: date) -> dict[int, list[t
     return base
 
 
+def merge_adjacent_windows(
+    windows: list[tuple[int, int, int, int, str]],
+) -> list[tuple[int, int, int, int, str]]:
+    """Merge back-to-back windows (same modality, one's end == next's start)
+    into a single window, so a multi-hour block can span the boundary between
+    them. Some schedules split one continuous shift into consecutive tuples
+    for exception granularity (e.g. Júlio's Thursday 14–18 + 18–20 is really
+    one uninterrupted 14–20 shift) — without merging, a 2h block starting at
+    17:00 looks like it overruns the 18:00 "window end" even though the
+    doctor has no gap there."""
+    if not windows:
+        return []
+    ordered = sorted(windows, key=lambda w: (w[0], w[1]))
+    merged = [ordered[0]]
+    for sh, sm, eh, em, modality in ordered[1:]:
+        psh, psm, peh, pem, pmodality = merged[-1]
+        if modality == pmodality and (peh, pem) == (sh, sm):
+            merged[-1] = (psh, psm, eh, em, modality)
+        else:
+            merged.append((sh, sm, eh, em, modality))
+    return merged
+
+
 _WEEKDAY_NAMES = {0: "Segunda", 1: "Terça", 2: "Quarta", 3: "Quinta", 4: "Sexta", 5: "Sábado", 6: "Domingo"}
 _DOCTOR_LABELS = {"bruna": "Dra. Bruna", "julio": "Dr. Júlio"}
 

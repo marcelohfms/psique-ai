@@ -740,10 +740,12 @@ async def confirm_appointment(
         # expediente (caso Bernardo/Mônica 5581991320003, 09/07/2026: 1ª consulta
         # gravada 19:00–21:00). get_available_slots já respeita isso; o confirm não.
         if doctor == "julio":
+            from app.google_calendar import merge_adjacent_windows
+            _merged_wins = merge_adjacent_windows(_day_wins)
             _slot_end_min = _slot_min + slot_duration_minutes
             if not any(
                 (sh * 60 + sm) <= _slot_min and _slot_end_min <= (eh * 60 + em)
-                for sh, sm, eh, em, _ in _day_wins
+                for sh, sm, eh, em, _ in _merged_wins
             ):
                 _dur_h = slot_duration_minutes // 60
                 return (

@@ -147,6 +147,36 @@ def test_parse_day_month_name_past_month_rolls_to_next_year(freeze_calendar_tues
     assert result == date(2027, 1, 1)  # Jan 1 2027 is a Friday
 
 
+# ── merge_adjacent_windows ─────────────────────────────────────────────────────
+
+def test_merge_adjacent_windows_joins_contiguous_same_modality():
+    """Júlio's Thursday grade: 14–18 and 18–20 have no gap between them and
+    share modality "escolha" — must merge into a single 14–20 window."""
+    from app.google_calendar import merge_adjacent_windows
+    result = merge_adjacent_windows([(9, 0, 12, 0, "escolha"), (14, 0, 18, 0, "escolha"), (18, 0, 20, 0, "escolha")])
+    assert result == [(9, 0, 12, 0, "escolha"), (14, 0, 20, 0, "escolha")]
+
+
+def test_merge_adjacent_windows_keeps_gap_separate():
+    """A real gap (9-12 then 14-18) must stay as two windows."""
+    from app.google_calendar import merge_adjacent_windows
+    result = merge_adjacent_windows([(9, 0, 12, 0, "escolha"), (14, 0, 18, 0, "escolha")])
+    assert result == [(9, 0, 12, 0, "escolha"), (14, 0, 18, 0, "escolha")]
+
+
+def test_merge_adjacent_windows_keeps_modality_change_separate():
+    """Contiguous windows with different modality must not merge — an online-only
+    slot right after a "escolha" one is a real boundary, not a data-modeling split."""
+    from app.google_calendar import merge_adjacent_windows
+    result = merge_adjacent_windows([(14, 0, 18, 0, "escolha"), (18, 0, 20, 0, "online")])
+    assert result == [(14, 0, 18, 0, "escolha"), (18, 0, 20, 0, "online")]
+
+
+def test_merge_adjacent_windows_empty_list():
+    from app.google_calendar import merge_adjacent_windows
+    assert merge_adjacent_windows([]) == []
+
+
 # ── get_available_slots (with mocked Google API) ──────────────────────────────
 
 def _make_service(busy_periods: list[dict]) -> MagicMock:

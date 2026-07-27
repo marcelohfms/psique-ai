@@ -721,6 +721,32 @@ async def test_confirm_appointment_julio_accepts_2h_block_that_fits():
     mock_create.assert_called_once()
 
 
+async def test_confirm_appointment_julio_accepts_2h_block_spanning_adjacent_windows():
+    """Dr. Júlio: quinta-feira tem duas janelas contíguas na grade — 14–18 e 18–20 —
+    que juntas formam um único expediente ininterrupto até as 20h. Um bloco de 2h
+    começando às 17:00 (17–19) atravessa a fronteira das 18h entre essas duas
+    tuplas, mas não estoura o expediente real — deve ser aceito (caso Davi Souza
+    de Brito, 5581995011672, 06/08/2026: atendente pediu 17h–19h, sistema recusou
+    dizendo que ultrapassava o expediente, embora o médico atenda até as 20h)."""
+    from app.graph.tools import confirm_appointment
+    client, _, _ = _make_supabase_client()
+    with patch("app.graph.tools._get_doctor_calendar_id", new_callable=AsyncMock, return_value="cal123"), \
+         patch("app.google_calendar.create_event", new_callable=AsyncMock, return_value="evt-2h-span") as mock_create, \
+         patch("app.graph.tools.get_supabase", new_callable=AsyncMock, return_value=client), \
+         patch("app.graph.tools.get_users_by_phone", new_callable=AsyncMock, return_value=[{"id": "user-1"}]), \
+         patch("app.graph.tools.get_user_by_phone", new_callable=AsyncMock, return_value={"id": "user-1"}), \
+         patch("app.graph.tools.log_event", new_callable=AsyncMock), \
+         patch("app.graph.tools._notify_clinic", new_callable=AsyncMock):
+        result = await confirm_appointment.coroutine(
+            slot_datetime="2026-03-26T17:00:00",  # quinta-feira
+            slot_duration_minutes=120,
+            state=_make_state(preferred_doctor="julio"),
+            config=CONFIG,
+        )
+    assert "evt-2h-span" in result
+    mock_create.assert_called_once()
+
+
 async def test_confirm_appointment_julio_accepts_60min_split_at_19h():
     """Dr. Júlio: sessão separada de 1h às 19:00 numa quinta cabe em 18–20 → aceito."""
     from app.graph.tools import confirm_appointment
