@@ -596,10 +596,8 @@ async def create_event(
     elif is_minor_first:
         description += "\n\n1ª hora: conversa com os pais/responsáveis\n2ª hora: consulta com o paciente"
 
-    summary = f"Consulta — {patient_name}"
-    if modality:
-        modality_label = "Online" if modality == "online" else "Presencial"
-        summary += f" [{modality_label}]"
+    modality_label = "Online" if modality == "online" else "Presencial"
+    summary = f"Consulta — {patient_name} [{modality_label}]"
     if session_note:
         summary += f" ({session_note})"
 
@@ -654,10 +652,8 @@ async def update_event(
     if is_minor_first:
         description += "\n\n1ª hora: conversa com os pais/responsáveis\n2ª hora: consulta com o paciente"
 
-    new_summary = f"Consulta — {patient_name}"
-    if modality:
-        modality_label = "Online" if modality == "online" else "Presencial"
-        new_summary += f" [{modality_label}]"
+    modality_label = "Online" if modality == "online" else "Presencial"
+    new_summary = f"Consulta — {patient_name} [{modality_label}]"
 
     patch = {
         "summary": new_summary,
