@@ -23,9 +23,8 @@ async def main():
     message = (
         f"Olá, {PATIENT_NAME}! 👋\n\n"
         f"Recebemos o seu pagamento de R$ {AMOUNT} referente à consulta "
-        f"com {DOCTOR_LABEL} hoje, {APPOINTMENT_DT} às 14h.\n\n"
-        f"Sua consulta está confirmada! ✅\n\n"
-        f"Qualquer dúvida, estou à disposição!"
+        f"com {DOCTOR_LABEL} de hoje, {APPOINTMENT_DT} às 14h. ✅\n\n"
+        f"Obrigado! Qualquer dúvida, estou à disposição!"
     )
 
     print("📱 Enviando confirmação de pagamento para Camila...")
