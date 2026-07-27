@@ -440,6 +440,34 @@ async def test_confirm_appointment_multi_patient_override_beats_user_db_id():
     assert _insert_payload.get("patient_id") == "laila-id"
 
 
+async def test_confirm_appointment_normalizes_attendant_all_caps_name():
+    """Nota da atendente com o nome do paciente em CAIXA ALTA não deve vazar assim
+    para o evento do Calendar nem para a notificação da clínica — ambos devem usar
+    o nome canônico de patients.name (caso João Pedro Lins Da Costa Gomes / Ednara
+    de Morais Lins, 5581992349207, 2026-07-27)."""
+    from app.graph.tools import confirm_appointment
+    client, table, execute = _make_supabase_client()
+    _joao = {"id": "joao-id", "patient_name": "João Pedro Lins Da Costa Gomes", "name": "Ednara de Morais Lins"}
+    with patch("app.graph.tools._get_doctor_calendar_id", new_callable=AsyncMock, return_value="cal123"), \
+         patch("app.google_calendar.create_event", new_callable=AsyncMock, return_value="evt-caps") as mock_create, \
+         patch("app.graph.tools.get_supabase", new_callable=AsyncMock, return_value=client), \
+         patch("app.graph.tools.get_users_by_phone", new_callable=AsyncMock, return_value=[_joao]), \
+         patch("app.graph.tools.get_user_by_phone", new_callable=AsyncMock, return_value=_joao), \
+         patch("app.graph.tools.log_event", new_callable=AsyncMock), \
+         patch("app.graph.tools._notify_clinic", new_callable=AsyncMock) as mock_notify:
+        await confirm_appointment.coroutine(
+            slot_datetime="2026-03-23T09:00:00",
+            slot_duration_minutes=60,
+            state=_make_state(patient_name="JOÃO PEDRO LINS DA COSTA GOMES"),
+            config=CONFIG,
+            patient_name_override="JOÃO PEDRO LINS DA COSTA GOMES",
+        )
+    assert mock_create.call_args.kwargs["patient_name"] == "João Pedro Lins Da Costa Gomes"
+    _notify_msg = mock_notify.call_args[0][0]
+    assert "Paciente: João Pedro Lins Da Costa Gomes" in _notify_msg
+    assert mock_notify.call_args.kwargs["subject"] == "Agendamento realizado — João Pedro Lins Da Costa Gomes"
+
+
 async def test_confirm_appointment_with_session_note():
     from app.graph.tools import confirm_appointment
     client, _, _ = _make_supabase_client()

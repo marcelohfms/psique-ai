@@ -892,6 +892,31 @@ async def confirm_appointment(
         doctor, "médico(a)"
     )
     patient_name = patient_name_override.strip() or state.get("patient_name") or state.get("user_name") or "Paciente"
+
+    # Always use the canonical `patients.name` from the DB for the Calendar
+    # event and clinic notification below — patient_name_override/state can
+    # carry the attendant's raw wording (e.g. an ALL CAPS name copied from a
+    # private note), and both must follow the standard format regardless of
+    # how it arrived (caso João Pedro Lins Da Costa Gomes / Ednara de Morais
+    # Lins, 5581992349207, 2026-07-27: nota da atendente em CAIXA ALTA foi
+    # parar sem normalização no evento do Calendar e no e-mail da clínica).
+    try:
+        _name_candidates = await get_users_by_phone(config["configurable"]["phone"])
+        _canonical_user = None
+        if len(_name_candidates) > 1:
+            _target = patient_name.strip().lower()
+            _canonical_user = next(
+                (c for c in _name_candidates if (c.get("patient_name") or "").strip().lower() == _target), None
+            ) or next(
+                (c for c in _name_candidates if _target in (c.get("patient_name") or "").strip().lower()), None
+            )
+        elif _name_candidates:
+            _canonical_user = _name_candidates[0]
+        if _canonical_user and _canonical_user.get("patient_name"):
+            patient_name = _canonical_user["patient_name"]
+    except Exception:
+        _logger.exception("CONFIRM_DEBUG canonical name lookup failed, using raw patient_name=%s", patient_name)
+
     patient_age = state.get("patient_age") or 99
     # is_minor_first only applies to a single 2h block (no session_note)
     is_minor_first = (
