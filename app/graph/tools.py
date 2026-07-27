@@ -19,12 +19,26 @@ logger = logging.getLogger(__name__)
 TZ = ZoneInfo("America/Recife")
 
 async def _notify_clinic(message: str, phone: str = "", subject: str = "Notificação Eva") -> None:
-    """Envia notificação para a clínica por e-mail."""
+    """Envia notificação para a clínica por e-mail.
+
+    Nunca propaga a exceção — notificação não pode derrubar o fluxo do paciente —
+    mas a falha fica auditável no log e no evento `clinic_email_failed`. Engolir
+    em silêncio fazia um pagamento registrado parecer notificado (caso Arthur
+    Tenório / Camila Brasileiro, 27/07/2026).
+    """
     from app.email_sender import send_clinic_notification_email
     try:
         await send_clinic_notification_email(subject, message)
-    except Exception:
-        pass
+    except Exception as exc:
+        logger.exception("CLINIC_EMAIL_FAILED subject=%r phone=%s", subject, phone)
+        try:
+            await log_event("clinic_email_failed", phone, {
+                "subject": subject,
+                "reason": str(exc),
+                "origin": "bot",
+            })
+        except Exception:
+            logger.exception("CLINIC_EMAIL_FAILED_LOG_EVENT_FAILED subject=%r", subject)
 
 
 def _build_registration_block(state: dict, phone: str = "") -> str:

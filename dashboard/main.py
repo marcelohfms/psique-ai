@@ -116,6 +116,15 @@ async def _poll_new_messages() -> None:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    # Um deploy sem SMTP grita aqui, no boot, em vez de esperar o próximo
+    # pagamento passar despercebido pela clínica (ver payments._send_clinic_email).
+    faltando = payments.missing_smtp_vars()
+    if faltando:
+        logger.error(
+            "SMTP INCOMPLETO no serviço dashboard — variáveis ausentes: %s. "
+            "Nenhum e-mail de pagamento chegará à clínica até que sejam configuradas.",
+            ", ".join(faltando),
+        )
     await _init_supabase()
     task = asyncio.create_task(_poll_new_messages())
     yield

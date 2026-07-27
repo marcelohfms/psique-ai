@@ -138,3 +138,90 @@ async def test_sheets_append_failure_notifies_clinic(mock_supabase):
     alert_emails = [call for call in mock_email.call_args_list
                     if "FALHA ao gravar" in str(call)]
     assert len(alert_emails) > 0, "Clinic should be notified of sheets append failure"
+
+
+# ── E-mail à clínica: falha nunca some em silêncio ────────────────────────────
+
+@pytest.mark.asyncio
+async def test_send_clinic_email_sem_smtp_registra_evento_e_levanta():
+    """SMTP ausente no serviço dashboard vira clinic_email_failed + exceção.
+
+    Regressão: o dashboard roda em container separado do bot; sem SMTP a função
+    apenas retornava, e o pagamento ficava registrado sem a clínica saber
+    (Arthur Tenório e Camila Brasileiro, 27/07/2026).
+    """
+    import payments
+
+    with patch.dict(os.environ, {"SMTP_HOST": "", "SMTP_USER": "", "SMTP_PASSWORD": "",
+                                 "CLINIC_NOTIFY_EMAIL": ""}, clear=False), \
+         patch("attendant_db.log_event", new_callable=AsyncMock) as mock_log:
+        with pytest.raises(RuntimeError):
+            await payments._send_clinic_email(
+                subject="Comprovante recebido — Arthur", body="corpo", phone="5581996503841",
+            )
+
+    mock_log.assert_awaited_once()
+    event_type, phone, metadata = mock_log.await_args.args
+    assert event_type == "clinic_email_failed"
+    assert phone == "5581996503841"
+    assert metadata["origin"] == "dashboard"
+    assert "CLINIC_NOTIFY_EMAIL" in metadata["reason"]
+
+
+@pytest.mark.asyncio
+async def test_send_clinic_email_falha_de_envio_registra_evento():
+    """Erro de SMTP no envio também vira clinic_email_failed."""
+    import payments
+
+    env = {"SMTP_HOST": "smtp.test", "SMTP_PORT": "465", "SMTP_USER": "u@test",
+           "SMTP_PASSWORD": "x", "CLINIC_NOTIFY_EMAIL": "clinica@test"}
+    with patch.dict(os.environ, env, clear=False), \
+         patch("smtplib.SMTP_SSL", side_effect=OSError("connection refused")), \
+         patch("attendant_db.log_event", new_callable=AsyncMock) as mock_log:
+        with pytest.raises(OSError):
+            await payments._send_clinic_email(subject="Assunto", body="corpo", phone="5581999999999")
+
+    mock_log.assert_awaited_once()
+    event_type, _, metadata = mock_log.await_args.args
+    assert event_type == "clinic_email_failed"
+    assert "connection refused" in metadata["reason"]
+
+
+@pytest.mark.asyncio
+async def test_pagar_sem_smtp_registra_pagamento_e_falha_de_email(mock_supabase):
+    """Pagamento continua sendo registrado mesmo sem SMTP — mas a falha fica auditável."""
+    update_mock = AsyncMock(return_value=AsyncMock(data=[{}]))
+    mock_supabase.from_.return_value.update.return_value.eq.return_value.execute = update_mock
+
+    with patch.dict(os.environ, {"SMTP_HOST": "", "SMTP_USER": "", "SMTP_PASSWORD": "",
+                                 "CLINIC_NOTIFY_EMAIL": ""}, clear=False), \
+         patch("payments._append_payment_sheet", new_callable=AsyncMock), \
+         patch("attendant_db.log_event", new_callable=AsyncMock) as mock_log:
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
+            resp = await ac.post(
+                "/api/pagamentos/appt-123/pagar",
+                json={"tipo": "consulta", "valor": 550, "forma_pagamento": "PIX",
+                      "paciente": "Arthur Tenório Ribeiro Clark", "medico": "Dra. Bruna",
+                      "data_hora": "27/07/2026 16:00", "phone": "5581996503841"},
+                headers=HEADERS,
+            )
+
+    assert resp.status_code == 200
+    update_mock.assert_awaited()
+    logged = [c.args[0] for c in mock_log.await_args_list]
+    assert "clinic_email_failed" in logged
+
+
+def test_missing_smtp_vars_lista_apenas_ausentes():
+    """missing_smtp_vars alimenta o aviso de startup do dashboard."""
+    import payments
+
+    env = {"SMTP_HOST": "smtp.test", "SMTP_USER": "u@test",
+           "SMTP_PASSWORD": "", "CLINIC_NOTIFY_EMAIL": ""}
+    with patch.dict(os.environ, env, clear=False):
+        assert payments.missing_smtp_vars() == ["SMTP_PASSWORD", "CLINIC_NOTIFY_EMAIL"]
+
+    env_ok = {"SMTP_HOST": "smtp.test", "SMTP_USER": "u@test",
+              "SMTP_PASSWORD": "x", "CLINIC_NOTIFY_EMAIL": "clinica@test"}
+    with patch.dict(os.environ, env_ok, clear=False):
+        assert payments.missing_smtp_vars() == []

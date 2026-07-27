@@ -2738,3 +2738,59 @@ def test_doctor_daily_agenda_reads_patient_name_from_patients_join():
     _, body = _format_agenda_email("Dr. Júlio", "01/06/2026", appts)
     assert "Miguel" in body
     assert "Paciente" not in body
+
+
+# ── _notify_clinic: falha de e-mail nunca some em silêncio ────────────────────
+
+@pytest.mark.asyncio
+async def test_notify_clinic_logs_event_when_smtp_not_configured():
+    """SMTP ausente registra clinic_email_failed em vez de retornar em silêncio.
+
+    Regressão: até 27/07/2026 o e-mail simplesmente não saía e nada indicava isso —
+    pagamentos do Arthur Tenório e da Camila Brasileiro ficaram sem notificar a clínica.
+    """
+    from app.graph.tools import _notify_clinic
+
+    with patch.dict(os.environ, {"SMTP_HOST": "", "SMTP_USER": "", "SMTP_PASSWORD": "",
+                                 "CLINIC_NOTIFY_EMAIL": ""}, clear=False), \
+         patch("app.graph.tools.log_event", new_callable=AsyncMock) as mock_log:
+        await _notify_clinic("corpo", phone=PHONE, subject="Comprovante recebido — Arthur")
+
+    mock_log.assert_awaited_once()
+    event_type, phone, metadata = mock_log.await_args.args
+    assert event_type == "clinic_email_failed"
+    assert phone == PHONE
+    assert metadata["subject"] == "Comprovante recebido — Arthur"
+    assert metadata["origin"] == "bot"
+    assert "CLINIC_NOTIFY_EMAIL" in metadata["reason"]
+
+
+@pytest.mark.asyncio
+async def test_notify_clinic_logs_event_when_send_raises():
+    """Erro de SMTP no envio também vira clinic_email_failed — e não propaga."""
+    from app.graph.tools import _notify_clinic
+
+    async def boom(subject, body):
+        raise OSError("connection refused")
+
+    with patch("app.email_sender.send_clinic_notification_email", side_effect=boom), \
+         patch("app.graph.tools.log_event", new_callable=AsyncMock) as mock_log:
+        await _notify_clinic("corpo", phone=PHONE, subject="Pagamento registrado — Ana")
+
+    mock_log.assert_awaited_once()
+    event_type, _, metadata = mock_log.await_args.args
+    assert event_type == "clinic_email_failed"
+    assert "connection refused" in metadata["reason"]
+
+
+@pytest.mark.asyncio
+async def test_notify_clinic_does_not_raise_when_log_event_also_fails():
+    """Notificação nunca derruba o fluxo do paciente, mesmo sem conseguir auditar."""
+    from app.graph.tools import _notify_clinic
+
+    async def boom(subject, body):
+        raise OSError("connection refused")
+
+    with patch("app.email_sender.send_clinic_notification_email", side_effect=boom), \
+         patch("app.graph.tools.log_event", side_effect=RuntimeError("db down")):
+        await _notify_clinic("corpo", phone=PHONE, subject="qualquer")

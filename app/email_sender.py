@@ -42,7 +42,13 @@ def _send_email(
 
 async def send_clinic_notification_email(subject: str, body: str) -> None:
     """Send a notification email to the clinic address (CLINIC_NOTIFY_EMAIL).
-    Does nothing if SMTP credentials or CLINIC_NOTIFY_EMAIL are not configured.
+
+    Raises RuntimeError if SMTP credentials or CLINIC_NOTIFY_EMAIL are missing.
+    Um serviço sem SMTP configurado é indistinguível de um e-mail entregue se
+    isso retornar em silêncio — foi assim que a clínica deixou de ser avisada de
+    pagamentos registrados pelo dashboard em 27/07/2026. Todos os chamadores já
+    capturam a exceção; quem captura é responsável por logar e registrar o
+    evento `clinic_email_failed`.
     """
     smtp_host = os.environ.get("SMTP_HOST")
     smtp_port = int(os.environ.get("SMTP_PORT", "465"))
@@ -50,8 +56,17 @@ async def send_clinic_notification_email(subject: str, body: str) -> None:
     smtp_password = os.environ.get("SMTP_PASSWORD")
     to_email = os.environ.get("CLINIC_NOTIFY_EMAIL")
 
-    if not all([smtp_host, smtp_user, smtp_password, to_email]):
-        return
+    missing = [
+        name for name, value in (
+            ("SMTP_HOST", smtp_host), ("SMTP_USER", smtp_user),
+            ("SMTP_PASSWORD", smtp_password), ("CLINIC_NOTIFY_EMAIL", to_email),
+        ) if not value
+    ]
+    if missing:
+        raise RuntimeError(
+            f"E-mail à clínica NÃO enviado ({subject!r}) — variáveis ausentes: "
+            f"{', '.join(missing)}"
+        )
 
     loop = asyncio.get_running_loop()
     await loop.run_in_executor(

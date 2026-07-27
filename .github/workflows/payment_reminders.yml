@@ -32,4 +32,11 @@ jobs:
           CHATWOOT_AGENT_BOT_TOKEN: ${{ secrets.CHATWOOT_AGENT_BOT_TOKEN }}
           CHATWOOT_INBOX_ID: ${{ secrets.CHATWOOT_INBOX_ID }}
           CHATWOOT_USER_TOKEN: ${{ secrets.CHATWOOT_USER_TOKEN }}
+          # Sem estas, o aviso de cancelamento por falta de pagamento nunca chega
+          # à clínica — send_clinic_notification_email não tinha para onde enviar.
+          SMTP_HOST: ${{ secrets.SMTP_HOST }}
+          SMTP_PORT: ${{ secrets.SMTP_PORT }}
+          SMTP_USER: ${{ secrets.SMTP_USER }}
+          SMTP_PASSWORD: ${{ secrets.SMTP_PASSWORD }}
+          CLINIC_NOTIFY_EMAIL: ${{ secrets.CLINIC_NOTIFY_EMAIL }}
         run: uv run python scripts/send_payment_reminders.py

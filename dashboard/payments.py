@@ -82,14 +82,36 @@ def _calc_valor_consulta(
     return base - 50  # desconto PIX/dinheiro
 
 
-async def _send_clinic_email(subject: str, body: str) -> None:
+def missing_smtp_vars() -> list[str]:
+    """Nomes das variáveis SMTP ausentes no ambiente (vazio = tudo configurado)."""
+    return [
+        name for name in ("SMTP_HOST", "SMTP_USER", "SMTP_PASSWORD", "CLINIC_NOTIFY_EMAIL")
+        if not os.environ.get(name)
+    ]
+
+
+async def _send_clinic_email(subject: str, body: str, phone: str = "") -> None:
+    """Envia e-mail à clínica. Levanta exceção se o SMTP não estiver configurado
+    ou se o envio falhar, sempre registrando `clinic_email_failed` em `events`.
+
+    O dashboard roda num container separado do bot, com env próprio: um serviço
+    sem SMTP retornava aqui em silêncio e o pagamento ficava registrado sem que
+    a clínica soubesse (casos Arthur Tenório e Camila Brasileiro, 27/07/2026).
+    """
     smtp_host = os.environ.get("SMTP_HOST")
     smtp_port = int(os.environ.get("SMTP_PORT", "465"))
     smtp_user = os.environ.get("SMTP_USER")
     smtp_password = os.environ.get("SMTP_PASSWORD")
     to_email = os.environ.get("CLINIC_NOTIFY_EMAIL")
-    if not all([smtp_host, smtp_user, smtp_password, to_email]):
-        return
+
+    missing = missing_smtp_vars()
+    if missing:
+        reason = f"variáveis ausentes no serviço dashboard: {', '.join(missing)}"
+        logger.error("CLINIC_EMAIL_FAILED subject=%r phone=%s — %s", subject, phone, reason)
+        await attendant_db.log_event("clinic_email_failed", phone, {
+            "subject": subject, "reason": reason, "origin": "dashboard",
+        })
+        raise RuntimeError(f"E-mail à clínica NÃO enviado ({subject!r}) — {reason}")
 
     def _send() -> None:
         msg = MIMEMultipart("alternative")
@@ -102,7 +124,14 @@ async def _send_clinic_email(subject: str, body: str) -> None:
             server.sendmail(smtp_user, to_email, msg.as_string())
 
     loop = asyncio.get_running_loop()
-    await loop.run_in_executor(None, _send)
+    try:
+        await loop.run_in_executor(None, _send)
+    except Exception as exc:
+        logger.exception("CLINIC_EMAIL_FAILED subject=%r phone=%s", subject, phone)
+        await attendant_db.log_event("clinic_email_failed", phone, {
+            "subject": subject, "reason": str(exc), "origin": "dashboard",
+        })
+        raise
 
 
 def _set_hyperlink_cell(service, spreadsheet_id: str, updated_range: str, drive_link: str, filename: str) -> None:
@@ -515,6 +544,7 @@ async def mark_paid(
                     f"Forma: {forma_label}\n"
                     f"appointment_id: {appointment_id}"
                 ),
+                phone=phone,
             )
         except Exception:
             logger.exception("ALERT_EMAIL_FAILED patient=%s", paciente)
@@ -535,6 +565,7 @@ async def mark_paid(
                     f"Consulta: {data_hora}\n"
                     f"Link: {drive_link}"
                 ),
+                phone=phone,
             )
         else:
             tipo_label = "Taxa de reserva" if tipo == "taxa" else "Consulta"
@@ -549,6 +580,7 @@ async def mark_paid(
                     f"Valor: R$ {amount_str}\n"
                     f"Forma: {forma_label}"
                 ),
+                phone=phone,
             )
     except Exception:
         logger.exception("EMAIL_FAILED patient=%s", paciente)
