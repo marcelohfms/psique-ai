@@ -33,8 +33,17 @@ SCHEDULE_EXCEPTIONS: dict[str, dict[str, list[tuple[int, int, int, int, str]]]] 
         "2026-07-06": [],                                                       # Segunda: sem atendimento (bloqueado)
         "2026-07-23": [],                                                       # Quinta: sem atendimento (bloqueado)
         "2026-07-16": [],                                                       # Quinta: feriado Nossa Senhora do Carmo (Recife)
+        "2026-08-20": [(9, 0, 12, 0, "escolha"), (14, 0, 18, 0, "escolha")],   # Quinta: 18h-20h bloqueado
+        "2026-08-31": [(9, 0, 12, 0, "escolha")],                              # Segunda: tarde (a partir das 14h) bloqueada
         "2026-09-07": [],                                                       # Segunda: feriado Independência do Brasil
         "2026-10-12": [],                                                       # Segunda: feriado Nossa Sra. Aparecida
+        "2026-10-15": [],                                                       # Quinta: sem atendimento (bloqueado)
+        "2026-10-19": [],                                                       # Segunda: sem atendimento (bloqueado)
+        "2026-10-21": [],                                                       # Quarta: sem atendimento (bloqueado)
+        "2026-10-22": [],                                                       # Quinta: sem atendimento (bloqueado)
+        "2026-10-26": [],                                                       # Segunda: sem atendimento (bloqueado)
+        "2026-10-28": [],                                                       # Quarta: sem atendimento (bloqueado)
+        "2026-10-29": [],                                                       # Quinta: sem atendimento (bloqueado)
         "2026-11-02": [],                                                       # Segunda: feriado Finados
         "2026-12-24": [],                                                       # Quinta: ponto facultativo Véspera de Natal
         "2026-12-31": [],                                                       # Quinta: ponto facultativo Véspera de Ano Novo
