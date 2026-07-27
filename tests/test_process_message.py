@@ -2535,3 +2535,141 @@ async def test_guard_ignores_rio_de_janeiro_mention_unrelated_to_address():
     original = "Sim! Vi que você é do Rio de Janeiro — atendemos online normalmente, sem problema."
     sent_text, _ = await _run_patient_agent_with_response(state, original)
     assert sent_text == original
+
+
+# ── Guard: endereço inventado (whitelist) ────────────────────────────────────
+# Regressão: conversa real 5581995011672 (27/07/2026) — durante o cadastro a Eva
+# respondeu "A clínica fica na Rua dos Jacarandás, 100, no bairro Jardim das
+# Flores". Duas falhas somadas: (1) COLLECT_SYSTEM nunca recebeu CLINIC_ADDRESS,
+# apesar de a instrução de interrupção mandar responder sobre endereço "usando as
+# regras acima"; (2) o guard antigo era uma blacklist de termos do incidente
+# anterior (Rio de Janeiro/Tijuca) e vivia só no patient_agent_node.
+
+_INVENTED_ADDRESS_REPLY = (
+    "Claro! A consulta com o Dr. Júlio custa R$ 700,00.\n\n"
+    "A clínica fica na Rua dos Jacarandás, 100, no bairro Jardim das Flores. "
+    "Aceitamos pagamento em dinheiro, PIX ou cartão.\n\n"
+    "Pode me informar o seu nome completo?"
+)
+
+
+def test_collect_system_prompt_carries_clinic_address():
+    """COLLECT_SYSTEM responde dúvidas de endereço na FASE 1 e nas interrupções do
+    cadastro — sem o bloco de endereço injetado, a Eva inventa um."""
+    from app.graph.prompts import COLLECT_SYSTEM
+    assert "{clinic_address}" in COLLECT_SYSTEM
+
+
+def test_every_patient_facing_prompt_carries_clinic_address():
+    """Nenhum prompt que fala com o paciente pode nascer sem o endereço da clínica."""
+    from app.graph import prompts
+    for name in ("COLLECT_SYSTEM", "NEW_PATIENT_SYSTEM", "EXISTING_PATIENT_SYSTEM"):
+        assert "{clinic_address}" in getattr(prompts, name), (
+            f"{name} não injeta o endereço da clínica"
+        )
+
+
+def test_clinic_address_inline_is_derived_from_canonical_text():
+    """A variante de uma linha não pode divergir da fonte única."""
+    from app.graph.prompts import CLINIC_ADDRESS_INLINE, CLINIC_ADDRESS_TEXT
+    for line in CLINIC_ADDRESS_TEXT.splitlines():
+        assert line in CLINIC_ADDRESS_INLINE
+    assert "\n" not in CLINIC_ADDRESS_INLINE
+
+
+def test_sanitize_replaces_invented_address_keeping_rest():
+    from app.graph.prompts import sanitize_clinic_address
+    safe, changed = sanitize_clinic_address(_INVENTED_ADDRESS_REPLY)
+    assert changed is True
+    assert "Jacarandás" not in safe
+    assert "Jardim das Flores" not in safe
+    assert "República do Líbano, 251" in safe
+    # o resto da mensagem sobrevive — só a frase do endereço é substituída
+    assert "R$ 700,00" in safe
+    assert "Aceitamos pagamento em dinheiro, PIX ou cartão." in safe
+    assert "Pode me informar o seu nome completo?" in safe
+
+
+def test_sanitize_catches_wrong_number_on_the_right_street():
+    """Endereço quase certo (número trocado) também é endereço errado."""
+    from app.graph.prompts import sanitize_clinic_address
+    safe, changed = sanitize_clinic_address("Ficamos na Av. República do Líbano, 215 — Recife.")
+    assert changed is True
+    assert "215" not in safe
+    assert "251" in safe
+
+
+def test_sanitize_keeps_canonical_address_untouched():
+    from app.graph.prompts import sanitize_clinic_address, CLINIC_ADDRESS_TEXT
+    original = f"O endereço da clínica é:\n{CLINIC_ADDRESS_TEXT}\n\nAté lá! 😊"
+    safe, changed = sanitize_clinic_address(original)
+    assert changed is False
+    assert safe == original
+
+
+def test_sanitize_ignores_text_without_address():
+    from app.graph.prompts import sanitize_clinic_address
+    original = "Sim! Vi que você é do Rio de Janeiro, atendemos online normalmente."
+    safe, changed = sanitize_clinic_address(original)
+    assert changed is False
+    assert safe == original
+
+
+async def test_collect_info_node_blocks_invented_address():
+    """Integração: a resposta do collect_info_node passa pelo sanitizador antes de
+    chegar ao paciente E antes de ser salva no histórico da conversa."""
+    from app.graph.nodes import collect_info_node
+    from app.graph.schemas import CollectInfoOutput
+
+    llm_result = CollectInfoOutput(reply=_INVENTED_ADDRESS_REPLY, is_complete=False)
+
+    state = {
+        "phone": PHONE,
+        "messages": [HumanMessage(content="Qual o valor e onde fica a clínica?")],
+    }
+    with patch("app.graph.nodes._get_collect_llm") as mock_llm_fn, \
+         patch("app.graph.nodes.send_text", new_callable=AsyncMock) as mock_send, \
+         patch("app.graph.nodes.save_message", new_callable=AsyncMock) as mock_save, \
+         patch("app.graph.nodes.get_users_by_phone", new_callable=AsyncMock, return_value=[]):
+        mock_llm = MagicMock()
+        mock_llm.ainvoke = AsyncMock(return_value=llm_result)
+        mock_llm_fn.return_value = mock_llm
+        result = await collect_info_node(state, {})
+
+    sent_text = mock_send.call_args[0][1]
+    assert "Jacarandás" not in sent_text
+    assert "República do Líbano, 251" in sent_text
+    # histórico e checkpoint também precisam ficar limpos, senão a LLM repete
+    # o endereço inventado no próximo turno
+    assert "Jacarandás" not in mock_save.call_args[0][2]
+    assert "Jacarandás" not in result["messages"][0].content
+
+
+async def test_patient_agent_blocks_invented_address():
+    """O mesmo endereço inventado, agora vindo do agente principal."""
+    state = _make_patient_agent_state(
+        messages=[HumanMessage(content="Onde fica a clínica?")],
+    )
+    sent_text, result = await _run_patient_agent_with_response(
+        state, "A clínica fica na Rua dos Jacarandás, 100, no bairro Jardim das Flores."
+    )
+    assert "Jacarandás" not in sent_text
+    assert "República do Líbano, 251" in sent_text
+    assert result["messages"][0].content == sent_text
+
+
+def test_sanitize_keeps_correction_message_that_already_has_right_address():
+    """Mensagem real (08/07/2026, Izabel): a Eva se corrigiu citando "Rio de Janeiro"
+    JUNTO do endereço certo. O guard não pode descartar uma resposta correta só
+    porque a cidade errada aparece no texto."""
+    from app.graph.prompts import sanitize_clinic_address
+    original = (
+        "Obrigada por avisar, Izabel! Realmente, você não é do Rio de Janeiro. "
+        "O endereço correto da Clínica Psique, onde será a consulta presencial da Júlia, é:\n\n"
+        "RioMar Trade Center, Torre 1, Andar 25, Sala 2502\n"
+        "Av. República do Líbano, 251 — Recife-PE\n\n"
+        "Se precisar de mais alguma informação, estou à disposição! 😊"
+    )
+    safe, changed = sanitize_clinic_address(original)
+    assert changed is False
+    assert safe == original

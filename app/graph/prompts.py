@@ -1,3 +1,5 @@
+import re as _re
+
 ATTENDANT_INSTRUCTION_RULE = """\
 - Quando receber uma mensagem prefixada com "[Instrução da atendente]:", execute a ação solicitada \
 usando as ferramentas disponíveis. Regras de roteamento:\
@@ -179,7 +181,7 @@ sem fazer perguntas. Exemplo: "Perfeito, tudo anotado! 😊"
 - Seja acolhedor e empático — a clínica cuida de saúde mental.
 - Responda SEMPRE em português brasileiro.
 - Ao perguntar sobre o médico preferido, use EXATAMENTE: "Você tem preferência pelo Dr. Júlio ou pela Dra. Bruna?"
-{pricing_rules}{medical_limits_rule}"""
+{pricing_rules}{clinic_address}{doctors_info}{medical_limits_rule}"""
 
 MINOR_RULE = """\
 
@@ -229,6 +231,10 @@ CLINIC_ADDRESS_TEXT = """\
 RioMar Trade Center, Torre 1, Andar 25, Sala 2502
 Av. República do Líbano, 251 — Recife-PE"""
 
+# Mesma informação em uma linha, para substituir uma frase inventada no meio de um
+# parágrafo sem quebrar o texto. Derivado — nunca redigite o endereço.
+CLINIC_ADDRESS_INLINE = ", ".join(CLINIC_ADDRESS_TEXT.splitlines())
+
 CLINIC_ADDRESS = f"""\
 
 ENDEREÇO DA CLÍNICA — REGRA ABSOLUTA: use SOMENTE o endereço abaixo, palavra por palavra, \
@@ -238,6 +244,106 @@ altere ou mencione outra cidade, bairro, rua ou endereço.
 
 PLANOS DE SAÚDE: A clínica NÃO aceita planos de saúde. O atendimento é exclusivamente particular.
 """
+
+# ── Sanitizador de endereço ──────────────────────────────────────────────────
+# Prompt não garante nada: a Eva já inventou endereço COM o bloco acima presente
+# (Rio de Janeiro, 08/07/2026) e SEM ele (Rua dos Jacarandás, 27/07/2026, caminho
+# do collect_info). A garantia é este filtro determinístico, aplicado nos nós e de
+# novo no send_text. É uma WHITELIST: qualquer coisa com cara de endereço que não
+# seja o endereço canônico é substituída — blacklist só pega o erro de ontem.
+
+_ADDRESS_TOKEN_RE = _re.compile(
+    r"(?:\b(?:rua|avenida|travessa|alameda|pra[cç]a|rodovia|estrada|bairro|cep)\b|\bav\.)",
+    _re.IGNORECASE,
+)
+_LOCATION_PHRASE_RE = _re.compile(
+    r"(?:cl[ií]nica fica|ficamos (?:localizad|na |no |em )|estamos localizad|"
+    r"fica localizad|unidade fica|funcionamos (?:na|no|em))",
+    _re.IGNORECASE,
+)
+# Afirmações falsas sobre localização que não têm forma de endereço (sem rua/número)
+# e por isso escapam da checagem por parágrafo. Descartam a mensagem inteira.
+# A clínica tem uma unidade só — isto é falso mesmo junto do endereço correto.
+_FALSE_UNIT_CLAIMS = ("duas unidades", "duas localizacoes", "outra unidade")
+# Cidade/bairro do incidente do Rio de Janeiro. Só é fatal quando a mensagem NÃO
+# traz o endereço correto — citar a cidade do paciente é legítimo (08/07/2026,
+# Izabel: "você não é do Rio de Janeiro" veio junto do endereço certo).
+_WRONG_CITY_TERMS = ("rio de janeiro", "tijuca", "conde de bonfim")
+# Não quebra em abreviação ("Av. República", "Dr. Júlio") — senão o número da rua
+# fica órfão numa "frase" sem token de endereço e escapa do filtro.
+_SENTENCE_SPLIT_RE = _re.compile(
+    r"(?<!\bav\.)(?<!\bdr\.)(?<!\bdra\.)(?<!\bsr\.)(?<!\bsra\.)(?<!\bex\.)(?<=[.!?])\s+",
+    _re.IGNORECASE,
+)
+
+
+def _strip_accents(text: str) -> str:
+    import unicodedata
+    return "".join(
+        c for c in unicodedata.normalize("NFKD", text) if not unicodedata.combining(c)
+    ).lower()
+
+
+def _is_canonical_address(text: str) -> bool:
+    """True quando o trecho cita o endereço real da clínica (tolerante a formatação)."""
+    n = _strip_accents(text)
+    return ("libano" in n and "251" in n) or ("riomar" in n and "2502" in n)
+
+
+def _looks_like_address(text: str) -> bool:
+    return bool(_ADDRESS_TOKEN_RE.search(text) or _LOCATION_PHRASE_RE.search(text))
+
+
+def sanitize_clinic_address(text: str) -> tuple[str, bool]:
+    """Substitui qualquer endereço não-canônico pelo endereço real da clínica.
+
+    Retorna (texto_seguro, corrigido). Mensagens sem cara de endereço passam
+    intactas — o custo é uma regex por mensagem enviada.
+    """
+    if not text:
+        return text, False
+
+    normalized = _strip_accents(text)
+    if "endereco" in normalized or "clinica fica" in normalized:
+        _false_claim = any(claim in normalized for claim in _FALSE_UNIT_CLAIMS) or (
+            not _is_canonical_address(text)
+            and any(term in normalized for term in _WRONG_CITY_TERMS)
+        )
+        if _false_claim:
+            # Afirmação falsa sobre onde a clínica fica: nada da resposta é aproveitável.
+            return f"O endereço da clínica é:\n{CLINIC_ADDRESS_TEXT}", True
+
+    if not _looks_like_address(text):
+        return text, False
+
+    corrected_sentence = f"A clínica fica no {CLINIC_ADDRESS_INLINE}."
+    changed = False
+    safe_paragraphs = []
+    # Parágrafo (bloco entre linhas em branco) = bolha do WhatsApp. O endereço
+    # canônico ocupa 2 linhas, então a checagem é por parágrafo, não por linha.
+    for paragraph in text.split("\n\n"):
+        if _is_canonical_address(paragraph) or not _looks_like_address(paragraph):
+            safe_paragraphs.append(paragraph)
+            continue
+        replaced = False
+        safe_lines = []
+        for line in paragraph.split("\n"):
+            kept = []
+            for sentence in _SENTENCE_SPLIT_RE.split(line):
+                if not _looks_like_address(sentence):
+                    kept.append(sentence)
+                    continue
+                changed = True
+                if not replaced:
+                    kept.append(corrected_sentence)
+                    replaced = True
+            joined = " ".join(s for s in kept if s.strip())
+            if joined.strip():
+                safe_lines.append(joined)
+        safe_paragraphs.append("\n".join(safe_lines) if safe_lines else corrected_sentence)
+
+    return "\n\n".join(safe_paragraphs), changed
+
 
 DOCTORS_INFO = """\
 

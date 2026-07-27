@@ -9,8 +9,11 @@ Environment variables required:
   WHATSAPP_PHONE_NUMBER_ID  — Meta phone number ID (for template messages)
 """
 import asyncio
+import logging
 import os
 import httpx
+
+_logger = logging.getLogger(__name__)
 
 _GRAPH_URL = "https://graph.facebook.com/v22.0"
 
@@ -42,9 +45,32 @@ async def send_text(phone: str, text: str) -> None:
 
     Replies with blank-line-separated paragraphs are sent as separate WhatsApp
     bubbles, one per paragraph, instead of a single wall of text.
+
+    Último filtro antes do paciente: nenhum endereço inventado passa daqui, venha
+    de que nó ou script vier (os nós já sanitizam; isto cobre caminhos futuros).
     """
-    from app.chatwoot import find_or_create_conversation, send_message
+    from app.chatwoot import find_or_create_conversation, send_message, add_private_note
+    from app.graph.prompts import sanitize_clinic_address
+
     conversation_id = await find_or_create_conversation(phone)
+
+    safe_text, address_fixed = sanitize_clinic_address(text)
+    if address_fixed:
+        _logger.error(
+            "GUARD_WRONG_ADDRESS: endereço inventado interceptado no send_text phone=%s original=%s",
+            phone, text,
+        )
+        try:
+            await add_private_note(
+                conversation_id,
+                "⚠️ A Eva tentou enviar um endereço que não é o da clínica. "
+                "A mensagem foi corrigida automaticamente antes do envio.\n\n"
+                f"Texto original: {text}",
+            )
+        except Exception:
+            _logger.exception("Falha ao registrar nota privada do guard de endereço")
+    text = safe_text
+
     parts = _split_into_messages(text) or [text]
     for i, part in enumerate(parts):
         if i > 0:

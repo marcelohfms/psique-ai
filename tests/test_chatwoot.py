@@ -264,3 +264,41 @@ async def test_find_or_create_skips_duplicate_contact_without_conversation():
         result = await find_or_create_conversation("5581999735649@s.whatsapp.net")
 
     assert result == 333
+
+
+async def test_send_text_sanitizes_invented_clinic_address():
+    """Rede final: qualquer texto que chegue ao paciente passa pelo sanitizador de
+    endereço, mesmo vindo de um caminho novo (cron, script, nó futuro)."""
+    from app.chatwoot import register_conversation, _store
+    _store.clear()
+    register_conversation("5511999999999@s.whatsapp.net", 99)
+
+    with patch("app.chatwoot.send_message", new_callable=AsyncMock) as mock_send, \
+         patch("app.chatwoot.add_private_note", new_callable=AsyncMock) as mock_note, \
+         patch("app.whatsapp.asyncio.sleep", new_callable=AsyncMock):
+        from app.whatsapp import send_text
+        await send_text(
+            "5511999999999@s.whatsapp.net",
+            "A clínica fica na Rua dos Jacarandás, 100, no bairro Jardim das Flores.",
+        )
+
+    sent = " ".join(c.args[1] for c in mock_send.await_args_list)
+    assert "Jacarandás" not in sent
+    assert "República do Líbano, 251" in sent
+    # a clínica precisa saber que a Eva alucinou — nota privada, não mensagem ao paciente
+    mock_note.assert_awaited_once()
+    assert "Jacarandás" in mock_note.await_args.args[1]
+
+
+async def test_send_text_does_not_alert_on_normal_message():
+    from app.chatwoot import register_conversation, _store
+    _store.clear()
+    register_conversation("5511999999999@s.whatsapp.net", 99)
+
+    with patch("app.chatwoot.send_message", new_callable=AsyncMock) as mock_send, \
+         patch("app.chatwoot.add_private_note", new_callable=AsyncMock) as mock_note:
+        from app.whatsapp import send_text
+        await send_text("5511999999999@s.whatsapp.net", "Oi! Tudo bem?")
+
+    mock_note.assert_not_awaited()
+    assert mock_send.await_args.args[1] == "Oi! Tudo bem?"
