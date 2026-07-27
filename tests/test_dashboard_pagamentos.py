@@ -112,3 +112,29 @@ async def test_pagar_tipo_invalido_retorna_400():
             headers=HEADERS,
         )
     assert resp.status_code == 400
+
+
+@pytest.mark.asyncio
+async def test_sheets_append_failure_notifies_clinic(mock_supabase):
+    """POST /api/pagamentos/{id}/pagar envia alerta de e-mail quando sheets append falha."""
+    update_mock = AsyncMock(return_value=AsyncMock(data=[{}]))
+    mock_supabase.from_.return_value.update.return_value.eq.return_value.execute = update_mock
+
+    async def failing_append(*args, **kwargs):
+        raise RuntimeError("Google Sheets append retornou updatedRange vazio — pagamento NÃO foi gravado.")
+
+    with patch("payments._append_payment_sheet", side_effect=failing_append), \
+         patch("payments._send_clinic_email", new_callable=AsyncMock) as mock_email:
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
+            resp = await ac.post(
+                "/api/pagamentos/appt-123/pagar",
+                json={"tipo": "taxa", "valor": 100, "forma_pagamento": "PIX",
+                      "paciente": "Camila Brasileiro", "medico": "Dr. Júlio",
+                      "data_hora": "27/07/2026 14:00", "phone": "5581987516312"},
+                headers=HEADERS,
+            )
+    assert resp.status_code == 200
+    # Ensure the alert email was called with failure message
+    alert_emails = [call for call in mock_email.call_args_list
+                    if "FALHA ao gravar" in str(call)]
+    assert len(alert_emails) > 0, "Clinic should be notified of sheets append failure"

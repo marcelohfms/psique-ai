@@ -179,10 +179,17 @@ async def _append_payment_sheet(
             valueInputOption="USER_ENTERED",
             body={"values": [row]},
         ).execute()
-        return response.get("updates", {}).get("updatedRange", "")
+        updated_range = response.get("updates", {}).get("updatedRange", "")
+        if not updated_range:
+            raise RuntimeError(
+                f"Google Sheets append retornou updatedRange vazio — "
+                f"pagamento NÃO foi gravado. response={response}"
+            )
+        return updated_range
 
     loop = asyncio.get_running_loop()
     updated_range = await loop.run_in_executor(None, _append)
+    logger.info("_append_payment_sheet: row written at range=%r patient=%s", updated_range, patient_name)
 
     if drive_link and updated_range:
         safe_name = patient_name.replace(" ", "_")
