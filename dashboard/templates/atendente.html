@@ -123,12 +123,19 @@ async function loadPagamentos() {
 }
 
 function pagamentoCard(p) {
-  const tipoLabel = p.tipo === "taxa" ? "Taxa de reserva" : "Consulta";
+  const tipoLabel = p.tipo === "taxa"
+    ? "Taxa de reserva"
+    : (p.realizada === false ? "Consulta (antecipado)" : "Consulta");
   const badgeClass = p.tipo === "taxa"
     ? "bg-green-100 text-green-700 dark:bg-green-900 dark:text-green-200"
-    : "bg-blue-100 text-blue-700 dark:bg-blue-900 dark:text-blue-200";
+    : (p.realizada === false
+        ? "bg-amber-100 text-amber-700 dark:bg-amber-900 dark:text-amber-200"
+        : "bg-blue-100 text-blue-700 dark:bg-blue-900 dark:text-blue-200");
   const isentarBtn = p.tipo === "taxa"
     ? `<button onclick="isentarTaxa(this)" class="bg-gray-500 hover:bg-gray-600 text-white text-xs px-3 py-1.5 rounded">Isentar taxa</button>`
+    : "";
+  const aviso = p.realizada === false
+    ? `<div class="text-xs text-amber-600 dark:text-amber-400 mb-2">Consulta ainda não realizada — pagamento antecipado, opcional.</div>`
     : "";
   return `<div class="bg-white dark:bg-gray-800 rounded-lg shadow p-3" data-appt="${escapeHtml(p.appointment_id)}" data-tipo="${escapeHtml(p.tipo)}"
        data-paciente="${escapeHtml(p.paciente)}" data-medico="${escapeHtml(p.medico)}" data-data-hora="${escapeHtml(p.data_hora)}" data-phone="${escapeHtml(p.phone)}"
@@ -138,6 +145,7 @@ function pagamentoCard(p) {
       <span class="text-xs px-2 py-0.5 rounded-full ${badgeClass}">${tipoLabel}</span>
     </div>
     <div class="text-xs text-gray-500 dark:text-gray-400 mb-2">${escapeHtml(p.medico)} · ${escapeHtml(p.data_hora)}</div>
+    ${aviso}
     <div class="flex items-center gap-2 flex-wrap">
       <input type="number" min="0" value="${p.valor}" class="valor-input w-20 border border-gray-300 dark:border-gray-600 dark:bg-gray-700 dark:text-gray-100 rounded px-2 py-1 text-sm">
       <select class="forma-input border border-gray-300 dark:border-gray-600 dark:bg-gray-700 dark:text-gray-100 rounded px-2 py-1 text-sm">

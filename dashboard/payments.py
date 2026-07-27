@@ -417,8 +417,11 @@ async def compute_pendencias(client, patient_ids: list[str] | None = None) -> li
                 "valor": 100,
             })
 
-        # Consultas só aparecem se já foram realizadas (status=completed)
-        if first.get("status") == "completed" and not all(row.get("paid_at") for row in rows):
+        # Consulta ainda não paga: se já aconteceu (completed) é pendência de fato;
+        # se ainda não aconteceu (scheduled), é só uma opção de pagamento antecipado
+        # (ver `realizada`) — quem decide se isso conta como "pendente de verdade"
+        # é quem consome a lista (dashboard geral separa em quadros distintos).
+        if not all(row.get("paid_at") for row in rows):
             valor = _calc_valor_consulta(
                 first.get("doctor_id", ""),
                 birth_date,
@@ -436,6 +439,7 @@ async def compute_pendencias(client, patient_ids: list[str] | None = None) -> li
                 "tipo": "consulta",
                 "tipo_label": "Consulta",
                 "valor": valor,
+                "realizada": first.get("status") == "completed",
             })
 
     pendencias.sort(key=lambda x: x["start_time"])

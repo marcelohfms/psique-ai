@@ -37,15 +37,21 @@ def _appt(appointment_id, patient_id, patient_name, phone, **overrides):
 
 async def test_compute_pendencias_sem_filtro_retorna_tudo(fake_client):
     fake_client.store["appointments"] = [
-        _appt("a1", "p1", "João", "5581999990000"),  # scheduled: taxa
+        _appt("a1", "p1", "João", "5581999990000"),  # scheduled: taxa + consulta (não realizada)
         _appt("a2", "p2", "Maria", "5581999991111", status="completed"),  # completed: taxa + consulta
     ]
     out = await payments.compute_pendencias(fake_client)
     assert {p["appointment_id"] for p in out} == {"a1", "a2"}
-    # a1: taxa (scheduled) | a2: taxa + consulta (completed) = 3 pendências
-    assert len(out) == 3
-    # a1 só tem taxa, a2 tem taxa + consulta
-    assert [p["tipo"] for p in sorted(out, key=lambda x: x["appointment_id"])] == ["taxa", "taxa", "consulta"]
+    # a1: taxa + consulta não realizada | a2: taxa + consulta realizada = 4 entradas
+    assert len(out) == 4
+    a1_tipos = sorted(p["tipo"] for p in out if p["appointment_id"] == "a1")
+    a2_tipos = sorted(p["tipo"] for p in out if p["appointment_id"] == "a2")
+    assert a1_tipos == ["consulta", "taxa"]
+    assert a2_tipos == ["consulta", "taxa"]
+    a1_consulta = next(p for p in out if p["appointment_id"] == "a1" and p["tipo"] == "consulta")
+    a2_consulta = next(p for p in out if p["appointment_id"] == "a2" and p["tipo"] == "consulta")
+    assert a1_consulta["realizada"] is False
+    assert a2_consulta["realizada"] is True
 
 
 async def test_compute_pendencias_filtra_por_patient_ids(fake_client):
@@ -68,10 +74,36 @@ async def test_compute_pendencias_taxa_ja_paga_nao_aparece(fake_client):
     fake_client.store["appointments"] = [
         _appt("a1", "p1", "João", "5581999990000",
               booking_fee_paid_at="2026-07-01T00:00:00+00:00",
-              status="completed"),  # Consulta só aparece para completed
+              status="completed"),
     ]
     out = await payments.compute_pendencias(fake_client)
     assert {p["tipo"] for p in out} == {"consulta"}
+
+
+async def test_compute_pendencias_consulta_futura_nao_paga_tem_realizada_false(fake_client):
+    # Consulta agendada (ainda não aconteceu) sem paid_at: aparece como consulta
+    # "não realizada" — não é pendência de fato, é opção de pagamento antecipado.
+    fake_client.store["appointments"] = [
+        _appt("a1", "p1", "João", "5581999990000",
+              booking_fee_paid_at="2026-07-01T00:00:00+00:00",
+              status="scheduled"),
+    ]
+    out = await payments.compute_pendencias(fake_client)
+    consultas = [p for p in out if p["tipo"] == "consulta"]
+    assert len(consultas) == 1
+    assert consultas[0]["realizada"] is False
+
+
+async def test_compute_pendencias_consulta_completed_tem_realizada_true(fake_client):
+    fake_client.store["appointments"] = [
+        _appt("a1", "p1", "João", "5581999990000",
+              booking_fee_paid_at="2026-07-01T00:00:00+00:00",
+              status="completed"),
+    ]
+    out = await payments.compute_pendencias(fake_client)
+    consultas = [p for p in out if p["tipo"] == "consulta"]
+    assert len(consultas) == 1
+    assert consultas[0]["realizada"] is True
 
 
 async def test_compute_pendencias_extrai_telefone_do_contato_self(fake_client):
