@@ -470,20 +470,35 @@ async def collect_info_node(state: ConversationState, config: RunnableConfig) ->
 
     def _is_info_question(text: str) -> bool:
         """True quando o paciente interrompe o cadastro com uma pergunta de
-        informação (valor, endereço, convênio, pagamento, duração). Nesses casos a
-        Eva deve RESPONDER e repetir a pergunta pendente — nunca tratar o texto como
-        resposta do campo atual (caso Arthur/Lúcio: 'Qual valor da consulta?' era
-        engolido como CPF inválido, 2026-07-20)."""
+        informação (valor, endereço, convênio, pagamento, duração, localização).
+        Nesses casos a Eva deve RESPONDER e repetir a pergunta pendente — nunca
+        tratar o texto como resposta do campo atual (caso Arthur/Lúcio: 'Qual
+        valor da consulta?' era engolido como CPF inválido, 2026-07-20; caso Davi
+        27/07/2026: 'O atendimento é no rio mar?' ignorado, não detectado).
+
+        Whitelist em vez de blacklist: se a mensagem contém uma interrogação ou
+        palavras de busca de informação, é provavelmente uma pergunta, não uma
+        resposta de campo."""
         tl = (text or "").lower()
+        # Pergunta explícita (tem interrogação) + palavras-chave de informação
         _info_kws = [
             "valor", "valores", "preço", "preco", "quanto custa", "quanto é",
             "quanto e", "quanto fica", "custa", "custo", "endereço", "endereco",
             "onde fica", "onde é", "onde e", "como funciona", "convênio", "convenio",
             "plano de saúde", "plano de saude", "aceita plano", "quanto tempo",
             "duração", "duracao", "forma de pagamento", "formas de pagamento",
-            "aceita cartão", "aceita cartao", "parcela",
+            "aceita cartão", "aceita cartao", "parcela", "localiz", "atendimento é",
+            "atendimento esta", "funciona em", "agendam",
         ]
-        return any(kw in tl for kw in _info_kws)
+        has_question_mark = "?" in (text or "")
+        has_info_keyword = any(kw in tl for kw in _info_kws)
+        # Qualquer pergunta (?) + informação sobre clínica/agendamento = interrupção
+        if has_question_mark and has_info_keyword:
+            return True
+        # Contexto: se o médico/clínica são mencionados em pergunta, é info
+        if has_question_mark and any(x in tl for x in ["doutor", "dra.", "dra ", "médico", "dr.", "dr ", "clínica", "clinica"]):
+            return True
+        return False
 
     # Uma pergunta de informação durante o cadastro (FASE 2) é roteada ao LLM, que
     # tem as regras de preço/endereço e responde antes de retomar a pergunta pendente.
