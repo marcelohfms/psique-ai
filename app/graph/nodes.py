@@ -1400,7 +1400,7 @@ async def patient_agent_node(state: ConversationState, config: RunnableConfig) -
     _raw_age = state.get("patient_age")
     patient_age = _raw_age or 99          # numeric fallback for logic checks
     patient_age_display = f"{patient_age} anos" if _raw_age else "não informada"
-    _full_name = state.get("patient_name") or state.get("user_name") or "paciente"
+    _full_name = state.get("social_name") or state.get("patient_name") or state.get("user_name") or "paciente"
     from app.utils import display_name as _dn
     first_name = _dn(_full_name)
     # contact_name: who is on WhatsApp. May differ from patient_name (e.g. guardian).
@@ -1408,7 +1408,7 @@ async def patient_agent_node(state: ConversationState, config: RunnableConfig) -
     # patient_name as fallback so the LLM doesn't confuse the two people.
     _is_third_party = state.get("is_patient") is False
     _contact_full = state.get("user_name") or (
-        "responsável" if _is_third_party else (state.get("patient_name") or "paciente")
+        "responsável" if _is_third_party else (state.get("social_name") or state.get("patient_name") or "paciente")
     )
     contact_first_name = _dn(_contact_full)
     contact_name = _contact_full

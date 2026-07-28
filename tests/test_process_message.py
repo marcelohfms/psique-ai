@@ -1270,6 +1270,7 @@ def _make_patient_agent_state(**overrides) -> dict:
         "guardian_cpf": None,
         "silent_mode": None,
         "user_db_id": None,
+        "social_name": None,
         "messages": [HumanMessage(content="quero agendar uma consulta")],
     }
     base.update(overrides)
@@ -1359,6 +1360,16 @@ async def test_patient_agent_hydrates_social_name_from_db():
         result = await patient_agent_node(state, {})
 
     assert result.get("social_name") == "Malu"
+
+
+async def test_patient_agent_prefers_social_name_over_civil_name():
+    """Quando social_name já está no state, a Eva deve se dirigir ao paciente por
+    ele, não pelo nome civil — mesmo com patient_name preenchido."""
+    state = _make_patient_agent_state(patient_name="Carlos Silva", social_name="Malu")
+    system_msg = await _run_patient_agent(state, last_assistant_time=None)
+    assert system_msg is not None
+    assert "atendendo Malu" in system_msg.content
+    assert "atendendo Carlos Silva" not in system_msg.content
 
 
 async def test_pending_appointment_success_with_internal_prefix():
