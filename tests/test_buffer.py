@@ -83,6 +83,43 @@ async def test_messages_arriving_during_invoke_join_the_same_turn():
     assert "Saldo restante pago" in combined_text
 
 
+async def test_replays_paulo_diniz_incident_end_to_end():
+    """Replay da sequência real de 28/07/2026 (5581988521442), com o handler
+    tomando o lock como o process_message faz, e os tempos reais divididos por 40:
+
+        13:05:42.3  comprovante entra no buffer
+        13:05:45    invoke do comprovante começa (debounce de 3s)
+        13:06:02.9  "Pix enviado"          — invoke ainda rodando
+        13:06:08.5  "Saldo restante pago"  — invoke ainda rodando
+        13:06:14.1  invoke do comprovante termina (29s: Drive + Sheets)
+
+    Antes: 3 turnos → 3 respostas da Eva. Depois: 2 turnos — o comprovante e,
+    num único turno, as duas linhas que chegaram durante o invoke."""
+    from app.buffer import push, get_phone_lock
+
+    SCALE = 1 / 40
+    turns: list[str] = []
+
+    async def fake_process_message(_phone: str, text: str) -> None:
+        turns.append(text)
+        # process_message segura o lock durante todo o ainvoke (app/main.py:486)
+        async with get_phone_lock(_phone):
+            await asyncio.sleep(29 * SCALE if "COMPROVANTE" in text else 5 * SCALE)
+
+    with patch("app.buffer.DEBOUNCE_SECONDS", 3 * SCALE), \
+         patch("app.buffer._DEFER_RETRY_SECONDS", 1 * SCALE):
+        await push(PHONE, "[imagem]: COMPROVANTE DE PAGAMENTO R$ 600,00", fake_process_message)
+        await asyncio.sleep(20.6 * SCALE)
+        await push(PHONE, "Pix enviado", fake_process_message)
+        await asyncio.sleep(5.6 * SCALE)
+        await push(PHONE, "Saldo restante pago", fake_process_message)
+        await asyncio.sleep(40 * SCALE)
+
+    assert len(turns) == 2, f"esperava 2 turnos, veio {len(turns)}: {turns}"
+    assert "COMPROVANTE" in turns[0]
+    assert "Pix enviado" in turns[1] and "Saldo restante pago" in turns[1]
+
+
 async def test_deferral_cap_dispatches_even_if_lock_never_released():
     """Um invoke travado não pode engolir a mensagem em silêncio: passado o teto,
     o buffer despacha mesmo com o lock preso."""
