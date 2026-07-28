@@ -12,13 +12,14 @@ from app.graph.tools import (
     cancel_appointment, reschedule_appointment, mark_reschedule_in_progress,
     request_document, transfer_to_human, confirm_attendance,
     register_payment, update_preferred_doctor, save_patient_email,
+    set_social_name,
     register_refund_request, confirm_refund_completed,
     request_registration_update, nudge_doctor_document,
     consultar_data, extend_payment_deadline, waive_booking_fee,
     request_external_contact, nudge_external_contact,
     _expected_consultation_amount,
 )
-from app.graph.prompts import COLLECT_SYSTEM, MINOR_RULE, MINOR_RETURNING_RULE, ADULT_RULE, GUARDIAN_RULE, EXISTING_PATIENT_SYSTEM, NEW_PATIENT_SYSTEM, CANCELLATION_RULES, CLINIC_ADDRESS, CLINIC_ADDRESS_TEXT, DOCTORS_INFO, sanitize_clinic_address, get_booking_fee_rule, MEDICAL_LIMITS_RULE, AGE_EXCEPTION_RULE, DOCTOR_CORRECTION_RULE, EMAIL_RULE, get_pricing_rules, ATTENDANT_INSTRUCTION_RULE, get_pricing_exception_rule, CORRECT_PIX_KEY
+from app.graph.prompts import COLLECT_SYSTEM, MINOR_RULE, MINOR_RETURNING_RULE, ADULT_RULE, GUARDIAN_RULE, EXISTING_PATIENT_SYSTEM, NEW_PATIENT_SYSTEM, CANCELLATION_RULES, CLINIC_ADDRESS, CLINIC_ADDRESS_TEXT, DOCTORS_INFO, sanitize_clinic_address, get_booking_fee_rule, MEDICAL_LIMITS_RULE, AGE_EXCEPTION_RULE, DOCTOR_CORRECTION_RULE, EMAIL_RULE, get_pricing_rules, ATTENDANT_INSTRUCTION_RULE, get_pricing_exception_rule, CORRECT_PIX_KEY, SOCIAL_NAME_RULE
 from app.whatsapp import send_text
 from app.database import upsert_user, log_event, get_upcoming_appointments, get_user_by_phone, get_users_by_phone, DOCTOR_IDS, DOCTOR_NAMES, save_message, get_last_assistant_message_time, is_registration_complete
 from app.chatwoot import get_conversation_id, add_private_note
@@ -30,6 +31,7 @@ TOOLS = [
     cancel_appointment, reschedule_appointment, mark_reschedule_in_progress,
     request_document, transfer_to_human, confirm_attendance,
     register_payment, update_preferred_doctor, save_patient_email,
+    set_social_name,
     register_refund_request, confirm_refund_completed,
     request_registration_update, nudge_doctor_document,
     consultar_data, extend_payment_deadline, waive_booking_fee,
@@ -1163,6 +1165,8 @@ async def patient_agent_node(state: ConversationState, config: RunnableConfig) -
                     _sync_updates["financial_cpf"] = _h_patient["financial_cpf"]
                 if not state.get("financial_email") and _h_patient.get("financial_email"):
                     _sync_updates["financial_email"] = _h_patient["financial_email"]
+                if not state.get("social_name") and _h_patient.get("social_name"):
+                    _sync_updates["social_name"] = _h_patient["social_name"]
 
             if state.get("is_patient") is None and _h_contact and _h_patient:
                 _db_h = await _get_db_hydr()
@@ -1396,7 +1400,7 @@ async def patient_agent_node(state: ConversationState, config: RunnableConfig) -
     _raw_age = state.get("patient_age")
     patient_age = _raw_age or 99          # numeric fallback for logic checks
     patient_age_display = f"{patient_age} anos" if _raw_age else "não informada"
-    _full_name = state.get("patient_name") or state.get("user_name") or "paciente"
+    _full_name = state.get("social_name") or state.get("patient_name") or state.get("user_name") or "paciente"
     from app.utils import display_name as _dn
     first_name = _dn(_full_name)
     # contact_name: who is on WhatsApp. May differ from patient_name (e.g. guardian).
@@ -1404,7 +1408,7 @@ async def patient_agent_node(state: ConversationState, config: RunnableConfig) -
     # patient_name as fallback so the LLM doesn't confuse the two people.
     _is_third_party = state.get("is_patient") is False
     _contact_full = state.get("user_name") or (
-        "responsável" if _is_third_party else (state.get("patient_name") or "paciente")
+        "responsável" if _is_third_party else (state.get("social_name") or state.get("patient_name") or "paciente")
     )
     contact_first_name = _dn(_contact_full)
     contact_name = _contact_full
@@ -1475,6 +1479,7 @@ async def patient_agent_node(state: ConversationState, config: RunnableConfig) -
         clinic_address=CLINIC_ADDRESS,
         doctors_info=DOCTORS_INFO,
         medical_limits_rule=MEDICAL_LIMITS_RULE,
+        social_name_rule=SOCIAL_NAME_RULE,
         age_exception_rule=AGE_EXCEPTION_RULE if state.get("age_exception") else "",
         attendant_instruction_rule=ATTENDANT_INSTRUCTION_RULE,
         modality_restriction=state.get("modality_restriction") or "",

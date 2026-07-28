@@ -41,6 +41,43 @@ def _make_supabase_client():
     return client, table, execute
 
 
+# ── _sanitize_social_name ─────────────────────────────────────────────────────
+
+def test_sanitize_social_name_strips_age_suffix_with_comma():
+    from app.graph.tools import _sanitize_social_name
+    assert _sanitize_social_name("Malu, 25 anos") == "Malu"
+
+
+def test_sanitize_social_name_strips_age_suffix_without_comma():
+    from app.graph.tools import _sanitize_social_name
+    assert _sanitize_social_name("Malu 8 anos") == "Malu"
+
+
+def test_sanitize_social_name_strips_parenthetical():
+    from app.graph.tools import _sanitize_social_name
+    assert _sanitize_social_name("Malu (é como minha família me chama)") == "Malu"
+
+
+def test_sanitize_social_name_keeps_clean_name_untouched():
+    from app.graph.tools import _sanitize_social_name
+    assert _sanitize_social_name("  João Gabriel  ") == "João Gabriel"
+
+
+def test_sanitize_social_name_empty_after_stripping_returns_empty():
+    from app.graph.tools import _sanitize_social_name
+    assert _sanitize_social_name("(  )") == ""
+
+
+def test_sanitize_social_name_handles_none():
+    from app.graph.tools import _sanitize_social_name
+    assert _sanitize_social_name(None) == ""
+
+
+def test_sanitize_social_name_handles_empty_string():
+    from app.graph.tools import _sanitize_social_name
+    assert _sanitize_social_name("") == ""
+
+
 # ── get_available_slots ───────────────────────────────────────────────────────
 
 async def test_get_available_slots_returns_formatted_list():
@@ -438,6 +475,32 @@ async def test_confirm_appointment_multi_patient_override_beats_user_db_id():
         )
     _insert_payload = table.insert.call_args[0][0]
     assert _insert_payload.get("patient_id") == "laila-id"
+
+
+async def test_confirm_appointment_matches_sibling_by_social_name():
+    """Duas pacientes no mesmo telefone (irmãs); uma tem social_name. Um override
+    usando o nome social deve resolver para a paciente certa, não para a outra
+    nem falhar o match (caso análogo a Laila/Suzi Viana, mas com nome social)."""
+    from app.graph.tools import confirm_appointment
+    client, table, execute = _make_supabase_client()
+    _joao = {"id": "joao-id", "patient_name": "João Pedro Viana", "name": "Renata Viana", "social_name": None}
+    _maria = {"id": "maria-id", "patient_name": "Maria Eduarda Viana", "name": "Renata Viana", "social_name": "Malu"}
+    with patch("app.graph.tools._get_doctor_calendar_id", new_callable=AsyncMock, return_value="cal123"), \
+         patch("app.google_calendar.create_event", new_callable=AsyncMock, return_value="evt-alias"), \
+         patch("app.graph.tools.get_supabase", new_callable=AsyncMock, return_value=client), \
+         patch("app.graph.tools.get_users_by_phone", new_callable=AsyncMock, return_value=[_joao, _maria]), \
+         patch("app.graph.tools.get_user_by_phone", new_callable=AsyncMock, return_value=_joao), \
+         patch("app.graph.tools.log_event", new_callable=AsyncMock), \
+         patch("app.graph.tools._notify_clinic", new_callable=AsyncMock):
+        await confirm_appointment.coroutine(
+            slot_datetime="2026-03-23T09:00:00",
+            slot_duration_minutes=60,
+            state=_make_state(patient_name="Zé", patient_email="renata@example.com"),
+            config=CONFIG,
+            patient_name_override="Malu",
+        )
+    _insert_payload = table.insert.call_args[0][0]
+    assert _insert_payload.get("patient_id") == "maria-id"
 
 
 async def test_confirm_appointment_normalizes_attendant_all_caps_name():
@@ -2609,6 +2672,39 @@ async def test_save_patient_email_passes_user_id_from_state():
         PHONE, {"email": "paciente@email.com"}, user_id="patient-id-1"
     )
     assert "paciente@email.com" in result
+
+
+# ── set_social_name ────────────────────────────────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_set_social_name_sanitizes_and_persists():
+    from app.graph.tools import set_social_name
+    state = _make_state(user_db_id="patient-id-1")
+    with patch("app.graph.tools.upsert_user", new_callable=AsyncMock) as mock_upsert, \
+         patch("app.graph.tools.log_event", new_callable=AsyncMock) as mock_log:
+        result = await set_social_name.coroutine(
+            social_name="Malu, 25 anos",
+            state=state,
+            config=CONFIG,
+        )
+    mock_upsert.assert_awaited_once_with(PHONE, {"social_name": "Malu"}, user_id="patient-id-1")
+    mock_log.assert_awaited_once_with("social_name_set", PHONE, {"social_name": "Malu"})
+    assert "Malu" in result
+
+
+@pytest.mark.asyncio
+async def test_set_social_name_rejects_empty_after_sanitization():
+    from app.graph.tools import set_social_name
+    state = _make_state(user_db_id="patient-id-1")
+    with patch("app.graph.tools.upsert_user", new_callable=AsyncMock) as mock_upsert, \
+         patch("app.graph.tools.log_event", new_callable=AsyncMock):
+        result = await set_social_name.coroutine(
+            social_name="(  )",
+            state=state,
+            config=CONFIG,
+        )
+    mock_upsert.assert_not_awaited()
+    assert "não entendi" in result.lower()
 
 
 # ── request_registration_update ───────────────────────────────────────────────

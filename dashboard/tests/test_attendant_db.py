@@ -100,6 +100,18 @@ async def test_update_patient_only_whitelisted(patched_client):
     assert row["age"] == 30              # permitido
 
 
+async def test_update_patient_allows_social_name(patched_client):
+    """Verify that social_name is whitelisted for patient updates."""
+    patched_client.store["patients"] = [{
+        "id": "p1",
+        "name": "João da Silva",
+        "social_name": None
+    }]
+    await attendant_db.update_patient("p1", {"social_name": "Jojo"})
+    row = patched_client.store["patients"][0]
+    assert row["social_name"] == "Jojo"
+
+
 async def test_update_contact_whitelist(patched_client):
     patched_client.store["contacts"] = [{"id": "c1", "phone": "5581999998888", "name": "A"}]
     await attendant_db.update_contact("c1", {"name": "B", "manual_hold": True, "id": "EVIL"})

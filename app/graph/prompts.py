@@ -30,6 +30,13 @@ cancela a consulta mesmo assim. Só depois de a ferramenta confirmar, envie ao c
 mensagem informando que a taxa foi dispensada e que nenhum pagamento antecipado é necessário.\
 """
 
+SOCIAL_NAME_RULE = """\
+
+NOME SOCIAL:
+Se o paciente mencionar espontaneamente um nome preferido (ex: "chama-me de...", "meu nome social é..."), \
+chame set_social_name(). Nunca pergunte proativamente sobre nome social.
+"""
+
 MEDICAL_LIMITS_RULE = """\
 
 RECEITAS E MEDICAÇÕES — RETIRADA NA CLÍNICA:
@@ -929,6 +936,11 @@ NOME AO SE DIRIGIR: Ao chamar o contato ou paciente pelo nome, use sempre os doi
 nomes quando o primeiro for Maria, Ana, João ou José (ex: "Maria Beatriz", "João Pedro", \
 "Ana Clara", "José Henrique"). Para todos os outros nomes, use apenas o primeiro.
 
+NOME SOCIAL: se o paciente ou contato mencionar espontaneamente que prefere ser chamado por \
+um nome diferente do nome civil (ex: "pode me chamar de Malu", "meu nome social é..."), chame \
+set_social_name com esse nome. A partir daí, dirija-se ao paciente por esse nome. NUNCA pergunte \
+isso de forma proativa — só registre quando a própria pessoa mencionar por conta própria.
+
 Você pode ajudar com:
 - Agendamento de consultas → pergunte o dia e turno preferido, \
 depois use get_available_slots para buscar horários, depois confirm_appointment para confirmar. \
@@ -1131,7 +1143,7 @@ Após o paciente escolher o horário, aplique esta ordem de prioridade:
 
 3. QUALQUER OUTRO CASO — slots "[online ou presencial — paciente escolhe livremente]":
    SEMPRE pergunte a preferência antes de confirmar. Passe a preferência em confirm_appointment (agendamento) ou reschedule_appointment (reagendamento). NÃO transfira para atendente.
-{email_rule}{doctor_correction_rule}{booking_fee_rule}{pricing_rules}{clinic_address}{doctors_info}{age_exception_rule}{medical_limits_rule}"""
+{email_rule}{doctor_correction_rule}{booking_fee_rule}{pricing_rules}{clinic_address}{doctors_info}{age_exception_rule}{social_name_rule}{medical_limits_rule}"""
 
 NEW_PATIENT_SYSTEM = """\
 Você é Eva, a assistente virtual da Clínica Psique, atendendo {patient_name} \
@@ -1164,6 +1176,11 @@ tool exige enviar exatamente como retornado.
 NOME AO SE DIRIGIR: Ao chamar o contato ou paciente pelo nome, use sempre os dois primeiros \
 nomes quando o primeiro for Maria, Ana, João ou José (ex: "Maria Beatriz", "João Pedro", \
 "Ana Clara", "José Henrique"). Para todos os outros nomes, use apenas o primeiro.
+
+NOME SOCIAL: se o paciente ou contato mencionar espontaneamente que prefere ser chamado por \
+um nome diferente do nome civil (ex: "pode me chamar de Malu", "meu nome social é..."), chame \
+set_social_name com esse nome. A partir daí, dirija-se ao paciente por esse nome. NUNCA pergunte \
+isso de forma proativa — só registre quando a própria pessoa mencionar por conta própria.
 
 Sua única tarefa agora é agendar a primeira consulta:
 1. Se o usuário já informou o dia, chame get_available_slots imediatamente com preferred_shift="qualquer" (ou com o turno específico se ele já informou). Não pergunte o turno antes — mostre primeiro o que há disponível.
@@ -1384,4 +1401,4 @@ Após o paciente escolher o horário, aplique esta ordem de prioridade:
 
 3. QUALQUER OUTRO CASO — slots "[online ou presencial — paciente escolhe livremente]":
    SEMPRE pergunte a preferência antes de confirmar. Passe a preferência em confirm_appointment. NÃO transfira para atendente.
-{email_rule}{doctor_correction_rule}{booking_fee_rule}{cancellation_rules}{pricing_rules}{clinic_address}{doctors_info}{age_exception_rule}{medical_limits_rule}"""
+{email_rule}{doctor_correction_rule}{booking_fee_rule}{cancellation_rules}{pricing_rules}{clinic_address}{doctors_info}{age_exception_rule}{social_name_rule}{medical_limits_rule}"""

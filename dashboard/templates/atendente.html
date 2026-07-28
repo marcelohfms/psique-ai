@@ -312,6 +312,7 @@ function renderForms(patient, link) {
       <h2 class="font-medium text-gray-700 dark:text-gray-100 mb-2">Paciente</h2>
       <div class="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-3">
         ${field("Nome", "p_name", patient.name)}
+        ${field("Nome Social", "p_social_name", patient.social_name)}
         ${field("Nascimento (dd/mm/aaaa)", "p_birth", patient.birth_date)}
         ${field("CPF", "p_cpf", patient.patient_cpf)}
         ${field("E-mail", "p_email", patient.email)}
@@ -364,7 +365,7 @@ async function saveContact() {
 }
 async function savePatient(pid) {
   const ok = await post(`/api/atendente/paciente/${pid}`, { data: {
-    name: val("p_name"), birth_date: val("p_birth"), patient_cpf: val("p_cpf"),
+    name: val("p_name"), social_name: val("p_social_name"), birth_date: val("p_birth"), patient_cpf: val("p_cpf"),
     email: val("p_email"), doctor_id: val("p_doctor") || null,
     is_returning_patient: chk("p_returning"),
     modality_restriction: val("p_modality") || null,
