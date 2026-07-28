@@ -19,7 +19,7 @@ from langchain_core.messages import HumanMessage
 
 from app.graph import graph as graph_module
 from app.database import get_user_by_phone, get_users_by_phone, get_contact_by_phone, log_event, DOCTOR_NAMES, save_message
-from app.buffer import push as buffer_push, get_phone_lock
+from app.buffer import push as buffer_push, drain as buffer_drain, get_phone_lock
 from app.auth import router as auth_router
 from app.whatsapp import send_text
 
@@ -103,6 +103,22 @@ async def _recover_messages_lost_to_restart() -> None:
         logger.exception("RESTART_RECOVERY failed")
 
 
+async def _drain_buffer_on_shutdown() -> None:
+    """Flush the in-memory debounce buffer before the process dies.
+
+    Counterpart to _recover_messages_lost_to_restart: recovery only runs at startup,
+    so it cannot help a message that lands on this container *while it is shutting
+    down* (Easypanel keeps the old container serving until the new one is up). The
+    drain closes that window at the source. Never let it break shutdown.
+    """
+    try:
+        flushed = await buffer_drain()
+        if flushed:
+            logger.warning("BUFFER_DRAIN flushed %d buffered message(s) on shutdown", flushed)
+    except Exception:
+        logger.exception("BUFFER_DRAIN failed during shutdown")
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Initialize Supabase checkpointer on startup if connection string is set."""
@@ -142,10 +158,18 @@ async def lifespan(app: FastAPI):
             graph_module.chatbot = build_graph(checkpointer=checkpointer)
             logger.info("Supabase checkpointer ready.")
             await _recover_messages_lost_to_restart()
-            yield
+            try:
+                yield
+            finally:
+                # Drain inside `async with conn`: the flushed handlers still need
+                # the checkpointer to run the graph.
+                await _drain_buffer_on_shutdown()
     else:
         logger.warning("SUPABASE_CONNECTION_STRING not set — using in-memory checkpointer.")
-        yield
+        try:
+            yield
+        finally:
+            await _drain_buffer_on_shutdown()
 
 
 app = FastAPI(title="Psique Chatbot", lifespan=lifespan)
