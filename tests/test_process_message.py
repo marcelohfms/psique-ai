@@ -2702,6 +2702,20 @@ def test_every_patient_facing_prompt_carries_clinic_address():
         )
 
 
+def test_tool_bearing_prompts_carry_social_name_instruction():
+    """NEW_PATIENT_SYSTEM e EXISTING_PATIENT_SYSTEM (únicos com acesso a tools)
+    devem instruir a Eva a chamar set_social_name quando o paciente mencionar
+    espontaneamente um nome social — e a NUNCA perguntar isso de forma proativa.
+    COLLECT_SYSTEM fica de fora: collect_info_node não chama tools."""
+    from app.graph import prompts
+    for name in ("NEW_PATIENT_SYSTEM", "EXISTING_PATIENT_SYSTEM"):
+        content = getattr(prompts, name)
+        assert "set_social_name" in content, f"{name} não menciona set_social_name"
+        assert "NUNCA pergunte" in content or "nunca pergunte" in content.lower(), (
+            f"{name} não deixa explícito que a pergunta nunca deve ser proativa"
+        )
+
+
 def test_clinic_address_inline_is_derived_from_canonical_text():
     """A variante de uma linha não pode divergir da fonte única."""
     from app.graph.prompts import CLINIC_ADDRESS_INLINE, CLINIC_ADDRESS_TEXT
