@@ -4,6 +4,7 @@ import hmac
 import json
 import logging
 import os
+from collections import OrderedDict
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone, timedelta
 from dotenv import load_dotenv
@@ -808,6 +809,31 @@ _EVA_ACTIVE_LABEL = "eva-ativa"
 # Used to detect label changes from message_updated events (Chatwoot doesn't send a dedicated label-change event)
 _conv_labels: dict[str, frozenset] = {}
 
+# Chatwoot message ids whose text was already mirrored into the checkpoint.
+# The same message_created reaches /chatwoot-webhook twice — once from the account
+# webhook and once from the agent bot's outgoing_url, both configured with the same
+# URL — and Chatwoot then fires message_updated on every delivery-status change
+# (sent → delivered → read). Without this guard each attendant message was appended
+# to the thread 3–4 times, inflating the context and making Eva parrot the attendant.
+_synced_outgoing_ids: OrderedDict[int, None] = OrderedDict()
+_SYNCED_OUTGOING_MAX = 2000
+
+
+def _already_synced_outgoing(message_id) -> bool:
+    """True if this Chatwoot message was already mirrored into the checkpoint.
+
+    Records the id as seen on the first call. Payloads without an id are never
+    considered duplicates — better a rare duplicate than dropping the message.
+    """
+    if message_id is None:
+        return False
+    if message_id in _synced_outgoing_ids:
+        return True
+    _synced_outgoing_ids[message_id] = None
+    while len(_synced_outgoing_ids) > _SYNCED_OUTGOING_MAX:
+        _synced_outgoing_ids.popitem(last=False)
+    return False
+
 
 def _extract_phone_from_payload(payload: dict) -> str | None:
     """Extract the patient phone from any Chatwoot payload."""
@@ -1133,7 +1159,18 @@ async def _handle_chatwoot_payload(payload: dict) -> None:
                 await _handle_attendant_note(payload)
             elif _is_human_agent and not _is_private:
                 # Public message from attendant to patient → save to checkpoint for
-                # context but do NOT trigger Eva to respond
+                # context but do NOT trigger Eva to respond.
+                # Only message_created carries new content; message_updated is just a
+                # delivery-status change on a message we have already seen.
+                _event_out = payload.get("event")
+                if _event_out and _event_out != "message_created":
+                    logger.info(
+                        "OUTGOING_SKIP_EVENT event=%s id=%s", _event_out, payload.get("id")
+                    )
+                    return
+                if _already_synced_outgoing(payload.get("id")):
+                    logger.info("OUTGOING_SKIP_DUP id=%s", payload.get("id"))
+                    return
                 _phone_out = _extract_phone_from_payload(payload)
                 _content_out = (payload.get("content") or "").strip()
                 if _phone_out and _content_out:
