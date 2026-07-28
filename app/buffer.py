@@ -37,12 +37,20 @@ def get_phone_lock(phone: str) -> asyncio.Lock:
     return _phone_locks[phone]
 
 
+# How long the shutdown drain waits for the flushed handlers to finish before
+# giving up. Easypanel sends SIGTERM and waits ~10 s before SIGKILL, so this has
+# to stay comfortably under that or the drain gets killed mid-flight anyway.
+_DRAIN_TIMEOUT_SECONDS = float(os.getenv("BUFFER_DRAIN_TIMEOUT_SECONDS", "8"))
+
+
 @dataclass
 class _Entry:
     messages: list[str] = field(default_factory=list)
     handle: asyncio.TimerHandle | None = None
     # Monotonic timestamp of the first deferral caused by an in-flight invoke.
     deferred_since: float | None = None
+    # Handler for the buffered messages, kept so `drain` can flush them on shutdown.
+    handler: Callable[[str, str], Awaitable[None]] | None = None
 
 
 # phone → pending entry
@@ -67,6 +75,7 @@ async def push(
     # for the same message. Don't add it twice within the same debounce window.
     if text not in entry.messages:
         entry.messages.append(text)
+    entry.handler = handler
 
     if entry.handle is not None:
         entry.handle.cancel()
@@ -96,6 +105,56 @@ async def push(
         asyncio.create_task(_run(phone, combined, handler))
 
     entry.handle = loop.call_later(DEBOUNCE_SECONDS, _fire)
+
+
+async def drain(timeout: float | None = None) -> int:
+    """Flush every pending debounce entry immediately. Returns how many were flushed.
+
+    The debounce timer lives only in memory (`loop.call_later`), but the patient's
+    message is already persisted in `messages` by the time it reaches the buffer.
+    A container restart inside the debounce window therefore loses the message with
+    no error, no exception and no event — the patient simply never gets an answer
+    (caso 5519994108706, 28/07/2026). Easypanel sends SIGTERM before SIGKILL, so on
+    shutdown we dispatch whatever is still buffered instead of dropping it.
+
+    Bounded by `timeout`: a hung handler must not block shutdown until SIGKILL,
+    which would defeat the purpose. Handlers that don't finish in time are lost —
+    the startup recovery in app/main.py is the backstop for those.
+    """
+    if timeout is None:
+        timeout = _DRAIN_TIMEOUT_SECONDS
+
+    # Snapshot first: _run may push again while we're iterating.
+    pending = [
+        (phone, entry)
+        for phone, entry in list(_pending.items())
+        if entry.messages and entry.handler is not None
+    ]
+    if not pending:
+        return 0
+
+    tasks = []
+    for phone, entry in pending:
+        if entry.handle is not None:
+            entry.handle.cancel()
+            entry.handle = None
+        combined = " ".join(entry.messages)
+        entry.messages.clear()
+        entry.deferred_since = None
+        logger.warning(
+            "BUFFER_DRAIN flushing buffered message for %s on shutdown: %.60s",
+            phone, combined,
+        )
+        tasks.append(asyncio.create_task(_run(phone, combined, entry.handler)))
+
+    _done, still_running = await asyncio.wait(tasks, timeout=timeout)
+    if still_running:
+        logger.error(
+            "BUFFER_DRAIN timed out after %.0fs with %d handler(s) unfinished — "
+            "those messages depend on the startup recovery to be reprocessed",
+            timeout, len(still_running),
+        )
+    return len(tasks)
 
 
 async def _run(

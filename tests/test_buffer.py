@@ -141,6 +141,103 @@ async def test_deferral_cap_dispatches_even_if_lock_never_released():
     handler.assert_awaited_once_with(PHONE, "alguém aí?")
 
 
+async def test_drain_flushes_pending_message_before_timer_fires():
+    """Caso 5519994108706 (28/07): a mensagem já está gravada em `messages`, mas o
+    timer do debounce só existe em memória. Se o container reinicia dentro da janela,
+    ninguém processa e o paciente nunca recebe resposta — falha 100% silenciosa.
+    O drain do shutdown tem que despachar o que estiver pendente."""
+    from app.buffer import push, drain
+
+    handler = AsyncMock()
+    # Debounce longo: sem o drain, o handler NUNCA seria chamado neste teste.
+    with patch("app.buffer.DEBOUNCE_SECONDS", 30):
+        await push(PHONE, "Oi", handler)
+        handler.assert_not_awaited()
+        flushed = await drain()
+
+    assert flushed == 1
+    handler.assert_awaited_once_with(PHONE, "Oi")
+
+
+async def test_drain_coalesces_pending_messages_into_one_call():
+    """O drain não pode quebrar a coalescência: o que está acumulado vira UM turno."""
+    from app.buffer import push, drain
+
+    handler = AsyncMock()
+    with patch("app.buffer.DEBOUNCE_SECONDS", 30):
+        await push(PHONE, "oi", handler)
+        await push(PHONE, "quero marcar", handler)
+        await drain()
+
+    handler.assert_awaited_once()
+    combined_text = handler.call_args[0][1]
+    assert "oi" in combined_text
+    assert "quero marcar" in combined_text
+
+
+async def test_drain_cancels_timer_so_handler_runs_only_once():
+    """Depois do drain o timer pendente não pode disparar um segundo turno."""
+    from app.buffer import push, drain
+
+    handler = AsyncMock()
+    with patch("app.buffer.DEBOUNCE_SECONDS", 0.05):
+        await push(PHONE, "Oi", handler)
+        await drain()
+        # Tempo de sobra para o call_later original disparar, se não tivesse sido cancelado
+        await asyncio.sleep(0.2)
+
+    handler.assert_awaited_once()
+
+
+async def test_drain_with_nothing_pending_is_a_noop():
+    from app.buffer import drain
+
+    assert await drain() == 0
+
+
+async def test_drain_drains_every_phone():
+    from app.buffer import push, drain
+
+    handler = AsyncMock()
+    other = "5583988888888@s.whatsapp.net"
+    with patch("app.buffer.DEBOUNCE_SECONDS", 30):
+        await push(PHONE, "oi", handler)
+        await push(other, "olá", handler)
+        assert await drain() == 2
+
+    assert handler.await_count == 2
+    assert {c[0][0] for c in handler.call_args_list} == {PHONE, other}
+
+
+async def test_drain_does_not_raise_when_handler_fails():
+    """Uma falha no handler não pode derrubar o shutdown."""
+    from app.buffer import push, drain
+
+    handler = AsyncMock(side_effect=RuntimeError("boom"))
+    with patch("app.buffer.DEBOUNCE_SECONDS", 30):
+        await push(PHONE, "Oi", handler)
+        await drain()
+
+    handler.assert_awaited_once()
+
+
+async def test_drain_gives_up_after_timeout_instead_of_hanging_shutdown():
+    """Se o handler travar, o drain respeita o timeout e devolve o controle."""
+    from app.buffer import push, drain
+
+    started = asyncio.Event()
+
+    async def hanging_handler(_phone: str, _text: str) -> None:
+        started.set()
+        await asyncio.sleep(30)
+
+    with patch("app.buffer.DEBOUNCE_SECONDS", 30):
+        await push(PHONE, "Oi", hanging_handler)
+        await asyncio.wait_for(drain(timeout=0.05), timeout=5)
+
+    assert started.is_set()
+
+
 async def test_handler_error_does_not_propagate():
     """An exception raised by the handler must not crash the buffer flush."""
     handler = AsyncMock(side_effect=RuntimeError("boom"))
