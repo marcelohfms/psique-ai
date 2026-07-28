@@ -1294,6 +1294,29 @@ def _valid_chatwoot_signature(
     return hmac.compare_digest(signature_header[len("sha256="):], expected)
 
 
+def _chatwoot_secrets(raw: str) -> list[str]:
+    """Divide a env var em secrets. DOIS emissores distintos entregam no mesmo
+    /chatwoot-webhook — o webhook de conta e o agent bot da Eva — e cada um tem
+    o seu próprio secret (verificado em produção: são diferentes). Um único
+    valor rejeitaria metade do tráfego, e a metade do agent bot é justamente a
+    que aciona a Eva. Por isso a env var aceita lista separada por vírgula.
+    """
+    return [s.strip() for s in raw.split(",") if s.strip()]
+
+
+def _match_chatwoot_secret(
+    raw_body: bytes,
+    signature_header: str | None,
+    timestamp_header: str | None,
+    secrets: list[str],
+) -> int | None:
+    """Índice (1-based) do secret que validou a assinatura, ou None se nenhum."""
+    for i, secret in enumerate(secrets, start=1):
+        if _valid_chatwoot_signature(raw_body, signature_header, timestamp_header, secret):
+            return i
+    return None
+
+
 @app.post("/chatwoot-webhook")
 async def chatwoot_webhook(
     request: Request,
@@ -1301,22 +1324,28 @@ async def chatwoot_webhook(
     x_chatwoot_timestamp: str | None = Header(default=None),
 ):
     raw_body = await request.body()
-    secret = os.getenv("CHATWOOT_WEBHOOK_SECRET", "")
-    dryrun_secret = os.getenv("CHATWOOT_WEBHOOK_SECRET_DRYRUN", "")
-    if secret:
-        if not _valid_chatwoot_signature(raw_body, x_chatwoot_signature, x_chatwoot_timestamp, secret):
+    secrets = _chatwoot_secrets(os.getenv("CHATWOOT_WEBHOOK_SECRET", ""))
+    dryrun_secrets = _chatwoot_secrets(os.getenv("CHATWOOT_WEBHOOK_SECRET_DRYRUN", ""))
+    if secrets:
+        if _match_chatwoot_secret(raw_body, x_chatwoot_signature, x_chatwoot_timestamp, secrets) is None:
             logger.warning("Chatwoot webhook signature validation failed — rejecting request.")
             raise HTTPException(status_code=403, detail="Invalid signature")
-    elif dryrun_secret:
+    elif dryrun_secrets:
         # Modo observação: calcula e loga, mas NUNCA rejeita. Serve para descobrir
-        # em tráfego real se o secret exposto na UI/API é mesmo a chave de
+        # em tráfego real (a) se o secret exposto pela API é mesmo a chave de
         # assinatura — há bug aberto no Chatwoot (#13809) em que o `secret`
-        # devolvido pela API não é o `hmac_token` usado internamente para assinar.
-        # Só ligar CHATWOOT_WEBHOOK_SECRET depois de ver match=True aqui.
-        match = _valid_chatwoot_signature(raw_body, x_chatwoot_signature, x_chatwoot_timestamp, dryrun_secret)
+        # devolvido pela API não é o `hmac_token` usado internamente — e (b) se
+        # TODOS os emissores estão cobertos. Só promover para
+        # CHATWOOT_WEBHOOK_SECRET quando não sobrar nenhum match=None no log.
+        matched = _match_chatwoot_secret(raw_body, x_chatwoot_signature, x_chatwoot_timestamp, dryrun_secrets)
+        try:
+            event = (json.loads(raw_body) or {}).get("event")
+        except Exception:
+            event = None  # o log é diagnóstico; corpo inválido é tratado abaixo
         logger.warning(
-            "CHATWOOT_SIGNATURE_DRYRUN match=%s tem_assinatura=%s tem_timestamp=%s",
-            match, bool(x_chatwoot_signature), bool(x_chatwoot_timestamp),
+            "CHATWOOT_SIGNATURE_DRYRUN match=%s secret_n=%s de %s tem_assinatura=%s tem_timestamp=%s evento=%s",
+            matched is not None, matched, len(dryrun_secrets),
+            bool(x_chatwoot_signature), bool(x_chatwoot_timestamp), event,
         )
     else:
         logger.warning("CHATWOOT_WEBHOOK_SECRET not set — skipping Chatwoot webhook signature validation")

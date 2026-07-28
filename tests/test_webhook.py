@@ -457,6 +457,73 @@ async def test_chatwoot_webhook_dryrun_never_rejects_on_mismatch(async_client, m
     assert response.status_code == 200
 
 
+async def test_chatwoot_webhook_accepts_any_of_multiple_secrets(async_client, monkeypatch):
+    """Dois emissores entregam no mesmo /chatwoot-webhook — o webhook de conta e o
+    agent bot da Eva — cada um com secret próprio (verificado em produção: são
+    diferentes). A env var aceita lista, e QUALQUER um deles precisa validar."""
+    monkeypatch.setenv("CHATWOOT_WEBHOOK_SECRET", "secret-do-webhook, secret-do-agent-bot")
+    body = json.dumps(_chatwoot_payload()).encode()
+    for emissor in ("secret-do-webhook", "secret-do-agent-bot"):
+        with patch("app.main.buffer_push"), patch("app.main.save_message"), \
+             patch("app.chatwoot.register_conversation"):
+            response = await async_client.post(
+                "/chatwoot-webhook", content=body,
+                headers=_chatwoot_signed_headers(body, emissor),
+            )
+        assert response.status_code == 200, f"emissor {emissor} foi rejeitado"
+
+
+async def test_chatwoot_webhook_rejects_secret_outside_the_list(async_client, monkeypatch):
+    monkeypatch.setenv("CHATWOOT_WEBHOOK_SECRET", "secret-do-webhook,secret-do-agent-bot")
+    body = json.dumps(_chatwoot_payload()).encode()
+    response = await async_client.post(
+        "/chatwoot-webhook", content=body,
+        headers=_chatwoot_signed_headers(body, "secret-de-terceiro"),
+    )
+    assert response.status_code == 403
+
+
+async def test_chatwoot_secrets_parsing_ignores_blanks_and_spaces():
+    from app.main import _chatwoot_secrets
+    assert _chatwoot_secrets(" a , b ,, c ") == ["a", "b", "c"]
+    assert _chatwoot_secrets("") == []
+    assert _chatwoot_secrets("  ,  ") == []
+
+
+async def test_chatwoot_webhook_dryrun_reports_which_secret_matched(async_client, monkeypatch, caplog):
+    """O log precisa dizer QUAL secret bateu, senão não dá para saber se algum
+    emissor ficou descoberto antes de promover para o modo enforce."""
+    monkeypatch.delenv("CHATWOOT_WEBHOOK_SECRET", raising=False)
+    monkeypatch.setenv("CHATWOOT_WEBHOOK_SECRET_DRYRUN", "secret-do-webhook,secret-do-agent-bot")
+    body = json.dumps(_chatwoot_payload()).encode()
+    with caplog.at_level(logging.WARNING, logger="app.main"), \
+         patch("app.main.buffer_push"), patch("app.main.save_message"), \
+         patch("app.chatwoot.register_conversation"):
+        response = await async_client.post(
+            "/chatwoot-webhook", content=body,
+            headers=_chatwoot_signed_headers(body, "secret-do-agent-bot"),
+        )
+    assert response.status_code == 200
+    assert "match=True secret_n=2 de 2" in caplog.text
+
+
+async def test_chatwoot_webhook_dryrun_reports_uncovered_emitter(async_client, monkeypatch, caplog):
+    """Emissor não coberto aparece como match=False — é este o sinal de que ainda
+    NÃO se pode promover para CHATWOOT_WEBHOOK_SECRET."""
+    monkeypatch.delenv("CHATWOOT_WEBHOOK_SECRET", raising=False)
+    monkeypatch.setenv("CHATWOOT_WEBHOOK_SECRET_DRYRUN", "so-o-secret-do-webhook")
+    body = json.dumps(_chatwoot_payload()).encode()
+    with caplog.at_level(logging.WARNING, logger="app.main"), \
+         patch("app.main.buffer_push"), patch("app.main.save_message"), \
+         patch("app.chatwoot.register_conversation"):
+        response = await async_client.post(
+            "/chatwoot-webhook", content=body,
+            headers=_chatwoot_signed_headers(body, "secret-do-agent-bot-nao-configurado"),
+        )
+    assert response.status_code == 200
+    assert "match=False secret_n=None" in caplog.text
+
+
 async def test_chatwoot_webhook_dryrun_logs_match_result(async_client, monkeypatch, caplog):
     monkeypatch.delenv("CHATWOOT_WEBHOOK_SECRET", raising=False)
     monkeypatch.setenv("CHATWOOT_WEBHOOK_SECRET_DRYRUN", "cw-test-secret")
