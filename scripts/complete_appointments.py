@@ -36,6 +36,75 @@ async def send_pos_consulta(phone: str, first_name: str) -> None:
     )
 
 
+def _should_skip_unconfirmed(appt: dict) -> bool:
+    """True if a day-before reminder asked the patient to confirm and got no reply.
+
+    The only message that asks "Consegue confirmar a presença?" is the
+    day-before reminder. Appointments booked the same day they occur never
+    get one, so confirmed_at can never be set for them even when the patient
+    clearly attended (e.g. paid, chatted about the consultation). Only treat
+    a missing confirmed_at as a no-show/cancel signal when there was actually
+    a chance to confirm.
+    """
+    return bool(appt.get("reminder_day_before_sent_at")) and not appt.get("confirmed_at")
+
+
+async def _process_pos_consulta(client, appt: dict, now_iso: str) -> None:
+    patient_id = appt.get("patient_id")
+
+    patient = appt.get("patients") or {}
+    patient_name = patient.get("name") or "paciente"
+    from app.utils import display_name as _dn
+    first_name = _dn(patient_name) if patient_name else "paciente"
+
+    async def _mark_sent():
+        await client.from_("appointments").update({
+            "pos_consulta_sent_at": now_iso,
+        }).eq("id", appt["id"]).execute()
+
+    if _should_skip_unconfirmed(appt):
+        print(f"Skipping pos_consulta for patient {patient_id} — reminder de dia anterior enviado, sem confirmação (no-show/cancel).")
+        await _mark_sent()
+        return
+
+    # Skip if patient already has a future/ongoing appointment scheduled
+    # (end_time > now catches split first consultations still in progress).
+    future = await (
+        client.from_("appointments")
+        .select("id")
+        .eq("patient_id", patient_id)
+        .eq("status", "scheduled")
+        .gt("end_time", now_iso)
+        .limit(1)
+        .execute()
+    ) if patient_id else None
+    if future and future.data:
+        print(f"Skipping pos_consulta for patient {patient_id} — already has a future appointment.")
+        await _mark_sent()
+        return
+
+    # Envia pós-consulta para TODOS os contatos com role 'consulta'.
+    contacts = await get_contacts_for_patient(patient_id, "consulta") if patient_id else []
+    if not contacts:
+        print(f"Skipping pos_consulta for patient {patient_id} — sem contato de consulta.")
+        await _mark_sent()
+        return
+
+    sent_any = False
+    for contact in contacts:
+        phone = contact.get("phone")
+        if not phone:
+            continue
+        try:
+            await send_pos_consulta(phone, first_name)
+            sent_any = True
+            print(f"Message sent to {phone} for appointment {appt['appointment_id']}")
+        except Exception as e:
+            print(f"Failed to send message to {phone}: {e}")
+    if sent_any:
+        await _mark_sent()
+
+
 async def main():
     from supabase import acreate_client
 
@@ -47,7 +116,10 @@ async def main():
 
     result = await (
         client.from_("appointments")
-        .select("id, appointment_id, end_time, patient_id, consultation_type, confirmed_at, patients(name)")
+        .select(
+            "id, appointment_id, end_time, patient_id, consultation_type, "
+            "confirmed_at, reminder_day_before_sent_at, patients(name)"
+        )
         .eq("status", "scheduled")
         .is_("pos_consulta_sent_at", "null")
         .lt("end_time", cutoff)
@@ -90,65 +162,7 @@ async def main():
                 )
                 print(f"Marked patient {patient_id} as returning patient.")
 
-        patient = appt.get("patients") or {}
-        patient_name = patient.get("name") or "paciente"
-        from app.utils import display_name as _dn
-        first_name = _dn(patient_name) if patient_name else "paciente"
-
-        async def _mark_sent():
-            await client.from_("appointments").update({
-                "pos_consulta_sent_at": now_iso,
-            }).eq("id", appt["id"]).execute()
-
-        # Skip pos_consulta if patient never confirmed attendance via WhatsApp.
-        # A null confirmed_at means the patient either cancelled or simply didn't
-        # respond to the day-before reminder — sending a post-consultation message
-        # would be incorrect.
-        if not appt.get("confirmed_at"):
-            print(f"Skipping pos_consulta for patient {patient_id} — no confirmed_at (no-show/cancel).")
-            await _mark_sent()
-            count += 1
-            continue
-
-        # Skip if patient already has a future/ongoing appointment scheduled
-        # (end_time > now catches split first consultations still in progress).
-        future = await (
-            client.from_("appointments")
-            .select("id")
-            .eq("patient_id", patient_id)
-            .eq("status", "scheduled")
-            .gt("end_time", now_iso)
-            .limit(1)
-            .execute()
-        ) if patient_id else None
-        if future and future.data:
-            print(f"Skipping pos_consulta for patient {patient_id} — already has a future appointment.")
-            await _mark_sent()
-            count += 1
-            continue
-
-        # Envia pós-consulta para TODOS os contatos com role 'consulta'.
-        contacts = await get_contacts_for_patient(patient_id, "consulta") if patient_id else []
-        if not contacts:
-            print(f"Skipping pos_consulta for patient {patient_id} — sem contato de consulta.")
-            await _mark_sent()
-            count += 1
-            continue
-
-        sent_any = False
-        for contact in contacts:
-            phone = contact.get("phone")
-            if not phone:
-                continue
-            try:
-                await send_pos_consulta(phone, first_name)
-                sent_any = True
-                print(f"Message sent to {phone} for appointment {appt['appointment_id']}")
-            except Exception as e:
-                print(f"Failed to send message to {phone}: {e}")
-        if sent_any:
-            await _mark_sent()
-
+        await _process_pos_consulta(client, appt, now_iso)
         count += 1
 
     print(f"Marked {count} appointment(s) as completed.")
