@@ -1014,6 +1014,10 @@ async def confirm_appointment(
                         return _u
                 # Third pass: substring match on civil name
                 for _u in all_users:
+                    _sname = (_u.get("social_name") or "").strip().lower()
+                    if _sname and _sname == target:
+                        return _u
+                for _u in all_users:
                     _pname = (_u.get("patient_name") or _u.get("name") or "").strip().lower()
                     if target in _pname:
                         return _u
@@ -2109,7 +2113,7 @@ async def confirm_attendance(
 
     # Idempotência: primeiro contato a confirmar vence. Quando vários responsáveis
     # (ex.: pai e mãe) recebem o lembrete, o segundo a confirmar não regrava nem
-    # loga de novo — apenas recebe a mesma resposta amigável.
+    # loga de novo.
     existing = (
         await client.from_("appointments")
         .select("confirmed_at")
@@ -2119,7 +2123,17 @@ async def confirm_attendance(
     )
     rows = existing.data or []
     if rows and rows[0].get("confirmed_at"):
-        return "Presença confirmada! ✅"
+        # A resposta NÃO pode ser igual à da primeira confirmação: o texto de
+        # confirmação é um template verbatim no prompt (inclusive o bloco de
+        # endereço), então repeti-lo produz uma mensagem byte a byte idêntica à
+        # anterior. Caso Dr. Paulo Diniz (28/07/2026): "Bom dia" confirmou a
+        # presença e o "Sim" seguinte fez a Eva reenviar os mesmos 203 caracteres.
+        return (
+            "[INSTRUÇÃO INTERNA — NÃO ENVIE AO PACIENTE] A presença JÁ estava "
+            "confirmada anteriormente. NÃO repita a mensagem de confirmação nem o "
+            "endereço da clínica. Responda apenas com uma frase curta e acolhedora "
+            'confirmando que já está tudo certo (ex.: "Tudo certo, já está confirmado! 😊").'
+        )
 
     await client.from_("appointments").update({
         "confirmed_at": datetime.now(TZ).isoformat(),

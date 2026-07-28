@@ -2716,6 +2716,22 @@ def test_tool_bearing_prompts_carry_social_name_instruction():
         )
 
 
+def test_greeting_alone_is_not_a_presence_confirmation():
+    """Caso Dr. Paulo Diniz (28/07/2026): o prompt listava "bom dia" entre as respostas
+    afirmativas ao lembrete "Consegue confirmar a presença?", então a saudação já
+    confirmava — e o "Sim" que veio logo depois fez a Eva repetir o template verbatim,
+    produzindo uma mensagem byte a byte idêntica à anterior."""
+    from app.graph import prompts
+    for name in ("EXISTING_PATIENT_SYSTEM", "NEW_PATIENT_SYSTEM"):
+        block = getattr(prompts, name)
+        assert '"bom dia" ou variações' not in block, (
+            f"{name} ainda trata saudação sozinha como confirmação de presença"
+        )
+        assert "NÃO é confirmação de presença" in block, (
+            f"{name} não instrui a Eva a repetir a pergunta quando vem só uma saudação"
+        )
+
+
 def test_clinic_address_inline_is_derived_from_canonical_text():
     """A variante de uma linha não pode divergir da fonte única."""
     from app.graph.prompts import CLINIC_ADDRESS_INLINE, CLINIC_ADDRESS_TEXT

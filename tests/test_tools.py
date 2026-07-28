@@ -1017,9 +1017,14 @@ async def test_confirm_attendance_is_idempotent_when_already_confirmed():
             state=_make_state(),
             config=CONFIG,
         )
-    assert "confirmada" in result.lower()  # resposta amigável igual
     table.update.assert_not_called()       # NÃO regravou confirmed_at
     mock_log.assert_not_awaited()          # NÃO logou de novo
+    # A segunda confirmação NÃO pode devolver a mesma resposta da primeira: o
+    # template de confirmação é verbatim no prompt, então repeti-lo produz uma
+    # mensagem byte a byte idêntica à anterior (caso Dr. Paulo Diniz, 28/07/2026).
+    # A tool precisa sinalizar ao LLM que já estava confirmada.
+    assert "INSTRUÇÃO INTERNA" in result
+    assert "NÃO repita" in result
 
 
 # ── cancel_appointment ────────────────────────────────────────────────────────

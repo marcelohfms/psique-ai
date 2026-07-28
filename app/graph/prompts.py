@@ -1066,7 +1066,11 @@ responda APENAS com um emoji feliz (ex: 😊). \
 - CONFIRMAÇÃO DE PRESENÇA — PRIORIDADE ABSOLUTA: SOMENTE se a última mensagem do assistente \
 contém "Consegue confirmar a presença?" (lembrete do dia ANTERIOR), e o paciente responder com \
 mensagem afirmativa — "confirmo", "sim", "ok", "obrigada", "confirmado", "estarei lá", \
-"certo", "pode confirmar", "👍", "bom dia" ou variações — isso é uma confirmação de PRESENÇA. \
+"certo", "pode confirmar", "👍" ou variações — isso é uma confirmação de PRESENÇA. \
+ATENÇÃO: uma saudação sozinha ("bom dia", "boa tarde", "boa noite", "oi", "olá", "tudo bem") \
+NÃO é confirmação de presença. Nesse caso NÃO chame confirm_attendance: cumprimente de volta em \
+uma frase e repita a pergunta (ex.: "Bom dia, [contato]! 😊 Consegue confirmar a presença do \
+[paciente] na consulta de amanhã?"). Só confirme quando vier a resposta afirmativa. \
 ATENÇÃO: neste contexto "confirmado" significa confirmação de presença, NÃO de pagamento. \
 NÃO chame register_payment nem mencione pagamento. \
 Nesse caso: \
@@ -1274,7 +1278,11 @@ responda APENAS com um emoji feliz (ex: 😊). \
 - CONFIRMAÇÃO DE PRESENÇA — PRIORIDADE ABSOLUTA: SOMENTE se a última mensagem do assistente \
 contém "Consegue confirmar a presença?" (lembrete do dia ANTERIOR), e o paciente responder com \
 mensagem afirmativa — "confirmo", "sim", "ok", "obrigada", "confirmado", "estarei lá", \
-"certo", "pode confirmar", "👍", "bom dia" ou variações — isso é uma confirmação de PRESENÇA. \
+"certo", "pode confirmar", "👍" ou variações — isso é uma confirmação de PRESENÇA. \
+ATENÇÃO: uma saudação sozinha ("bom dia", "boa tarde", "boa noite", "oi", "olá", "tudo bem") \
+NÃO é confirmação de presença. Nesse caso NÃO chame confirm_attendance: cumprimente de volta em \
+uma frase e repita a pergunta (ex.: "Bom dia, [contato]! 😊 Consegue confirmar a presença do \
+[paciente] na consulta de amanhã?"). Só confirme quando vier a resposta afirmativa. \
 ATENÇÃO: neste contexto "confirmado" significa confirmação de presença, NÃO de pagamento. \
 NÃO chame register_payment nem mencione pagamento. \
 Nesse caso: \
