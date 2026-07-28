@@ -75,7 +75,26 @@ async def send_text(phone: str, text: str) -> None:
     for i, part in enumerate(parts):
         if i > 0:
             await asyncio.sleep(_MESSAGE_SPLIT_DELAY_SECONDS)
-        await send_message(conversation_id, part)
+        try:
+            await send_message(conversation_id, part)
+        except Exception as exc:
+            # Chatwoot já esgotou os retries (rate limit, quota de token, 5xx).
+            # Sem isto a falha some: o paciente simplesmente não recebe resposta
+            # e ninguém fica sabendo. Registra em `events` e sobe o erro.
+            status = getattr(getattr(exc, "response", None), "status_code", None)
+            _logger.error(
+                "CHATWOOT_SEND_FAILED phone=%s conv=%s part=%s/%s status=%s: %s",
+                phone, conversation_id, i + 1, len(parts), status, exc,
+            )
+            from app.database import log_event
+            await log_event("chatwoot_send_failed", phone, {
+                "conversation_id": conversation_id,
+                "status_code": status,
+                "part": i + 1,
+                "total_parts": len(parts),
+                "error": str(exc)[:500],
+            })
+            raise
 
 
 async def send_template(phone: str, template_name: str, language: str, components: list) -> None:

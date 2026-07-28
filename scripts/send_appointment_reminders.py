@@ -30,6 +30,13 @@ from app.patients import get_contacts_for_patient
 
 TZ = ZoneInfo("America/Recife")
 
+# Pausa entre agendamentos. Cada envio custa várias chamadas à API do Chatwoot
+# (busca de contato por variante de telefone + conversas + envio do template),
+# multiplicado pelo número de contatos do paciente. Sem espaçamento o lote
+# inteiro sai em rajada e bate no rate limit da Application API (Chatwoot 4.16+).
+# Mesmo padrão já usado em send_return_reminders.py.
+BATCH_PAUSE_SECONDS = float(os.getenv("REMINDER_BATCH_PAUSE_SECONDS", "3"))
+
 DOCTOR_LABELS = {
     "d5baa58b-a788-4f40-b8c0-512c189150be": "Dr. Júlio",
     "18b01f87-eacd-4905-bd4a-a8293991e6fd": "Dra. Bruna",
@@ -274,7 +281,9 @@ async def main():
             *((a, "lembrete_dia_consulta", "reminder_day_of_sent_at") for a in day_of_appts),
         ]
 
-        for appt, template_name, sent_col in batch:
+        for i, (appt, template_name, sent_col) in enumerate(batch):
+            if i > 0 and BATCH_PAUSE_SECONDS > 0:
+                await asyncio.sleep(BATCH_PAUSE_SECONDS)
             # Envia para TODOS os contatos com role 'consulta' do paciente
             # (ex.: pai e mãe). Marca sent_col uma vez por agendamento.
             await _send_reminder_to_contacts(client, appt, template_name, sent_col, now, graph)

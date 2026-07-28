@@ -290,6 +290,145 @@ async def test_send_text_sanitizes_invented_clinic_address():
     assert "Jacarandás" in mock_note.await_args.args[1]
 
 
+# ── Rate limiting / retry (Chatwoot 4.16+) ────────────────────────────────────
+
+
+def _http_resp(status_code: int = 200, json_body: dict | None = None, headers: dict | None = None):
+    """A response mock with a real status_code, so the retry logic actually branches."""
+    r = MagicMock()
+    r.status_code = status_code
+    r.headers = headers or {}
+    r.json = MagicMock(return_value=json_body or {})
+    if status_code >= 400:
+        r.raise_for_status = MagicMock(side_effect=httpx.HTTPStatusError(
+            f"{status_code}", request=MagicMock(), response=r,
+        ))
+    else:
+        r.raise_for_status = MagicMock()
+    return r
+
+
+async def test_request_retries_on_429_then_succeeds():
+    """A throttled call is retried instead of blowing up the whole reply."""
+    from app.chatwoot import _request
+    client = AsyncMock()
+    client.post = AsyncMock(side_effect=[
+        _http_resp(429, headers={"Retry-After": "0"}),
+        _http_resp(200, {"ok": True}),
+    ])
+
+    with patch("app.chatwoot.asyncio.sleep", new_callable=AsyncMock) as mock_sleep:
+        resp = await _request(client, "POST", "https://chat.example.com/x", json={})
+
+    assert resp.status_code == 200
+    assert client.post.await_count == 2
+    mock_sleep.assert_awaited_once_with(0.0)  # honours Retry-After, not the backoff
+
+
+async def test_request_honours_backoff_when_no_retry_after_header():
+    from app.chatwoot import _request, _BACKOFF_BASE_SECONDS
+    client = AsyncMock()
+    client.get = AsyncMock(side_effect=[_http_resp(503), _http_resp(200)])
+
+    with patch("app.chatwoot.asyncio.sleep", new_callable=AsyncMock) as mock_sleep:
+        await _request(client, "GET", "https://chat.example.com/x")
+
+    mock_sleep.assert_awaited_once_with(_BACKOFF_BASE_SECONDS)
+
+
+async def test_request_gives_up_after_max_attempts():
+    from app.chatwoot import _request, _MAX_ATTEMPTS
+    client = AsyncMock()
+    client.post = AsyncMock(return_value=_http_resp(429, headers={"Retry-After": "0"}))
+
+    with patch("app.chatwoot.asyncio.sleep", new_callable=AsyncMock):
+        with pytest.raises(httpx.HTTPStatusError):
+            await _request(client, "POST", "https://chat.example.com/x", json={})
+
+    assert client.post.await_count == _MAX_ATTEMPTS
+
+
+async def test_request_does_not_retry_client_errors():
+    """A 403 (bad token / quota) is a hard failure — retrying just burns quota."""
+    from app.chatwoot import _request
+    client = AsyncMock()
+    client.get = AsyncMock(return_value=_http_resp(403))
+
+    with pytest.raises(httpx.HTTPStatusError):
+        await _request(client, "GET", "https://chat.example.com/x")
+
+    assert client.get.await_count == 1
+
+
+async def test_request_tolerates_expected_status():
+    """unassign_agent_bot's 404 must not raise."""
+    from app.chatwoot import _request
+    client = AsyncMock()
+    client.delete = AsyncMock(return_value=_http_resp(404))
+
+    resp = await _request(client, "DELETE", "https://chat.example.com/x", tolerate=(404,))
+
+    assert resp.status_code == 404
+    resp.raise_for_status.assert_not_called()
+
+
+async def test_find_or_create_fetches_contact_conversations_once():
+    """The contact-conversations endpoint used to be hit twice per lookup — once for
+    the diagnostic log, once to pick the conversation. One fetch must serve both."""
+    from app.chatwoot import find_or_create_conversation, _store
+    _store.clear()
+
+    mock_client = AsyncMock()
+    mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+    mock_client.__aexit__ = AsyncMock(return_value=False)
+
+    conv_calls = []
+
+    async def fake_get(url: str, **_kw):
+        if "/contacts/search" in url:
+            return _http_resp(200, {"payload": [{"id": 222, "contact_inboxes": [{"source_id": "x"}]}]})
+        if "/conversations" in url:
+            conv_calls.append(url)
+            return _http_resp(200, {"payload": [{"id": 333, "inbox_id": 1, "status": "open"}]})
+        raise AssertionError(f"unexpected GET {url}")
+
+    mock_client.get = AsyncMock(side_effect=fake_get)
+
+    with patch("httpx.AsyncClient", return_value=mock_client), \
+         patch.dict("os.environ", {
+             "CHATWOOT_BASE_URL": "https://chat.example.com",
+             "CHATWOOT_ACCOUNT_ID": "1",
+             "CHATWOOT_AGENT_BOT_TOKEN": "test-token",
+             "CHATWOOT_INBOX_ID": "1",
+         }):
+        result = await find_or_create_conversation("5511777777777@s.whatsapp.net")
+
+    assert result == 333
+    assert len(conv_calls) == 1
+
+
+async def test_send_text_logs_event_when_chatwoot_send_fails():
+    """A send that Chatwoot rejects after retries must not fail silently."""
+    from app.chatwoot import register_conversation, _store
+    _store.clear()
+    register_conversation("5511999999999@s.whatsapp.net", 99)
+
+    failure = httpx.HTTPStatusError("429", request=MagicMock(), response=_http_resp(429))
+
+    with patch("app.chatwoot.send_message", new_callable=AsyncMock, side_effect=failure), \
+         patch("app.database.log_event", new_callable=AsyncMock) as mock_log_event:
+        from app.whatsapp import send_text
+        with pytest.raises(httpx.HTTPStatusError):
+            await send_text("5511999999999@s.whatsapp.net", "Oi!")
+
+    mock_log_event.assert_awaited_once()
+    event_type, phone, metadata = mock_log_event.await_args.args
+    assert event_type == "chatwoot_send_failed"
+    assert phone == "5511999999999@s.whatsapp.net"
+    assert metadata["status_code"] == 429
+    assert metadata["conversation_id"] == 99
+
+
 async def test_send_text_does_not_alert_on_normal_message():
     from app.chatwoot import register_conversation, _store
     _store.clear()

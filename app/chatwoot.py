@@ -7,6 +7,7 @@ Environment variables:
   CHATWOOT_AGENT_BOT_TOKEN  — access token from the Agent Bot settings page
   CHATWOOT_INBOX_ID         — numeric ID of the WhatsApp inbox the bot writes to
 """
+import asyncio
 import logging
 import os
 import httpx
@@ -15,6 +16,67 @@ logger = logging.getLogger(__name__)
 
 # In-memory map: phone (with @s.whatsapp.net) -> Chatwoot conversation_id
 _store: dict[str, int] = {}
+
+# Chatwoot 4.16 tightened rate limits, agent quotas and token access on the
+# Application API, so a 429 is now a normal transient condition rather than
+# something that never happens. Every call goes through _request() instead of a
+# bare raise_for_status(), otherwise a single throttled response silently kills
+# the reply (webhook path) or aborts a whole reminder batch (cron path).
+_MAX_ATTEMPTS = 3
+_RETRY_STATUSES = frozenset({429, 500, 502, 503, 504})
+_BACKOFF_BASE_SECONDS = 1.0
+_MAX_RETRY_DELAY_SECONDS = 60.0
+
+
+def _retry_delay(response: httpx.Response, attempt: int) -> float:
+    """Seconds to wait before retrying: Chatwoot's Retry-After when it sends one,
+    exponential backoff otherwise."""
+    try:
+        raw = response.headers.get("Retry-After")
+    except Exception:
+        raw = None
+    if raw is not None:
+        try:
+            return max(0.0, min(float(raw), _MAX_RETRY_DELAY_SECONDS))
+        except (TypeError, ValueError):
+            pass  # Retry-After may be an HTTP-date; fall back to backoff
+    return _BACKOFF_BASE_SECONDS * (2 ** attempt)
+
+
+async def _request(
+    client: httpx.AsyncClient,
+    method: str,
+    url: str,
+    *,
+    tolerate: tuple[int, ...] = (),
+    **kwargs,
+) -> httpx.Response:
+    """Call the Chatwoot API, retrying on 429/5xx before giving up.
+
+    `tolerate` lists status codes that are expected and must not raise (e.g. 404
+    when removing an assignment that doesn't exist).
+    """
+    response = None
+    for attempt in range(_MAX_ATTEMPTS):
+        response = await getattr(client, method.lower())(url, **kwargs)
+        if response.status_code not in _RETRY_STATUSES:
+            break
+        if attempt == _MAX_ATTEMPTS - 1:
+            logger.error(
+                "CHATWOOT_API_EXHAUSTED %s %s status=%s attempts=%s",
+                method, url, response.status_code, _MAX_ATTEMPTS,
+            )
+            break
+        delay = _retry_delay(response, attempt)
+        logger.warning(
+            "CHATWOOT_API_RETRY %s %s status=%s attempt=%s delay=%.1fs",
+            method, url, response.status_code, attempt + 1, delay,
+        )
+        await asyncio.sleep(delay)
+
+    if response.status_code not in tolerate:
+        response.raise_for_status()
+    return response
 
 
 def register_conversation(phone: str, conversation_id: int) -> None:
@@ -83,25 +145,21 @@ async def send_template_message(
         },
     }
     async with httpx.AsyncClient(timeout=10) as client:
-        response = await client.post(url, json=payload, headers=_bot_headers())
-        response.raise_for_status()
+        await _request(client, "POST", url, json=payload, headers=_bot_headers())
 
 
 async def send_message(conversation_id: int, text: str) -> None:
     url = f"{_base_url()}/api/v1/accounts/{_account_id()}/conversations/{conversation_id}/messages"
     payload = {"content": text, "message_type": "outgoing", "private": False}
     async with httpx.AsyncClient(timeout=10) as client:
-        response = await client.post(url, json=payload, headers=_bot_headers())
-        response.raise_for_status()
+        await _request(client, "POST", url, json=payload, headers=_bot_headers())
 
 
 async def unassign_agent_bot(conversation_id: int) -> None:
     """Remove human agent assignment so agents can take over in Chatwoot. 404 = no agent assigned, safe to ignore."""
     url = f"{_base_url()}/api/v1/accounts/{_account_id()}/conversations/{conversation_id}/assignments"
     async with httpx.AsyncClient(timeout=10) as client:
-        response = await client.delete(url, headers=_bot_headers())
-        if response.status_code != 404:
-            response.raise_for_status()
+        await _request(client, "DELETE", url, tolerate=(404,), headers=_bot_headers())
 
 
 async def add_private_note(conversation_id: int, text: str) -> None:
@@ -109,8 +167,7 @@ async def add_private_note(conversation_id: int, text: str) -> None:
     url = f"{_base_url()}/api/v1/accounts/{_account_id()}/conversations/{conversation_id}/messages"
     payload = {"content": text, "message_type": "outgoing", "private": True}
     async with httpx.AsyncClient(timeout=10) as client:
-        response = await client.post(url, json=payload, headers=_bot_headers())
-        response.raise_for_status()
+        await _request(client, "POST", url, json=payload, headers=_bot_headers())
 
 
 async def reopen_conversation(conversation_id: int) -> None:
@@ -118,23 +175,20 @@ async def reopen_conversation(conversation_id: int) -> None:
     url = f"{_base_url()}/api/v1/accounts/{_account_id()}/conversations/{conversation_id}/toggle_status"
     payload = {"status": "open"}
     async with httpx.AsyncClient(timeout=10) as client:
-        response = await client.post(url, json=payload, headers=_bot_headers())
-        response.raise_for_status()
+        await _request(client, "POST", url, json=payload, headers=_bot_headers())
 
 
 async def set_labels(conversation_id: int, add: list[str], remove: list[str] | None = None) -> None:
     """Set labels on a conversation: adds the given labels and removes others atomically."""
     url = f"{_base_url()}/api/v1/accounts/{_account_id()}/conversations/{conversation_id}/labels"
     async with httpx.AsyncClient(timeout=10) as client:
-        resp = await client.get(url, headers=_headers())
-        resp.raise_for_status()
+        resp = await _request(client, "GET", url, headers=_headers())
         current = set(resp.json().get("payload") or [])
         for label in (remove or []):
             current.discard(label)
         for label in add:
             current.add(label)
-        response = await client.post(url, json={"labels": list(current)}, headers=_headers())
-        response.raise_for_status()
+        await _request(client, "POST", url, json={"labels": list(current)}, headers=_headers())
 
 
 async def add_label(conversation_id: int, label: str) -> None:
@@ -146,8 +200,7 @@ async def get_last_patient_message(conversation_id: int) -> str | None:
     """Return the text of the last incoming message from the patient, or None."""
     url = f"{_base_url()}/api/v1/accounts/{_account_id()}/conversations/{conversation_id}/messages"
     async with httpx.AsyncClient(timeout=10) as client:
-        resp = await client.get(url, headers=_headers())
-        resp.raise_for_status()
+        resp = await _request(client, "GET", url, headers=_headers())
         data = resp.json().get("payload") or {}
         if isinstance(data, list):
             messages = data
@@ -185,8 +238,11 @@ async def _search_contact(client: httpx.AsyncClient, phone_digits: str) -> dict 
     url = f"{_base_url()}/api/v1/accounts/{_account_id()}/contacts/search"
     candidates = []
     for variant in _phone_variants(phone_digits):
-        resp = await client.get(url, params={"q": variant, "include": "contact_inboxes"}, headers=_headers())
-        resp.raise_for_status()
+        resp = await _request(
+            client, "GET", url,
+            params={"q": variant, "include": "contact_inboxes"},
+            headers=_headers(),
+        )
         payload = resp.json().get("payload") or []
         if payload:
             candidates.append(payload[0])
@@ -205,17 +261,19 @@ async def _create_contact(client: httpx.AsyncClient, phone_digits: str) -> dict:
         "phone_number": f"+{phone_digits}",
         "identifier": phone_digits,
     }
-    resp = await client.post(url, json=body, headers=_headers())
-    resp.raise_for_status()
+    resp = await _request(client, "POST", url, json=body, headers=_headers())
     return resp.json().get("payload", {}).get("contact", {})
 
 
-async def _find_conversation_for_contact(client: httpx.AsyncClient, contact_id: int) -> tuple[int, str] | None:
-    """Return (conv_id, status) of the most recent conversation for the contact in our inbox, or None."""
+async def _get_contact_conversations(client: httpx.AsyncClient, contact_id: int) -> list:
+    """Fetch every conversation of a contact, across all inboxes."""
     url = f"{_base_url()}/api/v1/accounts/{_account_id()}/contacts/{contact_id}/conversations"
-    resp = await client.get(url, headers=_headers())
-    resp.raise_for_status()
-    convs = resp.json().get("payload") or []
+    resp = await _request(client, "GET", url, headers=_headers())
+    return resp.json().get("payload") or []
+
+
+def _pick_conversation(convs: list) -> tuple[int, str] | None:
+    """Return (conv_id, status) of the most recent conversation in our inbox, or None."""
     inbox = _inbox_id()
     # Prefer open/pending; fall back to most recent resolved
     open_conv = next((c for c in convs if c.get("inbox_id") == inbox and c.get("status") in ("open", "pending")), None)
@@ -248,15 +306,14 @@ async def find_or_create_conversation(phone: str) -> int:
         if not contact_id:
             raise RuntimeError(f"Chatwoot returned no contact id for {digits}")
 
-        # Log all conversations for this contact to diagnose inbox_id mismatches
-        url = f"{_base_url()}/api/v1/accounts/{_account_id()}/contacts/{contact_id}/conversations"
-        _dbg = await client.get(url, headers=_headers())
-        _all_convs = (_dbg.json().get("payload") or []) if _dbg.status_code == 200 else []
+        # One fetch serves both the inbox_id-mismatch diagnostic log and the pick
+        # below — this used to be two identical GETs to the same endpoint.
+        all_convs = await _get_contact_conversations(client, contact_id)
         logger.info("FIND_CONV contact_id=%s inbox_id_cfg=%s all_convs=%s",
                     contact_id, _inbox_id(),
-                    [(c.get("id"), c.get("inbox_id"), c.get("status")) for c in _all_convs])
+                    [(c.get("id"), c.get("inbox_id"), c.get("status")) for c in all_convs])
 
-        result = await _find_conversation_for_contact(client, contact_id)
+        result = _pick_conversation(all_convs)
         if result is None:
             raise RuntimeError(f"No Chatwoot conversation found for {digits} and cannot create one for WhatsApp inboxes")
         conv_id, status = result
