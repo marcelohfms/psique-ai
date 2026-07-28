@@ -88,7 +88,7 @@ _CONTACT_FIELDS = {"name", "cpf", "phone", "active", "manual_hold"}
 _PATIENT_FIELDS = {
     "name", "birth_date", "age", "patient_cpf", "email", "doctor_id",
     "is_returning_patient", "modality_restriction", "age_exception", "custom_price",
-    "financial_name", "financial_cpf", "financial_email",
+    "financial_name", "financial_cpf", "financial_email", "social_name",
 }
 _LINK_FIELDS = {"role", "is_self", "relationship"}
 
