@@ -68,6 +68,16 @@ def test_sanitize_social_name_empty_after_stripping_returns_empty():
     assert _sanitize_social_name("(  )") == ""
 
 
+def test_sanitize_social_name_handles_none():
+    from app.graph.tools import _sanitize_social_name
+    assert _sanitize_social_name(None) == ""
+
+
+def test_sanitize_social_name_handles_empty_string():
+    from app.graph.tools import _sanitize_social_name
+    assert _sanitize_social_name("") == ""
+
+
 # ── get_available_slots ───────────────────────────────────────────────────────
 
 async def test_get_available_slots_returns_formatted_list():

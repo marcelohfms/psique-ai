@@ -48,10 +48,12 @@ _SOCIAL_NAME_AGE_RE = re.compile(r"\s*,?\s*\d+\s*anos?\b", re.IGNORECASE)
 _SOCIAL_NAME_PARENS_RE = re.compile(r"\([^)]*\)")
 
 
-def _sanitize_social_name(raw: str) -> str:
+def _sanitize_social_name(raw: str | None) -> str:
     """Remove sufixos comuns que não fazem parte do nome (idade, parênteses)
     antes de salvar o nome social — camada em código além da instrução de
     prompt, que já falhou sozinha na prática para patient_name/user_name."""
+    if not raw:
+        return ""
     cleaned = _SOCIAL_NAME_PARENS_RE.sub("", raw)
     cleaned = _SOCIAL_NAME_AGE_RE.sub("", cleaned)
     return " ".join(cleaned.split()).strip(" ,.-")
