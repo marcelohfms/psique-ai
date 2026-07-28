@@ -3,6 +3,8 @@ import asyncio
 import hashlib
 import hmac
 import json
+import logging
+import time
 import os
 import pytest
 from unittest.mock import AsyncMock, patch
@@ -330,8 +332,20 @@ def _chatwoot_payload(
 # CHATWOOT_WEBHOOK_SECRET is set. It's unset in tests (see conftest.py), so the
 # ten existing /chatwoot-webhook tests above and below keep working unsigned.
 
-def _chatwoot_signed(body: bytes, secret: str) -> str:
-    return hmac.new(secret.encode(), body, hashlib.sha256).hexdigest()
+def _chatwoot_signed(body: bytes, secret: str, timestamp: str) -> str:
+    """Reproduz o formato real do Chatwoot >= 4.11: `sha256=<hex>` sobre
+    `{timestamp}.{body}` — não o hex puro do corpo sozinho."""
+    message = timestamp.encode() + b"." + body
+    return "sha256=" + hmac.new(secret.encode(), message, hashlib.sha256).hexdigest()
+
+
+def _chatwoot_signed_headers(body: bytes, secret: str, timestamp: str | None = None) -> dict:
+    ts = timestamp if timestamp is not None else str(int(time.time()))
+    return {
+        "X-Chatwoot-Signature": _chatwoot_signed(body, secret, ts),
+        "X-Chatwoot-Timestamp": ts,
+        "Content-Type": "application/json",
+    }
 
 
 async def test_chatwoot_webhook_skips_signature_check_when_secret_unset(async_client):
@@ -351,7 +365,11 @@ async def test_chatwoot_webhook_rejects_invalid_signature_when_secret_set(async_
     body = json.dumps(_chatwoot_payload()).encode()
     response = await async_client.post(
         "/chatwoot-webhook", content=body,
-        headers={"X-Chatwoot-Signature": "deadbeef", "Content-Type": "application/json"},
+        headers={
+            "X-Chatwoot-Signature": "sha256=deadbeef",
+            "X-Chatwoot-Timestamp": str(int(time.time())),
+            "Content-Type": "application/json",
+        },
     )
     assert response.status_code == 403
 
@@ -363,12 +381,103 @@ async def test_chatwoot_webhook_accepts_valid_signature_when_secret_set(async_cl
          patch("app.chatwoot.register_conversation"):
         response = await async_client.post(
             "/chatwoot-webhook", content=body,
-            headers={
-                "X-Chatwoot-Signature": _chatwoot_signed(body, "cw-test-secret"),
-                "Content-Type": "application/json",
-            },
+            headers=_chatwoot_signed_headers(body, "cw-test-secret"),
         )
     assert response.status_code == 200
+
+
+async def test_chatwoot_webhook_rejects_signature_without_sha256_prefix(async_client, monkeypatch):
+    """O hex puro (formato antigo, errado) não pode ser aceito."""
+    monkeypatch.setenv("CHATWOOT_WEBHOOK_SECRET", "cw-test-secret")
+    body = json.dumps(_chatwoot_payload()).encode()
+    ts = str(int(time.time()))
+    bare_hex = _chatwoot_signed(body, "cw-test-secret", ts)[len("sha256="):]
+    response = await async_client.post(
+        "/chatwoot-webhook", content=body,
+        headers={
+            "X-Chatwoot-Signature": bare_hex,
+            "X-Chatwoot-Timestamp": ts,
+            "Content-Type": "application/json",
+        },
+    )
+    assert response.status_code == 403
+
+
+async def test_chatwoot_webhook_rejects_body_signed_without_timestamp(async_client, monkeypatch):
+    """Assinar só o corpo (o que o código fazia antes) tem de ser rejeitado —
+    é o que o timestamp no HMAC protege contra replay."""
+    monkeypatch.setenv("CHATWOOT_WEBHOOK_SECRET", "cw-test-secret")
+    body = json.dumps(_chatwoot_payload()).encode()
+    body_only = hmac.new(b"cw-test-secret", body, hashlib.sha256).hexdigest()
+    response = await async_client.post(
+        "/chatwoot-webhook", content=body,
+        headers={
+            "X-Chatwoot-Signature": "sha256=" + body_only,
+            "X-Chatwoot-Timestamp": str(int(time.time())),
+            "Content-Type": "application/json",
+        },
+    )
+    assert response.status_code == 403
+
+
+async def test_chatwoot_webhook_rejects_missing_timestamp_header(async_client, monkeypatch):
+    monkeypatch.setenv("CHATWOOT_WEBHOOK_SECRET", "cw-test-secret")
+    body = json.dumps(_chatwoot_payload()).encode()
+    headers = _chatwoot_signed_headers(body, "cw-test-secret")
+    del headers["X-Chatwoot-Timestamp"]
+    response = await async_client.post("/chatwoot-webhook", content=body, headers=headers)
+    assert response.status_code == 403
+
+
+async def test_chatwoot_webhook_rejects_stale_timestamp(async_client, monkeypatch):
+    """Assinatura válida mas antiga = replay. Rejeita."""
+    monkeypatch.setenv("CHATWOOT_WEBHOOK_SECRET", "cw-test-secret")
+    body = json.dumps(_chatwoot_payload()).encode()
+    stale = str(int(time.time()) - 3600)
+    response = await async_client.post(
+        "/chatwoot-webhook", content=body,
+        headers=_chatwoot_signed_headers(body, "cw-test-secret", timestamp=stale),
+    )
+    assert response.status_code == 403
+
+
+async def test_chatwoot_webhook_dryrun_never_rejects_on_mismatch(async_client, monkeypatch):
+    """Modo observação: secret errado, assinatura não bate — mas o webhook passa.
+    É o que permite descobrir em produção se o secret da UI é o de assinatura
+    sem arriscar derrubar a Eva."""
+    monkeypatch.delenv("CHATWOOT_WEBHOOK_SECRET", raising=False)
+    monkeypatch.setenv("CHATWOOT_WEBHOOK_SECRET_DRYRUN", "secret-que-nao-bate")
+    body = json.dumps(_chatwoot_payload()).encode()
+    with patch("app.main.buffer_push"), patch("app.main.save_message"), \
+         patch("app.chatwoot.register_conversation"):
+        response = await async_client.post(
+            "/chatwoot-webhook", content=body,
+            headers=_chatwoot_signed_headers(body, "outro-secret"),
+        )
+    assert response.status_code == 200
+
+
+async def test_chatwoot_webhook_dryrun_logs_match_result(async_client, monkeypatch, caplog):
+    monkeypatch.delenv("CHATWOOT_WEBHOOK_SECRET", raising=False)
+    monkeypatch.setenv("CHATWOOT_WEBHOOK_SECRET_DRYRUN", "cw-test-secret")
+    body = json.dumps(_chatwoot_payload()).encode()
+    with caplog.at_level(logging.WARNING, logger="app.main"), \
+         patch("app.main.buffer_push"), patch("app.main.save_message"), \
+         patch("app.chatwoot.register_conversation"):
+        response = await async_client.post(
+            "/chatwoot-webhook", content=body,
+            headers=_chatwoot_signed_headers(body, "cw-test-secret"),
+        )
+    assert response.status_code == 200
+    assert "CHATWOOT_SIGNATURE_DRYRUN match=True" in caplog.text
+
+
+async def test_chatwoot_webhook_enforcing_secret_wins_over_dryrun(async_client, monkeypatch):
+    """Com os dois setados, o modo enforce manda — dryrun não afrouxa nada."""
+    monkeypatch.setenv("CHATWOOT_WEBHOOK_SECRET", "cw-test-secret")
+    monkeypatch.setenv("CHATWOOT_WEBHOOK_SECRET_DRYRUN", "qualquer-coisa")
+    response = await async_client.post("/chatwoot-webhook", json=_chatwoot_payload())
+    assert response.status_code == 403
 
 
 async def test_chatwoot_webhook_processes_incoming_message(async_client):
