@@ -1,5 +1,6 @@
 import asyncio
 import os
+import re
 from datetime import datetime, timedelta, date
 from typing import Annotated, Literal
 from zoneinfo import ZoneInfo
@@ -39,6 +40,23 @@ async def _notify_clinic(message: str, phone: str = "", subject: str = "Notifica
             })
         except Exception:
             logger.exception("CLINIC_EMAIL_FAILED_LOG_EVENT_FAILED subject=%r", subject)
+
+
+# ── Regex patterns for social name sanitization ──────────────────────────────
+
+_SOCIAL_NAME_AGE_RE = re.compile(r"\s*,?\s*\d+\s*anos?\b", re.IGNORECASE)
+_SOCIAL_NAME_PARENS_RE = re.compile(r"\([^)]*\)")
+
+
+def _sanitize_social_name(raw: str | None) -> str:
+    """Remove sufixos comuns que não fazem parte do nome (idade, parênteses)
+    antes de salvar o nome social — camada em código além da instrução de
+    prompt, que já falhou sozinha na prática para patient_name/user_name."""
+    if not raw:
+        return ""
+    cleaned = _SOCIAL_NAME_PARENS_RE.sub("", raw)
+    cleaned = _SOCIAL_NAME_AGE_RE.sub("", cleaned)
+    return " ".join(cleaned.split()).strip(" ,.-")
 
 
 def _build_registration_block(state: dict, phone: str = "") -> str:
@@ -2854,6 +2872,26 @@ async def save_patient_email(
     await upsert_user(phone, {"email": email}, user_id=state.get("user_db_id"))
     await log_event("patient_email_saved", phone, {"email": email})
     return f"E-mail {email} registrado com sucesso. Agora pode prosseguir com o agendamento."
+
+
+@tool
+async def set_social_name(
+    social_name: str,
+    state: Annotated[dict, InjectedState],
+    config: RunnableConfig,
+) -> str:
+    """Registra o nome social do paciente — o nome pelo qual ele prefere ser
+    chamado, quando diferente do nome civil. Use SOMENTE quando o paciente ou
+    contato mencionar espontaneamente essa preferência (ex: "pode me chamar de
+    Malu", "meu nome social é..."). NUNCA pergunte isso de forma proativa.
+    """
+    phone = config["configurable"]["phone"]
+    cleaned = _sanitize_social_name(social_name)
+    if not cleaned:
+        return "Não entendi o nome social informado. Pode repetir?"
+    await upsert_user(phone, {"social_name": cleaned}, user_id=state.get("user_db_id"))
+    await log_event("social_name_set", phone, {"social_name": cleaned})
+    return f"Nome social '{cleaned}' registrado com sucesso. A partir de agora vou te chamar assim."
 
 
 @tool

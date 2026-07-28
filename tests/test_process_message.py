@@ -1270,6 +1270,7 @@ def _make_patient_agent_state(**overrides) -> dict:
         "guardian_cpf": None,
         "silent_mode": None,
         "user_db_id": None,
+        "social_name": None,
         "messages": [HumanMessage(content="quero agendar uma consulta")],
     }
     base.update(overrides)
@@ -1313,6 +1314,62 @@ async def test_patient_agent_injects_greeting_on_first_turn():
     assert system_msg is not None
     assert "INÍCIO DE CONVERSA" in system_msg.content
     assert "Carlos" in system_msg.content
+
+
+async def test_patient_agent_hydrates_social_name_from_db():
+    """social_name ausente no state (ex: checkpoint novo) deve ser hidratado do
+    banco, igual a patient_name/financial_name, e incluído no update retornado
+    pelo patient_agent_node (mesmo mecanismo de sync que popula o checkpoint).
+
+    Nota: a Eva ainda não usa social_name na montagem do prompt — isso é escopo
+    das Tasks 5-6 (wiring do prompt). Este teste cobre só a hidratação (Task 4)."""
+    from app.graph.nodes import patient_agent_node
+
+    state = _make_patient_agent_state(
+        user_db_id=None, social_name=None,
+        messages=[HumanMessage(content="quero agendar")],
+    )
+    fake_patient = {
+        "id": "patient-1", "name": "Carlos Silva", "social_name": "Malu",
+        "doctor_id": None, "email": "carlos@email.com",
+        "is_returning_patient": True,
+        "financial_name": None, "financial_cpf": None, "financial_email": None,
+    }
+
+    ai_response = MagicMock()
+    ai_response.tool_calls = []
+    ai_response.content = "resposta"
+
+    async def fake_ainvoke(messages):
+        return ai_response
+
+    with patch(
+        "app.patients.resolve_active_patient", new_callable=AsyncMock,
+        return_value={"contact": {"name": "Carlos"}, "patient": fake_patient},
+    ), \
+         patch("app.graph.nodes._get_agent_llm") as mock_llm_fn, \
+         patch("app.graph.nodes.send_text", new_callable=AsyncMock), \
+         patch("app.graph.nodes.save_message", new_callable=AsyncMock), \
+         patch("app.graph.nodes.get_upcoming_appointments", new_callable=AsyncMock, return_value=[]), \
+         patch("app.graph.nodes.get_user_by_phone", new_callable=AsyncMock, return_value={"price_adjustment_notified_at": "2026-01-01"}), \
+         patch("app.graph.nodes.get_last_assistant_message_time", new_callable=AsyncMock, return_value=None), \
+         patch("app.google_calendar.format_doctor_schedules", return_value="seg-sex"):
+        mock_llm = MagicMock()
+        mock_llm.ainvoke = fake_ainvoke
+        mock_llm_fn.return_value = mock_llm
+        result = await patient_agent_node(state, {})
+
+    assert result.get("social_name") == "Malu"
+
+
+async def test_patient_agent_prefers_social_name_over_civil_name():
+    """Quando social_name já está no state, a Eva deve se dirigir ao paciente por
+    ele, não pelo nome civil — mesmo com patient_name preenchido."""
+    state = _make_patient_agent_state(patient_name="Carlos Silva", social_name="Malu")
+    system_msg = await _run_patient_agent(state, last_assistant_time=None)
+    assert system_msg is not None
+    assert "atendendo Malu" in system_msg.content
+    assert "atendendo Carlos Silva" not in system_msg.content
 
 
 async def test_pending_appointment_success_with_internal_prefix():
@@ -2642,6 +2699,20 @@ def test_every_patient_facing_prompt_carries_clinic_address():
     for name in ("COLLECT_SYSTEM", "NEW_PATIENT_SYSTEM", "EXISTING_PATIENT_SYSTEM"):
         assert "{clinic_address}" in getattr(prompts, name), (
             f"{name} não injeta o endereço da clínica"
+        )
+
+
+def test_tool_bearing_prompts_carry_social_name_instruction():
+    """NEW_PATIENT_SYSTEM e EXISTING_PATIENT_SYSTEM (únicos com acesso a tools)
+    devem instruir a Eva a chamar set_social_name quando o paciente mencionar
+    espontaneamente um nome social — e a NUNCA perguntar isso de forma proativa.
+    COLLECT_SYSTEM fica de fora: collect_info_node não chama tools."""
+    from app.graph import prompts
+    for name in ("NEW_PATIENT_SYSTEM", "EXISTING_PATIENT_SYSTEM"):
+        content = getattr(prompts, name)
+        assert "set_social_name" in content, f"{name} não menciona set_social_name"
+        assert "NUNCA pergunte" in content or "nunca pergunte" in content.lower(), (
+            f"{name} não deixa explícito que a pergunta nunca deve ser proativa"
         )
 
 

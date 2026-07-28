@@ -12,6 +12,7 @@ from app.graph.tools import (
     cancel_appointment, reschedule_appointment, mark_reschedule_in_progress,
     request_document, transfer_to_human, confirm_attendance,
     register_payment, update_preferred_doctor, save_patient_email,
+    set_social_name,
     register_refund_request, confirm_refund_completed,
     request_registration_update, nudge_doctor_document,
     consultar_data, extend_payment_deadline, waive_booking_fee,
@@ -30,6 +31,7 @@ TOOLS = [
     cancel_appointment, reschedule_appointment, mark_reschedule_in_progress,
     request_document, transfer_to_human, confirm_attendance,
     register_payment, update_preferred_doctor, save_patient_email,
+    set_social_name,
     register_refund_request, confirm_refund_completed,
     request_registration_update, nudge_doctor_document,
     consultar_data, extend_payment_deadline, waive_booking_fee,
@@ -1163,6 +1165,8 @@ async def patient_agent_node(state: ConversationState, config: RunnableConfig) -
                     _sync_updates["financial_cpf"] = _h_patient["financial_cpf"]
                 if not state.get("financial_email") and _h_patient.get("financial_email"):
                     _sync_updates["financial_email"] = _h_patient["financial_email"]
+                if not state.get("social_name") and _h_patient.get("social_name"):
+                    _sync_updates["social_name"] = _h_patient["social_name"]
 
             if state.get("is_patient") is None and _h_contact and _h_patient:
                 _db_h = await _get_db_hydr()
@@ -1396,7 +1400,7 @@ async def patient_agent_node(state: ConversationState, config: RunnableConfig) -
     _raw_age = state.get("patient_age")
     patient_age = _raw_age or 99          # numeric fallback for logic checks
     patient_age_display = f"{patient_age} anos" if _raw_age else "não informada"
-    _full_name = state.get("patient_name") or state.get("user_name") or "paciente"
+    _full_name = state.get("social_name") or state.get("patient_name") or state.get("user_name") or "paciente"
     from app.utils import display_name as _dn
     first_name = _dn(_full_name)
     # contact_name: who is on WhatsApp. May differ from patient_name (e.g. guardian).
@@ -1404,7 +1408,7 @@ async def patient_agent_node(state: ConversationState, config: RunnableConfig) -
     # patient_name as fallback so the LLM doesn't confuse the two people.
     _is_third_party = state.get("is_patient") is False
     _contact_full = state.get("user_name") or (
-        "responsável" if _is_third_party else (state.get("patient_name") or "paciente")
+        "responsável" if _is_third_party else (state.get("social_name") or state.get("patient_name") or "paciente")
     )
     contact_first_name = _dn(_contact_full)
     contact_name = _contact_full

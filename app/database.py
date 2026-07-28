@@ -55,6 +55,7 @@ _PATIENT_COPY_FIELDS = (
     "patient_cpf", "consultation_reason", "referral_professional",
     "modality_restriction", "age_exception", "custom_price",
     "booking_fee_waived", "financial_name", "financial_cpf", "financial_email",
+    "social_name",
 )
 
 # Campos copiados de `contacts` para o dict legado.

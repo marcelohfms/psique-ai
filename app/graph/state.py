@@ -21,6 +21,7 @@ class ConversationState(TypedDict):
 
     # Patient data (may differ from contact when is_patient=False)
     patient_name: str | None
+    social_name: str | None        # nome social (preferred name)
     patient_age: int | None        # determines 1h vs 2h slot
 
     # Clinic status
