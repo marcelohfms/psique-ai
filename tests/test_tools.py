@@ -41,6 +41,33 @@ def _make_supabase_client():
     return client, table, execute
 
 
+# ── _sanitize_social_name ─────────────────────────────────────────────────────
+
+def test_sanitize_social_name_strips_age_suffix_with_comma():
+    from app.graph.tools import _sanitize_social_name
+    assert _sanitize_social_name("Malu, 25 anos") == "Malu"
+
+
+def test_sanitize_social_name_strips_age_suffix_without_comma():
+    from app.graph.tools import _sanitize_social_name
+    assert _sanitize_social_name("Malu 8 anos") == "Malu"
+
+
+def test_sanitize_social_name_strips_parenthetical():
+    from app.graph.tools import _sanitize_social_name
+    assert _sanitize_social_name("Malu (é como minha família me chama)") == "Malu"
+
+
+def test_sanitize_social_name_keeps_clean_name_untouched():
+    from app.graph.tools import _sanitize_social_name
+    assert _sanitize_social_name("  João Gabriel  ") == "João Gabriel"
+
+
+def test_sanitize_social_name_empty_after_stripping_returns_empty():
+    from app.graph.tools import _sanitize_social_name
+    assert _sanitize_social_name("(  )") == ""
+
+
 # ── get_available_slots ───────────────────────────────────────────────────────
 
 async def test_get_available_slots_returns_formatted_list():

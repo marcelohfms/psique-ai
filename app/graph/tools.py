@@ -1,5 +1,6 @@
 import asyncio
 import os
+import re
 from datetime import datetime, timedelta, date
 from typing import Annotated, Literal
 from zoneinfo import ZoneInfo
@@ -39,6 +40,21 @@ async def _notify_clinic(message: str, phone: str = "", subject: str = "Notifica
             })
         except Exception:
             logger.exception("CLINIC_EMAIL_FAILED_LOG_EVENT_FAILED subject=%r", subject)
+
+
+# ── Regex patterns for social name sanitization ──────────────────────────────
+
+_SOCIAL_NAME_AGE_RE = re.compile(r"\s*,?\s*\d+\s*anos?\b", re.IGNORECASE)
+_SOCIAL_NAME_PARENS_RE = re.compile(r"\([^)]*\)")
+
+
+def _sanitize_social_name(raw: str) -> str:
+    """Remove sufixos comuns que não fazem parte do nome (idade, parênteses)
+    antes de salvar o nome social — camada em código além da instrução de
+    prompt, que já falhou sozinha na prática para patient_name/user_name."""
+    cleaned = _SOCIAL_NAME_PARENS_RE.sub("", raw)
+    cleaned = _SOCIAL_NAME_AGE_RE.sub("", cleaned)
+    return " ".join(cleaned.split()).strip(" ,.-")
 
 
 def _build_registration_block(state: dict, phone: str = "") -> str:
