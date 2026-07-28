@@ -1315,6 +1315,52 @@ async def test_patient_agent_injects_greeting_on_first_turn():
     assert "Carlos" in system_msg.content
 
 
+async def test_patient_agent_hydrates_social_name_from_db():
+    """social_name ausente no state (ex: checkpoint novo) deve ser hidratado do
+    banco, igual a patient_name/financial_name, e incluído no update retornado
+    pelo patient_agent_node (mesmo mecanismo de sync que popula o checkpoint).
+
+    Nota: a Eva ainda não usa social_name na montagem do prompt — isso é escopo
+    das Tasks 5-6 (wiring do prompt). Este teste cobre só a hidratação (Task 4)."""
+    from app.graph.nodes import patient_agent_node
+
+    state = _make_patient_agent_state(
+        user_db_id=None, social_name=None,
+        messages=[HumanMessage(content="quero agendar")],
+    )
+    fake_patient = {
+        "id": "patient-1", "name": "Carlos Silva", "social_name": "Malu",
+        "doctor_id": None, "email": "carlos@email.com",
+        "is_returning_patient": True,
+        "financial_name": None, "financial_cpf": None, "financial_email": None,
+    }
+
+    ai_response = MagicMock()
+    ai_response.tool_calls = []
+    ai_response.content = "resposta"
+
+    async def fake_ainvoke(messages):
+        return ai_response
+
+    with patch(
+        "app.patients.resolve_active_patient", new_callable=AsyncMock,
+        return_value={"contact": {"name": "Carlos"}, "patient": fake_patient},
+    ), \
+         patch("app.graph.nodes._get_agent_llm") as mock_llm_fn, \
+         patch("app.graph.nodes.send_text", new_callable=AsyncMock), \
+         patch("app.graph.nodes.save_message", new_callable=AsyncMock), \
+         patch("app.graph.nodes.get_upcoming_appointments", new_callable=AsyncMock, return_value=[]), \
+         patch("app.graph.nodes.get_user_by_phone", new_callable=AsyncMock, return_value={"price_adjustment_notified_at": "2026-01-01"}), \
+         patch("app.graph.nodes.get_last_assistant_message_time", new_callable=AsyncMock, return_value=None), \
+         patch("app.google_calendar.format_doctor_schedules", return_value="seg-sex"):
+        mock_llm = MagicMock()
+        mock_llm.ainvoke = fake_ainvoke
+        mock_llm_fn.return_value = mock_llm
+        result = await patient_agent_node(state, {})
+
+    assert result.get("social_name") == "Malu"
+
+
 async def test_pending_appointment_success_with_internal_prefix():
     """Regressão: confirm_appointment retorna o código AGENDAMENTO_OK prefixado com
     '[INSTRUÇÃO INTERNA — NÃO ENVIE AO PACIENTE]'. O handler de pending_appointment
