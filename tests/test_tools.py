@@ -2566,6 +2566,39 @@ async def test_save_patient_email_passes_user_id_from_state():
     assert "paciente@email.com" in result
 
 
+# ── set_social_name ────────────────────────────────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_set_social_name_sanitizes_and_persists():
+    from app.graph.tools import set_social_name
+    state = _make_state(user_db_id="patient-id-1")
+    with patch("app.graph.tools.upsert_user", new_callable=AsyncMock) as mock_upsert, \
+         patch("app.graph.tools.log_event", new_callable=AsyncMock) as mock_log:
+        result = await set_social_name.coroutine(
+            social_name="Malu, 25 anos",
+            state=state,
+            config=CONFIG,
+        )
+    mock_upsert.assert_awaited_once_with(PHONE, {"social_name": "Malu"}, user_id="patient-id-1")
+    mock_log.assert_awaited_once_with("social_name_set", PHONE, {"social_name": "Malu"})
+    assert "Malu" in result
+
+
+@pytest.mark.asyncio
+async def test_set_social_name_rejects_empty_after_sanitization():
+    from app.graph.tools import set_social_name
+    state = _make_state(user_db_id="patient-id-1")
+    with patch("app.graph.tools.upsert_user", new_callable=AsyncMock) as mock_upsert, \
+         patch("app.graph.tools.log_event", new_callable=AsyncMock):
+        result = await set_social_name.coroutine(
+            social_name="(  )",
+            state=state,
+            config=CONFIG,
+        )
+    mock_upsert.assert_not_awaited()
+    assert "não entendi" in result.lower()
+
+
 # ── request_registration_update ───────────────────────────────────────────────
 
 @pytest.mark.asyncio

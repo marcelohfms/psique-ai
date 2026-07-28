@@ -2875,6 +2875,26 @@ async def save_patient_email(
 
 
 @tool
+async def set_social_name(
+    social_name: str,
+    state: Annotated[dict, InjectedState],
+    config: RunnableConfig,
+) -> str:
+    """Registra o nome social do paciente — o nome pelo qual ele prefere ser
+    chamado, quando diferente do nome civil. Use SOMENTE quando o paciente ou
+    contato mencionar espontaneamente essa preferência (ex: "pode me chamar de
+    Malu", "meu nome social é..."). NUNCA pergunte isso de forma proativa.
+    """
+    phone = config["configurable"]["phone"]
+    cleaned = _sanitize_social_name(social_name)
+    if not cleaned:
+        return "Não entendi o nome social informado. Pode repetir?"
+    await upsert_user(phone, {"social_name": cleaned}, user_id=state.get("user_db_id"))
+    await log_event("social_name_set", phone, {"social_name": cleaned})
+    return f"Nome social '{cleaned}' registrado com sucesso. A partir de agora vou te chamar assim."
+
+
+@tool
 async def update_preferred_doctor(
     doctor: Literal["julio", "bruna"],
     state: Annotated[dict, InjectedState],
