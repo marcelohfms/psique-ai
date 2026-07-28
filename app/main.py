@@ -883,6 +883,39 @@ def _extract_phone_from_payload(payload: dict) -> str | None:
     return (_variants[0] if _variants else _raw) + "@s.whatsapp.net"
 
 
+def _extract_conversation_id(payload: dict):
+    """Conversation id: nested under conversation{} for message events, at the top
+    level for conversation_updated (there the conversation IS the payload)."""
+    conv = payload.get("conversation") or {}
+    return conv.get("id") or payload.get("id")
+
+
+def _extract_label_delta(changed: list) -> tuple[set, set] | None:
+    """Read (labels_before, labels_now) from Chatwoot's changed_attributes.
+
+    Chatwoot reports label changes as `label_list` (list of names) and
+    `cached_label_list` (comma-separated string) — never as `labels`.
+    Returns None when the change didn't touch labels.
+    """
+    for entry in changed:
+        if isinstance(entry, dict) and "label_list" in entry:
+            change = entry.get("label_list") or {}
+            return set(change.get("previous_value") or []), set(change.get("current_value") or [])
+
+    for entry in changed:
+        if isinstance(entry, dict) and "cached_label_list" in entry:
+            change = entry.get("cached_label_list") or {}
+
+            def _split(value) -> set:
+                if isinstance(value, str):
+                    return {part.strip() for part in value.split(",") if part.strip()}
+                return set(value or [])
+
+            return _split(change.get("previous_value")), _split(change.get("current_value"))
+
+    return None
+
+
 async def _apply_eva_label_action(payload: dict, added: set, removed: set) -> bool:
     """Pause/resume Eva based on which control labels were added or removed."""
     phone = _extract_phone_from_payload(payload)
@@ -903,7 +936,7 @@ async def _apply_eva_label_action(payload: dict, added: set, removed: set) -> bo
         await _resume_bot_for_patient(phone)
         logger.info("Eva reativada via label eva-ativa para %s", phone)
 
-        conversation_id = payload.get("conversation", {}).get("id")
+        conversation_id = _extract_conversation_id(payload)
         if conversation_id:
             try:
                 from app.chatwoot import get_last_patient_message
@@ -933,13 +966,10 @@ async def _handle_label_change(payload: dict) -> bool:
                     payload.get("changed_attributes"))
         changed = payload.get("changed_attributes") or []
         logger.info("CONV_UPDATED_CHANGED_ATTRS type=%s value=%s", type(changed).__name__, changed)
-        label_change = next(
-            (c for c in changed if isinstance(c, dict) and "labels" in c),
-            None,
-        )
-        if label_change is None:
+        delta = _extract_label_delta(changed)
+        if delta is None:
             # Fallback: if eva-ativa is in current labels and not tracked yet, treat as added
-            conv_id = str(payload.get("conversation", {}).get("id") or "")
+            conv_id = str(_extract_conversation_id(payload) or "")
             labels_now = frozenset(
                 payload.get("conversation", {}).get("labels")
                 or payload.get("labels")
@@ -955,16 +985,15 @@ async def _handle_label_change(payload: dict) -> bool:
                     return await _apply_eva_label_action(payload, added, removed)
             return False
 
-        # Labels may be at payload["conversation"]["labels"] (agent-bot format)
-        # or at payload["labels"] (account webhook format) — check both.
-        labels_now = set(
-            payload.get("conversation", {}).get("labels")
-            or payload.get("labels")
-            or []
-        )
-        labels_before = set((label_change.get("labels") or {}).get("previous_value") or [])
+        labels_before, labels_now = delta
         added = labels_now - labels_before
         removed = labels_before - labels_now
+
+        # Keep the in-memory tracker in sync so Path 2 (message_updated) doesn't
+        # replay a change already applied here.
+        conv_id = str(_extract_conversation_id(payload) or "")
+        if conv_id:
+            _conv_labels[conv_id] = frozenset(labels_now)
 
         logger.info(
             "LABEL_CHANGE conversation_updated labels_now=%s labels_before=%s added=%s removed=%s",

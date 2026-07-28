@@ -971,3 +971,123 @@ async def test_chatwoot_delivery_failure_ignores_human_agent_messages():
 
     mock_log.assert_not_called()
     mock_note.assert_not_called()
+
+
+# ── conversation_updated label changes (eva-ativa / eva-inativa) ───────────────
+
+_LABEL_PHONE = "+5511999999999"
+_LABEL_PHONE_JID = "5511999999999@s.whatsapp.net"
+
+
+def _conv_updated_payload(
+    previous_labels: list[str],
+    current_labels: list[str],
+    conversation_id: int = 42,
+    include_label_list: bool = True,
+) -> dict:
+    """Real conversation_updated shape: the conversation IS the payload (no nested
+    "conversation" key), and label changes arrive as label_list/cached_label_list
+    entries inside changed_attributes — never as "labels"."""
+    changed: list[dict] = [
+        {"updated_at": {"previous_value": 1753723751, "current_value": 1753723752}},
+        {"cached_label_list": {
+            "previous_value": ",".join(previous_labels),
+            "current_value": ",".join(current_labels),
+        }},
+    ]
+    if include_label_list:
+        changed.append({"label_list": {
+            "previous_value": previous_labels,
+            "current_value": current_labels,
+        }})
+
+    return {
+        "event": "conversation_updated",
+        "id": conversation_id,
+        "inbox_id": 1,
+        "status": "open",
+        "can_reply": True,
+        "channel": "Channel::Whatsapp",
+        "additional_attributes": {},
+        "contact_inbox": {"source_id": _LABEL_PHONE},
+        "messages": [],
+        "labels": current_labels,
+        "meta": {"sender": {"phone_number": _LABEL_PHONE}},
+        "changed_attributes": changed,
+    }
+
+
+async def test_conv_updated_eva_inativa_added_pauses():
+    """Adding eva-inativa via conversation_updated must pause Eva for that patient."""
+    from app.main import _handle_label_change
+
+    payload = _conv_updated_payload(previous_labels=[], current_labels=["eva-inativa"])
+    with patch("app.main._pause_bot_for_patient", new_callable=AsyncMock) as mock_pause, \
+         patch("app.main._resume_bot_for_patient", new_callable=AsyncMock) as mock_resume:
+        handled = await _handle_label_change(payload)
+
+    assert handled is True
+    mock_pause.assert_awaited_once_with(_LABEL_PHONE_JID)
+    mock_resume.assert_not_awaited()
+
+
+async def test_conv_updated_eva_inativa_removed_resumes():
+    """Removing eva-inativa via conversation_updated must resume Eva — this is the
+    resume path that was silently dropped, leaving contacts.active False."""
+    from app.main import _handle_label_change
+
+    payload = _conv_updated_payload(previous_labels=["eva-inativa"], current_labels=[])
+    with patch("app.main._pause_bot_for_patient", new_callable=AsyncMock) as mock_pause, \
+         patch("app.main._resume_bot_for_patient", new_callable=AsyncMock) as mock_resume:
+        handled = await _handle_label_change(payload)
+
+    assert handled is True
+    mock_resume.assert_awaited_once_with(_LABEL_PHONE_JID)
+    mock_pause.assert_not_awaited()
+
+
+async def test_conv_updated_eva_ativa_added_resumes_and_reprocesses():
+    """Adding eva-ativa resumes Eva and reprocesses the last patient message; the
+    conversation id must be read from the top level of the payload."""
+    from app.main import _handle_label_change
+
+    payload = _conv_updated_payload(previous_labels=[], current_labels=["eva-ativa"])
+    with patch("app.main._resume_bot_for_patient", new_callable=AsyncMock) as mock_resume, \
+         patch("app.chatwoot.get_last_patient_message", new_callable=AsyncMock) as mock_last, \
+         patch("app.main.buffer_push", new_callable=AsyncMock) as mock_push:
+        mock_last.return_value = "oi, tudo bem?"
+        handled = await _handle_label_change(payload)
+
+    assert handled is True
+    mock_resume.assert_awaited_once_with(_LABEL_PHONE_JID)
+    mock_last.assert_awaited_once_with(42)
+    assert mock_push.await_args[0][0] == _LABEL_PHONE_JID
+    assert mock_push.await_args[0][1] == "oi, tudo bem?"
+
+
+async def test_conv_updated_falls_back_to_cached_label_list():
+    """Older/agent-bot payloads may carry only cached_label_list (comma-separated)."""
+    from app.main import _handle_label_change
+
+    payload = _conv_updated_payload(
+        previous_labels=["eva-inativa"], current_labels=[], include_label_list=False
+    )
+    with patch("app.main._resume_bot_for_patient", new_callable=AsyncMock) as mock_resume:
+        handled = await _handle_label_change(payload)
+
+    assert handled is True
+    mock_resume.assert_awaited_once_with(_LABEL_PHONE_JID)
+
+
+async def test_conv_updated_unrelated_label_change_is_ignored():
+    """A label change that doesn't touch the eva-* control labels changes nothing."""
+    from app.main import _handle_label_change
+
+    payload = _conv_updated_payload(previous_labels=[], current_labels=["urgente"])
+    with patch("app.main._pause_bot_for_patient", new_callable=AsyncMock) as mock_pause, \
+         patch("app.main._resume_bot_for_patient", new_callable=AsyncMock) as mock_resume:
+        handled = await _handle_label_change(payload)
+
+    assert handled is False
+    mock_pause.assert_not_awaited()
+    mock_resume.assert_not_awaited()
