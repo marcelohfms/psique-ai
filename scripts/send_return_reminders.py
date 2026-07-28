@@ -18,10 +18,10 @@ Cada um dos 3 templates acima tem uma variante `_terceiro` (contato ≠
 paciente, ex: mãe agendando pelo filho) — ver `_plain_message` e
 `_build_body_params` abaixo.
 
-Sends are throttled — batches of 10, 60s pause between batches — to reduce
-risk of the WhatsApp number being flagged for spam. Only the flag for a
-successfully-sent reminder is marked, so anything left over from today's run
-is retried automatically on tomorrow's run.
+Sends are throttled — one reminder at a time, 60s pause between each send —
+to reduce risk of the WhatsApp number being flagged for spam. Only the flag
+for a successfully-sent reminder is marked, so anything left over from
+today's run is retried automatically on tomorrow's run.
 
 Requires in Supabase: tabela `return_reminders` (ver
 supabase/migrations/20260714_create_return_reminders.sql).
@@ -38,7 +38,9 @@ import app.database  # noqa: F401 — carrega database antes de patients (evita 
 from app.patients import get_contacts_for_patient
 
 TZ = ZoneInfo("America/Recife")
-BATCH_SIZE = 10
+# Envio individual (1 por vez) com pausa entre cada mensagem — evita rajadas
+# que podem disparar a detecção de spam da Meta e restringir o número.
+BATCH_SIZE = 1
 BATCH_PAUSE_SECONDS = 60
 
 DOCTOR_LABELS = {
@@ -230,18 +232,31 @@ async def save_to_checkpoint(graph, phone: str, message: str, patient_name: str,
     await graph.aupdate_state(config, update, as_node="patient_agent")
 
 
-async def _has_future_appointment(client, patient_id: str, doctor_id: str, now_iso: str) -> bool:
+async def _is_stale_classification(
+    client, patient_id: str, doctor_id: str, last_classified_appointment_id: str | None
+) -> bool:
+    """True se a consulta agendada/concluída mais recente do paciente com este
+    médico for diferente da que o médico classificou por último (`return_reminders.
+    last_classified_appointment_id`). Isso cobre tanto "paciente já marcou o
+    retorno" quanto "paciente já veio de novo mas o médico ainda não
+    reclassificou" — nos dois casos o `next_return_date` da linha está
+    desatualizado e não é seguro lembrar até o médico reclassificar via
+    dashboard (caso Mariana Mendonça, consulta em 22/07 gerou 2 lembretes
+    com data de retorno já obsoleta).
+    """
     result = await (
         client.from_("appointments")
-        .select("id")
+        .select("appointment_id")
         .eq("patient_id", patient_id)
         .eq("doctor_id", doctor_id)
-        .eq("status", "scheduled")
-        .gt("end_time", now_iso)
+        .in_("status", ["scheduled", "completed"])
+        .order("start_time", desc=True)
         .limit(1)
         .execute()
     )
-    return bool(result.data)
+    if not result.data:
+        return False
+    return result.data[0]["appointment_id"] != last_classified_appointment_id
 
 
 async def _send_for_row(client, row: dict, template_name: str, sent_col: str, graph) -> None:
@@ -309,12 +324,12 @@ async def main():
     )
 
     today = datetime.now(TZ).date()
-    now_iso = datetime.now(TZ).isoformat()
 
     result = await (
         client.from_("return_reminders")
         .select(
             "id, patient_id, doctor_id, return_interval, next_return_date, "
+            "last_classified_appointment_id, "
             "month_before_sent_at, month_of_sent_at, overdue_sent_at, patients(name)"
         )
         .neq("return_interval", "15_dias")
@@ -329,11 +344,21 @@ async def main():
             continue
         patient_id = row.get("patient_id")
         doctor_id = row.get("doctor_id")
-        if patient_id and doctor_id and await _has_future_appointment(client, patient_id, doctor_id, now_iso):
-            print(f"  [SKIP] return_reminder {row.get('id')} — já tem consulta futura com o mesmo médico.")
+        if patient_id and doctor_id and await _is_stale_classification(
+            client, patient_id, doctor_id, row.get("last_classified_appointment_id")
+        ):
+            print(f"  [SKIP] return_reminder {row.get('id')} — consulta mais recente ainda não classificada pelo médico.")
             continue
         template_name, sent_col = pending
         candidates.append((row, template_name, sent_col))
+
+    # Ordena por dia-do-mês da última consulta — preservado em next_return_date
+    # por _add_months (dashboard/return_reminders.py), que soma meses mantendo
+    # o dia original. Sem isso, um paciente de retorno longo (ex.: 6 meses)
+    # cuja última consulta caiu no fim do mês podia furar a fila na frente de
+    # quem precisa agendar logo no início do mês, mesmo tendo prioridade menor
+    # na prática.
+    candidates.sort(key=lambda c: date.fromisoformat(c[0]["next_return_date"]).day)
 
     print(f"Return reminders to send today: {len(candidates)}")
 

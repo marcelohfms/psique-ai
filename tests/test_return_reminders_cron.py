@@ -155,7 +155,7 @@ async def test_send_return_reminder_template_envia_body_params_montados():
 def _client_returning(data):
     execute = AsyncMock(return_value=MagicMock(data=data))
     table = MagicMock()
-    for m in ("select", "eq", "gt", "limit", "update"):
+    for m in ("select", "eq", "gt", "in_", "order", "limit", "update"):
         getattr(table, m).return_value = table
     table.execute = execute
     client = MagicMock()
@@ -163,18 +163,31 @@ def _client_returning(data):
     return client, table
 
 
-# ── _has_future_appointment ───────────────────────────────────────────────
+# ── _is_stale_classification ────────────────────────────────────────────
+# Regra: sempre considerar só a consulta agendada/completa mais recente do
+# paciente com o médico. Se ela for diferente da última classificada pelo
+# médico (last_classified_appointment_id), a linha está desatualizada —
+# esperar o médico reclassificar em vez de lembrar com base num
+# next_return_date que já não vale mais (caso Mariana Mendonça, consulta em
+# 22/07 ainda não reclassificada, gerou 2 lembretes com data de retorno
+# obsoleta).
 
 
-async def test_has_future_appointment_true_quando_existe():
-    client, _ = _client_returning([{"id": "a9"}])
-    out = await srr._has_future_appointment(client, "p1", JULIO_ID, "2026-07-13T00:00:00+00:00")
+async def test_is_stale_classification_true_quando_ultima_consulta_diverge():
+    client, _ = _client_returning([{"appointment_id": "appt-novo"}])
+    out = await srr._is_stale_classification(client, "p1", JULIO_ID, "appt-antigo")
     assert out is True
 
 
-async def test_has_future_appointment_false_quando_vazio():
+async def test_is_stale_classification_false_quando_bate_com_classificada():
+    client, _ = _client_returning([{"appointment_id": "appt-classificada"}])
+    out = await srr._is_stale_classification(client, "p1", JULIO_ID, "appt-classificada")
+    assert out is False
+
+
+async def test_is_stale_classification_false_quando_sem_consultas():
     client, _ = _client_returning([])
-    out = await srr._has_future_appointment(client, "p1", JULIO_ID, "2026-07-13T00:00:00+00:00")
+    out = await srr._is_stale_classification(client, "p1", JULIO_ID, "appt-classificada")
     assert out is False
 
 
@@ -275,19 +288,21 @@ async def test_send_for_row_marca_flag_mesmo_se_um_contato_falhar():
 # ── main ─────────────────────────────────────────────────────────────────
 
 
-async def test_main_pula_linha_com_consulta_futura_do_mesmo_medico():
+async def test_main_pula_linha_com_classificacao_desatualizada():
     # next_return_date no mesmo mês de "hoje" (mockado) -> pending_template
     # garantidamente dá match em retorno_no_mes; o único motivo pra
-    # _send_for_row não ser chamado deve ser o skip por consulta futura.
+    # _send_for_row não ser chamado deve ser o skip por classificação
+    # desatualizada (consulta mais recente != last_classified_appointment_id,
+    # que aqui é None por padrão em _row()).
     rr_table = MagicMock()
     for m in ("select", "neq"):
         getattr(rr_table, m).return_value = rr_table
     rr_table.execute = AsyncMock(return_value=MagicMock(data=[_row(next_return_date="2026-09-13")]))
 
     appt_table = MagicMock()
-    for m in ("select", "eq", "gt", "limit"):
+    for m in ("select", "eq", "in_", "order", "limit"):
         getattr(appt_table, m).return_value = appt_table
-    appt_table.execute = AsyncMock(return_value=MagicMock(data=[{"id": "a-future"}]))
+    appt_table.execute = AsyncMock(return_value=MagicMock(data=[{"appointment_id": "appt-nova"}]))
 
     def from_(table_name):
         return rr_table if table_name == "return_reminders" else appt_table
@@ -307,7 +322,7 @@ async def test_main_pula_linha_com_consulta_futura_do_mesmo_medico():
     mock_send.assert_not_awaited()
 
 
-async def test_main_processa_em_lotes_com_pausa():
+async def test_main_processa_um_por_vez_com_pausa():
     rows = [_row(id=f"rr{i}", next_return_date="2026-10-13") for i in range(12)]
     rr_table = MagicMock()
     for m in ("select", "neq"):
@@ -315,7 +330,7 @@ async def test_main_processa_em_lotes_com_pausa():
     rr_table.execute = AsyncMock(return_value=MagicMock(data=rows))
 
     appt_table = MagicMock()
-    for m in ("select", "eq", "gt", "limit"):
+    for m in ("select", "eq", "in_", "order", "limit"):
         getattr(appt_table, m).return_value = appt_table
     appt_table.execute = AsyncMock(return_value=MagicMock(data=[]))  # sem consulta futura
 
@@ -341,4 +356,55 @@ async def test_main_processa_em_lotes_com_pausa():
             await srr.main()
 
     assert mock_send.await_count == 12  # 12 linhas, todas elegíveis (nada enviado ainda)
-    mock_sleep.assert_awaited_once_with(srr.BATCH_PAUSE_SECONDS)  # 2 lotes de 10 -> 1 pausa
+    # BATCH_SIZE=1 -> pausa entre CADA envio individual: 11 pausas para 12 candidatos
+    # (nenhuma pausa depois do último, pra não atrasar o fim do run à toa).
+    assert mock_sleep.await_count == 11
+    mock_sleep.assert_awaited_with(srr.BATCH_PAUSE_SECONDS)
+
+
+async def test_main_ordena_por_dia_do_mes_da_ultima_consulta():
+    """Um paciente de retorno longo (6 meses) cuja última consulta caiu no
+    fim do mês não deve furar a fila na frente de quem precisa agendar logo
+    no início do mês — a ordem de envio segue o dia-do-mês de
+    next_return_date (= dia-do-mês da última consulta, preservado por
+    _add_months), não a ordem de leitura da tabela."""
+    rows = [
+        _row(id="rr-fim-mes", return_interval="6_meses", next_return_date="2026-10-28"),
+        _row(id="rr-inicio-mes", return_interval="1_mes", next_return_date="2026-10-03"),
+        _row(id="rr-meio-mes", return_interval="3_meses", next_return_date="2026-10-15"),
+    ]
+    rr_table = MagicMock()
+    for m in ("select", "neq"):
+        getattr(rr_table, m).return_value = rr_table
+    rr_table.execute = AsyncMock(return_value=MagicMock(data=rows))
+
+    appt_table = MagicMock()
+    for m in ("select", "eq", "in_", "order", "limit"):
+        getattr(appt_table, m).return_value = appt_table
+    appt_table.execute = AsyncMock(return_value=MagicMock(data=[]))  # sem consulta futura
+
+    def from_(table_name):
+        return rr_table if table_name == "return_reminders" else appt_table
+
+    client = MagicMock()
+    client.from_.side_effect = from_
+
+    sent_order = []
+
+    async def fake_send_for_row(client, row, template_name, sent_col, graph):
+        sent_order.append(row["id"])
+
+    with patch("supabase.acreate_client", new_callable=AsyncMock, return_value=client), \
+         patch("scripts.send_return_reminders._send_for_row",
+               new_callable=AsyncMock) as mock_send, \
+         patch("scripts.send_return_reminders.asyncio.sleep", new_callable=AsyncMock), \
+         patch.dict(os.environ, {"SUPABASE_URL": "x", "SUPABASE_KEY": "y"}, clear=False):
+        os.environ.pop("SUPABASE_CONNECTION_STRING", None)
+        mock_send.side_effect = fake_send_for_row
+        # mesmo mês em todas as linhas (só o dia difere) -> as 3 caem em
+        # retorno_no_mes simultaneamente, isolando o efeito da ordenação.
+        with patch("scripts.send_return_reminders.datetime") as mock_dt:
+            mock_dt.now.return_value = datetime(2026, 10, 10, tzinfo=srr.TZ)
+            await srr.main()
+
+    assert sent_order == ["rr-inicio-mes", "rr-meio-mes", "rr-fim-mes"]
