@@ -30,6 +30,13 @@ cancela a consulta mesmo assim. Só depois de a ferramenta confirmar, envie ao c
 mensagem informando que a taxa foi dispensada e que nenhum pagamento antecipado é necessário.\
 """
 
+SOCIAL_NAME_RULE = """\
+
+NOME SOCIAL:
+Se o paciente mencionar espontaneamente um nome preferido (ex: "chama-me de...", "meu nome social é..."), \
+chame set_social_name(). Nunca pergunte proativamente sobre nome social.
+"""
+
 MEDICAL_LIMITS_RULE = """\
 
 RECEITAS E MEDICAÇÕES — RETIRADA NA CLÍNICA:
@@ -1127,7 +1134,7 @@ Após o paciente escolher o horário, aplique esta ordem de prioridade:
 
 3. QUALQUER OUTRO CASO — slots "[online ou presencial — paciente escolhe livremente]":
    SEMPRE pergunte a preferência antes de confirmar. Passe a preferência em confirm_appointment (agendamento) ou reschedule_appointment (reagendamento). NÃO transfira para atendente.
-{email_rule}{doctor_correction_rule}{booking_fee_rule}{pricing_rules}{clinic_address}{doctors_info}{age_exception_rule}{medical_limits_rule}"""
+{email_rule}{doctor_correction_rule}{booking_fee_rule}{pricing_rules}{clinic_address}{doctors_info}{age_exception_rule}{social_name_rule}{medical_limits_rule}"""
 
 NEW_PATIENT_SYSTEM = """\
 Você é Eva, a assistente virtual da Clínica Psique, atendendo {patient_name} \
@@ -1376,4 +1383,4 @@ Após o paciente escolher o horário, aplique esta ordem de prioridade:
 
 3. QUALQUER OUTRO CASO — slots "[online ou presencial — paciente escolhe livremente]":
    SEMPRE pergunte a preferência antes de confirmar. Passe a preferência em confirm_appointment. NÃO transfira para atendente.
-{email_rule}{doctor_correction_rule}{booking_fee_rule}{cancellation_rules}{pricing_rules}{clinic_address}{doctors_info}{age_exception_rule}{medical_limits_rule}"""
+{email_rule}{doctor_correction_rule}{booking_fee_rule}{cancellation_rules}{pricing_rules}{clinic_address}{doctors_info}{age_exception_rule}{social_name_rule}{medical_limits_rule}"""

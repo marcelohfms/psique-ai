@@ -2786,3 +2786,28 @@ def test_is_info_question_whitelist_detection():
         has_clinic_mention = any(x in tl for x in ["doutor", "dra.", "dra ", "médico", "dr.", "dr ", "clínica", "clinica"])
         result = (has_question_mark and has_info_keyword) or (has_question_mark and has_clinic_mention)
         assert result == expected, f"_is_info_question('{text}') = {result}, esperado {expected}"
+
+
+def test_social_name_instruction_in_prompts():
+    """Verifies that both EXISTING_PATIENT_SYSTEM and NEW_PATIENT_SYSTEM contain
+    the social name detection instruction with set_social_name() call and
+    the explicit instruction never to ask proactively."""
+    from app.graph.prompts import EXISTING_PATIENT_SYSTEM, NEW_PATIENT_SYSTEM, SOCIAL_NAME_RULE
+
+    # The SOCIAL_NAME_RULE constant should contain the set_social_name tool reference
+    assert "set_social_name" in SOCIAL_NAME_RULE, (
+        "SOCIAL_NAME_RULE missing set_social_name instruction"
+    )
+
+    # The SOCIAL_NAME_RULE should explicitly instruct never to ask proactively
+    assert "Nunca pergunte" in SOCIAL_NAME_RULE, (
+        "SOCIAL_NAME_RULE missing 'Nunca pergunte' instruction"
+    )
+
+    # Both prompt templates should reference the social_name_rule placeholder
+    assert "{social_name_rule}" in EXISTING_PATIENT_SYSTEM, (
+        "EXISTING_PATIENT_SYSTEM missing {social_name_rule} placeholder"
+    )
+    assert "{social_name_rule}" in NEW_PATIENT_SYSTEM, (
+        "NEW_PATIENT_SYSTEM missing {social_name_rule} placeholder"
+    )
