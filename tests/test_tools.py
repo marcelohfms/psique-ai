@@ -477,6 +477,32 @@ async def test_confirm_appointment_multi_patient_override_beats_user_db_id():
     assert _insert_payload.get("patient_id") == "laila-id"
 
 
+async def test_confirm_appointment_matches_sibling_by_social_name():
+    """Duas pacientes no mesmo telefone (irmãs); uma tem social_name. Um override
+    usando o nome social deve resolver para a paciente certa, não para a outra
+    nem falhar o match (caso análogo a Laila/Suzi Viana, mas com nome social)."""
+    from app.graph.tools import confirm_appointment
+    client, table, execute = _make_supabase_client()
+    _joao = {"id": "joao-id", "patient_name": "João Pedro Viana", "name": "Renata Viana", "social_name": None}
+    _maria = {"id": "maria-id", "patient_name": "Maria Eduarda Viana", "name": "Renata Viana", "social_name": "Malu"}
+    with patch("app.graph.tools._get_doctor_calendar_id", new_callable=AsyncMock, return_value="cal123"), \
+         patch("app.google_calendar.create_event", new_callable=AsyncMock, return_value="evt-alias"), \
+         patch("app.graph.tools.get_supabase", new_callable=AsyncMock, return_value=client), \
+         patch("app.graph.tools.get_users_by_phone", new_callable=AsyncMock, return_value=[_joao, _maria]), \
+         patch("app.graph.tools.get_user_by_phone", new_callable=AsyncMock, return_value=_joao), \
+         patch("app.graph.tools.log_event", new_callable=AsyncMock), \
+         patch("app.graph.tools._notify_clinic", new_callable=AsyncMock):
+        await confirm_appointment.coroutine(
+            slot_datetime="2026-03-23T09:00:00",
+            slot_duration_minutes=60,
+            state=_make_state(patient_name="Zé", patient_email="renata@example.com"),
+            config=CONFIG,
+            patient_name_override="Malu",
+        )
+    _insert_payload = table.insert.call_args[0][0]
+    assert _insert_payload.get("patient_id") == "maria-id"
+
+
 async def test_confirm_appointment_normalizes_attendant_all_caps_name():
     """Nota da atendente com o nome do paciente em CAIXA ALTA não deve vazar assim
     para o evento do Calendar nem para a notificação da clínica — ambos devem usar

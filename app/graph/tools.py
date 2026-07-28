@@ -1002,10 +1002,17 @@ async def confirm_appointment(
                 target = target.strip().lower()
                 if not target:
                     return None
+                # First pass: exact match on civil name (patient_name or name)
                 for _u in all_users:
                     _pname = (_u.get("patient_name") or _u.get("name") or "").strip().lower()
                     if _pname == target:
                         return _u
+                # Second pass: exact match on social name (new in Task 8)
+                for _u in all_users:
+                    _sname = (_u.get("social_name") or "").strip().lower()
+                    if _sname and _sname == target:
+                        return _u
+                # Third pass: substring match on civil name
                 for _u in all_users:
                     _pname = (_u.get("patient_name") or _u.get("name") or "").strip().lower()
                     if target in _pname:
