@@ -900,6 +900,7 @@ async def confirm_appointment(
     # how it arrived (caso João Pedro Lins Da Costa Gomes / Ednara de Morais
     # Lins, 5581992349207, 2026-07-27: nota da atendente em CAIXA ALTA foi
     # parar sem normalização no evento do Calendar e no e-mail da clínica).
+    social_name = None
     try:
         _name_candidates = await get_users_by_phone(config["configurable"]["phone"])
         _canonical_user = None
@@ -908,14 +909,24 @@ async def confirm_appointment(
             _canonical_user = next(
                 (c for c in _name_candidates if (c.get("patient_name") or "").strip().lower() == _target), None
             ) or next(
+                (c for c in _name_candidates if (c.get("social_name") or "").strip().lower() == _target), None
+            ) or next(
                 (c for c in _name_candidates if _target in (c.get("patient_name") or "").strip().lower()), None
             )
         elif _name_candidates:
             _canonical_user = _name_candidates[0]
         if _canonical_user and _canonical_user.get("patient_name"):
             patient_name = _canonical_user["patient_name"]
+        if _canonical_user:
+            social_name = _canonical_user.get("social_name")
     except Exception:
         _logger.exception("CONFIRM_DEBUG canonical name lookup failed, using raw patient_name=%s", patient_name)
+
+    # Nome Civil (Nome Social): nome civil primeiro (casa com CPF/prontuário,
+    # fica auditável), nome social entre parênteses avisa o médico como chamar
+    # o paciente. Só para uso interno (Calendar, e-mail da clínica) — a Eva usa
+    # só o nome social ao se dirigir ao paciente (ver app/graph/nodes.py).
+    calendar_display_name = f"{patient_name} ({social_name})" if social_name else patient_name
 
     patient_age = state.get("patient_age") or 99
     # is_minor_first only applies to a single 2h block (no session_note)
@@ -934,7 +945,7 @@ async def confirm_appointment(
             calendar_id=calendar_id,
             start=start,
             slot_minutes=slot_duration_minutes,
-            patient_name=patient_name,
+            patient_name=calendar_display_name,
             doctor_name=doctor_label,
             is_minor_first=is_minor_first,
             session_note=session_note,
@@ -976,6 +987,10 @@ async def confirm_appointment(
                 for _u in all_users:
                     _pname = (_u.get("patient_name") or _u.get("name") or "").strip().lower()
                     if _pname == target:
+                        return _u
+                for _u in all_users:
+                    _sname = (_u.get("social_name") or "").strip().lower()
+                    if _sname and _sname == target:
                         return _u
                 for _u in all_users:
                     _pname = (_u.get("patient_name") or _u.get("name") or "").strip().lower()
@@ -1072,14 +1087,14 @@ async def confirm_appointment(
     registration_block = _build_registration_block(state, phone=phone)
     asyncio.create_task(_notify_clinic(
         f"Agendamento realizado! ✅\n"
-        f"Paciente: {patient_name}{session_label}\n"
+        f"Paciente: {calendar_display_name}{session_label}\n"
         f"Data e horário: {formatted}\n"
         f"Médico(a): {doctor_label}"
         f"{modality_line}\n\n"
         f"📋 LEMBRETE: enviar o Termo de Compromisso para o e-mail do paciente ({patient_email})."
         f"{registration_block}",
         phone=phone,
-        subject=f"Agendamento realizado — {patient_name}",
+        subject=f"Agendamento realizado — {calendar_display_name}",
     ))
 
     from app.graph.prompts import get_pix_key
@@ -2073,7 +2088,7 @@ async def confirm_attendance(
 
     # Idempotência: primeiro contato a confirmar vence. Quando vários responsáveis
     # (ex.: pai e mãe) recebem o lembrete, o segundo a confirmar não regrava nem
-    # loga de novo — apenas recebe a mesma resposta amigável.
+    # loga de novo.
     existing = (
         await client.from_("appointments")
         .select("confirmed_at")
@@ -2083,7 +2098,17 @@ async def confirm_attendance(
     )
     rows = existing.data or []
     if rows and rows[0].get("confirmed_at"):
-        return "Presença confirmada! ✅"
+        # A resposta NÃO pode ser igual à da primeira confirmação: o texto de
+        # confirmação é um template verbatim no prompt (inclusive o bloco de
+        # endereço), então repeti-lo produz uma mensagem byte a byte idêntica à
+        # anterior. Caso Dr. Paulo Diniz (28/07/2026): "Bom dia" confirmou a
+        # presença e o "Sim" seguinte fez a Eva reenviar os mesmos 203 caracteres.
+        return (
+            "[INSTRUÇÃO INTERNA — NÃO ENVIE AO PACIENTE] A presença JÁ estava "
+            "confirmada anteriormente. NÃO repita a mensagem de confirmação nem o "
+            "endereço da clínica. Responda apenas com uma frase curta e acolhedora "
+            'confirmando que já está tudo certo (ex.: "Tudo certo, já está confirmado! 😊").'
+        )
 
     await client.from_("appointments").update({
         "confirmed_at": datetime.now(TZ).isoformat(),

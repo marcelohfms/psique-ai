@@ -468,6 +468,83 @@ async def test_confirm_appointment_normalizes_attendant_all_caps_name():
     assert mock_notify.call_args.kwargs["subject"] == "Agendamento realizado — João Pedro Lins Da Costa Gomes"
 
 
+async def test_confirm_appointment_shows_social_name_in_calendar_and_email():
+    """Quando o paciente tem social_name registrado, o evento do Calendar e o
+    e-mail da clínica mostram 'Nome Civil (Nome Social)' — nome civil primeiro
+    (casa com CPF/prontuário), nome social entre parênteses (como chamar o
+    paciente)."""
+    from app.graph.tools import confirm_appointment
+    client, table, execute = _make_supabase_client()
+    _patient = {"id": "patient-id", "patient_name": "Maria Eduarda Viana", "name": "Renata Viana", "social_name": "Malu"}
+    with patch("app.graph.tools._get_doctor_calendar_id", new_callable=AsyncMock, return_value="cal123"), \
+         patch("app.google_calendar.create_event", new_callable=AsyncMock, return_value="evt-social") as mock_create, \
+         patch("app.graph.tools.get_supabase", new_callable=AsyncMock, return_value=client), \
+         patch("app.graph.tools.get_users_by_phone", new_callable=AsyncMock, return_value=[_patient]), \
+         patch("app.graph.tools.get_user_by_phone", new_callable=AsyncMock, return_value=_patient), \
+         patch("app.graph.tools.log_event", new_callable=AsyncMock), \
+         patch("app.graph.tools._notify_clinic", new_callable=AsyncMock) as mock_notify:
+        await confirm_appointment.coroutine(
+            slot_datetime="2026-03-23T09:00:00",
+            slot_duration_minutes=60,
+            state=_make_state(patient_name="Maria Eduarda Viana"),
+            config=CONFIG,
+        )
+    assert mock_create.call_args.kwargs["patient_name"] == "Maria Eduarda Viana (Malu)"
+    _notify_msg = mock_notify.call_args[0][0]
+    assert "Paciente: Maria Eduarda Viana (Malu)" in _notify_msg
+    assert mock_notify.call_args.kwargs["subject"] == "Agendamento realizado — Maria Eduarda Viana (Malu)"
+
+
+async def test_confirm_appointment_no_social_name_uses_plain_name():
+    """Regressão: sem social_name, Calendar e e-mail continuam mostrando só o
+    nome civil (comportamento existente, sem parênteses vazios)."""
+    from app.graph.tools import confirm_appointment
+    client, table, execute = _make_supabase_client()
+    _patient = {"id": "patient-id", "patient_name": "Carlos Silva", "name": "Carlos Silva"}
+    with patch("app.graph.tools._get_doctor_calendar_id", new_callable=AsyncMock, return_value="cal123"), \
+         patch("app.google_calendar.create_event", new_callable=AsyncMock, return_value="evt-plain") as mock_create, \
+         patch("app.graph.tools.get_supabase", new_callable=AsyncMock, return_value=client), \
+         patch("app.graph.tools.get_users_by_phone", new_callable=AsyncMock, return_value=[_patient]), \
+         patch("app.graph.tools.get_user_by_phone", new_callable=AsyncMock, return_value=_patient), \
+         patch("app.graph.tools.log_event", new_callable=AsyncMock), \
+         patch("app.graph.tools._notify_clinic", new_callable=AsyncMock) as mock_notify:
+        await confirm_appointment.coroutine(
+            slot_datetime="2026-03-23T09:00:00",
+            slot_duration_minutes=60,
+            state=_make_state(patient_name="Carlos Silva"),
+            config=CONFIG,
+        )
+    assert mock_create.call_args.kwargs["patient_name"] == "Carlos Silva"
+    assert "Paciente: Carlos Silva\n" in mock_notify.call_args[0][0]
+
+
+async def test_confirm_appointment_resolves_social_name_alias_with_multiple_candidates():
+    """Quando há mais de um paciente no telefone (irmãs) e o override bate só com
+    o social_name de uma delas, a resolução de nome canônico (usada pro Calendar
+    e e-mail) precisa achar essa paciente pelo social_name — não só a resolução
+    de patient_id (Task 8) — senão o Calendar mostraria 'Malu' cru, sem o nome
+    civil, justamente no caso em que o médico mais precisa dele."""
+    from app.graph.tools import confirm_appointment
+    client, table, execute = _make_supabase_client()
+    _joao = {"id": "joao-id", "patient_name": "João Pedro Viana", "name": "Renata Viana", "social_name": None}
+    _maria = {"id": "maria-id", "patient_name": "Maria Eduarda Viana", "name": "Renata Viana", "social_name": "Malu"}
+    with patch("app.graph.tools._get_doctor_calendar_id", new_callable=AsyncMock, return_value="cal123"), \
+         patch("app.google_calendar.create_event", new_callable=AsyncMock, return_value="evt-canon-alias") as mock_create, \
+         patch("app.graph.tools.get_supabase", new_callable=AsyncMock, return_value=client), \
+         patch("app.graph.tools.get_users_by_phone", new_callable=AsyncMock, return_value=[_joao, _maria]), \
+         patch("app.graph.tools.log_event", new_callable=AsyncMock), \
+         patch("app.graph.tools._notify_clinic", new_callable=AsyncMock) as mock_notify:
+        await confirm_appointment.coroutine(
+            slot_datetime="2026-03-23T09:00:00",
+            slot_duration_minutes=60,
+            state=_make_state(patient_email="renata@example.com"),
+            config=CONFIG,
+            patient_name_override="Malu",
+        )
+    assert mock_create.call_args.kwargs["patient_name"] == "Maria Eduarda Viana (Malu)"
+    assert "Paciente: Maria Eduarda Viana (Malu)" in mock_notify.call_args[0][0]
+
+
 async def test_confirm_appointment_with_session_note():
     from app.graph.tools import confirm_appointment
     client, _, _ = _make_supabase_client()
@@ -877,9 +954,14 @@ async def test_confirm_attendance_is_idempotent_when_already_confirmed():
             state=_make_state(),
             config=CONFIG,
         )
-    assert "confirmada" in result.lower()  # resposta amigável igual
     table.update.assert_not_called()       # NÃO regravou confirmed_at
     mock_log.assert_not_awaited()          # NÃO logou de novo
+    # A segunda confirmação NÃO pode devolver a mesma resposta da primeira: o
+    # template de confirmação é verbatim no prompt, então repeti-lo produz uma
+    # mensagem byte a byte idêntica à anterior (caso Dr. Paulo Diniz, 28/07/2026).
+    # A tool precisa sinalizar ao LLM que já estava confirmada.
+    assert "INSTRUÇÃO INTERNA" in result
+    assert "NÃO repita" in result
 
 
 # ── cancel_appointment ────────────────────────────────────────────────────────
