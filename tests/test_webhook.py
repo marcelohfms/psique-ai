@@ -614,6 +614,110 @@ async def test_chatwoot_private_note_unexpected_sender_is_logged_not_dropped():
     assert args[1] == "5511999999999@s.whatsapp.net"
 
 
+def _chatwoot_public_agent_payload(
+    message_id: int = 501,
+    content: str = "Bom dia! Aqui é a Débora, secretária da clínica.",
+    event: str | None = "message_created",
+    phone: str = "+5511999999999",
+    conversation_id: int = 42,
+) -> dict:
+    """A public (non-private) message sent by a human attendant in Chatwoot."""
+    payload = {
+        "id": message_id,
+        "content": content,
+        "message_type": "outgoing",
+        "private": False,
+        "conversation": {
+            "id": conversation_id,
+            "meta": {"sender": {"phone_number": phone}},
+        },
+        "sender": {"phone_number": phone, "type": "user"},
+    }
+    if event is not None:
+        payload["event"] = event
+    return payload
+
+
+async def test_chatwoot_public_agent_message_is_saved_once(mock_chatbot):
+    """A public message from the attendant is mirrored into the checkpoint so Eva has
+    the context — exactly once."""
+    from app.main import _handle_chatwoot_payload
+
+    mock_chatbot.aupdate_state = AsyncMock()
+    await _handle_chatwoot_payload(_chatwoot_public_agent_payload(message_id=1001))
+
+    mock_chatbot.aupdate_state.assert_called_once()
+    injected = mock_chatbot.aupdate_state.call_args[0][1]["messages"]
+    assert injected[0].content.startswith("Bom dia!")
+
+
+async def test_chatwoot_public_agent_message_deduped_across_deliveries(mock_chatbot):
+    """The same message_created reaches /chatwoot-webhook twice — once via the account
+    webhook and once via the agent bot's outgoing_url, both pointing at the same URL.
+    Only the first delivery may be written to the checkpoint."""
+    from app.main import _handle_chatwoot_payload
+
+    mock_chatbot.aupdate_state = AsyncMock()
+    payload = _chatwoot_public_agent_payload(message_id=1002)
+    await _handle_chatwoot_payload(payload)
+    await _handle_chatwoot_payload(dict(payload))
+
+    mock_chatbot.aupdate_state.assert_called_once()
+
+
+async def test_chatwoot_public_agent_message_updated_is_not_resaved(mock_chatbot):
+    """Chatwoot fires message_updated on every delivery-status change (sent → delivered
+    → read). Those must never append another copy of the same text to the thread."""
+    from app.main import _handle_chatwoot_payload
+
+    mock_chatbot.aupdate_state = AsyncMock()
+    await _handle_chatwoot_payload(_chatwoot_public_agent_payload(message_id=1003))
+    for _ in range(3):
+        await _handle_chatwoot_payload(
+            _chatwoot_public_agent_payload(message_id=1003, event="message_updated")
+        )
+
+    mock_chatbot.aupdate_state.assert_called_once()
+
+
+async def test_chatwoot_public_agent_message_updated_alone_is_ignored(mock_chatbot):
+    """A message_updated whose message_created was never seen (e.g. bot restarted) must
+    not be synced either — status updates are not new content."""
+    from app.main import _handle_chatwoot_payload
+
+    mock_chatbot.aupdate_state = AsyncMock()
+    await _handle_chatwoot_payload(
+        _chatwoot_public_agent_payload(message_id=1004, event="message_updated")
+    )
+
+    mock_chatbot.aupdate_state.assert_not_called()
+
+
+async def test_chatwoot_distinct_public_agent_messages_are_both_saved(mock_chatbot):
+    """Dedup is per Chatwoot message id — two different messages from the attendant,
+    even with identical text, must both reach the checkpoint."""
+    from app.main import _handle_chatwoot_payload
+
+    mock_chatbot.aupdate_state = AsyncMock()
+    await _handle_chatwoot_payload(_chatwoot_public_agent_payload(message_id=1005, content="Oi"))
+    await _handle_chatwoot_payload(_chatwoot_public_agent_payload(message_id=1006, content="Oi"))
+
+    assert mock_chatbot.aupdate_state.call_count == 2
+
+
+async def test_chatwoot_public_agent_message_without_id_still_saved(mock_chatbot):
+    """Payloads without a message id (older/agent-bot shapes) must keep the previous
+    behaviour — better a rare duplicate than losing the attendant's message."""
+    from app.main import _handle_chatwoot_payload
+
+    mock_chatbot.aupdate_state = AsyncMock()
+    payload = _chatwoot_public_agent_payload(message_id=1007)
+    payload.pop("id")
+    await _handle_chatwoot_payload(payload)
+
+    mock_chatbot.aupdate_state.assert_called_once()
+
+
 def _chatwoot_delivery_status_payload(
     status: str = "failed",
     content: str = "Olá! Esperamos que a consulta tenha sido boa!",
