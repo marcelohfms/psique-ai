@@ -290,6 +290,37 @@ async def test_get_available_slots_qualquer_dia_keeps_expanding_until_found():
     assert "não encontrei" not in result.lower()
 
 
+async def test_get_available_slots_qualquer_dia_continues_past_blocked_week_when_still_few_days():
+    """1 dia disponível na semana atual + semana seguinte totalmente bloqueada (ex: recesso
+    do médico) não pode fazer a busca parar aí — precisa continuar expandindo até achar pelo
+    menos _ANY_DAY_MIN_DISTINCT_DAYS dias distintos, mesmo já tendo achado algo antes."""
+    from app.graph.tools import get_available_slots
+
+    async def _fake_slots(*, calendar_id, preferred_day, preferred_shift, slot_minutes, doctor_key):
+        if preferred_shift != "manha":
+            return []
+        if preferred_day == "2026-07-07":  # só terça nesta semana
+            return [(datetime(2026, 7, 7, 9, 0, tzinfo=TZ), "escolha")]
+        # semana seguinte (13-17/07) totalmente bloqueada (recesso) — nenhum slot
+        if preferred_day == "2026-07-20":  # segunda da 3ª semana
+            return [(datetime(2026, 7, 20, 9, 0, tzinfo=TZ), "escolha")]
+        return []
+
+    with patch("app.graph.tools.datetime", _FrozenDTTuesday), \
+         patch("app.graph.tools._get_doctor_calendar_id", new_callable=AsyncMock, return_value="cal123"), \
+         patch("app.google_calendar.get_available_slots", new_callable=AsyncMock, side_effect=_fake_slots):
+        result = await get_available_slots.coroutine(
+            preferred_day="qualquer dia",
+            preferred_shift="manha",
+            slot_duration_minutes=60,
+            state=_make_state(),
+            config=CONFIG,
+        )
+
+    assert "07/07" in result
+    assert "20/07" in result
+
+
 async def test_get_available_slots_qualquer_dia_e_qualquer_turno_shows_per_shift_breakdown():
     """'qualquer dia' combinado com turno 'qualquer' (o caso real mais comum, já
     que a Eva pergunta o dia antes do turno) deve mostrar o detalhamento por turno."""
