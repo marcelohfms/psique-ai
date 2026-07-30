@@ -470,25 +470,44 @@ async def get_available_slots(
     if doctor_schedule or date_key in doctor_exceptions:
         if day_windows_raw is None:
             return []  # doctor doesn't work on this day
-        # Keep only windows that overlap with the requested shift
-        filtered = [
-            entry for entry in day_windows_raw
-            if entry[0] < shift_end_h and entry[2] > shift_start_h
-        ]
-        if not filtered:
-            return []  # doctor doesn't work this shift on this day
-        shift_start_dt = datetime(target_date.year, target_date.month, target_date.day, shift_start_h, 0, tzinfo=TZ)
-        shift_end_dt   = datetime(target_date.year, target_date.month, target_date.day, shift_end_h,   0, tzinfo=TZ)
-        windows = []
-        for entry in filtered:
-            ws = datetime(target_date.year, target_date.month, target_date.day, entry[0], entry[1], tzinfo=TZ)
-            we = datetime(target_date.year, target_date.month, target_date.day, entry[2], entry[3], tzinfo=TZ)
-            # Clip window to the requested shift so a 14h–19h window doesn't bleed
-            # into a "manhã" or "noite" query (avoids duplicate slots across shifts).
-            ws = max(ws, shift_start_dt)
-            we = min(we, shift_end_dt)
-            if ws < we:
-                windows.append((ws, we, entry[4]))
+        if shift in SHIFT_HOURS:
+            # Keep only windows that overlap with the requested shift.
+            # Compare total minutes, not just the hour, so a window like
+            # 7:30-8:30 correctly overlaps an 8:00 shift boundary.
+            shift_start_min = shift_start_h * 60
+            shift_end_min = shift_end_h * 60
+            filtered = [
+                entry for entry in day_windows_raw
+                if (entry[0] * 60 + entry[1]) < shift_end_min
+                and (entry[2] * 60 + entry[3]) > shift_start_min
+            ]
+            if not filtered:
+                return []  # doctor doesn't work this shift on this day
+            shift_start_dt = datetime(target_date.year, target_date.month, target_date.day, shift_start_h, 0, tzinfo=TZ)
+            shift_end_dt   = datetime(target_date.year, target_date.month, target_date.day, shift_end_h,   0, tzinfo=TZ)
+            windows = []
+            for entry in filtered:
+                ws = datetime(target_date.year, target_date.month, target_date.day, entry[0], entry[1], tzinfo=TZ)
+                we = datetime(target_date.year, target_date.month, target_date.day, entry[2], entry[3], tzinfo=TZ)
+                # Clip window to the requested shift so a 14h–19h window doesn't bleed
+                # into a "manhã" or "noite" query (avoids duplicate slots across shifts).
+                ws = max(ws, shift_start_dt)
+                we = min(we, shift_end_dt)
+                if ws < we:
+                    windows.append((ws, we, entry[4]))
+        else:
+            # No specific shift requested ("qualquer"): return every window for
+            # the day as-is, with no shift-based filtering or clipping.
+            windows = [
+                (
+                    datetime(target_date.year, target_date.month, target_date.day, entry[0], entry[1], tzinfo=TZ),
+                    datetime(target_date.year, target_date.month, target_date.day, entry[2], entry[3], tzinfo=TZ),
+                    entry[4],
+                )
+                for entry in day_windows_raw
+            ]
+            if not windows:
+                return []
     else:
         start_hour, end_hour = shift_start_h, shift_end_h
         windows = [(
