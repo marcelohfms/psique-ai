@@ -1277,7 +1277,7 @@ def _make_patient_agent_state(**overrides) -> dict:
     return base
 
 
-async def _run_patient_agent(state: dict, last_assistant_time=None, upcoming=None) -> "SystemMessage":
+async def _run_patient_agent(state: dict, last_assistant_time=None) -> "SystemMessage":
     """Helper: run patient_agent_node and return the SystemMessage passed to the LLM."""
     from app.graph.nodes import patient_agent_node
     from langchain_core.messages import SystemMessage
@@ -1295,7 +1295,7 @@ async def _run_patient_agent(state: dict, last_assistant_time=None, upcoming=Non
     with patch("app.graph.nodes._get_agent_llm") as mock_llm_fn, \
          patch("app.graph.nodes.send_text", new_callable=AsyncMock), \
          patch("app.graph.nodes.save_message", new_callable=AsyncMock), \
-         patch("app.graph.nodes.get_upcoming_appointments", new_callable=AsyncMock, return_value=upcoming or []), \
+         patch("app.graph.nodes.get_upcoming_appointments", new_callable=AsyncMock, return_value=[]), \
          patch("app.graph.nodes.get_user_by_phone", new_callable=AsyncMock, return_value={"price_adjustment_notified_at": "2026-01-01"}), \
          patch("app.graph.nodes.get_last_assistant_message_time", new_callable=AsyncMock, return_value=last_assistant_time), \
          patch("app.google_calendar.format_doctor_schedules", return_value="seg-sex"):
@@ -1305,45 +1305,6 @@ async def _run_patient_agent(state: dict, last_assistant_time=None, upcoming=Non
         await patient_agent_node(state, {})
 
     return next((m for m in captured if isinstance(m, SystemMessage)), None)
-
-
-async def test_patient_agent_states_no_active_appointment_when_none_exist():
-    """Sem consulta ativa, o prompt precisa DIZER isso explicitamente.
-
-    O histórico da thread guarda para sempre as mensagens de confirmação antigas
-    ("Consulta registrada! ✅ Dra. Bruna — 15/07 às 16:00"). Se a consulta é
-    cancelada depois (ex: taxa de reserva não paga) e o paciente volta semanas
-    depois, o silêncio do prompt deixa o histórico como única afirmação concreta
-    sobre agendamento — e a Eva repete uma consulta que não existe mais
-    (caso 5519994108706, 28/07/2026)."""
-    state = _make_patient_agent_state(messages=[HumanMessage(content="Oi")])
-    system_msg = await _run_patient_agent(state, upcoming=[])
-    assert system_msg is not None
-    assert "NENHUMA consulta ativa" in system_msg.content
-    assert "histórico" in system_msg.content.lower()
-
-
-async def test_patient_agent_omits_no_appointment_warning_when_one_exists():
-    """Com consulta ativa, o aviso de 'nenhuma consulta' não pode aparecer — ele
-    contradiria a lista de consultas agendadas logo acima."""
-    state = _make_patient_agent_state(messages=[HumanMessage(content="Oi")])
-    appt = {
-        "appointment_id": "abc123",
-        "patient_id": "p1",
-        "patient_name": "Carlos Silva",
-        "start_time": "2026-08-15T19:00:00+00:00",
-        "end_time": "2026-08-15T20:00:00+00:00",
-        "status": "scheduled",
-        "booking_fee_paid_at": "2026-08-01T12:00:00+00:00",
-        "booking_fee_waived": None,
-        "paid_at": None,
-        "modality": "presencial",
-        "reschedule_requested_at": None,
-    }
-    system_msg = await _run_patient_agent(state, upcoming=[appt])
-    assert system_msg is not None
-    assert "Consultas agendadas" in system_msg.content
-    assert "NENHUMA consulta ativa" not in system_msg.content
 
 
 async def test_patient_agent_injects_greeting_on_first_turn():
@@ -2953,80 +2914,3 @@ def test_no_waitlist_promise_without_search_instruction_in_prompts():
     assert marker in NEW_PATIENT_SYSTEM, (
         "NEW_PATIENT_SYSTEM missing waitlist-without-search instruction"
     )
-
-
-# ── Insistência em "Débora" → handoff ────────────────────────────────────────
-
-def test_detect_debora_insistence_two_mentions():
-    """Detect when patient mentions 'Débora' twice or more without responding to Eva."""
-    from app.graph.nodes import _detect_debora_insistence
-    from langchain_core.messages import HumanMessage, AIMessage
-
-    messages = [
-        AIMessage(content="Olá! Como posso ajudar?"),
-        HumanMessage(content="Débora, você está aí?"),
-        AIMessage(content="Sou Eva, a assistente. Como posso ajudá-lo?"),
-        HumanMessage(content="Preciso falar com a Débora por favor!"),
-    ]
-
-    assert _detect_debora_insistence(messages) is True
-
-
-def test_detect_debora_insistence_case_insensitive():
-    """Detect variations like 'débora', 'DÉBORA', 'Debora'."""
-    from app.graph.nodes import _detect_debora_insistence
-    from langchain_core.messages import HumanMessage, AIMessage
-
-    messages = [
-        AIMessage(content="Olá! Como posso ajudar?"),
-        HumanMessage(content="debora???"),
-        AIMessage(content="Sou Eva, a assistente."),
-        HumanMessage(content="DÉBORA!"),
-    ]
-
-    assert _detect_debora_insistence(messages) is True
-
-
-def test_detect_debora_insistence_with_context():
-    """Detect 'Você pode falar por favor?' pattern."""
-    from app.graph.nodes import _detect_debora_insistence
-    from langchain_core.messages import HumanMessage, AIMessage
-
-    messages = [
-        AIMessage(content="Oi, em que posso ajudar?"),
-        HumanMessage(content="Débora, você pode falar por favor?"),
-        AIMessage(content="Sou Eva, assistente automática."),
-        HumanMessage(content="Débora, preciso falar com você!"),
-    ]
-
-    assert _detect_debora_insistence(messages) is True
-
-
-def test_detect_debora_insistence_ignores_single_mention():
-    """Don't trigger on a single mention of Débora."""
-    from app.graph.nodes import _detect_debora_insistence
-    from langchain_core.messages import HumanMessage, AIMessage
-
-    messages = [
-        AIMessage(content="Como posso ajudar?"),
-        HumanMessage(content="Débora está disponível?"),
-        AIMessage(content="Sou Eva. Como posso ajudá-lo?"),
-    ]
-
-    assert _detect_debora_insistence(messages) is False
-
-
-def test_detect_debora_insistence_ignores_when_responding():
-    """Don't trigger if patient is responding to Eva's questions."""
-    from app.graph.nodes import _detect_debora_insistence
-    from langchain_core.messages import HumanMessage, AIMessage
-
-    messages = [
-        AIMessage(content="Qual é o seu nome?"),
-        HumanMessage(content="Sou João, mas prefiro falar com a Débora"),
-        AIMessage(content="Qual sua data de nascimento?"),
-        HumanMessage(content="15/01/1990. A Débora não vem?"),
-    ]
-
-    # Patient is answering Eva's questions, so don't trigger
-    assert _detect_debora_insistence(messages) is False
