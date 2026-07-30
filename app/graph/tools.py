@@ -229,8 +229,14 @@ async def _search_month_shift(
     _get_slots,
 ) -> str:
     """Busca os primeiros dias de um mês com slots disponíveis para um turno específico.
+    Se o texto pedir o FINAL do mês ("final de agosto"), busca só a última semana.
     Retorna formatado ou mensagem de indisponibilidade."""
-    from app.google_calendar import _MONTHS_PT, get_available_slots as _inner_get_slots
+    from app.google_calendar import (
+        _MONTHS_PT,
+        _month_end_window_start,
+        _wants_month_end,
+        get_available_slots as _inner_get_slots,
+    )
 
     # Extract month from preferred_month_str
     month_num = None
@@ -248,12 +254,15 @@ async def _search_month_shift(
     if month_num < today.month:
         year += 1
 
-    # Iterate through all days of that month, collecting available slots
+    # Iterate through all days of that month, collecting available slots.
+    # "final de <mês>" = última semana do mês → only the last 7 calendar days.
     from calendar import monthrange
     _, days_in_month = monthrange(year, month_num)
+    month_end_only = _wants_month_end(preferred_month_str)
+    start_day = _month_end_window_start(year, month_num).day if month_end_only else 1
 
     slots_by_day = {}
-    for day_num in range(1, days_in_month + 1):
+    for day_num in range(start_day, days_in_month + 1):
         try_date = date(year, month_num, day_num)
         # Skip weekends and past dates
         if try_date.weekday() >= 5 or try_date < today:
@@ -273,16 +282,27 @@ async def _search_month_shift(
             if len(slots_by_day) >= 3:
                 break
 
+    month_name_pt = ["", "Janeiro", "Fevereiro", "Março", "Abril", "Maio", "Junho",
+                     "Julho", "Agosto", "Setembro", "Outubro", "Novembro", "Dezembro"][month_num]
+
     if not slots_by_day:
-        month_name_pt = ["", "Janeiro", "Fevereiro", "Março", "Abril", "Maio", "Junho",
-                         "Julho", "Agosto", "Setembro", "Outubro", "Novembro", "Dezembro"][month_num]
+        if month_end_only:
+            return (
+                f"Não há horários disponíveis no final de {month_name_pt} "
+                f"(última semana do mês) para o turno da {preferred_shift}. "
+                "NÃO ofereça dias do início ou do meio do mês — o paciente pediu o final. "
+                "Pergunte se prefere outro turno, o início do mês seguinte ou outro período."
+            )
         return (
             f"Não há horários disponíveis em {month_name_pt} para o turno da {preferred_shift}. "
             "Deseja tentar outro turno ou outro mês?"
         )
 
     # Format the response
-    lines = [f"Primeiros horários disponíveis em {preferred_shift}:"]
+    if month_end_only:
+        lines = [f"Horários disponíveis no final de {month_name_pt} (última semana), turno da {preferred_shift}:"]
+    else:
+        lines = [f"Primeiros horários disponíveis em {preferred_shift}:"]
     for day, day_slots in sorted(slots_by_day.items())[:3]:
         day_label = _WEEKDAY_LABELS_PT.get(day.weekday(), "")
         date_label = day.strftime("%d/%m")
@@ -393,6 +413,11 @@ async def get_available_slots(
     um dia da semana, inclua o mês em preferred_day (ex: "quinta de agosto") para que a busca
     comece a partir daquele mês — NUNCA responda que "a agenda desse mês ainda não está aberta",
     isso não existe; sempre chame a ferramenta com o mês incluído.
+    IMPORTANTE — "final/fim de <mês>" (ex: "final de agosto", "fim de setembro", "última semana
+    de agosto"): passe a expressão COMPLETA em preferred_day (ex: "final de agosto") — NUNCA
+    reduza para só o nome do mês ("agosto"). "Final" de um mês significa a ÚLTIMA SEMANA daquele
+    mês, e a busca retorna apenas dias dessa última semana. NUNCA ofereça dias do início ou do
+    meio do mês quando o paciente pediu o final do mês.
     IMPORTANTE — dia da semana + número juntos (ex: "sexta, dia 14", "quarta dia 22"): NUNCA
     passe apenas o nome do dia da semana (ex: "sexta") nesse caso — isso faz a busca ignorar o
     número "14" e parar na primeira ocorrência daquele dia da semana com vaga (que pode ser uma
