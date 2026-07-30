@@ -349,7 +349,7 @@ async def _search_any_day(calendar_id: str, doctor: str, preferred_shift: str, s
                 found.append((day, day_shifts))
 
     week_offset = 2
-    while not found and week_offset <= _ANY_DAY_MAX_WEEKS:
+    while len(found) < _ANY_DAY_MIN_DISTINCT_DAYS and week_offset <= _ANY_DAY_MAX_WEEKS:
         extended = True
         start, end = _week_range(week_offset)
         for day in _business_days(start, end):

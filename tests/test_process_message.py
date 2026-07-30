@@ -2898,3 +2898,19 @@ def test_social_name_instruction_in_prompts():
     assert "{social_name_rule}" in NEW_PATIENT_SYSTEM, (
         "NEW_PATIENT_SYSTEM missing {social_name_rule} placeholder"
     )
+
+
+def test_no_waitlist_promise_without_search_instruction_in_prompts():
+    """Regressão: Eva não pode oferecer 'vou avisar depois' / lista de espera em
+    resposta a indisponibilidade (ex: recesso do médico) sem antes ter chamado
+    get_available_slots para o período em que a agenda reabre. Ambos os prompts
+    de agendamento (paciente novo/existente) devem conter essa instrução."""
+    from app.graph.prompts import EXISTING_PATIENT_SYSTEM, NEW_PATIENT_SYSTEM
+
+    marker = 'NUNCA ofereça "vou verificar e te aviso assim que abrir" ou lista de espera'
+    assert marker in EXISTING_PATIENT_SYSTEM, (
+        "EXISTING_PATIENT_SYSTEM missing waitlist-without-search instruction"
+    )
+    assert marker in NEW_PATIENT_SYSTEM, (
+        "NEW_PATIENT_SYSTEM missing waitlist-without-search instruction"
+    )
