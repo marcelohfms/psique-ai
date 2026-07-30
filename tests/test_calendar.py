@@ -147,6 +147,54 @@ def test_parse_day_month_name_past_month_rolls_to_next_year(freeze_calendar_tues
     assert result == date(2027, 1, 1)  # Jan 1 2027 is a Friday
 
 
+# ── "final de <mês>" = última semana do mês ────────────────────────────────────
+# Regression Dione/Pedro Lins (5581999578203, 2026-07-30): a responsável pediu
+# "final de agosto" e a Eva ofereceu 06/08, 10/08 e 13/08. O qualificador
+# "final" era ignorado e a busca caía no início do mês. "Final" de um mês
+# significa a ÚLTIMA SEMANA (últimos 7 dias corridos) daquele mês.
+
+def test_parse_day_final_de_agosto_returns_last_week(freeze_calendar_tuesday):
+    """'final de agosto' → primeiro dia útil da última semana de agosto
+    (agosto 2026 tem 31 dias → janela 25–31; 25/08 é terça)."""
+    from app.google_calendar import _parse_day
+    result = _parse_day("final de agosto")
+    assert result == date(2026, 8, 25)
+
+
+def test_parse_day_fim_de_setembro_returns_last_week(freeze_calendar_tuesday):
+    """'fim de setembro' → setembro 2026 tem 30 dias → janela 24–30; 24/09 é quinta."""
+    from app.google_calendar import _parse_day
+    result = _parse_day("fim de setembro")
+    assert result == date(2026, 9, 24)
+
+
+def test_parse_day_ultima_semana_de_agosto(freeze_calendar_tuesday):
+    from app.google_calendar import _parse_day
+    result = _parse_day("última semana de agosto")
+    assert result == date(2026, 8, 25)
+
+
+def test_parse_day_final_current_month_starts_from_today(freeze_calendar_mid_july):
+    """'final de julho' pedido em 11/07 → janela 25–31/07; 25/07 é sábado,
+    avança para segunda 27/07."""
+    from app.google_calendar import _parse_day
+    result = _parse_day("final de julho")
+    assert result == date(2026, 7, 27)
+
+
+def test_parse_day_fim_de_semana_is_not_month_end(freeze_calendar_tuesday):
+    """'fim de semana' (= sábado/domingo) não é qualificador de fim de mês e
+    segue sem data reconhecida."""
+    from app.google_calendar import _parse_day
+    assert _parse_day("fim de semana") is None
+
+
+def test_parse_day_month_without_qualifier_unchanged(freeze_calendar_tuesday):
+    """Mês sem qualificador continua retornando o primeiro dia útil do mês."""
+    from app.google_calendar import _parse_day
+    assert _parse_day("agosto") == date(2026, 8, 3)
+
+
 # ── merge_adjacent_windows ─────────────────────────────────────────────────────
 
 def test_merge_adjacent_windows_joins_contiguous_same_modality():

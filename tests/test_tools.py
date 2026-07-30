@@ -265,6 +265,92 @@ async def test_get_available_slots_qualquer_dia_extends_to_next_week_when_few():
     assert "outras semanas" in result.lower()
 
 
+# ── get_available_slots — "final de <mês>" (última semana do mês) ─────────────
+# Regression Dione/Pedro Lins (5581999578203, 2026-07-30): a responsável pediu
+# "final de agosto" com turno "tarde" e a Eva ofereceu 06/08, 10/08 e 13/08 —
+# _search_month_shift ignorava o qualificador "final" e devolvia os 3 primeiros
+# dias do mês com vaga. "Final" de um mês = última semana (últimos 7 dias).
+
+async def test_get_available_slots_final_de_agosto_only_offers_last_week():
+    """'final de agosto' + tarde → só dias da última semana de agosto (25–31)."""
+    from datetime import date as _date
+    from app.graph.tools import get_available_slots
+
+    async def _fake_slots(*, calendar_id, preferred_day, preferred_shift, slot_minutes, doctor_key):
+        d = _date.fromisoformat(preferred_day)
+        if preferred_shift == "tarde" and d.month == 8:
+            return [(datetime(2026, 8, d.day, 14, 0, tzinfo=TZ), "escolha")]
+        return []
+
+    with patch("app.graph.tools.datetime", _FrozenDTTuesday), \
+         patch("app.graph.tools._get_doctor_calendar_id", new_callable=AsyncMock, return_value="cal123"), \
+         patch("app.google_calendar.get_available_slots", new_callable=AsyncMock, side_effect=_fake_slots) as mock_slots:
+        result = await get_available_slots.coroutine(
+            preferred_day="final de agosto",
+            preferred_shift="tarde",
+            slot_duration_minutes=60,
+            state=_make_state(),
+            config=CONFIG,
+        )
+
+    # Nunca consultou dias fora da última semana de agosto (31 dias → 25–31)
+    called_days = {c.kwargs["preferred_day"] for c in mock_slots.call_args_list}
+    assert called_days, "esperava chamadas ao calendário"
+    assert all(_date.fromisoformat(d).day >= 25 for d in called_days), called_days
+    # E só ofereceu dias da última semana
+    assert "06/08" not in result
+    assert "10/08" not in result
+    assert "13/08" not in result
+    assert "25/08" in result
+
+
+async def test_get_available_slots_final_de_agosto_no_slots_says_final_do_mes():
+    """Sem vagas na última semana → mensagem fala do FINAL do mês, sem oferecer
+    dias do início/meio como fallback silencioso."""
+    from app.graph.tools import get_available_slots
+
+    async def _fake_slots(*, calendar_id, preferred_day, preferred_shift, slot_minutes, doctor_key):
+        return []
+
+    with patch("app.graph.tools.datetime", _FrozenDTTuesday), \
+         patch("app.graph.tools._get_doctor_calendar_id", new_callable=AsyncMock, return_value="cal123"), \
+         patch("app.google_calendar.get_available_slots", new_callable=AsyncMock, side_effect=_fake_slots):
+        result = await get_available_slots.coroutine(
+            preferred_day="final de agosto",
+            preferred_shift="tarde",
+            slot_duration_minutes=60,
+            state=_make_state(),
+            config=CONFIG,
+        )
+
+    assert "final de agosto" in result.lower()
+
+
+async def test_get_available_slots_mes_sem_qualificador_ainda_busca_do_inicio():
+    """'agosto' sem qualificador segue devolvendo os primeiros dias do mês."""
+    from datetime import date as _date
+    from app.graph.tools import get_available_slots
+
+    async def _fake_slots(*, calendar_id, preferred_day, preferred_shift, slot_minutes, doctor_key):
+        d = _date.fromisoformat(preferred_day)
+        if preferred_shift == "tarde" and d.month == 8:
+            return [(datetime(2026, 8, d.day, 14, 0, tzinfo=TZ), "escolha")]
+        return []
+
+    with patch("app.graph.tools.datetime", _FrozenDTTuesday), \
+         patch("app.graph.tools._get_doctor_calendar_id", new_callable=AsyncMock, return_value="cal123"), \
+         patch("app.google_calendar.get_available_slots", new_callable=AsyncMock, side_effect=_fake_slots):
+        result = await get_available_slots.coroutine(
+            preferred_day="agosto",
+            preferred_shift="tarde",
+            slot_duration_minutes=60,
+            state=_make_state(),
+            config=CONFIG,
+        )
+
+    assert "03/08" in result  # 1º dia útil de agosto/2026
+
+
 async def test_get_available_slots_qualquer_dia_keeps_expanding_until_found():
     """Duas semanas totalmente vazias NUNCA devem gerar mensagem de 'não encontrei' —
     a busca deve continuar expandindo até achar algo."""

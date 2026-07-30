@@ -290,6 +290,27 @@ _MONTHS_PT = {
 }
 
 
+# "Final" de um mês = a ÚLTIMA SEMANA (últimos 7 dias corridos) daquele mês.
+# "fim/final de semana" (= sábado/domingo) NÃO é qualificador de fim de mês.
+_MONTH_END_PATTERNS = (
+    "final", "fim", "fins",
+    "última semana", "ultima semana",
+    "últimos dias", "ultimos dias",
+)
+
+
+def _wants_month_end(s: str) -> bool:
+    cleaned = s.lower().replace("final de semana", "").replace("fim de semana", "")
+    return any(p in cleaned for p in _MONTH_END_PATTERNS)
+
+
+def _month_end_window_start(year: int, month: int) -> date:
+    """Primeiro dia da janela 'final do mês' (últimos 7 dias corridos)."""
+    from calendar import monthrange
+    _, days_in_month = monthrange(year, month)
+    return date(year, month, days_in_month - 6)
+
+
 def _next_weekday_in_month(weekday: int, year: int, month: int) -> date:
     """First occurrence of `weekday` on or after the 1st of the given month/year."""
     d = date(year, month, 1)
@@ -318,6 +339,11 @@ def _parse_day(preferred_day: str) -> date | None:
         year = today.year
         if date(year, month_num, 1) < date(today.year, today.month, 1):
             year += 1
+        if _wants_month_end(s):
+            # "quinta do final de agosto" → 1ª quinta dentro da última semana
+            start = _month_end_window_start(year, month_num)
+            days_ahead = (wd - start.weekday()) % 7
+            return start + timedelta(days=days_ahead)
         return _next_weekday_in_month(wd, year, month_num)
 
     if _weekday_match and any(p in s for p in _NEXT_WEEK_PATTERNS):
@@ -358,6 +384,8 @@ def _parse_day(preferred_day: str) -> date | None:
                     # Same month as today, but day 1 already passed -> continue
                     # searching from today onward instead of skipping to next year.
                     d = today
+            if _wants_month_end(s):
+                d = max(d, _month_end_window_start(year, month_num))
             # advance to first weekday (Mon-Fri) on/after d
             while d.weekday() >= 5:  # skip weekends
                 d += timedelta(days=1)
