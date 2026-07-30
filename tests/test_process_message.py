@@ -2095,6 +2095,74 @@ async def test_patient_agent_prompt_flags_stale_pending_reschedule():
     assert "Consultas agendadas (por paciente):" not in system_prompt
 
 
+async def test_patient_agent_prompt_flags_recent_cancellation_for_nonpayment():
+    """Uma consulta com canceled_unpaid=True deve aparecer no prompt sob seu próprio
+    cabeçalho, com instrução explícita para checar disponibilidade e perguntar
+    mesmo-horário-ou-outro ANTES de confirmar qualquer novo agendamento — sem isso a
+    Eva confirma verbalmente uma remarcação sem chamar nenhuma ferramenta (caso João
+    Pedro Lins Da Costa Gomes, 5581992349207, 2026-07-30)."""
+    import datetime as _dt
+    from zoneinfo import ZoneInfo
+    from unittest.mock import AsyncMock, MagicMock, patch
+    from langchain_core.messages import HumanMessage, AIMessage
+    from tests.conftest import CONFIG
+    from app.graph.nodes import patient_agent_node
+    from app.database import DOCTOR_IDS
+
+    TZ = ZoneInfo("America/Recife")
+    now = _dt.datetime.now(TZ)
+    original_slot = (now + _dt.timedelta(days=4)).replace(hour=14, minute=0, second=0, microsecond=0)
+
+    appt = {
+        "appointment_id": "a-canceled",
+        "start_time": original_slot.isoformat(),
+        "status": "canceled",
+        "modality": "presencial",
+        "doctor_id": DOCTOR_IDS["julio"],
+        "canceled_unpaid": True,
+    }
+
+    captured = {}
+
+    class _FakeLLM:
+        async def ainvoke(self, messages):
+            captured["messages"] = messages
+            return AIMessage(content="ok")
+
+    state = {
+        "phone": "5581992349207@s.whatsapp.net",
+        "stage": "patient_agent",
+        "user_name": "Ednara",
+        "patient_name": "João Pedro",
+        "patient_age": 19,
+        "is_patient": False,
+        "is_returning_patient": True,
+        "preferred_doctor": "julio",
+        "messages": [HumanMessage(content="sim, quero remarcar")],
+    }
+
+    with patch("app.graph.nodes.get_user_by_phone", new_callable=AsyncMock, return_value=None), \
+         patch("app.graph.nodes.get_upcoming_appointments", new_callable=AsyncMock, return_value=[appt]), \
+         patch("app.google_calendar.format_doctor_schedules", return_value=""), \
+         patch("app.graph.nodes._get_agent_llm", return_value=_FakeLLM()), \
+         patch("app.graph.nodes.send_text", new_callable=AsyncMock), \
+         patch("app.graph.nodes.save_message", new_callable=AsyncMock), \
+         patch("app.graph.nodes.get_users_by_phone", new_callable=AsyncMock, return_value=[]), \
+         patch("app.graph.nodes.get_last_assistant_message_time", new_callable=AsyncMock, return_value=None), \
+         patch("app.graph.nodes.is_registration_complete", return_value=True), \
+         patch("app.graph.nodes.upsert_user", new_callable=AsyncMock, return_value=None):
+        await patient_agent_node(state, CONFIG)
+
+    system_prompt = captured["messages"][0].content
+    assert "a-canceled" in system_prompt
+    # Not listed as an active appointment.
+    assert "Consultas agendadas (por paciente):" not in system_prompt
+    # Explicit instruction: check availability before confirming anything.
+    assert "get_available_slots" in system_prompt
+    assert "MESMO horário" in system_prompt
+    assert "NUNCA" in system_prompt and "confirm_appointment" in system_prompt
+
+
 def test_cancellation_rules_proactively_directs_stale_reschedule_flow():
     """A regra deve orientar a Eva a tratar QUALQUER menção a marcar/agendar como
     continuação de uma remarcação pendente quando a tag 🔄 REMARCAÇÃO PENDENTE
@@ -2914,3 +2982,80 @@ def test_no_waitlist_promise_without_search_instruction_in_prompts():
     assert marker in NEW_PATIENT_SYSTEM, (
         "NEW_PATIENT_SYSTEM missing waitlist-without-search instruction"
     )
+
+
+# ── Insistência em "Débora" → handoff ────────────────────────────────────────
+
+def test_detect_debora_insistence_two_mentions():
+    """Detect when patient mentions 'Débora' twice or more without responding to Eva."""
+    from app.graph.nodes import _detect_debora_insistence
+    from langchain_core.messages import HumanMessage, AIMessage
+
+    messages = [
+        AIMessage(content="Olá! Como posso ajudar?"),
+        HumanMessage(content="Débora, você está aí?"),
+        AIMessage(content="Sou Eva, a assistente. Como posso ajudá-lo?"),
+        HumanMessage(content="Preciso falar com a Débora por favor!"),
+    ]
+
+    assert _detect_debora_insistence(messages) is True
+
+
+def test_detect_debora_insistence_case_insensitive():
+    """Detect variations like 'débora', 'DÉBORA', 'Debora'."""
+    from app.graph.nodes import _detect_debora_insistence
+    from langchain_core.messages import HumanMessage, AIMessage
+
+    messages = [
+        AIMessage(content="Olá! Como posso ajudar?"),
+        HumanMessage(content="debora???"),
+        AIMessage(content="Sou Eva, a assistente."),
+        HumanMessage(content="DÉBORA!"),
+    ]
+
+    assert _detect_debora_insistence(messages) is True
+
+
+def test_detect_debora_insistence_with_context():
+    """Detect 'Você pode falar por favor?' pattern."""
+    from app.graph.nodes import _detect_debora_insistence
+    from langchain_core.messages import HumanMessage, AIMessage
+
+    messages = [
+        AIMessage(content="Oi, em que posso ajudar?"),
+        HumanMessage(content="Débora, você pode falar por favor?"),
+        AIMessage(content="Sou Eva, assistente automática."),
+        HumanMessage(content="Débora, preciso falar com você!"),
+    ]
+
+    assert _detect_debora_insistence(messages) is True
+
+
+def test_detect_debora_insistence_ignores_single_mention():
+    """Don't trigger on a single mention of Débora."""
+    from app.graph.nodes import _detect_debora_insistence
+    from langchain_core.messages import HumanMessage, AIMessage
+
+    messages = [
+        AIMessage(content="Como posso ajudar?"),
+        HumanMessage(content="Débora está disponível?"),
+        AIMessage(content="Sou Eva. Como posso ajudá-lo?"),
+    ]
+
+    assert _detect_debora_insistence(messages) is False
+
+
+def test_detect_debora_insistence_ignores_when_responding():
+    """Don't trigger if patient is responding to Eva's questions."""
+    from app.graph.nodes import _detect_debora_insistence
+    from langchain_core.messages import HumanMessage, AIMessage
+
+    messages = [
+        AIMessage(content="Qual é o seu nome?"),
+        HumanMessage(content="Sou João, mas prefiro falar com a Débora"),
+        AIMessage(content="Qual sua data de nascimento?"),
+        HumanMessage(content="15/01/1990. A Débora não vem?"),
+    ]
+
+    # Patient is answering Eva's questions, so don't trigger
+    assert _detect_debora_insistence(messages) is False

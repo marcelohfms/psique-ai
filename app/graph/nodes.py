@@ -56,6 +56,58 @@ def _get_agent_llm():
     return _agent_llm
 
 
+def _detect_debora_insistence(messages: list) -> bool:
+    """Detecta se o paciente está insistindo em falar com Débora sem responder às mensagens de Eva.
+
+    Retorna True se:
+    1. O paciente mencionou "débora" 2 ou mais vezes
+    2. E está sendo teimoso (não respondendo substantivamente às perguntas de Eva)
+
+    A detecção distingue entre:
+    - Insistência: "Débora?" "Débora, você pode falar?" (puro foco em Débora)
+    - Resposta com menção: "Sou João, mas quero falar com Débora" (respondendo + mencionando)
+    """
+    if not messages:
+        return False
+
+    human_msgs = [m for m in messages if getattr(m, "type", None) == "human"]
+    if not human_msgs:
+        return False
+
+    debora_mentions = 0
+    substantive_responses = 0
+
+    for msg in human_msgs:
+        content = (msg.content or "").lower()
+
+        has_debora = "débora" in content or "debora" in content
+        if has_debora:
+            debora_mentions += 1
+
+        # Verificar se esta é uma resposta substantiva (informação real sendo fornecida)
+        # Mesmo que tenha "débora", se tem informação é uma resposta válida
+        info_keywords = [
+            "sou ", "meu nome ", "chamo ", "minha data", "nascimento",
+            "email", "@", "ano", "dia", "mês", "mes",
+            "/",  # data separator — forte indicador de data
+        ]
+        # Procurar por números (datas, idades) ou palavras de informação
+        has_number = any(c.isdigit() for c in content)
+        has_info_keyword = any(kw in content for kw in info_keywords)
+
+        if (has_number and "/" in content) or has_info_keyword:
+            substantive_responses += 1
+
+    # Trigger insistência se:
+    # - Há 2+ menções de Débora
+    # - E NENHUMA resposta substantiva foi dada
+    # (Se o paciente está respondendo perguntas, mesmo mencionando Débora, não é insistência)
+    if debora_mentions >= 2 and substantive_responses == 0:
+        return True
+
+    return False
+
+
 # ── Nodes ─────────────────────────────────────────────────────────────────────
 
 async def collect_info_node(state: ConversationState, config: RunnableConfig) -> dict:
@@ -1120,6 +1172,18 @@ async def patient_agent_node(state: ConversationState, config: RunnableConfig) -
     import logging as _log_pa
     _pa_logger = _log_pa.getLogger(__name__)
 
+    # ── Check for Débora insistence → transfer to human ──────────────────────
+    if _detect_debora_insistence(state.get("messages", [])):
+        _pa_logger.info("DEBORA_INSISTENCE detected for %s — transferring to human", state.get("phone"))
+        await log_event("debora_insistence_detected", state.get("phone"))
+        from app.graph.tools import transfer_to_human as _transfer_tool
+        result = await _transfer_tool.coroutine(
+            reason="Paciente insistindo em falar com Débora",
+            state=state,
+            config=config,
+        )
+        return {"messages": [AIMessage(content=result)]}
+
     # ── DB ↔ checkpoint hydration ─────────────────────────────────────────────
     # Hydrates missing fields from DB using the new patients/contacts schema.
     # Only runs when at least one field is absent — once set, the checkpoint is trusted.
@@ -1575,6 +1639,7 @@ async def patient_agent_node(state: ConversationState, config: RunnableConfig) -
         recent_lines = []
         past_unpaid_lines = []
         stale_reschedule_lines = []
+        canceled_unpaid_lines = []
         for apt in upcoming:
             dt = datetime.fromisoformat(apt["start_time"]).astimezone(_TZ)
             fee_ok = apt.get("booking_fee_paid_at") or apt.get("booking_fee_waived")
@@ -1604,6 +1669,10 @@ async def patient_agent_node(state: ConversationState, config: RunnableConfig) -
                 recent_lines.append(label)
             elif apt.get("stale_reschedule"):
                 stale_reschedule_lines.append(label)
+            elif apt.get("canceled_unpaid"):
+                _doc_key = DOCTOR_NAMES.get(apt.get("doctor_id"), "")
+                _doc_label = {"julio": "Dr. Júlio", "bruna": "Dra. Bruna"}.get(_doc_key, "")
+                canceled_unpaid_lines.append(f"{label} — {_doc_label}" if _doc_label else label)
             else:
                 future_lines.append(label)
         if future_lines:
@@ -1622,6 +1691,38 @@ async def patient_agent_node(state: ConversationState, config: RunnableConfig) -
                 "\n\nRemarcação pendente (vaga liberada, aguardando nova data):\n"
                 + "\n".join(stale_reschedule_lines)
             )
+        if canceled_unpaid_lines:
+            system_prompt += (
+                "\n\nConsulta cancelada recentemente por falta de pagamento da taxa de reserva "
+                "(vaga já foi liberada — NÃO é uma consulta ativa):\n"
+                + "\n".join(canceled_unpaid_lines)
+                + "\nSe o contato disser que quer remarcar, confirmar 'sim' para retomar o "
+                "agendamento, ou voltar a falar sobre marcar/agendar — mesmo que pareça um pedido "
+                "novo — NUNCA diga que a consulta já está confirmada/reservada sem antes: "
+                "1) chamar get_available_slots para o mesmo dia e turno do horário acima, para "
+                "checar se ele ainda está livre; "
+                "2) perguntar explicitamente se o contato quer o MESMO horário (se a busca "
+                "confirmar que ainda está disponível) ou prefere ver outras opções. "
+                "NUNCA chame confirm_appointment (nem descreva a consulta como reservada) antes "
+                "do contato responder a essa pergunta."
+            )
+    else:
+        # Sem consultas o bloco acima não dizia NADA, e o silêncio não contradiz o
+        # histórico: a thread guarda para sempre as confirmações antigas ("Consulta
+        # registrada! ✅ ... 15/07 às 16:00"). Quando a consulta é cancelada depois
+        # (taxa de reserva não paga, cancelamento pela clínica) e o paciente volta
+        # semanas depois, essa mensagem antiga vira a única afirmação concreta sobre
+        # agendamento no contexto — e a Eva a repete como se valesse hoje
+        # (caso 5519994108706, 28/07/2026). O negativo precisa ser dito em voz alta.
+        system_prompt += (
+            "\n\nConsultas: NENHUMA consulta ativa para este contato no sistema.\n"
+            "ATENÇÃO: mensagens antigas DESTA MESMA conversa podem conter confirmações "
+            "de agendamento ('Consulta registrada', 'está reservada para o dia X'). "
+            "Elas estão desatualizadas — a consulta foi cancelada ou já aconteceu. "
+            "NUNCA afirme que existe consulta marcada com base no histórico da conversa: "
+            "a lista acima é a única fonte de verdade. Se o paciente perguntar sobre a "
+            "consulta dele, diga que não há consulta ativa e ofereça agendar."
+        )
 
     import logging as _log
     _logger = _log.getLogger(__name__)
