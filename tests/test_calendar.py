@@ -317,6 +317,29 @@ async def test_bruna_monday_morning_no_mid_morning_slots(freeze_calendar_now):
         assert bad_hour not in hours, f"Unexpected slot at {bad_hour}h for Bruna on Monday"
 
 
+async def test_bruna_monday_default_shift_includes_half_hour_window(freeze_calendar_now):
+    """Dra. Bruna's Monday window is 07:30-08:30. With no specific shift
+    requested ("qualquer"), every window for the day must be offered as-is,
+    including this one that starts on a half hour.
+    Regression: the shift-overlap filter used to compare whole hours only
+    (entry[2] > shift_start_h -> 8 > 8 -> False), incorrectly discarding this
+    window under the "qualquer" default shift bounds (8-18h) before it could
+    even be clipped."""
+    from app.google_calendar import get_available_slots
+
+    service = _make_service([])  # empty calendar
+    with patch("app.google_calendar._credentials", return_value=MagicMock()), \
+         patch("app.google_calendar.build", return_value=service):
+        slots = await get_available_slots(
+            calendar_id="cal-test",
+            preferred_day="2026-03-23",  # Monday
+            preferred_shift="qualquer",
+            slot_minutes=60,
+            doctor_key="bruna",
+        )
+    assert (datetime(2026, 3, 23, 7, 30, tzinfo=TZ), "online") in slots
+
+
 async def test_timezone_america_recife(freeze_calendar_now):
     """Returned slots must carry America/Recife tzinfo."""
     from app.google_calendar import get_available_slots
