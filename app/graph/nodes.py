@@ -21,7 +21,7 @@ from app.graph.tools import (
 )
 from app.graph.prompts import COLLECT_SYSTEM, MINOR_RULE, MINOR_RETURNING_RULE, ADULT_RULE, GUARDIAN_RULE, EXISTING_PATIENT_SYSTEM, NEW_PATIENT_SYSTEM, CANCELLATION_RULES, CLINIC_ADDRESS, CLINIC_ADDRESS_TEXT, DOCTORS_INFO, sanitize_clinic_address, get_booking_fee_rule, MEDICAL_LIMITS_RULE, AGE_EXCEPTION_RULE, DOCTOR_CORRECTION_RULE, EMAIL_RULE, get_pricing_rules, ATTENDANT_INSTRUCTION_RULE, get_pricing_exception_rule, CORRECT_PIX_KEY, SOCIAL_NAME_RULE, MINOR_FIRST_CONSULT_INFO, MINOR_RULE_SCHEDULING_ONLY
 from app.whatsapp import send_text
-from app.database import upsert_user, log_event, get_upcoming_appointments, get_user_by_phone, get_users_by_phone, DOCTOR_IDS, DOCTOR_NAMES, save_message, get_last_assistant_message_time, is_registration_complete
+from app.database import upsert_user, log_event, get_upcoming_appointments, get_user_by_phone, get_users_by_phone, DOCTOR_IDS, DOCTOR_NAMES, save_message, get_last_assistant_message_time, is_registration_complete, missing_registration_field
 from app.chatwoot import get_conversation_id, add_private_note
 
 # ── LLM setup (lazy — instantiated on first use after .env is loaded) ─────────
@@ -152,6 +152,58 @@ def _detect_debora_insistence(messages: list) -> bool:
         return True
 
     return False
+
+
+def _registration_state_to_user(d: dict) -> dict:
+    """Map the conversation state onto the dict shape missing_registration_field()
+    expects. Used both to warn the LLM about the field it still owes and to check
+    its answer afterwards."""
+    return {
+        "name": d.get("user_name"),
+        "email": d.get("patient_email"),
+        "birth_date": d.get("birth_date"),
+        "doctor_id": DOCTOR_IDS.get(d.get("preferred_doctor", ""), None),
+        "is_patient": d.get("is_patient"),
+        "is_returning_patient": d.get("is_returning_patient"),
+        "patient_name": d.get("patient_name"),
+        "age": d.get("patient_age"),
+        "guardian_name": d.get("guardian_name"),
+        "guardian_cpf": d.get("guardian_cpf"),
+        "guardian_relationship": d.get("guardian_relationship"),
+    }
+
+
+# Pergunta determinística para cada campo obrigatório do cadastro. Serve de rede
+# quando a LLM diz que o cadastro está completo mas missing_registration_field()
+# discorda: sem isso ninguém volta a perguntar e a conversa fica presa no
+# collect_info para sempre (caso Bernardo, 5581987415206, 31/07/2026).
+_REGISTRATION_QUESTIONS = {
+    "name": "Antes de continuar, como posso te chamar?",
+    "email": (
+        "Preciso de um e-mail para contato — é por ele que enviamos o Termo de "
+        "Compromisso e os documentos da consulta. Qual e-mail podemos usar?"
+    ),
+    "birth_date": "Qual a data de nascimento do paciente? (formato dd/mm/aaaa)",
+    "doctor_id": "Você tem preferência pelo Dr. Júlio ou pela Dra. Bruna?",
+    "is_patient": "A consulta é para você ou para outra pessoa?",
+    "is_returning_patient": (
+        "É a primeira consulta ou o paciente já está em acompanhamento na clínica?"
+    ),
+    "patient_name": "Qual o nome completo do paciente?",
+    "guardian_name": "Qual o nome completo do responsável pelo paciente?",
+    "guardian_relationship": "E qual o seu parentesco com {patient_first}? (mãe, pai, avó, responsável legal...)",
+    "guardian_cpf": "Qual é o CPF do responsável?",
+}
+
+
+def _registration_question(field: str, merged: dict) -> str:
+    """Deterministic question for a missing registration field."""
+    from app.utils import display_name as _dn
+    template = _REGISTRATION_QUESTIONS.get(field)
+    if not template:
+        return ""
+    patient_full = merged.get("patient_name") or merged.get("user_name") or "o paciente"
+    return template.format(patient_first=_dn(patient_full))
 
 
 # ── Nodes ─────────────────────────────────────────────────────────────────────
@@ -1031,6 +1083,18 @@ async def collect_info_node(state: ConversationState, config: RunnableConfig) ->
             f"Use o nome {_ci_patient_first} apenas quando falar SOBRE o paciente na terceira pessoa."
         )
 
+    # Diga à LLM, em texto, qual campo o gate determinístico ainda exige. Sem isso
+    # ela declara o cadastro completo com um campo obrigatório vazio, o
+    # _route_entry devolve todo turno para cá, e ninguém mais pergunta nada.
+    _still_missing = missing_registration_field(_registration_state_to_user(state))
+    if _still_missing and not _is_interruption:
+        _collect_system += (
+            f"\n\nCAMPO OBRIGATÓRIO AINDA FALTANDO: {_still_missing}. "
+            f"NÃO marque is_complete=true e NÃO diga que o cadastro está completo "
+            f"enquanto ele não for preenchido — pergunte por ele agora, "
+            f"a menos que o paciente tenha acabado de respondê-lo nesta mensagem."
+        )
+
     # Trim history to cap token usage (same as patient_agent_node).
     _trimmed_messages = _trim_history(state["messages"])
 
@@ -1064,10 +1128,10 @@ async def collect_info_node(state: ConversationState, config: RunnableConfig) ->
             state["phone"], result.reply,
         )
 
-    await send_text(state["phone"], reply)
-    await save_message(state["phone"], "assistant", reply)
-
-    update: dict = {"messages": [AIMessage(content=reply)]}
+    # A mensagem só é enviada no fim deste nó: a resposta da LLM ainda pode ser
+    # substituída por uma pergunta determinística se ela declarar o cadastro
+    # completo com um campo obrigatório vazio (ver abaixo).
+    update: dict = {}
 
     for field in [
         "user_name", "patient_name",
@@ -1133,21 +1197,28 @@ async def collect_info_node(state: ConversationState, config: RunnableConfig) ->
     merged = {**state, **{k: v for k, v in update.items() if k not in ("messages", "stage")}}
 
     # Map merged state to the dict shape expected by is_registration_complete.
-    _reg_check = {
-        "name": merged.get("user_name"),
-        "email": merged.get("patient_email"),
-        "birth_date": merged.get("birth_date"),
-        "doctor_id": DOCTOR_IDS.get(merged.get("preferred_doctor", ""), None),
-        "is_patient": merged.get("is_patient"),
-        "is_returning_patient": merged.get("is_returning_patient"),
-        "patient_name": merged.get("patient_name"),
-        "age": merged.get("patient_age"),
-        "guardian_name": merged.get("guardian_name"),
-        "guardian_cpf": merged.get("guardian_cpf"),
-        "guardian_relationship": merged.get("guardian_relationship"),
-    }
+    _reg_check = _registration_state_to_user(merged)
+    _missing = missing_registration_field(_reg_check)
 
-    if result.is_complete and not birth_date_invalid and is_registration_complete(_reg_check):
+    # Desempate LLM × gate determinístico. A LLM diz "tudo anotado!", o gate diz que
+    # falta um campo — e o _route_entry então devolve TODO turno seguinte para o
+    # collect_info, um nó sem ferramentas. Ninguém volta a perguntar, e a conversa
+    # trava para sempre: comprovante, agendamento e documento param de funcionar
+    # (caso Bernardo Lima Beltrão Teixeira, 5581987415206, 31/07/2026 —
+    # guardian_relationship vazio porque "Para meu filho" não diz mãe ou pai).
+    # Quem manda é o gate: substituímos a despedida pela pergunta que falta.
+    if result.is_complete and not birth_date_invalid and _missing:
+        _forced_q = _registration_question(_missing, merged)
+        if _forced_q:
+            import logging as _log
+            _log.getLogger(__name__).warning(
+                "COLLECT_INFO_INCOMPLETE: LLM marcou is_complete=true faltando %s phone=%s — "
+                "resposta substituída pela pergunta determinística",
+                _missing, state["phone"],
+            )
+            reply = _forced_q
+
+    if result.is_complete and not birth_date_invalid and not _missing:
         update["stage"] = "patient_agent"
         if _is_document:
             update["pending_action"] = "request_document"
@@ -1178,6 +1249,10 @@ async def collect_info_node(state: ConversationState, config: RunnableConfig) ->
         except Exception:
             import logging as _log
             _log.getLogger(__name__).exception("Failed to upsert user after collect_info")
+
+    await send_text(state["phone"], reply)
+    await save_message(state["phone"], "assistant", reply)
+    update["messages"] = [AIMessage(content=reply)]
 
     return update
 

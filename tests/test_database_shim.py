@@ -565,3 +565,37 @@ async def test_get_upcoming_appointments_excludes_canceled_unpaid_when_already_r
         result = await database.get_upcoming_appointments("5581992349207")
     assert len(result) == 1
     assert result[0]["appointment_id"] == "a-active"
+
+
+# ── missing_registration_field ───────────────────────────────────────────────
+# Fonte única da completude do cadastro: o collect_info usa o nome do campo
+# devolvido aqui para fazer uma pergunta determinística, de modo que a conversa
+# nunca fique presa no collect_info sem ninguém perguntar pelo campo que falta
+# (caso Bernardo Lima Beltrão Teixeira, 5581987415206, 31/07/2026).
+
+def test_missing_registration_field_names_the_blocking_field():
+    from app.database import missing_registration_field
+    assert missing_registration_field(_complete_minor(guardian_relationship=None)) == "guardian_relationship"
+    assert missing_registration_field(_complete_minor(email=None)) == "email"
+    assert missing_registration_field(_complete_minor(guardian_name=None)) == "guardian_name"
+    assert missing_registration_field(
+        _complete_minor(is_returning_patient=False, guardian_cpf=None)
+    ) == "guardian_cpf"
+
+
+def test_missing_registration_field_returns_none_when_complete():
+    from app.database import missing_registration_field
+    assert missing_registration_field(_complete_minor()) is None
+
+
+def test_missing_registration_field_agrees_with_is_registration_complete():
+    """As duas funções não podem divergir — is_registration_complete é um wrapper."""
+    from app.database import missing_registration_field
+    for user in (
+        _complete_minor(),
+        _complete_minor(guardian_relationship=None),
+        _complete_minor(name=None),
+        _complete_minor(is_patient=None),
+        {},
+    ):
+        assert is_registration_complete(user) is (missing_registration_field(user) is None)
