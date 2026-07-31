@@ -218,6 +218,39 @@ session_note="1ª hora — responsáveis".
 session_note="2ª hora — paciente".
 """
 
+# Texto enviado pelo collect_info_node assim que as 3 condições (menor de
+# idade + primeira consulta + Dr. Júlio) são identificadas — ver Task 3.
+# Formatado como UMA bolha única de WhatsApp (sem quebras para bolhas
+# separadas, ao contrário do texto completo em MINOR_RULE acima).
+MINOR_FIRST_CONSULT_INFO = (
+    "Como {patient_name} tem menos de 18 anos, a primeira consulta com o Dr. Júlio acontece em "
+    "duas partes de 1 hora cada: a primeira é com os pais ou responsáveis, e a segunda é com "
+    "{patient_name}. O mais comum é fazer as duas seguidas, totalizando 2h, mas também é possível "
+    "marcar em dias diferentes — vamos combinar isso na hora de escolher o horário."
+)
+
+# Variante de MINOR_RULE usada quando a explicação acima já foi enviada
+# durante o cadastro (minor_first_consult_explained=True) — só pergunta a
+# preferência de logística, sem reexplicar a divisão em duas partes.
+MINOR_RULE_SCHEDULING_ONLY = """\
+
+REGRA IMPORTANTE — PACIENTE MENOR DE IDADE ({patient_age} anos) com Dr. Júlio (primeira consulta):
+O responsável já foi informado de que a primeira consulta é dividida em duas partes de 1 hora \
+(uma com os responsáveis, outra com {patient_name}). Antes de buscar horários, pergunte: \
+"Prefere fazer as duas partes seguidas (2h) ou em dias/horários separados?"
+
+SE o responsável preferir na sequência (2h seguidas):
+- Use slot_duration_minutes=120 em get_available_slots e confirm_appointment.
+- Deixe session_note vazio em confirm_appointment.
+
+SE o responsável preferir em momentos separados:
+- Agende a 1ª sessão (responsáveis): use slot_duration_minutes=60, \
+session_note="1ª hora — responsáveis".
+- Após confirmar a 1ª sessão, pergunte o dia e horário da 2ª sessão (paciente).
+- Agende a 2ª sessão (paciente): use slot_duration_minutes=60, \
+session_note="2ª hora — paciente".
+"""
+
 MINOR_RETURNING_RULE = """\
 
 REGRA — PACIENTE MENOR DE IDADE ({patient_age} anos) em consulta de acompanhamento (2ª consulta em diante):
