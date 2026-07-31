@@ -58,6 +58,26 @@ Regras do formato:
 - **Sempre** incluir o aviso ⚠️ de agendamentos simultâneos / sem garantia até confirmar (ver memória `feedback_availability_disclaimer`).
 - Terminar com uma pergunta convidando o paciente a escolher.
 
+## Formato resumido (uso interno, não para o paciente)
+
+Se o usuário pedir a lista "de forma mais resumida" (uso interno, não é a mensagem para o paciente), use uma linha por data, sem saudação, sem bullets e sem o aviso ⚠️:
+
+```
+03/08 (seg): 9h
+05/08 (qua): 10h, 11h
+06/08 (qui): 9h, 10h, 11h, 14h, 15h
+10/08 (seg): 9h, 11h, 14h, 15h
+12/08 (qua): 9h, 10h, 11h
+```
+
+Regras:
+- `DD/MM (dia-da-semana abreviado): hora1, hora2, ...` — um por linha.
+- Dia da semana abreviado em minúsculas: seg, ter, qua, qui, sex, sáb, dom.
+- Datas sem vaga não entram na lista (mesmo critério do Passo 2).
+- Sem saudação, sem markdown de negrito, sem emoji, sem aviso de disponibilidade — é só a lista compacta.
+
+Se o pedido for a **mensagem completa** mas com os horários resumidos, mantenha a saudação, a nota de duração, o aviso ⚠️ e a pergunta final do Passo 2, só trocando o bloco de datas/bullets pelo formato compacto acima.
+
 ## IDs / nomes dos médicos
 
 - `julio` → Dr. Júlio (`dr.juliogouveia@gmail.com`)
