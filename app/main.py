@@ -798,6 +798,27 @@ def _extract_chatwoot_message(payload: dict) -> tuple[str, str | None, int] | No
     return phone, content, conversation_id
 
 
+def _attachment_is_pdf(att: dict) -> bool:
+    """Decide se um anexo `file` é PDF, a partir dos metadados do Chatwoot.
+
+    Ordem dos sinais, medida contra anexos reais da instância (4.16.2):
+
+    1. `content_type` — é o sinal confiável, vem `application/pdf`.
+    2. `extension` — campo adicionado na 4.15 (o nome NÃO é `file_extension`).
+       Vem `None` na maioria dos anexos reais, inclusive em PDFs, então não
+       serve como checagem principal. Vale como rede para o caso em que o
+       WhatsApp entrega o PDF como `application/octet-stream`.
+    3. sufixo do `data_url` — mantido por último, mas na prática é inútil: o
+       Chatwoot serve anexos por URL de redirect do ActiveStorage
+       (`/rails/active_storage/blobs/redirect/...`), sem extensão nenhuma.
+    """
+    if "pdf" in (att.get("content_type") or "").lower():
+        return True
+    if (att.get("extension") or "").lower().lstrip(".") == "pdf":
+        return True
+    return (att.get("data_url") or "").lower().endswith(".pdf")
+
+
 async def _process_chatwoot_attachments(attachments: list, phone: str = "") -> str | None:
     """Download and process the first recognisable attachment (audio or image)."""
     import httpx
@@ -818,8 +839,7 @@ async def _process_chatwoot_attachments(attachments: list, phone: str = "") -> s
             if file_type == "image":
                 return await describe_image_bytes(media_bytes, phone=phone)
             if file_type == "file":
-                content_type = (att.get("content_type") or "").lower()
-                if "pdf" in content_type or data_url.lower().endswith(".pdf"):
+                if _attachment_is_pdf(att):
                     return await describe_pdf_bytes(media_bytes, phone=phone)
                 return "[pdf-recebido]"
         except Exception:
