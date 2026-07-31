@@ -3059,3 +3059,205 @@ def test_detect_debora_insistence_ignores_when_responding():
 
     # Patient is answering Eva's questions, so don't trigger
     assert _detect_debora_insistence(messages) is False
+
+
+# ── Early minor-first-consult explanation (Task 3) ───────────────────────────
+
+async def test_collect_info_explains_minor_first_consult_when_doctor_confirmed_last():
+    """Fluxo padrão: idade e 'primeira vez' já conhecidas, médico é a última das
+    3 condições a ser confirmada (step 9 do cadastro) — a explicação antecipada
+    deve sair prefixada à pergunta seguinte (e-mail) nesse mesmo turno."""
+    from app.graph.nodes import collect_info_node
+    from langchain_core.messages import HumanMessage, AIMessage
+
+    _DOCTOR_Q = "Você tem preferência pelo Dr. Júlio ou pela Dra. Bruna?"
+    state = _base_minor_state(
+        user_name="Ana", patient_name="Bernardo", patient_cpf="111.222.333-00",
+        is_patient=False, is_returning_patient=False,
+        patient_age=10, birth_date="18/03/2016",
+        guardian_name="Ana", guardian_cpf="111.222.333-44",
+        preferred_doctor=None,
+        messages=[
+            HumanMessage(content="quero agendar"),
+            AIMessage(content=_DOCTOR_Q),
+            HumanMessage(content="Dr Júlio"),
+        ],
+    )
+    with patch("app.graph.nodes.send_text", new_callable=AsyncMock) as mock_send, \
+         patch("app.graph.nodes.save_message", new_callable=AsyncMock), \
+         patch("app.graph.nodes.get_users_by_phone", new_callable=AsyncMock, return_value=[]), \
+         patch("app.graph.nodes.upsert_user", new_callable=AsyncMock, return_value="id"):
+        result = await collect_info_node(state, {})
+
+    assert result.get("preferred_doctor") == "julio"
+    assert result.get("minor_first_consult_explained") is True
+    sent = mock_send.call_args[0][1]
+    assert "duas partes de 1 hora" in sent
+    assert "Bernardo" in sent
+    assert "e-mail" in sent.lower()
+
+
+async def test_collect_info_explains_minor_first_consult_when_doctor_known_from_first_message():
+    """Caso 'Bernardo' real: o médico já foi mencionado na 1ª mensagem (auto-
+    detectado antes dos steps), então is_returning_patient=False (step 4) é a
+    última das 3 condições a ficar completa — a explicação deve sair
+    prefixada à pergunta de CPF do paciente (step 5), não só na hora de agendar."""
+    from app.graph.nodes import collect_info_node
+    from langchain_core.messages import HumanMessage, AIMessage
+
+    _PATIENT_Q = "É a primeira consulta ou o paciente já está em acompanhamento na clínica?"
+    state = _base_minor_state(
+        user_name="Bernardo Lima Beltrão Teixeira",
+        patient_name="Bernardo Lima Beltrão Teixeira",
+        patient_cpf=None,
+        is_patient=False,
+        is_returning_patient=None,
+        patient_age=10, birth_date="18/03/2016",
+        preferred_doctor="julio",  # já auto-detectado em turno anterior
+        messages=[
+            HumanMessage(content="Gostaria de marcar uma consulta com Dr Júlio"),
+            AIMessage(content=_PATIENT_Q),
+            HumanMessage(content="Primeira vez"),
+        ],
+    )
+    with patch("app.graph.nodes.send_text", new_callable=AsyncMock) as mock_send, \
+         patch("app.graph.nodes.save_message", new_callable=AsyncMock), \
+         patch("app.graph.nodes.get_users_by_phone", new_callable=AsyncMock, return_value=[]), \
+         patch("app.graph.nodes.upsert_user", new_callable=AsyncMock, return_value="id"):
+        result = await collect_info_node(state, {})
+
+    assert result.get("is_returning_patient") is False
+    assert result.get("minor_first_consult_explained") is True
+    sent = mock_send.call_args[0][1]
+    assert "duas partes de 1 hora" in sent
+    assert "cpf" in sent.lower()
+
+
+async def test_collect_info_does_not_explain_minor_rule_for_adult():
+    """Paciente adulto com Dr. Júlio nunca recebe a explicação de menor."""
+    from app.graph.nodes import collect_info_node
+    from langchain_core.messages import HumanMessage, AIMessage
+
+    _DOCTOR_Q = "Você tem preferência pelo Dr. Júlio ou pela Dra. Bruna?"
+    state = _base_minor_state(
+        user_name="Carlos", patient_name="Carlos", patient_cpf="111.222.333-00",
+        is_patient=True, is_returning_patient=False,
+        patient_age=35, birth_date="10/05/1989",
+        preferred_doctor=None,
+        messages=[
+            HumanMessage(content="quero agendar"),
+            AIMessage(content=_DOCTOR_Q),
+            HumanMessage(content="Dr Júlio"),
+        ],
+    )
+    with patch("app.graph.nodes.send_text", new_callable=AsyncMock) as mock_send, \
+         patch("app.graph.nodes.save_message", new_callable=AsyncMock), \
+         patch("app.graph.nodes.get_users_by_phone", new_callable=AsyncMock, return_value=[]), \
+         patch("app.graph.nodes.upsert_user", new_callable=AsyncMock, return_value="id"):
+        result = await collect_info_node(state, {})
+
+    assert result.get("preferred_doctor") == "julio"
+    assert not result.get("minor_first_consult_explained")
+    sent = mock_send.call_args[0][1]
+    assert "duas partes de 1 hora" not in sent
+
+
+async def test_collect_info_does_not_explain_minor_rule_for_bruna():
+    """Menor de idade escolhendo Dra. Bruna nunca recebe essa explicação
+    (a divisão em 2 partes é específica do Dr. Júlio)."""
+    from app.graph.nodes import collect_info_node
+    from langchain_core.messages import HumanMessage, AIMessage
+
+    _DOCTOR_Q = "Você tem preferência pelo Dr. Júlio ou pela Dra. Bruna?"
+    state = _base_minor_state(
+        user_name="Ana", patient_name="Joãozinho", patient_cpf="111.222.333-00",
+        is_patient=False, is_returning_patient=False,
+        patient_age=14, birth_date="18/03/2012",
+        guardian_name="Ana", guardian_cpf="111.222.333-44",
+        preferred_doctor=None,
+        messages=[
+            HumanMessage(content="quero agendar"),
+            AIMessage(content=_DOCTOR_Q),
+            HumanMessage(content="Dra Bruna"),
+        ],
+    )
+    with patch("app.graph.nodes.send_text", new_callable=AsyncMock) as mock_send, \
+         patch("app.graph.nodes.save_message", new_callable=AsyncMock), \
+         patch("app.graph.nodes.get_users_by_phone", new_callable=AsyncMock, return_value=[]), \
+         patch("app.graph.nodes.upsert_user", new_callable=AsyncMock, return_value="id"):
+        result = await collect_info_node(state, {})
+
+    assert result.get("preferred_doctor") == "bruna"
+    assert not result.get("minor_first_consult_explained")
+    sent = mock_send.call_args[0][1]
+    assert "duas partes de 1 hora" not in sent
+
+
+async def test_collect_info_does_not_explain_minor_rule_for_returning_patient():
+    """Menor de idade RETORNANTE (is_returning_patient=True) com Dr. Júlio
+    nunca recebe essa explicação — a divisão em 2 partes é só para a 1ª
+    consulta."""
+    from app.graph.nodes import collect_info_node
+    from langchain_core.messages import HumanMessage, AIMessage
+
+    _DOCTOR_Q = "Você tem preferência pelo Dr. Júlio ou pela Dra. Bruna?"
+    state = _base_minor_state(
+        user_name="Ana", patient_name="Joãozinho",
+        is_patient=False, is_returning_patient=True,
+        patient_age=14, birth_date="18/03/2012",
+        guardian_name="Ana",
+        preferred_doctor=None,
+        messages=[
+            HumanMessage(content="quero agendar"),
+            AIMessage(content=_DOCTOR_Q),
+            HumanMessage(content="Dr Júlio"),
+        ],
+    )
+    with patch("app.graph.nodes.send_text", new_callable=AsyncMock) as mock_send, \
+         patch("app.graph.nodes.save_message", new_callable=AsyncMock), \
+         patch("app.graph.nodes.get_users_by_phone", new_callable=AsyncMock, return_value=[]), \
+         patch("app.graph.nodes.upsert_user", new_callable=AsyncMock, return_value="id"):
+        result = await collect_info_node(state, {})
+
+    assert result.get("preferred_doctor") == "julio"
+    assert not result.get("minor_first_consult_explained")
+    sent = mock_send.call_args[0][1]
+    assert "duas partes de 1 hora" not in sent
+
+
+async def test_collect_info_does_not_repeat_explanation_once_sent():
+    """Se minor_first_consult_explained já é True no estado de entrada, um
+    turno seguinte do cadastro (aqui, respondendo o CPF do paciente) não deve
+    reenviar a explicação — mesmo com as 3 condições continuando satisfeitas.
+
+    Nota: não usar o passo de e-mail para este teste — quando e-mail é o
+    último campo faltante, collect_info_node cai no fluxo que chama a LLM
+    (não retorna via _ask/_extract_and_ask), então não é o cenário certo
+    para testar o prefixo determinístico."""
+    from app.graph.nodes import collect_info_node
+    from langchain_core.messages import HumanMessage, AIMessage
+
+    _CPF_Q = "Qual o CPF do paciente?"
+    state = _base_minor_state(
+        user_name="Ana", patient_name="Bernardo", patient_cpf=None,
+        is_patient=False, is_returning_patient=False,
+        patient_age=10, birth_date="18/03/2016",
+        guardian_name=None, guardian_cpf=None,
+        preferred_doctor="julio",
+        messages=[
+            HumanMessage(content="quero agendar"),
+            AIMessage(content=_CPF_Q),
+            HumanMessage(content="111.222.333-00"),
+        ],
+    )
+    state["minor_first_consult_explained"] = True
+    with patch("app.graph.nodes.send_text", new_callable=AsyncMock) as mock_send, \
+         patch("app.graph.nodes.save_message", new_callable=AsyncMock), \
+         patch("app.graph.nodes.get_users_by_phone", new_callable=AsyncMock, return_value=[]), \
+         patch("app.graph.nodes.upsert_user", new_callable=AsyncMock, return_value="id"):
+        result = await collect_info_node(state, {})
+
+    assert result.get("patient_cpf") == "111.222.333-00"
+    sent = mock_send.call_args[0][1]
+    assert "duas partes de 1 hora" not in sent
+    assert "responsável" in sent.lower()  # segue para a pergunta do nome do responsável

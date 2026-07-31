@@ -19,7 +19,7 @@ from app.graph.tools import (
     request_external_contact, nudge_external_contact,
     _expected_consultation_amount,
 )
-from app.graph.prompts import COLLECT_SYSTEM, MINOR_RULE, MINOR_RETURNING_RULE, ADULT_RULE, GUARDIAN_RULE, EXISTING_PATIENT_SYSTEM, NEW_PATIENT_SYSTEM, CANCELLATION_RULES, CLINIC_ADDRESS, CLINIC_ADDRESS_TEXT, DOCTORS_INFO, sanitize_clinic_address, get_booking_fee_rule, MEDICAL_LIMITS_RULE, AGE_EXCEPTION_RULE, DOCTOR_CORRECTION_RULE, EMAIL_RULE, get_pricing_rules, ATTENDANT_INSTRUCTION_RULE, get_pricing_exception_rule, CORRECT_PIX_KEY, SOCIAL_NAME_RULE
+from app.graph.prompts import COLLECT_SYSTEM, MINOR_RULE, MINOR_RETURNING_RULE, ADULT_RULE, GUARDIAN_RULE, EXISTING_PATIENT_SYSTEM, NEW_PATIENT_SYSTEM, CANCELLATION_RULES, CLINIC_ADDRESS, CLINIC_ADDRESS_TEXT, DOCTORS_INFO, sanitize_clinic_address, get_booking_fee_rule, MEDICAL_LIMITS_RULE, AGE_EXCEPTION_RULE, DOCTOR_CORRECTION_RULE, EMAIL_RULE, get_pricing_rules, ATTENDANT_INSTRUCTION_RULE, get_pricing_exception_rule, CORRECT_PIX_KEY, SOCIAL_NAME_RULE, MINOR_FIRST_CONSULT_INFO, MINOR_RULE_SCHEDULING_ONLY
 from app.whatsapp import send_text
 from app.database import upsert_user, log_event, get_upcoming_appointments, get_user_by_phone, get_users_by_phone, DOCTOR_IDS, DOCTOR_NAMES, save_message, get_last_assistant_message_time, is_registration_complete
 from app.chatwoot import get_conversation_id, add_private_note
@@ -409,6 +409,33 @@ async def collect_info_node(state: ConversationState, config: RunnableConfig) ->
                     import logging as _log
                     _log.getLogger(__name__).exception("Failed to persist preferred_doctor")
 
+    def _minor_first_explain_needed(extra: dict | None = None) -> bool:
+        """True quando as 3 condições (menor de idade + primeira consulta +
+        Dr. Júlio) estão completas neste turno e a explicação ainda não foi
+        enviada. `extra` são os campos recém-extraídos neste turno (ainda não
+        persistidos em `state`)."""
+        merged = {**state, **_persistent_updates}
+        if extra:
+            merged.update(extra)
+        age = merged.get("patient_age") or 99
+        return (
+            age < 18
+            and merged.get("is_returning_patient") is False
+            and merged.get("preferred_doctor") == "julio"
+            and not merged.get("minor_first_consult_explained")
+        )
+
+    def _minor_first_explain_text(extra: dict | None = None) -> str:
+        merged = {**state, **_persistent_updates}
+        if extra:
+            merged.update(extra)
+        from app.utils import display_name as _dn
+        full_name = (
+            merged.get("social_name") or merged.get("patient_name")
+            or merged.get("user_name") or "o paciente"
+        )
+        return MINOR_FIRST_CONSULT_INFO.format(patient_name=_dn(full_name))
+
     async def _ask(reply: str) -> dict:
         # Force stage back to collect_info: a caller upstream (e.g. an attendant
         # instruction in main.py) may have optimistically set stage="patient_agent"
@@ -417,9 +444,13 @@ async def collect_info_node(state: ConversationState, config: RunnableConfig) ->
         # would wrongly continue into patient_agent in the same turn, producing a
         # second, conflicting AI message and corrupting _last_ai()/_last_human()
         # bookkeeping for the next turn (see Talita/CPF incident 2026-07-03).
+        extra_update: dict = {}
+        if _minor_first_explain_needed():
+            reply = _minor_first_explain_text() + "\n\n" + reply
+            extra_update["minor_first_consult_explained"] = True
         await send_text(state["phone"], reply)
         await save_message(state["phone"], "assistant", reply)
-        return {**_persistent_updates, "stage": "collect_info", "messages": [AIMessage(content=reply)]}
+        return {**_persistent_updates, **extra_update, "stage": "collect_info", "messages": [AIMessage(content=reply)]}
 
     async def _extract_and_ask(extracted: dict, next_q: str) -> dict:
         """Persist extracted fields to Supabase and ask the next question in one turn."""
@@ -439,8 +470,12 @@ async def collect_info_node(state: ConversationState, config: RunnableConfig) ->
         db_payload = {_STATE_TO_DB[k]: v for k, v in extracted.items() if k in _STATE_TO_DB}
         if "preferred_doctor" in extracted:
             db_payload["doctor_id"] = DOCTOR_IDS.get(extracted["preferred_doctor"])
+        extra_update: dict = {}
+        if next_q and _minor_first_explain_needed(extracted):
+            next_q = _minor_first_explain_text(extracted) + "\n\n" + next_q
+            extra_update["minor_first_consult_explained"] = True
         # See _ask() above for why stage is forced back to collect_info here too.
-        result_update: dict = {**_persistent_updates, **extracted, "stage": "collect_info", "messages": [AIMessage(content=next_q)]}
+        result_update: dict = {**_persistent_updates, **extracted, **extra_update, "stage": "collect_info", "messages": [AIMessage(content=next_q)]}
         if db_payload:
             try:
                 returned_id = await upsert_user(state["phone"], db_payload, user_id=state.get("user_db_id"))
