@@ -89,3 +89,34 @@ async def test_document_upload_notifies_clinic_with_full_patient_name():
     mock_notify.assert_awaited_once()
     _subject, body = mock_notify.call_args[0]
     assert "Ana Beatriz Souza" in body
+
+
+# ── is_payment_receipt_message ────────────────────────────────────────────────
+# Usado pelo _route_entry para levar um comprovante ao patient_agent mesmo com o
+# cadastro incompleto. Precisa ser ESTRITO: só o que o classificador de visão
+# marcou como CATEGORIA 1 conta — nunca "qualquer imagem".
+
+async def test_receipt_detector_accepts_classifier_output():
+    from app.media import is_payment_receipt_message
+    assert is_payment_receipt_message(
+        "[imagem]: COMPROVANTE DE PAGAMENTO: valor transferido R$ 100,00, "
+        "chave PIX 42.006.848/0001-78. [drive_link:https://drive.google.com/file/d/abc/view]"
+    )
+
+
+async def test_receipt_detector_accepts_receipt_without_drive_link():
+    """Quando o upload para o Drive falha, media.py devolve a descrição sem a tag
+    [drive_link:...] — continua sendo um comprovante, e register_payment sabe
+    procurar o link no histórico."""
+    from app.media import is_payment_receipt_message
+    assert is_payment_receipt_message("[imagem]: COMPROVANTE DE PAGAMENTO: valor transferido R$ 100,00.")
+
+
+async def test_receipt_detector_rejects_other_media():
+    from app.media import is_payment_receipt_message
+    assert not is_payment_receipt_message("[imagem]: LAUDO: laudo neuropsicológico de 12 páginas.")
+    assert not is_payment_receipt_message("[imagem]: EXAME: hemograma completo.")
+    assert not is_payment_receipt_message("[pdf-recebido]")
+    assert not is_payment_receipt_message("já mandei o comprovante de pagamento ontem")
+    assert not is_payment_receipt_message("")
+    assert not is_payment_receipt_message(None)

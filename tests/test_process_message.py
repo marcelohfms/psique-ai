@@ -3291,3 +3291,99 @@ async def test_patient_agent_uses_full_minor_rule_when_not_yet_explained():
     system_msg = await _run_patient_agent(state, last_assistant_time="2026-07-31T09:00:00+00:00")
     assert system_msg is not None
     assert "Antes de buscar horários, explique ao responsável" in system_msg.content
+
+
+# ── Desempate LLM × gate determinístico de cadastro ──────────────────────────
+# Caso Bernardo Lima Beltrão Teixeira (5581987415206, 31/07/2026): a LLM devolveu
+# is_complete=True com guardian_relationship vazio ("Para meu filho" não diz mãe
+# ou pai). O gate discordou, o _route_entry passou a devolver TODO turno para o
+# collect_info, e como a LLM já achava o cadastro pronto, ninguém mais perguntou
+# nada: a conversa travou num nó sem ferramentas e o comprovante da taxa nunca
+# foi registrado.
+
+def _bernardo_state(**over):
+    state = {
+        "phone": PHONE,
+        "messages": [
+            AIMessage(content="Qual o motivo da consulta?"),
+            HumanMessage(content="Dificuldade escolar"),
+        ],
+        "user_name": "Raphaelle Beltrão",
+        "patient_name": "Bernardo Lima Beltrão Teixeira",
+        "patient_email": "rlabanatomia@gmail.com",
+        "birth_date": "18/03/2016",
+        "patient_age": 10,
+        "preferred_doctor": "julio",
+        "is_patient": False,
+        "_is_patient_confirmed": True,
+        "is_returning_patient": False,
+        "guardian_name": "Raphaelle Beltrão",
+        "guardian_cpf": "05473966438",
+        "guardian_relationship": None,
+        "patient_cpf": "13716254410",
+        "minor_first_consult_explained": True,
+        "user_db_id": "patient-uuid",
+    }
+    state.update(over)
+    return state
+
+
+async def _run_collect(state, llm_result):
+    from app.graph.nodes import collect_info_node
+    with patch("app.graph.nodes._get_collect_llm") as mock_llm_fn, \
+         patch("app.graph.nodes.send_text", new_callable=AsyncMock) as mock_send, \
+         patch("app.graph.nodes.save_message", new_callable=AsyncMock), \
+         patch("app.graph.nodes.get_users_by_phone", new_callable=AsyncMock, return_value=[]), \
+         patch("app.graph.nodes.upsert_user", new_callable=AsyncMock, return_value="patient-uuid"), \
+         patch("app.graph.nodes.log_event", new_callable=AsyncMock):
+        mock_llm = MagicMock()
+        mock_llm.ainvoke = AsyncMock(return_value=llm_result)
+        mock_llm_fn.return_value = mock_llm
+        result = await collect_info_node(state, {})
+    return result, mock_send
+
+
+async def test_collect_info_asks_for_missing_field_when_llm_claims_complete():
+    """is_complete=True com campo obrigatório vazio: a despedida da LLM é
+    substituída pela pergunta determinística do campo que falta, e o stage NÃO
+    avança — senão a conversa trava sem ninguém perguntar."""
+    from app.graph.schemas import CollectInfoOutput
+
+    result, mock_send = await _run_collect(
+        _bernardo_state(),
+        CollectInfoOutput(reply="Perfeito, tudo anotado! 😊", is_complete=True),
+    )
+
+    sent = mock_send.call_args[0][1]
+    assert "parentesco" in sent.lower()
+    assert "tudo anotado" not in sent
+    assert result.get("stage") != "patient_agent"
+
+
+async def test_collect_info_completes_normally_when_nothing_is_missing():
+    """Sem campo faltando, o comportamento não muda: a resposta da LLM é enviada
+    como está e o cadastro avança para o patient_agent."""
+    from app.graph.schemas import CollectInfoOutput
+
+    result, mock_send = await _run_collect(
+        _bernardo_state(guardian_relationship="mãe"),
+        CollectInfoOutput(reply="Perfeito, tudo anotado! 😊", is_complete=True),
+    )
+
+    assert mock_send.call_args[0][1] == "Perfeito, tudo anotado! 😊"
+    assert result.get("stage") == "patient_agent"
+
+
+async def test_collect_info_uses_field_answered_in_this_turn():
+    """Se o campo que faltava veio na resposta deste turno, o cadastro fecha
+    normalmente — a rede não pode reperguntar algo já respondido."""
+    from app.graph.schemas import CollectInfoOutput
+
+    result, mock_send = await _run_collect(
+        _bernardo_state(),
+        CollectInfoOutput(reply="Perfeito, tudo anotado! 😊",
+                          guardian_relationship="mãe", is_complete=True),
+    )
+
+    assert mock_send.call_args[0][1] == "Perfeito, tudo anotado! 😊"
+    assert result.get("stage") == "patient_agent"

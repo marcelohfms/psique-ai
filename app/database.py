@@ -247,7 +247,23 @@ async def log_event(event_type: str, phone: str, metadata: dict | None = None) -
 
 def is_registration_complete(user: dict) -> bool:
     """Return True only when the user record has all fields required to proceed
-    to scheduling.
+    to scheduling. Thin wrapper over missing_registration_field() — see there for
+    the full list of required fields and the rules per profile."""
+    return missing_registration_field(user) is None
+
+
+def missing_registration_field(user: dict) -> str | None:
+    """Return the name of the FIRST required registration field still missing,
+    or None when the registration is complete.
+
+    Single source of truth for registration completeness: collect_info uses the
+    returned field name to ask a deterministic question for it, so the
+    conversation can never get pinned in collect_info with nobody asking for the
+    missing field (caso Bernardo Lima Beltrão Teixeira, 5581987415206,
+    2026-07-31: the LLM reported is_complete=True with guardian_relationship
+    empty, this check disagreed, and _route_entry sent every following turn back
+    to collect_info — a node with no tools — so the payment receipt the mother
+    sent was never registered and the slot was auto-canceled).
 
     Required for ALL patients:
     - name          (contact name — used to address the person in chat)
@@ -276,16 +292,16 @@ def is_registration_complete(user: dict) -> bool:
     Both must be present and different.
     """
     if not user:
-        return False
+        return "name"
 
     # Universal required fields
     required = ["name", "email", "birth_date", "doctor_id"]
     for field in required:
         if not user.get(field):
-            return False
+            return field
 
     if user.get("is_patient") is None:
-        return False
+        return "is_patient"
 
     # is_returning_patient só é obrigatório para menores do Dr. Júlio — é o único
     # caso em que muda o atendimento (1ª consulta em 2 momentos + preço). Para os
@@ -296,12 +312,12 @@ def is_registration_complete(user: dict) -> bool:
         and user.get("doctor_id") == DOCTOR_IDS.get("julio")
     )
     if _is_julio_minor and user.get("is_returning_patient") is None:
-        return False
+        return "is_returning_patient"
 
     # When contact ≠ patient, patient_name must be explicitly set
     if user.get("is_patient") is False:
         if not user.get("patient_name"):
-            return False
+            return "patient_name"
 
     # Minor-specific requirements — only apply when a THIRD PARTY (a guardian)
     # is the one messaging (is_patient=False). A minor messaging about
@@ -317,9 +333,9 @@ def is_registration_complete(user: dict) -> bool:
             required_minor.append("guardian_cpf")
         for field in required_minor:
             if not user.get(field):
-                return False
+                return field
 
-    return True
+    return None
 
 
 # ── Appointment helpers ───────────────────────────────────────────────────────

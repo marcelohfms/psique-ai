@@ -20,10 +20,12 @@ def _appt(**kw):
     return base
 
 
-def _client():
-    execute = AsyncMock(return_value=MagicMock(data=[]))
+def _client(receipt_rows=None):
+    """Supabase double. `receipt_rows` feeds the messages/comprovante lookup;
+    the default (empty) means "no receipt in the conversation"."""
+    execute = AsyncMock(return_value=MagicMock(data=receipt_rows or []))
     table = MagicMock()
-    for m in ("update", "eq", "select", "single"):
+    for m in ("update", "eq", "select", "single", "ilike", "gte", "order", "limit"):
         getattr(table, m).return_value = table
     table.execute = execute
     client = MagicMock()
@@ -80,3 +82,79 @@ async def test_cancel_does_not_log_event_when_no_contact_notified():
 
     mock_log_event.assert_not_awaited()
     table.update.assert_not_called()
+
+
+# ── Guarda: comprovante na conversa bloqueia o cancelamento ──────────────────
+# Caso Bernardo Lima Beltrão Teixeira (5581987415206, 31/07/2026): a mãe enviou o
+# comprovante da taxa, Eva respondeu "recebemos!" mas não chamou register_payment
+# (a conversa estava presa no collect_info, um nó sem ferramentas), então
+# booking_fee_paid_at ficou NULL e este cron cancelou a consulta 4h depois.
+
+_RECEIPT_ROW = [{
+    "phone": "5581987415206",
+    "content": "[imagem]: COMPROVANTE DE PAGAMENTO: valor transferido R$ 100,00 [drive_link:https://drive.google.com/file/d/abc/view]",
+    "created_at": "2026-07-31T17:27:29+00:00",
+}]
+
+
+@pytest.mark.asyncio
+async def test_cancel_blocked_when_receipt_found_in_conversation():
+    """Com um comprovante na conversa, o cron NÃO cancela, NÃO mexe no Calendar e
+    NÃO manda a mensagem de cancelamento — avisa a clínica para conferir na mão."""
+    client, table = _client(receipt_rows=_RECEIPT_ROW)
+    now = datetime(2026, 7, 31, 20, 15, tzinfo=TZ)
+    appt = _appt(created_at="2026-07-31T14:30:44+00:00")
+
+    with patch("scripts.send_payment_reminders.get_financial_contacts",
+               new_callable=AsyncMock,
+               return_value=[{"phone": "5581987415206", "name": "Raphaelle"}]), \
+         patch("scripts.send_payment_reminders.send_whatsapp", new_callable=AsyncMock) as mock_wpp, \
+         patch("scripts.send_payment_reminders.cancel_calendar_event", new_callable=AsyncMock) as mock_cal, \
+         patch("app.database.log_event", new_callable=AsyncMock) as mock_log_event, \
+         patch("app.email_sender.send_clinic_notification_email", new_callable=AsyncMock) as mock_email:
+        await spr._cancel_unpaid_appointment(client, appt, None, now)
+
+    mock_wpp.assert_not_awaited()
+    mock_cal.assert_not_awaited()
+    table.update.assert_not_called()
+    mock_email.assert_awaited_once()
+    assert "bloqueado" in mock_email.await_args.args[0].lower()
+    mock_log_event.assert_awaited_once()
+    assert mock_log_event.await_args.args[0] == "payment_cancel_blocked_receipt_found"
+
+
+@pytest.mark.asyncio
+async def test_cancel_blocked_when_receipt_lookup_fails():
+    """Fail-closed: se a consulta ao histórico falhar, não dá para provar que NÃO
+    há comprovante — então o cancelamento é bloqueado, não executado."""
+    client, table = _client()
+    table.execute = AsyncMock(side_effect=Exception("supabase down"))
+    now = datetime(2026, 7, 31, 20, 15, tzinfo=TZ)
+    appt = _appt(created_at="2026-07-31T14:30:44+00:00")
+
+    with patch("scripts.send_payment_reminders.get_financial_contacts",
+               new_callable=AsyncMock,
+               return_value=[{"phone": "5581987415206", "name": "Raphaelle"}]), \
+         patch("scripts.send_payment_reminders.send_whatsapp", new_callable=AsyncMock) as mock_wpp, \
+         patch("scripts.send_payment_reminders.cancel_calendar_event", new_callable=AsyncMock) as mock_cal, \
+         patch("app.database.log_event", new_callable=AsyncMock), \
+         patch("app.email_sender.send_clinic_notification_email", new_callable=AsyncMock):
+        await spr._cancel_unpaid_appointment(client, appt, None, now)
+
+    mock_wpp.assert_not_awaited()
+    mock_cal.assert_not_awaited()
+    table.update.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_receipt_lookup_ignores_messages_older_than_the_booking():
+    """O comprovante precisa ser posterior ao agendamento: um comprovante de uma
+    consulta anterior não pode segurar o cancelamento da consulta nova."""
+    client, table = _client()
+    since = "2026-07-31T14:30:44+00:00"
+
+    await spr.find_receipt_in_conversation(client, ["5581987415206@s.whatsapp.net"], since)
+
+    table.gte.assert_called_once_with("created_at", since)
+    table.eq.assert_any_call("phone", "5581987415206")
+    table.eq.assert_any_call("role", "user")
