@@ -441,3 +441,75 @@ async def test_send_text_does_not_alert_on_normal_message():
 
     mock_note.assert_not_awaited()
     assert mock_send.await_args.args[1] == "Oi! Tudo bem?"
+
+
+def _messages_get_mock(messages: list[dict]):
+    mock_client = AsyncMock()
+    mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+    mock_client.__aexit__ = AsyncMock(return_value=False)
+    resp = MagicMock()
+    resp.raise_for_status = MagicMock()
+    resp.json = MagicMock(return_value={"payload": messages})
+    mock_client.get = AsyncMock(return_value=resp)
+    return mock_client
+
+
+async def test_get_last_patient_message_returns_content_and_attachments():
+    from app.chatwoot import get_last_patient_message
+
+    messages = [
+        {"message_type": 0, "content": "oi, tudo bem?", "attachments": [], "created_at": 1},
+    ]
+    mock_client = _messages_get_mock(messages)
+
+    with patch("httpx.AsyncClient", return_value=mock_client), \
+         patch.dict("os.environ", {
+             "CHATWOOT_BASE_URL": "https://chat.example.com",
+             "CHATWOOT_ACCOUNT_ID": "1",
+             "CHATWOOT_AGENT_BOT_TOKEN": "test-token",
+         }):
+        result = await get_last_patient_message(42)
+
+    assert result == {"content": "oi, tudo bem?", "attachments": []}
+
+
+async def test_get_last_patient_message_includes_attachment_only_message():
+    """A comprovante sent with no caption has empty `content` in Chatwoot — it must
+    still be returned (with its attachments) instead of being filtered out, otherwise
+    reactivating Eva via the eva-ativa label can never recover it."""
+    from app.chatwoot import get_last_patient_message
+
+    attachments = [{"file_type": "image", "data_url": "https://cw.example/comprovante.jpg"}]
+    messages = [
+        {"message_type": 0, "content": "", "attachments": attachments, "created_at": 5},
+    ]
+    mock_client = _messages_get_mock(messages)
+
+    with patch("httpx.AsyncClient", return_value=mock_client), \
+         patch.dict("os.environ", {
+             "CHATWOOT_BASE_URL": "https://chat.example.com",
+             "CHATWOOT_ACCOUNT_ID": "1",
+             "CHATWOOT_AGENT_BOT_TOKEN": "test-token",
+         }):
+        result = await get_last_patient_message(42)
+
+    assert result == {"content": "", "attachments": attachments}
+
+
+async def test_get_last_patient_message_returns_none_when_no_incoming():
+    from app.chatwoot import get_last_patient_message
+
+    messages = [
+        {"message_type": 1, "content": "resposta do atendente", "attachments": [], "created_at": 1},
+    ]
+    mock_client = _messages_get_mock(messages)
+
+    with patch("httpx.AsyncClient", return_value=mock_client), \
+         patch.dict("os.environ", {
+             "CHATWOOT_BASE_URL": "https://chat.example.com",
+             "CHATWOOT_ACCOUNT_ID": "1",
+             "CHATWOOT_AGENT_BOT_TOKEN": "test-token",
+         }):
+        result = await get_last_patient_message(42)
+
+    assert result is None

@@ -940,9 +940,16 @@ async def _apply_eva_label_action(payload: dict, added: set, removed: set) -> bo
         if conversation_id:
             try:
                 from app.chatwoot import get_last_patient_message
-                last_msg = await get_last_patient_message(conversation_id)
-                if last_msg:
-                    await buffer_push(phone, last_msg, process_message)
+                last = await get_last_patient_message(conversation_id)
+                if last:
+                    text = last["content"] or None
+                    attachments = last["attachments"]
+                    if attachments:
+                        attachment_text = await _process_chatwoot_attachments(attachments, phone=phone)
+                        if attachment_text and attachment_text != "[audio-nao-suportado]":
+                            text = f"{text}\n{attachment_text}" if text else attachment_text
+                    if text:
+                        await buffer_push(phone, text, process_message)
             except Exception:
                 logger.exception("Failed to fetch/reprocess last message for %s", phone)
 

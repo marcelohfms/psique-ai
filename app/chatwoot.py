@@ -196,8 +196,14 @@ async def add_label(conversation_id: int, label: str) -> None:
     await set_labels(conversation_id, add=[label])
 
 
-async def get_last_patient_message(conversation_id: int) -> str | None:
-    """Return the text of the last incoming message from the patient, or None."""
+async def get_last_patient_message(conversation_id: int) -> dict | None:
+    """Return the last incoming message from the patient as {"content", "attachments"},
+    or None if there isn't one.
+
+    Includes attachment-only messages (empty content, e.g. a payment receipt image
+    sent without a caption) — otherwise reactivating Eva via the eva-ativa label can
+    never recover them, since there'd be nothing left to reprocess.
+    """
     url = f"{_base_url()}/api/v1/accounts/{_account_id()}/conversations/{conversation_id}/messages"
     async with httpx.AsyncClient(timeout=10) as client:
         resp = await _request(client, "GET", url, headers=_headers())
@@ -208,11 +214,17 @@ async def get_last_patient_message(conversation_id: int) -> str | None:
             messages = data.get("messages") or []
         else:
             messages = []
-    incoming = [m for m in messages if m.get("message_type") == 0 and (m.get("content") or "").strip()]
+    incoming = [
+        m for m in messages
+        if m.get("message_type") == 0 and ((m.get("content") or "").strip() or m.get("attachments"))
+    ]
     if not incoming:
         return None
     last = max(incoming, key=lambda m: m.get("created_at", 0))
-    return last.get("content", "").strip() or None
+    return {
+        "content": (last.get("content") or "").strip(),
+        "attachments": last.get("attachments") or [],
+    }
 
 
 # ── Contact / conversation lookup-or-create ───────────────────────────────────
