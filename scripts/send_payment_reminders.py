@@ -134,6 +134,107 @@ async def cancel_calendar_event(appointment_id: str, doctor_id: str, supabase_cl
         print(f"  Calendar cancel failed (non-fatal): {e}")
 
 
+async def find_receipt_in_conversation(client, phones: list[str], since_iso: str) -> dict | None:
+    """Return the most recent payment-receipt message sent by any of `phones`
+    after `since_iso`, or None.
+
+    Last line of defense before an auto-cancellation: the booking fee lives in
+    `appointments.booking_fee_paid_at`, but the receipt itself lives in the
+    conversation. When Eva fails to call register_payment the two disagree, and
+    this job would otherwise cancel a consultation the patient already paid for (caso
+    Bernardo Lima Beltrão Teixeira, 5581987415206, 2026-07-31).
+    """
+    from app.media import RECEIPT_PREFIX
+
+    for phone in phones:
+        phone_clean = phone.replace("@s.whatsapp.net", "")
+        try:
+            result = await (
+                client.from_("messages")
+                .select("phone, content, created_at")
+                .eq("phone", phone_clean)
+                .eq("role", "user")
+                .ilike("content", f"%{RECEIPT_PREFIX}%")
+                .gte("created_at", since_iso)
+                .order("created_at", desc=True)
+                .limit(1)
+                .execute()
+            )
+        except Exception as e:
+            # Never let a lookup failure turn into a cancellation: treat an error
+            # as "cannot prove there is no receipt" and block the cancel.
+            print(f"  [payment_cancel] Receipt lookup FAILED for {phone_clean}: {e}")
+            return {"phone": phone_clean, "content": "", "created_at": "", "lookup_failed": True}
+        if result.data:
+            return result.data[0]
+    return None
+
+
+async def _block_cancel_receipt_found(client, appt: dict, receipt: dict,
+                                      patient_name: str, doctor_label: str,
+                                      date_str: str, phones: list[str]) -> None:
+    """Skip the cancellation and ask the clinic to check the receipt by hand.
+    Emails only once per appointment — this job runs every 30 minutes."""
+    from app.database import log_event
+
+    appointment_id = appt["appointment_id"]
+    print(f"  [payment_cancel] BLOQUEADO — comprovante encontrado na conversa de {patient_name} "
+          f"({receipt.get('created_at')}). Cancelamento não executado.")
+
+    already_flagged = False
+    try:
+        existing = await (
+            client.from_("events")
+            .select("id")
+            .eq("event_type", "payment_cancel_blocked_receipt_found")
+            .limit(50)
+            .execute()
+        )
+        already_flagged = any(
+            (e.get("data") or {}).get("appointment_id") == appointment_id
+            for e in (existing.data or [])
+        )
+    except Exception:
+        pass
+
+    for phone in phones:
+        try:
+            await log_event("payment_cancel_blocked_receipt_found", phone, {
+                "appointment_id": appointment_id,
+                "start_time": appt["start_time"],
+                "receipt_at": receipt.get("created_at"),
+                "lookup_failed": receipt.get("lookup_failed", False),
+            })
+        except Exception as e:
+            print(f"  [payment_cancel] log_event failed for {phone}: {e}")
+
+    if already_flagged:
+        return
+
+    try:
+        from app.email_sender import send_clinic_notification_email
+        reason = (
+            "A busca pelo comprovante falhou, então o cancelamento foi bloqueado por precaução."
+            if receipt.get("lookup_failed")
+            else f"O paciente enviou um comprovante em {receipt.get('created_at')}, "
+                 "mas a taxa não consta como paga no sistema."
+        )
+        await send_clinic_notification_email(
+            f"⚠️ Cancelamento automático bloqueado — {patient_name}",
+            f"A consulta abaixo NÃO foi cancelada por falta de pagamento.\n\n"
+            f"Paciente: {patient_name}\n"
+            f"Médico(a): {doctor_label}\n"
+            f"Data/hora: {date_str}\n"
+            f"Contatos: {', '.join(phones)}\n\n"
+            f"{reason}\n\n"
+            f"⚠️ Confira o comprovante na conversa e registre o pagamento manualmente "
+            f"(ou cancele a consulta, se o comprovante não for válido).",
+        )
+        print("  [payment_cancel] Clinic notification email sent (cancel blocked).")
+    except Exception as e:
+        print(f"  [payment_cancel] Clinic email (cancel blocked) failed: {e}")
+
+
 async def _cancel_unpaid_appointment(client, appt: dict, graph, now: datetime) -> None:
     """Notify financial contacts, then cancel a single appointment whose booking fee
     was never paid within 2h of the payment reminder. Cancellation only proceeds if
@@ -154,6 +255,20 @@ async def _cancel_unpaid_appointment(client, appt: dict, graph, now: datetime) -
     financial_contacts = await get_financial_contacts(client, patient_id)
     if not financial_contacts:
         print(f"  [payment_cancel] No financial contacts for patient_id={patient_id}")
+        return
+
+    # ── Guarda: nunca cancelar por cima de um comprovante ─────────────────────
+    # Roda ANTES de qualquer notificação: avisar "sua vaga foi liberada" e depois
+    # não cancelar deixaria o paciente sem saber em que ficou (foi exatamente o que
+    # aconteceu com a mãe do Bernardo em 31/07/2026).
+    _contact_phones = [c["phone"] for c in financial_contacts]
+    _receipt = await find_receipt_in_conversation(
+        client, _contact_phones, appt.get("created_at") or appt["start_time"],
+    )
+    if _receipt:
+        await _block_cancel_receipt_found(
+            client, appt, _receipt, patient_name, doctor_label, date_str, _contact_phones,
+        )
         return
 
     # Must notify at least one contact before canceling
