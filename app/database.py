@@ -407,6 +407,23 @@ async def get_upcoming_appointments(phone: str) -> list[dict]:
         .execute()
     )
 
+    # Auto-canceled for unpaid booking fee (payment_reminder_sent_at set,
+    # booking_fee_paid_at null — the slot was genuinely released, not held like a
+    # pending_reschedule). Without this the LLM has no signal that a previous slot
+    # exists to check availability against, and falls back to freelancing a
+    # rebooking from scratch — including confirming one without ever calling a tool
+    # (caso João Pedro Lins Da Costa Gomes, 5581992349207, 2026-07-30).
+    canceled_unpaid_result = (
+        await client.from_("appointments")
+        .select(_appt_fields + ", doctor_id")
+        .eq("status", "canceled")
+        .in_("patient_id", patient_ids)
+        .not_.is_("payment_reminder_sent_at", "null")
+        .is_("booking_fee_paid_at", "null")
+        .order("start_time", desc=True)
+        .execute()
+    )
+
     # Attach patient_name to each row so the caller can attribute the appointment
     # to the correct patient when the contact manages more than one.
     future = [dict(r, patient_name=name_by_id.get(r.get("patient_id"), "")) for r in (future_result.data or [])]
@@ -419,7 +436,21 @@ async def get_upcoming_appointments(phone: str) -> list[dict]:
         dict(r, stale_reschedule=True, patient_name=name_by_id.get(r.get("patient_id"), ""))
         for r in (stale_reschedule_result.data or [])
     ]
-    return future + recent + unpaid_past + stale_reschedule
+
+    # Only surface the most recent non-payment cancellation per patient, and only
+    # when the patient has no other active/pending appointment already — otherwise
+    # a stale cancellation would show up alongside a slot that already replaced it.
+    _active_patient_ids = {r.get("patient_id") for r in future + recent + stale_reschedule}
+    canceled_unpaid = []
+    _seen_canceled_patient_ids = set()
+    for r in (canceled_unpaid_result.data or []):
+        pid = r.get("patient_id")
+        if pid in _active_patient_ids or pid in _seen_canceled_patient_ids:
+            continue
+        _seen_canceled_patient_ids.add(pid)
+        canceled_unpaid.append(dict(r, canceled_unpaid=True, patient_name=name_by_id.get(pid, "")))
+
+    return future + recent + unpaid_past + stale_reschedule + canceled_unpaid
 
 
 # ── Message persistence ───────────────────────────────────────────────────────
