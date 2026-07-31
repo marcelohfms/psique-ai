@@ -42,6 +42,52 @@ _collect_llm = None
 _agent_llm = None
 
 
+# ── History trimming helpers ──────────────────────────────────────────────────
+
+def _strip_orphan_tool_calls(messages: list) -> list:
+    """
+    Remove orphan tool_calls: AIMessages with tool_calls not followed by ToolMessages.
+    Returns a cleaned list of messages.
+    """
+    raw_messages = list(messages)
+    clean_messages = []
+    for i, msg in enumerate(raw_messages):
+        if getattr(msg, "tool_calls", None):
+            next_msg = raw_messages[i + 1] if i + 1 < len(raw_messages) else None
+            if next_msg is None or next_msg.type != "tool":
+                continue  # skip orphan tool call
+        clean_messages.append(msg)
+    return clean_messages
+
+
+def _trim_history(messages: list, max_hist: int = None) -> list:
+    """
+    Trim conversation history to cap token usage.
+    - Removes orphan tool_calls from messages.
+    - If len(messages) > max_hist, keeps only the last max_hist messages.
+    - Always ensures the first kept message is a human message (no orphan tool-response).
+
+    Args:
+        messages: List of message objects (must already be orphan-stripped).
+        max_hist: Maximum number of messages to keep. Uses MAX_HISTORY_MESSAGES env var if not provided.
+
+    Returns:
+        Trimmed list of messages.
+    """
+    if max_hist is None:
+        max_hist = int(os.getenv("MAX_HISTORY_MESSAGES", "30"))
+
+    clean_messages = _strip_orphan_tool_calls(messages)
+
+    if len(clean_messages) > max_hist:
+        clean_messages = clean_messages[-max_hist:]
+        # Walk forward until the first message is a human message
+        while clean_messages and getattr(clean_messages[0], "type", "") != "human":
+            clean_messages = clean_messages[1:]
+
+    return clean_messages
+
+
 def _get_collect_llm():
     global _collect_llm
     if _collect_llm is None:
@@ -949,9 +995,13 @@ async def collect_info_node(state: ConversationState, config: RunnableConfig) ->
             f"Em TODAS as mensagens, dirija-se a {_ci_contact_first} pelo nome. "
             f"Use o nome {_ci_patient_first} apenas quando falar SOBRE o paciente na terceira pessoa."
         )
+
+    # Trim history to cap token usage (same as patient_agent_node).
+    _trimmed_messages = _trim_history(state["messages"])
+
     messages = [
         SystemMessage(content=_collect_system),
-        *state["messages"],
+        *_trimmed_messages,
     ]
 
     result: CollectInfoOutput = await _get_collect_llm().ainvoke(messages)
@@ -1727,25 +1777,10 @@ async def patient_agent_node(state: ConversationState, config: RunnableConfig) -
     import logging as _log
     _logger = _log.getLogger(__name__)
 
-    # Remove orphan tool_calls: AIMessages with tool_calls not followed by ToolMessages
-    raw_messages = list(state["messages"])
-    clean_messages = []
-    for i, msg in enumerate(raw_messages):
-        if getattr(msg, "tool_calls", None):
-            next_msg = raw_messages[i + 1] if i + 1 < len(raw_messages) else None
-            if next_msg is None or next_msg.type != "tool":
-                continue  # skip orphan tool call
-        clean_messages.append(msg)
-
     # Trim history to cap per-request token usage and avoid TPM rate limits.
-    # Keep the most recent MAX_HISTORY_MESSAGES messages; always start on a
-    # human turn so the LLM never sees an orphan tool-response as first message.
-    _max_hist = int(os.getenv("MAX_HISTORY_MESSAGES", "30"))
-    if len(clean_messages) > _max_hist:
-        clean_messages = clean_messages[-_max_hist:]
-        # Walk forward until the first message is a human message
-        while clean_messages and getattr(clean_messages[0], "type", "") != "human":
-            clean_messages = clean_messages[1:]
+    # This removes orphan tool_calls and keeps only the last MAX_HISTORY_MESSAGES,
+    # ensuring the first message is always human.
+    clean_messages = _trim_history(state["messages"])
 
     # Detect whether this is the start of a new session:
     # (a) no prior AI messages at all — patient_agent_node seeing this patient for the first time, or

@@ -404,42 +404,22 @@ async def get_available_slots(
 ) -> str:
     """
     Busca horários disponíveis no Google Calendar para o médico do paciente.
-    Quando preferred_day for um dia da semana (ex: "quarta"), a ferramenta busca
-    automaticamente nas próximas semanas até encontrar um horário disponível (máx. 4 semanas).
-    IMPORTANTE: Se o paciente informar uma data específica (ex: "dia 17", "17/06", "17 de junho"),
-    passe SEMPRE a data completa no formato dd/mm (ex: "17/06") — NUNCA converta para o nome
-    do dia da semana. Converter "17/06" para "quarta" causaria busca na semana errada.
-    Se o paciente mencionar um MÊS específico (ex: "agosto", "consulta em setembro") junto com
-    um dia da semana, inclua o mês em preferred_day (ex: "quinta de agosto") para que a busca
-    comece a partir daquele mês — NUNCA responda que "a agenda desse mês ainda não está aberta",
-    isso não existe; sempre chame a ferramenta com o mês incluído.
-    IMPORTANTE — "final/fim de <mês>" (ex: "final de agosto", "fim de setembro", "última semana
-    de agosto"): passe a expressão COMPLETA em preferred_day (ex: "final de agosto") — NUNCA
-    reduza para só o nome do mês ("agosto"). "Final" de um mês significa a ÚLTIMA SEMANA daquele
-    mês, e a busca retorna apenas dias dessa última semana. NUNCA ofereça dias do início ou do
-    meio do mês quando o paciente pediu o final do mês.
-    IMPORTANTE — dia da semana + número juntos (ex: "sexta, dia 14", "quarta dia 22"): NUNCA
-    passe apenas o nome do dia da semana (ex: "sexta") nesse caso — isso faz a busca ignorar o
-    número "14" e parar na primeira ocorrência daquele dia da semana com vaga (que pode ser uma
-    data completamente diferente da que o paciente pediu). Monte a data completa dd/mm combinando
-    o número informado com o mês em contexto (da mensagem atual ou de mensagens anteriores) e
-    passe isso em preferred_day (ex: "14/08"). Só use o nome do dia da semana sozinho quando o
-    paciente NÃO tiver informado nenhum número de dia.
-    NUNCA diga ao paciente que uma data específica não tem horário sem antes ter chamado esta
-    ferramenta com exatamente aquela data em formato dd/mm e recebido "não há horários" como
-    resultado — não infira indisponibilidade a partir do resultado de uma busca por nome do dia
-    da semana que retornou uma data diferente da pedida.
-    IMPORTANTE — "próxima semana": se o paciente disser explicitamente "próxima semana", "semana
-    que vem" ou "semana seguinte" (mesmo que o dia da semana já tenha sido combinado em mensagens
-    anteriores), inclua essa expressão JUNTO com o dia em preferred_day (ex: "quarta-feira da
-    próxima semana") — NUNCA passe só o dia sozinho nesse caso. "Próxima semana" significa a
-    segunda-feira seguinte até a sexta-feira daquela semana, e a ferramenta pula qualquer
-    ocorrência do dia que ainda caia na semana atual.
-    Use slot_duration_minutes=120 para primeira consulta de paciente menor de 18 anos,
-    60 para todos os outros casos.
-    Use preferred_shift="qualquer" quando o paciente informar um dia mas ainda não tiver
-    dito preferência de turno — isso verifica todos os turnos e retorna os disponíveis
-    para que você possa apresentar opções reais ao paciente antes de perguntar o turno.
+    Se preferred_day for um dia da semana (ex: "quarta"), busca até 4 semanas à frente.
+
+    FORMATO DE DATAS:
+    - Data específica: sempre dd/mm (ex: "17/06"), NUNCA nome do dia da semana.
+    - Com mês: inclua o mês (ex: "quinta de agosto").
+    - "final de <mês>": passe a expressão completa (ex: "final de agosto"), não só o mês.
+    - Dia + número juntos (ex: "sexta, dia 14"): use dd/mm (ex: "14/08").
+    - "próxima semana": inclua com o dia (ex: "quarta-feira da próxima semana").
+
+    NUNCA diga que uma data não tem horário sem antes chamar esta ferramenta com
+    exatamente essa data em dd/mm e receber "não há horários" como resultado — não
+    infira indisponibilidade a partir de uma busca por dia da semana que retornou
+    outra data.
+
+    slot_duration_minutes: 120 para primeira consulta <18 anos, 60 para outros casos.
+    preferred_shift: use "qualquer" para verificar todos os turnos e oferecer opções.
     """
     from app.google_calendar import get_available_slots as _get_slots, _parse_day, DOCTOR_SCHEDULES, SHIFT_HOURS, _WEEKDAYS_PT
 
@@ -694,26 +674,15 @@ async def confirm_appointment(
 ) -> str:
     """
     Confirma e cria o agendamento no Google Calendar.
-    slot_datetime deve estar no formato ISO 8601 em HORÁRIO LOCAL DE RECIFE (UTC-3),
-    exatamente como exibido ao paciente — ex: se o slot é 08:00, passe '2026-03-19T08:00:00'.
-    NUNCA converta para UTC antes de passar — a conversão é feita internamente pela tool.
-    session_note: use para identificar sessões separadas de menor de idade,
-      ex: '1ª hora — responsáveis' ou '2ª hora — paciente'.
-      Deixe vazio para consultas normais ou consultas de 2h em bloco único.
-    modality: modalidade de atendimento — "online" ou "presencial".
-      Para slots marcados como "apenas online" na listagem, passe "online".
-      Para slots com escolha livre, passe o que o paciente escolheu.
-      Para slots "presencial requer confirmação": se o paciente escolheu presencial,
-      use transfer_to_human antes de chamar confirm_appointment.
-    force_encaixe: quando True, ignora verificações de bloqueio de agenda e conflitos
-      de horário — use SOMENTE quando a atendente solicitar um encaixe explicitamente.
-      NÃO usar force_encaixe se o paciente já tem uma consulta futura agendada: "encaixar
-      para outra data/horário" nesse caso significa REMARCAR a consulta existente
-      (mark_reschedule_in_progress + reschedule_appointment), nunca criar uma segunda
-      consulta com confirm_appointment.
-    patient_name_override: quando a atendente mencionar um nome de paciente diferente
-      do que está no estado da conversa (ex: contato tem múltiplos pacientes),
-      passe o nome aqui para garantir que o agendamento seja feito para a pessoa correta.
+    slot_datetime: ISO 8601 em horário local de Recife (ex: '2026-03-19T08:00:00').
+      Não converta para UTC — feito internamente.
+    session_note: para minores, identifique sessões separadas (ex: '1ª hora — responsáveis');
+      deixe vazio para consultas normais.
+    modality: "online" ou "presencial". Para "presencial requer confirmação", use
+      transfer_to_human antes de chamar confirm_appointment.
+    force_encaixe: apenas com solicitação explícita da atendente. NÃO usar se o paciente
+      já tem consulta futura — use mark_reschedule_in_progress + reschedule_appointment.
+    patient_name_override: para agendamentos com múltiplos pacientes no contato.
     """
     import logging as _log
     _logger = _log.getLogger(__name__)
@@ -2253,21 +2222,13 @@ async def register_payment(
 ) -> str:
     """
     Registra um comprovante de pagamento PIX na planilha.
-    Chame quando o paciente enviar imagem de comprovante — ela aparecerá no histórico como
-    "[imagem]: descrição... [drive_link:URL]".
-    amount: valor pago extraído da descrição (ex: "100,00"). Use "?" se não identificado.
-    drive_link: URL extraída da tag [drive_link:URL] na descrição. Passe "" se não houver.
-    payment_method: método de pagamento presencial registrado pela atendente — "cartao_credito",
-      "cartao_debito" ou "dinheiro". Usar apenas em pagamentos presenciais sem comprovante de imagem.
+    amount: valor pago (ex: "100,00") ou "?" se não identificado.
+    drive_link: URL extraída da tag [drive_link:URL]. Passe "" se não houver.
+    payment_method: para presencial sem imagem — "cartao_credito", "cartao_debito" ou "dinheiro".
     image_description: texto completo da descrição da imagem.
-    patient_name_override: use quando este número não tem agendamento e o remetente informou
-      o nome do paciente — busca pelo nome no cadastro e envia confirmação ao número original do paciente.
-      Se o remetente não tiver vínculo cadastrado (patient_contacts) com o paciente encontrado, a tool
-      vai pedir confirmação em vez de registrar — pergunte ao remetente se o comprovante é realmente
-      para esse paciente e, se confirmado, chame novamente com sender_confirmed_patient=True.
-    sender_confirmed_patient: True somente depois que o remetente confirmar explicitamente que o
-      comprovante é para o paciente encontrado via patient_name_override (quando o número dele não é
-      um contato cadastrado desse paciente). Nunca assuma isso sem confirmação explícita.
+    patient_name_override: quando o remetente informar nome de paciente diferente do estado.
+      Se sem vínculo cadastrado, a tool pede confirmação — chame novamente com
+      sender_confirmed_patient=True após confirmação explícita do remetente.
     """
     import logging as _log
     import re as _re
