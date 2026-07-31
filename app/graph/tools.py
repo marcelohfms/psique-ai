@@ -2396,7 +2396,7 @@ async def register_payment(
             # ── Caso 1: consulta cancelada recente com data futura e taxa pendente ──
             now_iso = datetime.now(TZ).isoformat()
             canceled_result = await client.from_("appointments").select(
-                "appointment_id, start_time, doctor_id, status, patients(id, name, birth_date)"
+                "appointment_id, start_time, end_time, doctor_id, status, patients(id, name, birth_date)"
             ).in_("patient_id", user_ids).eq("status", "canceled").is_(
                 "booking_fee_paid_at", "null"
             ).gt("start_time", now_iso).order("updated_at", desc=True).limit(3).execute()
