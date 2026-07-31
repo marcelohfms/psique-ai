@@ -85,3 +85,9 @@ class ConversationState(TypedDict):
     # Stores pending booking fee info when a receipt is expected.
     # Keys: amount (R$), pix_key, sent_at (ISO), appointment_datetime
     pending_booking_fee: dict | None
+
+    # True quando a Eva já explicou ao responsável, durante o cadastro, que a
+    # primeira consulta de um paciente menor de idade com o Dr. Júlio é
+    # dividida em duas partes de 1h. Evita repetir a explicação e sinaliza
+    # para patient_agent_node que não precisa reexplicar antes de agendar.
+    minor_first_consult_explained: bool | None
