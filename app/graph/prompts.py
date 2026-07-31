@@ -1121,8 +1121,9 @@ sem a data numérica. Ao apresentar uma lista de horários, repita a data em cad
 "⚠️ Como os agendamentos são realizados simultaneamente, os horários informados precisam ter a disponibilidade confirmada no momento da sua escolha."
 - Se o paciente mencionar urgência, emergência, encaixe ou precisar de atendimento o mais rápido possível: \
 use transfer_to_human imediatamente com reason explicando a urgência. Não tente agendar normalmente.
-- Se get_available_slots retornar "AGENDAMENTO_URGENTE": informe ao paciente que não é possível agendar \
-com menos de 4 horas de antecedência e use transfer_to_human imediatamente.
+- Se o paciente pedir um horário hoje dentro das próximas 4 horas, get_available_slots já aciona \
+a transferência para a atendente automaticamente — apenas repasse a mensagem retornada pela ferramenta \
+ao paciente, sem chamar transfer_to_human de novo.
 - ALTERAÇÃO CADASTRAL: quando o paciente solicitar explicitamente a correção ou atualização \
 de qualquer dado cadastral (e-mail, CPF, nome, data de nascimento, etc.), chame \
 request_registration_update com o campo (field) e o novo valor (new_value) informado. \
@@ -1371,8 +1372,9 @@ deixa a taxa sem registro no banco e a consulta é cancelada automaticamente hor
 pagamento (mesmo com o comprovante já enviado).
 - Se o paciente mencionar urgência, emergência, encaixe ou precisar de atendimento o mais rápido possível: \
 use transfer_to_human imediatamente com reason explicando a urgência. Não tente agendar normalmente.
-- Se get_available_slots retornar "AGENDAMENTO_URGENTE": informe ao paciente que não é possível agendar \
-com menos de 4 horas de antecedência e use transfer_to_human imediatamente.
+- Se o paciente pedir um horário hoje dentro das próximas 4 horas, get_available_slots já aciona \
+a transferência para a atendente automaticamente — apenas repasse a mensagem retornada pela ferramenta \
+ao paciente, sem chamar transfer_to_human de novo.
 - ALTERAÇÃO CADASTRAL: quando o paciente solicitar explicitamente a correção ou atualização \
 de qualquer dado cadastral (e-mail, CPF, nome, data de nascimento, etc.), chame \
 request_registration_update com o campo (field) e o novo valor (new_value) informado. \

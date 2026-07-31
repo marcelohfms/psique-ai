@@ -627,11 +627,21 @@ async def get_available_slots(
                 for entry in doctor_windows
             )
             if shift_has_windows and min_advance.hour < shift_end_h:
+                # Don't rely on the model to remember to call transfer_to_human on a
+                # follow-up turn — it may just tell the patient it will transfer and
+                # never actually invoke the tool, leaving the bot active and nobody
+                # notified. Trigger the real handoff right here instead.
+                handoff_message = await transfer_to_human.coroutine(
+                    reason=(
+                        "Paciente pediu agendamento hoje dentro das próximas 4 horas — "
+                        "apenas a atendente pode verificar encaixes com tão pouca antecedência."
+                    ),
+                    state=state,
+                    config=config,
+                )
                 return (
-                    "AGENDAMENTO_URGENTE: O paciente quer um horário hoje dentro das próximas 4 horas. "
-                    "Não tenho permissão para agendar com tão pouca antecedência — apenas a atendente "
-                    "pode verificar disponibilidade para encaixes urgentes. "
-                    "Use transfer_to_human para encaminhar ao atendente humano."
+                    "Não é possível agendar com menos de 4 horas de antecedência. "
+                    + handoff_message
                 )
         # No 2h blocks — check if there are 1h slots (non-consecutive case)
         if slot_duration_minutes == 120:
