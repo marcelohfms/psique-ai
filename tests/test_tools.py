@@ -113,6 +113,44 @@ async def test_get_available_slots_no_slots_returns_message():
     assert "Não encontrei horários disponíveis para segunda-feira" in result
 
 
+async def test_get_available_slots_urgent_same_day_calls_transfer_to_human_directly():
+    """Regression: the model previously had to remember to call transfer_to_human
+    after seeing "AGENDAMENTO_URGENTE", and sometimes it only told the patient it
+    would transfer without actually invoking the tool (leaving the conversation
+    stuck with the bot still active and nobody notified). get_available_slots
+    must now trigger the real handoff itself instead of relying on the model."""
+    from app.graph.tools import get_available_slots
+
+    fixed_now = datetime(2026, 7, 31, 13, 0, tzinfo=TZ)
+    weekday = fixed_now.weekday()
+    schedules = {"julio": {weekday: [(9, 0, 18, 0, "escolha")]}}
+
+    mock_dt = MagicMock(wraps=datetime)
+    mock_dt.now.return_value = fixed_now
+
+    with patch("app.graph.tools.datetime", mock_dt), \
+         patch("app.google_calendar._parse_day", return_value=fixed_now.date()), \
+         patch("app.google_calendar.DOCTOR_SCHEDULES", schedules), \
+         patch("app.graph.tools._get_doctor_calendar_id", new_callable=AsyncMock, return_value="cal123"), \
+         patch("app.google_calendar.get_available_slots", new_callable=AsyncMock, return_value=[]), \
+         patch("app.graph.tools.transfer_to_human.coroutine", new_callable=AsyncMock,
+               return_value="👤 Vou transferir você para um de nossos atendentes. Um momento, por favor!") as mock_transfer:
+        result = await get_available_slots.coroutine(
+            preferred_day="hoje",
+            preferred_shift="tarde",
+            slot_duration_minutes=60,
+            state=_make_state(),
+            config=CONFIG,
+        )
+
+    mock_transfer.assert_awaited_once()
+    _, kwargs = mock_transfer.call_args
+    assert kwargs["state"] == _make_state()
+    assert kwargs["config"] == CONFIG
+    assert "hoje" in kwargs["reason"].lower() or "urgente" in kwargs["reason"].lower()
+    assert "Vou transferir você para um de nossos atendentes" in result
+
+
 async def test_get_available_slots_bruna_always_60min():
     """Dra. Bruna overrides slot_duration_minutes to 60 regardless of input."""
     from app.graph.tools import get_available_slots
