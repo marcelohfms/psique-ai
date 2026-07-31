@@ -126,6 +126,59 @@ async def test_medical_document_image_handled_directly():
     assert result is None
 
 
+async def test_image_processing_failure_notifies_clinic():
+    """An image whose processing blows up must never vanish silently.
+
+    Real incident (31/07/2026): OpenAI credits ran out, vision raised 429, and a
+    caption-less payment receipt was dropped without a row in `messages`, without
+    an event and without any alert — the clinic only found it by opening Chatwoot
+    by hand. Failure must be traceable, like the PDF path already is.
+    """
+    from app.main import extract_message
+    with patch("app.media.process_media", new_callable=AsyncMock,
+               side_effect=RuntimeError("429 insufficient_quota")), \
+         patch("app.main._notify_media_processing_failure", new_callable=AsyncMock) as mock_notify, \
+         patch("app.main.log_event", new_callable=AsyncMock) as mock_log:
+        result = await extract_message(_meta_payload(msg_type="image"))
+
+    assert result is None          # nothing sensible to hand Eva
+    mock_notify.assert_awaited_once()
+    mock_log.assert_awaited_once()
+    assert mock_log.call_args[0][0] == "media_processing_failed"
+
+
+async def test_image_processing_failure_keeps_caption():
+    """When the image had a caption, the caption still reaches Eva — and the
+    clinic is alerted anyway, since the image itself was lost."""
+    from app.main import extract_message
+    payload = _meta_payload(msg_type="image")
+    payload["entry"][0]["changes"][0]["value"]["messages"][0]["image"]["caption"] = "segue o comprovante"
+    with patch("app.media.process_media", new_callable=AsyncMock,
+               side_effect=RuntimeError("boom")), \
+         patch("app.main._notify_media_processing_failure", new_callable=AsyncMock) as mock_notify, \
+         patch("app.main.log_event", new_callable=AsyncMock):
+        result = await extract_message(payload)
+
+    assert result is not None
+    _, text = result
+    assert "segue o comprovante" in text
+    mock_notify.assert_awaited_once()
+
+
+async def test_medical_document_image_does_not_notify_clinic():
+    """A medical-document image returns None by design (thank-you already sent,
+    clinic already notified). That must not be mistaken for a failure."""
+    from app.main import extract_message
+    with patch("app.media.process_media", new_callable=AsyncMock, return_value=None), \
+         patch("app.main._notify_media_processing_failure", new_callable=AsyncMock) as mock_notify, \
+         patch("app.main.log_event", new_callable=AsyncMock) as mock_log:
+        result = await extract_message(_meta_payload(msg_type="image"))
+
+    assert result is None
+    mock_notify.assert_not_awaited()
+    mock_log.assert_not_awaited()
+
+
 async def test_medical_document_pdf_handled_directly():
     """Medical document PDFs return None — Eva is skipped."""
     from app.main import extract_message
@@ -641,6 +694,59 @@ async def test_chatwoot_webhook_processes_attachment_with_caption(async_client):
         pushed_text = mock_push.call_args[0][1]
         assert "segue o comprovante" in pushed_text
         assert "[drive_link:" in pushed_text
+
+
+async def test_chatwoot_attachment_failure_notifies_clinic():
+    """Same guarantee as the Meta webhook, on the Chatwoot side: an attachment that
+    blows up mid-processing must leave a trace instead of returning a bare None."""
+    from app.main import _process_chatwoot_attachments
+    attachments = [{"file_type": "image", "data_url": "https://storage.example.com/img.jpg"}]
+
+    class _Resp:
+        content = b"fake-bytes"
+        def raise_for_status(self): pass
+
+    class _Client:
+        async def __aenter__(self): return self
+        async def __aexit__(self, *a): return False
+        async def get(self, *a, **kw): return _Resp()
+
+    with patch("httpx.AsyncClient", return_value=_Client()), \
+         patch("app.media.describe_image_bytes", new_callable=AsyncMock,
+               side_effect=RuntimeError("429 insufficient_quota")), \
+         patch("app.main._notify_media_processing_failure", new_callable=AsyncMock) as mock_notify, \
+         patch("app.main.log_event", new_callable=AsyncMock) as mock_log:
+        result = await _process_chatwoot_attachments(attachments, phone="5581999999999@s.whatsapp.net")
+
+    assert result is None
+    mock_notify.assert_awaited_once()
+    mock_log.assert_awaited_once()
+    assert mock_log.call_args[0][0] == "media_processing_failed"
+
+
+async def test_chatwoot_attachment_medical_document_does_not_notify():
+    """describe_image_bytes returning None means 'already handled' — not a failure."""
+    from app.main import _process_chatwoot_attachments
+    attachments = [{"file_type": "image", "data_url": "https://storage.example.com/img.jpg"}]
+
+    class _Resp:
+        content = b"fake-bytes"
+        def raise_for_status(self): pass
+
+    class _Client:
+        async def __aenter__(self): return self
+        async def __aexit__(self, *a): return False
+        async def get(self, *a, **kw): return _Resp()
+
+    with patch("httpx.AsyncClient", return_value=_Client()), \
+         patch("app.media.describe_image_bytes", new_callable=AsyncMock, return_value=None), \
+         patch("app.main._notify_media_processing_failure", new_callable=AsyncMock) as mock_notify, \
+         patch("app.main.log_event", new_callable=AsyncMock) as mock_log:
+        result = await _process_chatwoot_attachments(attachments, phone="5581999999999@s.whatsapp.net")
+
+    assert result is None
+    mock_notify.assert_not_awaited()
+    mock_log.assert_not_awaited()
 
 
 async def test_chatwoot_webhook_document_with_caption_falls_back_to_caption(async_client):

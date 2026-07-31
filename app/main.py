@@ -194,24 +194,28 @@ async def webhook_verify(request: Request):
     raise HTTPException(status_code=403, detail="Verification failed")
 
 
-async def _notify_document_processing_failure(phone: str, media_id: str, mime: str) -> None:
-    """Best-effort: alert the clinic that a document/PDF failed to process, so a human
+async def _notify_media_processing_failure(
+    phone: str, media_id: str, mime: str, kind: str = "documento"
+) -> None:
+    """Best-effort: alert the clinic that a file failed to process, so a human
     attendant can pick it up via a private note in Chatwoot — instead of the bot
-    asking the patient to resend, so a failed document never disappears without a trace.
+    asking the patient to resend, so a failed file never disappears without a trace.
+
+    kind: "documento" (PDF) or "imagem" — only changes the wording.
     """
     try:
         from app.email_sender import send_clinic_notification_email
         phone_clean = phone.replace("@s.whatsapp.net", "")
         await send_clinic_notification_email(
-            f"Falha ao processar documento — {phone_clean}",
+            f"Falha ao processar {kind} — {phone_clean}",
             f"Número: {phone_clean}\nmedia_id: {media_id}\nmime_type: {mime}\n\n"
-            "O paciente enviou um arquivo (documento/PDF) que não pôde ser processado automaticamente. "
+            f"O paciente enviou um arquivo ({kind}) que não pôde ser processado automaticamente. "
             "Possível comprovante de pagamento ou documento médico.\n\n"
             "Por favor, verifique o arquivo diretamente no WhatsApp/Chatwoot e envie uma NOTA PRIVADA "
             "na conversa avisando a atendente sobre o problema, em vez de pedir para o paciente reenviar.",
         )
     except Exception:
-        logger.exception("DOCUMENT_FAILURE_CLINIC_NOTIFY failed phone=%s", phone)
+        logger.exception("MEDIA_FAILURE_CLINIC_NOTIFY failed phone=%s", phone)
 
 
 # ── Message extraction from Meta Cloud API payload ────────────────────────────
@@ -276,9 +280,26 @@ async def extract_message(payload: dict) -> tuple[str, str] | None:
         caption = msg.get("image", {}).get("caption", "").strip()
         if not media_id:
             return (phone, caption) if caption else None
-        text = await process_media(media_id, "image", phone=phone)
+        try:
+            text = await process_media(media_id, "image", phone=phone)
+        except Exception:
+            # The image is lost: it was never described, never stored and — without
+            # a caption — would leave no row in `messages` at all. Record it and tell
+            # the clinic, mirroring the PDF path, so a payment receipt can still be
+            # recovered by hand from Chatwoot instead of vanishing.
+            logger.exception("IMAGE_PROCESSING_FAILED phone=%s media_id=%s", phone, media_id)
+            mime = msg.get("image", {}).get("mime_type", "image/jpeg")
+            await log_event("media_processing_failed", phone, {
+                "media_id": media_id,
+                "mime_type": mime,
+                "media_type": "image",
+                "had_caption": bool(caption),
+            })
+            await _notify_media_processing_failure(phone, media_id, mime, kind="imagem")
+            return (phone, caption) if caption else None
         if not text:
-            # Image processing failed — fall back to caption so the message isn't lost
+            # Handled elsewhere (medical document): thank-you already sent and clinic
+            # already notified by describe_image_bytes. Nothing left for Eva.
             return (phone, caption) if caption else None
         if caption:
             text = f"{caption}\n{text}"
@@ -299,11 +320,11 @@ async def extract_message(payload: dict) -> tuple[str, str] | None:
                 return phone, text
             except Exception:
                 logger.exception("Failed to process PDF media_id=%s", media_id)
-                await _notify_document_processing_failure(phone, media_id, mime)
+                await _notify_media_processing_failure(phone, media_id, mime, kind="documento")
                 return None
         # Unrecognized document type/mime, or missing media_id — don't drop silently
         logger.warning("Unhandled document mime_type=%s media_id=%s phone=%s", mime, media_id, phone)
-        await _notify_document_processing_failure(phone, media_id, mime)
+        await _notify_media_processing_failure(phone, media_id, mime, kind="documento")
         return None
 
     # reaction, sticker, location, etc. — ignore
@@ -823,7 +844,19 @@ async def _process_chatwoot_attachments(attachments: list, phone: str = "") -> s
                     return await describe_pdf_bytes(media_bytes, phone=phone)
                 return "[pdf-recebido]"
         except Exception:
+            # Never let a failed attachment vanish: without a caption there would be
+            # nothing left of it anywhere. Same trace as the Meta webhook path.
             logger.exception("Failed to process Chatwoot attachment type=%s url=%.80s", file_type, data_url)
+            await log_event("media_processing_failed", phone, {
+                "media_id": data_url[:300],
+                "mime_type": (att.get("content_type") or file_type or ""),
+                "media_type": file_type or "desconhecido",
+                "source": "chatwoot",
+            })
+            await _notify_media_processing_failure(
+                phone, data_url[:300], (att.get("content_type") or file_type or ""),
+                kind="imagem" if file_type == "image" else "documento",
+            )
     return None
 
 

@@ -262,13 +262,18 @@ async def process_media(media_id: str, media_type: str, phone: str = "") -> str 
     """
     Returns transcribed/described text for audio or image messages.
     media_type: 'audio' or 'image' (Meta Cloud API types).
-    Returns None for unsupported types.
+    Returns None for unsupported types, and for images already handled elsewhere
+    (medical documents — describe_image_bytes sends the thank-you and notifies the
+    clinic itself).
+
+    Raises on genuine processing failures. Callers MUST distinguish the two: a
+    None means "nothing left to do", an exception means the media was lost and
+    somebody has to be told. Swallowing the exception here used to collapse both
+    into None, which silently dropped caption-less payment receipts whenever the
+    vision call failed.
     """
-    try:
-        if media_type == "audio":
-            return await transcribe_audio(media_id)
-        if media_type == "image":
-            return await describe_image(media_id, phone)
-    except Exception:
-        logger.exception("Failed to process media %s (type=%s)", media_id, media_type)
+    if media_type == "audio":
+        return await transcribe_audio(media_id)
+    if media_type == "image":
+        return await describe_image(media_id, phone)
     return None
