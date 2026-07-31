@@ -6,3 +6,6 @@ __pycache__/
 *.egg-info/
 dist/
 .worktrees/
+.claude/worktrees/
+.DS_Store
+psique.db
