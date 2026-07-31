@@ -2077,6 +2077,118 @@ async def test_register_payment_rename_uses_no_extension_and_sanitizes_amount():
     assert "100-00" in new_filename
 
 
+def _make_supabase_client_with_canceled_appointment(slot_taken=False):
+    """Supabase client for the late-payment recovery path: the patient has NO
+    scheduled appointment, only a canceled one with a pending booking fee whose
+    date is still in the future.
+
+    Call order:
+      1. appts_with_users → empty (no scheduled appointment for this phone)
+      2. canceled_result  → the canceled appointment awaiting the fee
+      3. conflict check   → empty when the slot is still free
+    """
+    future_start = (datetime.now(TZ) + timedelta(days=12)).replace(hour=16, minute=0, second=0, microsecond=0)
+    future_end = future_start + timedelta(hours=1)
+    canceled = MagicMock(data=[{
+        "appointment_id": "apt-canceled-1",
+        "start_time": future_start.isoformat(),
+        "end_time": future_end.isoformat(),
+        "doctor_id": "18b01f87-eacd-4905-bd4a-a8293991e6fd",
+        "status": "canceled",
+        "patients": {"id": "user-123", "name": "Mismania Karla Pereira", "birth_date": "14/01/1980"},
+    }])
+    conflict = MagicMock(data=[{"id": "other-appt"}] if slot_taken else [])
+    empty = MagicMock(data=[])
+
+    table = MagicMock()
+
+    # Honour the select() projection: a column the query never asked for must not
+    # show up in the result. Without this the mock hands back every key and a
+    # missing column in the real select goes unnoticed.
+    selected: dict[str, str] = {"cols": ""}
+
+    def _select(cols="*", *_a, **_kw):
+        selected["cols"] = cols
+        return table
+
+    def _project(rows):
+        cols = selected["cols"]
+        if "*" in cols:
+            return rows
+        return [{k: v for k, v in row.items() if k in cols} for row in rows]
+
+    def _side_effect(*_a, **_kw):
+        _side_effect.call_count += 1
+        if _side_effect.call_count == 1:
+            return empty       # no scheduled appointment
+        if _side_effect.call_count == 2:
+            return MagicMock(data=_project(canceled.data))  # canceled, fee pending
+        if _side_effect.call_count == 3:
+            return conflict    # slot conflict check
+        return empty
+    _side_effect.call_count = 0
+
+    execute = AsyncMock(side_effect=_side_effect)
+    for m in ("eq", "in_", "limit", "single", "maybe_single",
+              "gte", "gt", "lt", "neq", "order", "insert", "update", "upsert", "is_"):
+        getattr(table, m).return_value = table
+    table.select = MagicMock(side_effect=_select)
+    table.execute = execute
+    client = MagicMock()
+    client.from_.return_value = table
+    return client
+
+
+async def test_register_payment_recovers_canceled_appointment_with_free_slot():
+    """Fee paid after the appointment was auto-canceled for non-payment: the
+    canceled-appointment query must select end_time, which the slot-conflict
+    check reads. Omitting it raised KeyError('end_time') and the whole payment
+    registration crashed — the exact path of a patient who pays late.
+    """
+    from app.graph.tools import register_payment
+    client = _make_supabase_client_with_canceled_appointment()
+    with patch("app.graph.tools.get_supabase", new_callable=AsyncMock, return_value=client), \
+         patch("app.graph.tools.get_users_by_phone", new_callable=AsyncMock, return_value=[{"id": "user-123", "patient_name": "Mismania Karla Pereira"}]), \
+         patch("app.graph.tools.log_event", new_callable=AsyncMock), \
+         patch("app.graph.tools._notify_clinic", new_callable=AsyncMock), \
+         patch("app.google_drive.rename_file", new_callable=AsyncMock), \
+         patch("app.google_sheets.append_payment_receipt", new_callable=AsyncMock), \
+         patch("app.graph.tools.send_text", new_callable=AsyncMock):
+        result = await register_payment.coroutine(
+            amount="100,00",
+            drive_link="https://drive.google.com/file/d/abc/view",
+            state=_make_state(preferred_doctor="bruna"),
+            config=CONFIG,
+        )
+
+    assert "CONSULTA_CANCELADA_REATIVAVEL" in result
+    assert "apt-canceled-1" in result
+    assert "Mismania Karla Pereira" in result
+
+
+async def test_register_payment_canceled_appointment_slot_already_taken():
+    """Same recovery path, but the freed slot was taken by someone else in the
+    meantime — Eva must be told to arrange a new date instead of reactivating."""
+    from app.graph.tools import register_payment
+    client = _make_supabase_client_with_canceled_appointment(slot_taken=True)
+    with patch("app.graph.tools.get_supabase", new_callable=AsyncMock, return_value=client), \
+         patch("app.graph.tools.get_users_by_phone", new_callable=AsyncMock, return_value=[{"id": "user-123", "patient_name": "Mismania Karla Pereira"}]), \
+         patch("app.graph.tools.log_event", new_callable=AsyncMock), \
+         patch("app.graph.tools._notify_clinic", new_callable=AsyncMock), \
+         patch("app.google_drive.rename_file", new_callable=AsyncMock), \
+         patch("app.google_sheets.append_payment_receipt", new_callable=AsyncMock), \
+         patch("app.graph.tools.send_text", new_callable=AsyncMock):
+        result = await register_payment.coroutine(
+            amount="100,00",
+            drive_link="https://drive.google.com/file/d/abc/view",
+            state=_make_state(preferred_doctor="bruna"),
+            config=CONFIG,
+        )
+
+    assert "CONSULTA_CANCELADA_SEM_SLOT" in result
+    assert "pending_reschedule" in result
+
+
 async def test_register_payment_rename_unknown_amount_uses_placeholder():
     """amount='?' (not identified) must not produce a broken filename like
     '..._R$.pdf' or '..._R$?.pdf' — falls back to a readable placeholder."""
