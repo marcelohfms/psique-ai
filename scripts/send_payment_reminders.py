@@ -134,6 +134,112 @@ async def cancel_calendar_event(appointment_id: str, doctor_id: str, supabase_cl
         print(f"  Calendar cancel failed (non-fatal): {e}")
 
 
+async def _cancel_unpaid_appointment(client, appt: dict, graph, now: datetime) -> None:
+    """Notify financial contacts, then cancel a single appointment whose booking fee
+    was never paid within 2h of the payment reminder. Cancellation only proceeds if
+    at least one contact was successfully notified via WhatsApp."""
+    appointment_id = appt["appointment_id"]
+    patient_id = appt.get("patient_id")
+    if not patient_id:
+        print(f"  [payment_cancel] Skipping {appointment_id} — no patient_id")
+        return
+
+    start_dt = datetime.fromisoformat(appt["start_time"]).astimezone(TZ)
+    date_str = start_dt.strftime("%d/%m/%Y às %H:%M")
+    doctor_label = DOCTOR_LABELS.get(appt.get("doctor_id", ""), "médico(a)")
+    doctor_key = DOCTOR_KEYS.get(appt.get("doctor_id", ""), "")
+    doctor_id = appt.get("doctor_id", "")
+    patient_name = (appt.get("patients") or {}).get("name", "paciente")
+
+    financial_contacts = await get_financial_contacts(client, patient_id)
+    if not financial_contacts:
+        print(f"  [payment_cancel] No financial contacts for patient_id={patient_id}")
+        return
+
+    # Must notify at least one contact before canceling
+    any_notified = False
+    notified_phones = []
+    for contact in financial_contacts:
+        phone = contact["phone"]
+        from app.utils import display_name as _dn
+        contact_first = _dn(contact["name"] or patient_name)
+        patient_first = _dn(patient_name) if contact["name"] and contact["name"] != patient_name else None
+        message = payment_cancel_message(contact_first, doctor_label, date_str, patient_first)
+        try:
+            await send_whatsapp(phone, message)
+            any_notified = True
+            notified_phones.append(phone)
+            print(f"  [payment_cancel] WhatsApp enviado para {phone}.")
+        except Exception as e:
+            print(f"  [payment_cancel] WhatsApp FALHOU para {phone}: {e}")
+        if graph:
+            try:
+                await save_to_checkpoint(graph, phone, message, patient_name, doctor_key)
+            except Exception as e:
+                print(f"  [payment_cancel] save_to_checkpoint failed (non-fatal): {e}")
+
+    if not any_notified:
+        print(f"  [payment_cancel] Nenhum contato notificado — cancelamento adiado para {appointment_id}")
+        return
+
+    # Cancel Google Calendar event
+    await cancel_calendar_event(appointment_id, doctor_id, client)
+
+    # Update DB status
+    try:
+        await client.from_("appointments").update({
+            "status": "canceled",
+            "updated_at": now.isoformat(),
+        }).eq("appointment_id", appointment_id).execute()
+    except Exception as e:
+        print(f"  [payment_cancel] DB update failed for {appointment_id}: {e}")
+
+    # Audit trail — every other cancellation path (cancel_appointment in
+    # app/graph/tools.py) logs this event; this auto-cancel job was the one
+    # exception, which left no trace in `events` of what happened to the
+    # appointment (caso João Pedro Lins Da Costa Gomes, 5581992349207,
+    # 2026-07-30: investigating the cancellation required cross-referencing
+    # Chatwoot and Google Calendar by hand instead of reading `events`).
+    from app.database import log_event
+    for phone in notified_phones:
+        try:
+            await log_event("appointment_canceled", phone, {
+                "appointment_id": appointment_id,
+                "reason": "unpaid_booking_fee",
+                "start_time": appt["start_time"],
+                "doctor_id": doctor_id,
+            })
+        except Exception as e:
+            print(f"  [payment_cancel] log_event failed for {phone}: {e}")
+
+    # Notify clinic by email
+    try:
+        from app.email_sender import send_clinic_notification_email
+        import asyncio as _asyncio
+        subject = f"Consulta cancelada por falta de pagamento — {patient_name}"
+        body = (
+            f"A consulta abaixo foi cancelada automaticamente por falta de pagamento da taxa de reserva.\n\n"
+            f"Paciente: {patient_name}\n"
+            f"Médico(a): {doctor_label}\n"
+            f"Data/hora: {date_str}\n"
+            f"Contatos notificados: {', '.join(c['phone'] for c in financial_contacts)}\n\n"
+            f"A vaga foi liberada no Google Calendar."
+        )
+        for attempt in range(1, 3):
+            try:
+                await send_clinic_notification_email(subject, body)
+                print(f"  [payment_cancel] Clinic notification email sent (attempt {attempt}).")
+                break
+            except Exception as e:
+                print(f"  [payment_cancel] Clinic email attempt {attempt} failed: {e}")
+                if attempt < 2:
+                    await _asyncio.sleep(5)
+    except Exception as e:
+        print(f"  [payment_cancel] Clinic email setup failed: {e}")
+
+    print(f"  [payment_cancel] Canceled {'and notified' if any_notified else '(WhatsApp FAILED)'} — {patient_name}")
+
+
 async def main():
     from supabase import acreate_client
 
@@ -258,86 +364,7 @@ async def main():
 
         # ── Process 4h cancellations ──────────────────────────────────────────
         for appt in cancel_appts:
-            appointment_id = appt["appointment_id"]
-            patient_id = appt.get("patient_id")
-            if not patient_id:
-                print(f"  [payment_cancel] Skipping {appointment_id} — no patient_id")
-                continue
-
-            start_dt = datetime.fromisoformat(appt["start_time"]).astimezone(TZ)
-            date_str = start_dt.strftime("%d/%m/%Y às %H:%M")
-            doctor_label = DOCTOR_LABELS.get(appt.get("doctor_id", ""), "médico(a)")
-            doctor_key = DOCTOR_KEYS.get(appt.get("doctor_id", ""), "")
-            doctor_id = appt.get("doctor_id", "")
-            patient_name = (appt.get("patients") or {}).get("name", "paciente")
-
-            financial_contacts = await get_financial_contacts(client, patient_id)
-            if not financial_contacts:
-                print(f"  [payment_cancel] No financial contacts for patient_id={patient_id}")
-                continue
-
-            # Must notify at least one contact before canceling
-            any_notified = False
-            for contact in financial_contacts:
-                phone = contact["phone"]
-                from app.utils import display_name as _dn
-                contact_first = _dn(contact["name"] or patient_name)
-                patient_first = _dn(patient_name) if contact["name"] and contact["name"] != patient_name else None
-                message = payment_cancel_message(contact_first, doctor_label, date_str, patient_first)
-                try:
-                    await send_whatsapp(phone, message)
-                    any_notified = True
-                    print(f"  [payment_cancel] WhatsApp enviado para {phone}.")
-                except Exception as e:
-                    print(f"  [payment_cancel] WhatsApp FALHOU para {phone}: {e}")
-                if graph:
-                    try:
-                        await save_to_checkpoint(graph, phone, message, patient_name, doctor_key)
-                    except Exception as e:
-                        print(f"  [payment_cancel] save_to_checkpoint failed (non-fatal): {e}")
-
-            if not any_notified:
-                print(f"  [payment_cancel] Nenhum contato notificado — cancelamento adiado para {appointment_id}")
-                continue
-
-            # Cancel Google Calendar event
-            await cancel_calendar_event(appointment_id, doctor_id, client)
-
-            # Update DB status
-            try:
-                await client.from_("appointments").update({
-                    "status": "canceled",
-                    "updated_at": now.isoformat(),
-                }).eq("appointment_id", appointment_id).execute()
-            except Exception as e:
-                print(f"  [payment_cancel] DB update failed for {appointment_id}: {e}")
-
-            # Notify clinic by email
-            try:
-                from app.email_sender import send_clinic_notification_email
-                import asyncio as _asyncio
-                subject = f"Consulta cancelada por falta de pagamento — {patient_name}"
-                body = (
-                    f"A consulta abaixo foi cancelada automaticamente por falta de pagamento da taxa de reserva.\n\n"
-                    f"Paciente: {patient_name}\n"
-                    f"Médico(a): {doctor_label}\n"
-                    f"Data/hora: {date_str}\n"
-                    f"Contatos notificados: {', '.join(c['phone'] for c in financial_contacts)}\n\n"
-                    f"A vaga foi liberada no Google Calendar."
-                )
-                for attempt in range(1, 3):
-                    try:
-                        await send_clinic_notification_email(subject, body)
-                        print(f"  [payment_cancel] Clinic notification email sent (attempt {attempt}).")
-                        break
-                    except Exception as e:
-                        print(f"  [payment_cancel] Clinic email attempt {attempt} failed: {e}")
-                        if attempt < 2:
-                            await _asyncio.sleep(5)
-            except Exception as e:
-                print(f"  [payment_cancel] Clinic email setup failed: {e}")
-
-            print(f"  [payment_cancel] Canceled {'and notified' if any_notified else '(WhatsApp FAILED)'} — {patient_name}")
+            await _cancel_unpaid_appointment(client, appt, graph, now)
 
     finally:
         if pg_conn:

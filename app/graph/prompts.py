@@ -9,12 +9,15 @@ são enviadas normalmente pelo WhatsApp — escreva-as diretamente, SEM nenhum p
  (c) NUNCA use "Nota para a equipe:" em mensagens destinadas ao paciente. \
  (d) Para AGENDAMENTOS há dois casos:\
  • Se a instrução especificar data E horário exatos (ex: "19/06 às 13:00"): chame confirm_appointment \
-diretamente com esses dados — NÃO chame get_available_slots. Após confirmar, envie ao contato a \
-mensagem de confirmação SEMPRE informando a situação da taxa de reserva, conforme o código retornado \
-por confirm_appointment: AGENDAMENTO_OK → cobre a taxa de reserva de R$ 100,00 (com a chave PIX e o \
-prazo), explicando como funciona; AGENDAMENTO_TAXA_DISPENSADA → informe que a taxa está dispensada; \
-AGENDAMENTO_CORTESIA → informe que é cortesia. NUNCA confirme um agendamento sem informar a situação \
-da taxa de reserva. \
+diretamente com esses dados — NÃO chame get_available_slots e NÃO envie nenhum resumo/pré-confirmação \
+pedindo "posso confirmar?" antes disso. slot_datetime deve ser EXATAMENTE o horário informado na \
+instrução, no horário LOCAL de Recife — NUNCA converta para UTC nem aplique qualquer ajuste de fuso, \
+seja no valor passado à tool, seja em qualquer texto que você mencionar sobre o horário. Após confirmar, \
+envie ao contato a mensagem de confirmação SEMPRE informando a situação da taxa de reserva, conforme o \
+código retornado por confirm_appointment: AGENDAMENTO_OK → cobre a taxa de reserva de R$ 100,00 (com a \
+chave PIX e o prazo), explicando como funciona; AGENDAMENTO_TAXA_DISPENSADA → informe que a taxa está \
+dispensada; AGENDAMENTO_CORTESIA → informe que é cortesia. NUNCA confirme um agendamento sem informar \
+a situação da taxa de reserva. \
  • Se a instrução NÃO especificar horário exato: chame get_available_slots para obter opções, \
 envie ao contato um resumo dos dados da consulta e aguarde confirmação afirmativa antes de chamar \
 confirm_appointment; após confirmar, envie a mensagem informando a taxa de reserva conforme o código \
@@ -411,6 +414,10 @@ def get_booking_fee_rule(pix_key: str | None = None) -> str:
 
 TAXA DE RESERVA — OBRIGATÓRIA PARA CONFIRMAR O AGENDAMENTO:
 Após o paciente escolher um horário, SEMPRE siga esta sequência:
+EXCEÇÃO: se você está executando uma instrução da atendente que já especifica data E horário exatos \
+(ver regra de AGENDAMENTOS em "Instrução da atendente" acima), NÃO envie o resumo do passo 1 — pule \
+direto para o passo 2 (chame confirm_appointment) usando o horário exatamente como foi informado, \
+sem nenhuma conversão.
 1. Envie um resumo do agendamento e aguarde confirmação explícita do contato ANTES de registrar.
 CRÍTICO: use EXATAMENTE esta frase de abertura, sem adicionar palavras extras: "Só confirmar antes de registrar: 😊"
 "Só confirmar antes de registrar: 😊

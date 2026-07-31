@@ -362,6 +362,7 @@ async def test_get_upcoming_appointments_filters_by_patient_id():
     table = MagicMock()
     for m in ("select", "eq", "in_", "limit", "maybe_single", "order", "gte", "lt", "is_"):
         getattr(table, m).return_value = table
+    table.not_ = table
     table.execute = AsyncMock(return_value=MagicMock(data=[]))
     client = MagicMock()
     client.from_.return_value = table
@@ -393,8 +394,12 @@ async def test_get_upcoming_appointments_covers_all_contact_patients():
     table = MagicMock()
     for m in ("select", "eq", "in_", "order", "gte", "lt", "is_"):
         getattr(table, m).return_value = table
-    # 1ª execução = query de futuros; 2ª = recém-terminados; 3ª = concluídos com saldo pendente
-    table.execute = AsyncMock(side_effect=[MagicMock(data=future_rows), MagicMock(data=[]), MagicMock(data=[]), MagicMock(data=[])])
+    table.not_ = table
+    # 1ª execução = query de futuros; 2ª = recém-terminados; 3ª = concluídos com saldo
+    # pendente; 4ª = pending_reschedule antigo; 5ª = cancelados por falta de pagamento
+    table.execute = AsyncMock(side_effect=[
+        MagicMock(data=future_rows), MagicMock(data=[]), MagicMock(data=[]), MagicMock(data=[]), MagicMock(data=[]),
+    ])
     client = MagicMock()
     client.from_.return_value = table
     with patch("app.database.get_supabase", new_callable=AsyncMock, return_value=client), \
@@ -426,8 +431,13 @@ async def test_get_upcoming_appointments_flags_completed_unpaid_as_already_occur
     table = MagicMock()
     for m in ("select", "eq", "in_", "order", "gte", "lt", "is_"):
         getattr(table, m).return_value = table
-    # 1ª = futuros (vazio); 2ª = recém-terminados (vazio); 3ª = concluídos com saldo pendente
-    table.execute = AsyncMock(side_effect=[MagicMock(data=[]), MagicMock(data=[]), MagicMock(data=past_unpaid_rows), MagicMock(data=[])])
+    table.not_ = table
+    # 1ª = futuros (vazio); 2ª = recém-terminados (vazio); 3ª = concluídos com saldo
+    # pendente; 4ª = pending_reschedule antigo (vazio); 5ª = cancelados por falta de
+    # pagamento (vazio)
+    table.execute = AsyncMock(side_effect=[
+        MagicMock(data=[]), MagicMock(data=[]), MagicMock(data=past_unpaid_rows), MagicMock(data=[]), MagicMock(data=[]),
+    ])
     client = MagicMock()
     client.from_.return_value = table
     with patch("app.database.get_supabase", new_callable=AsyncMock, return_value=client), \
@@ -459,10 +469,12 @@ async def test_get_upcoming_appointments_flags_stale_pending_reschedule():
     table = MagicMock()
     for m in ("select", "eq", "in_", "order", "gte", "lt", "is_"):
         getattr(table, m).return_value = table
+    table.not_ = table
     # 1ª = futuros (vazio); 2ª = recém-terminados (vazio); 3ª = concluídos com saldo
-    # pendente (vazio); 4ª = pending_reschedule antigo (stale_rows)
+    # pendente (vazio); 4ª = pending_reschedule antigo (stale_rows); 5ª = cancelados
+    # por falta de pagamento (vazio)
     table.execute = AsyncMock(side_effect=[
-        MagicMock(data=[]), MagicMock(data=[]), MagicMock(data=[]), MagicMock(data=stale_rows),
+        MagicMock(data=[]), MagicMock(data=[]), MagicMock(data=[]), MagicMock(data=stale_rows), MagicMock(data=[]),
     ])
     client = MagicMock()
     client.from_.return_value = table
@@ -472,4 +484,84 @@ async def test_get_upcoming_appointments_flags_stale_pending_reschedule():
     assert len(result) == 1
     assert result[0]["stale_reschedule"] is True
     assert result[0]["appointment_id"] == "a-stale"
-    assert result[0]["patient_name"] == "Heitor"
+
+
+@pytest.mark.asyncio
+async def test_get_upcoming_appointments_flags_recent_cancellation_for_nonpayment():
+    """Uma consulta cancelada automaticamente por falta de pagamento da taxa de
+    reserva (payment_reminder_sent_at preenchido, booking_fee_paid_at nulo), sem
+    nenhum reagendamento posterior, deve voltar marcada com canceled_unpaid=True —
+    sem isso a Eva não tem como saber que precisa checar disponibilidade antes de
+    confirmar um novo agendamento quando o contato disser que quer remarcar (caso
+    João Pedro Lins Da Costa Gomes, 5581992349207, 2026-07-30: a Eva confirmou
+    verbalmente um reagendamento sem chamar nenhuma ferramenta)."""
+    users = [{"id": "p-joao", "patient_name": "João Pedro"}]
+    canceled_rows = [{
+        "appointment_id": "a-canceled",
+        "start_time": "2026-08-03T17:00:00+00:00",
+        "end_time": "2026-08-03T18:00:00+00:00",
+        "status": "canceled",
+        "patient_id": "p-joao",
+        "payment_reminder_sent_at": "2026-07-29T10:05:00+00:00",
+        "booking_fee_paid_at": None,
+        "booking_fee_waived": False,
+        "doctor_id": DOCTOR_IDS["julio"],
+    }]
+    table = MagicMock()
+    for m in ("select", "eq", "in_", "order", "gte", "lt", "is_"):
+        getattr(table, m).return_value = table
+    table.not_ = table
+    # 1ª=futuros(vazio) 2ª=recém-terminados(vazio) 3ª=saldo pendente(vazio)
+    # 4ª=pending_reschedule antigo(vazio) 5ª=cancelados por falta de pagamento
+    table.execute = AsyncMock(side_effect=[
+        MagicMock(data=[]), MagicMock(data=[]), MagicMock(data=[]), MagicMock(data=[]),
+        MagicMock(data=canceled_rows),
+    ])
+    client = MagicMock()
+    client.from_.return_value = table
+    with patch("app.database.get_supabase", new_callable=AsyncMock, return_value=client), \
+         patch("app.database.get_users_by_phone", new_callable=AsyncMock, return_value=users):
+        result = await database.get_upcoming_appointments("5581992349207")
+    assert len(result) == 1
+    assert result[0]["canceled_unpaid"] is True
+    assert result[0]["appointment_id"] == "a-canceled"
+
+
+@pytest.mark.asyncio
+async def test_get_upcoming_appointments_excludes_canceled_unpaid_when_already_rebooked():
+    """Se o paciente já tem uma consulta ativa, uma cancelação antiga por falta de
+    pagamento não deve aparecer também como canceled_unpaid — senão a Eva veria duas
+    listagens conflitantes para o mesmo paciente."""
+    users = [{"id": "p-joao", "patient_name": "João Pedro"}]
+    future_rows = [{
+        "appointment_id": "a-active",
+        "start_time": "2026-08-10T14:00:00+00:00",
+        "end_time": "2026-08-10T15:00:00+00:00",
+        "status": "scheduled",
+        "patient_id": "p-joao",
+    }]
+    canceled_rows = [{
+        "appointment_id": "a-canceled",
+        "start_time": "2026-08-03T17:00:00+00:00",
+        "end_time": "2026-08-03T18:00:00+00:00",
+        "status": "canceled",
+        "patient_id": "p-joao",
+        "payment_reminder_sent_at": "2026-07-29T10:05:00+00:00",
+        "booking_fee_paid_at": None,
+        "doctor_id": DOCTOR_IDS["julio"],
+    }]
+    table = MagicMock()
+    for m in ("select", "eq", "in_", "order", "gte", "lt", "is_"):
+        getattr(table, m).return_value = table
+    table.not_ = table
+    table.execute = AsyncMock(side_effect=[
+        MagicMock(data=future_rows), MagicMock(data=[]), MagicMock(data=[]), MagicMock(data=[]),
+        MagicMock(data=canceled_rows),
+    ])
+    client = MagicMock()
+    client.from_.return_value = table
+    with patch("app.database.get_supabase", new_callable=AsyncMock, return_value=client), \
+         patch("app.database.get_users_by_phone", new_callable=AsyncMock, return_value=users):
+        result = await database.get_upcoming_appointments("5581992349207")
+    assert len(result) == 1
+    assert result[0]["appointment_id"] == "a-active"
