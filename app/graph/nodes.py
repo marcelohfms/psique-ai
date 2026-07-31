@@ -1568,7 +1568,10 @@ async def patient_agent_node(state: ConversationState, config: RunnableConfig) -
         and state.get("preferred_doctor") == "julio"
     )
     if is_minor_first:
-        duration_rule = MINOR_RULE.format(patient_name=first_name, patient_age=patient_age)
+        if state.get("minor_first_consult_explained"):
+            duration_rule = MINOR_RULE_SCHEDULING_ONLY.format(patient_name=first_name, patient_age=patient_age)
+        else:
+            duration_rule = MINOR_RULE.format(patient_name=first_name, patient_age=patient_age)
     elif is_minor:
         duration_rule = MINOR_RETURNING_RULE.format(patient_age=patient_age)
     else:

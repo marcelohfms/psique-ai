@@ -3261,3 +3261,33 @@ async def test_collect_info_does_not_repeat_explanation_once_sent():
     sent = mock_send.call_args[0][1]
     assert "duas partes de 1 hora" not in sent
     assert "responsável" in sent.lower()  # segue para a pergunta do nome do responsável
+
+
+async def test_patient_agent_uses_reduced_minor_rule_when_already_explained():
+    """Quando minor_first_consult_explained=True, o prompt de agendamento não
+    deve reexplicar a divisão em duas partes — só pergunta a preferência."""
+    state = _make_patient_agent_state(
+        patient_age=10, birth_date="18/03/2016",
+        is_returning_patient=False, preferred_doctor="julio",
+        patient_name="Bernardo",
+    )
+    state["minor_first_consult_explained"] = True
+    system_msg = await _run_patient_agent(state, last_assistant_time="2026-07-31T09:00:00+00:00")
+    assert system_msg is not None
+    assert "já foi informado" in system_msg.content
+    assert "acontece em" not in system_msg.content  # trecho só do texto completo
+
+
+async def test_patient_agent_uses_full_minor_rule_when_not_yet_explained():
+    """Rede de segurança: se minor_first_consult_explained ainda não é True
+    ao chegar em patient_agent_node, o prompt completo (explica + pergunta)
+    continua sendo usado, como hoje."""
+    state = _make_patient_agent_state(
+        patient_age=10, birth_date="18/03/2016",
+        is_returning_patient=False, preferred_doctor="julio",
+        patient_name="Bernardo",
+    )
+    state["minor_first_consult_explained"] = None
+    system_msg = await _run_patient_agent(state, last_assistant_time="2026-07-31T09:00:00+00:00")
+    assert system_msg is not None
+    assert "Antes de buscar horários, explique ao responsável" in system_msg.content
