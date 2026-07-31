@@ -1055,7 +1055,7 @@ async def test_conv_updated_eva_ativa_added_resumes_and_reprocesses():
     with patch("app.main._resume_bot_for_patient", new_callable=AsyncMock) as mock_resume, \
          patch("app.chatwoot.get_last_patient_message", new_callable=AsyncMock) as mock_last, \
          patch("app.main.buffer_push", new_callable=AsyncMock) as mock_push:
-        mock_last.return_value = "oi, tudo bem?"
+        mock_last.return_value = {"content": "oi, tudo bem?", "attachments": []}
         handled = await _handle_label_change(payload)
 
     assert handled is True
@@ -1063,6 +1063,29 @@ async def test_conv_updated_eva_ativa_added_resumes_and_reprocesses():
     mock_last.assert_awaited_once_with(42)
     assert mock_push.await_args[0][0] == _LABEL_PHONE_JID
     assert mock_push.await_args[0][1] == "oi, tudo bem?"
+
+
+async def test_conv_updated_eva_ativa_added_reprocesses_attachment_only_receipt():
+    """A comprovante sent with no caption has empty `content` in Chatwoot — reactivating
+    Eva via eva-ativa must still pick it up and reclassify the attachment, not just the
+    (empty) text. Regression test for a receipt from 5581994358739 that was never
+    recovered after the attendant added the eva-ativa label."""
+    from app.main import _handle_label_change
+
+    payload = _conv_updated_payload(previous_labels=[], current_labels=["eva-ativa"])
+    attachments = [{"file_type": "image", "data_url": "https://cw.example/comprovante.jpg"}]
+    with patch("app.main._resume_bot_for_patient", new_callable=AsyncMock), \
+         patch("app.chatwoot.get_last_patient_message", new_callable=AsyncMock) as mock_last, \
+         patch("app.main._process_chatwoot_attachments", new_callable=AsyncMock) as mock_process, \
+         patch("app.main.buffer_push", new_callable=AsyncMock) as mock_push:
+        mock_last.return_value = {"content": "", "attachments": attachments}
+        mock_process.return_value = "[imagem]: COMPROVANTE DE PAGAMENTO: R$100 [drive_link:https://drive/x]"
+        handled = await _handle_label_change(payload)
+
+    assert handled is True
+    mock_process.assert_awaited_once_with(attachments, phone=_LABEL_PHONE_JID)
+    assert mock_push.await_args[0][0] == _LABEL_PHONE_JID
+    assert mock_push.await_args[0][1] == "[imagem]: COMPROVANTE DE PAGAMENTO: R$100 [drive_link:https://drive/x]"
 
 
 async def test_conv_updated_falls_back_to_cached_label_list():
