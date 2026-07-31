@@ -8,8 +8,37 @@ from app.graph.nodes import collect_info_node, patient_agent_node, TOOLS
 from app.database import is_registration_complete, DOCTOR_IDS
 
 
+def _incoming_payment_receipt(state: ConversationState) -> bool:
+    """True when the message being processed this turn is a payment receipt.
+
+    Only the LAST message counts, and only if it came from the patient: older
+    receipts in the history were already handled, and Eva's own messages quoting
+    a receipt must never re-trigger this.
+    """
+    from app.media import is_payment_receipt_message
+
+    messages = state.get("messages") or []
+    if not messages:
+        return False
+    last = messages[-1]
+    if getattr(last, "type", None) != "human":
+        return False
+    return is_payment_receipt_message(str(getattr(last, "content", "") or ""))
+
+
 def _route_entry(state: ConversationState) -> str:
     stage = state.get("stage", "collect_info")
+
+    # A payment receipt ALWAYS needs tools — register_payment resolves the patient
+    # from the phone/appointment and never depends on the cadastro being complete.
+    # Without this, a conversation whose registration is incomplete is pinned to
+    # collect_info (a node with no tools): Eva reads the receipt, answers "recebemos
+    # o comprovante!" and registers nothing, so the booking fee stays NULL and the
+    # cron auto-cancels the consultation hours later (caso Bernardo Lima Beltrão
+    # Teixeira, 5581987415206, 2026-07-31 — 43 conversations were in this state).
+    if _incoming_payment_receipt(state):
+        return "patient_agent"
+
     if stage == "patient_agent":
         # Safety guard: if registration is incomplete, always go through collect_info.
         # Prevents scheduling before all required fields are collected, even if stage

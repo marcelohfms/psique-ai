@@ -84,6 +84,28 @@ _DOC_TYPE_PREFIXES: list[tuple[str, str]] = [
 ]
 
 
+RECEIPT_PREFIX = "COMPROVANTE DE PAGAMENTO"
+
+
+def is_payment_receipt_message(content: str) -> bool:
+    """True when `content` is a media message that the vision classifier tagged as
+    a payment receipt — i.e. exactly what describe_image_bytes() emits for
+    CATEGORIA 1 ("[imagem]: COMPROVANTE DE PAGAMENTO: ...").
+
+    Deliberately strict: it is NOT "any image". A photo, sticker or bom-dia image
+    is classified as IGNORAR and never reaches Eva; a medical document gets its
+    own prefix (EXAME:, LAUDO:, ...). Only the classifier's own receipt prefix,
+    in the position it writes it, counts here.
+    """
+    if not content:
+        return False
+    text = content.strip()
+    if not text.startswith("[imagem]:"):
+        return False
+    description = text[len("[imagem]:"):].strip()
+    return description.upper().startswith(RECEIPT_PREFIX)
+
+
 def _extract_doc_type(description: str) -> str:
     upper = description.upper()
     for prefix, slug in _DOC_TYPE_PREFIXES:
