@@ -77,6 +77,27 @@ def test_assistant_message_quoting_a_receipt_is_not_a_receipt():
     assert _route_entry(_state("patient_agent", [quoting])) == "collect_info"
 
 
+def test_receipt_with_a_caption_reaches_patient_agent():
+    """Legenda + comprovante é o formato que os dois webhooks produzem
+    (`f"{caption}\\n{descrição}"`, app/main.py). Havia 4 casos reais em `messages`
+    que o roteamento não reconhecia — o mesmo desfecho do caso Bernardo."""
+    msg = HumanMessage(content=f"Pagamento ok\n{RECEIPT}")
+    assert _route_entry(_state("collect_info", [msg])) == "patient_agent"
+
+
+def test_receipt_after_another_image_reaches_patient_agent():
+    """O buffer de debounce junta as mensagens da janela numa string só."""
+    msg = HumanMessage(content=f"[imagem]: EXAME: hemograma completo. {RECEIPT}")
+    assert _route_entry(_state("collect_info", [msg])) == "patient_agent"
+
+
+def test_typed_claim_of_payment_is_not_a_receipt():
+    """Só o classificador de visão cria um comprovante. Texto solto não pode
+    furar a guarda de cadastro incompleto e ir agendar."""
+    msg = HumanMessage(content="Segue o comprovante de pagamento")
+    assert _route_entry(_state("patient_agent", [msg])) == "collect_info"
+
+
 def test_complete_registration_still_routes_to_patient_agent():
     state = _state("patient_agent", [HumanMessage(content="oi")], guardian_relationship="mãe")
     assert _route_entry(state) == "patient_agent"

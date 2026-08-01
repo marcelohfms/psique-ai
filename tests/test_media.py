@@ -120,3 +120,50 @@ async def test_receipt_detector_rejects_other_media():
     assert not is_payment_receipt_message("já mandei o comprovante de pagamento ontem")
     assert not is_payment_receipt_message("")
     assert not is_payment_receipt_message(None)
+
+
+@pytest.mark.parametrize("legenda", [
+    "Pagamento de sinal para consulta realizado!",
+    "Segue comprovante de antecipação ref consulta p 13/07, às 11 h.",
+    "Pagamento ok",
+    "Paguei no dia 01 de julho",
+])
+async def test_receipt_detector_accepts_receipt_sent_with_a_caption(legenda):
+    """Os dois webhooks montam o texto como `f"{caption}\\n{descrição}"`
+    (app/main.py) — o comprovante quase nunca chega no início da string. Ancorar em
+    startswith() deixava esses casos invisíveis para o _route_entry, que é
+    exatamente o furo do caso Bernardo. As legendas acima são reais, extraídas da
+    tabela `messages` na auditoria de 31/07/2026."""
+    from app.media import is_payment_receipt_message
+    assert is_payment_receipt_message(
+        f"{legenda}\n[imagem]: COMPROVANTE DE PAGAMENTO: valor transferido R$ 100,00."
+    )
+
+
+async def test_receipt_detector_accepts_receipt_after_another_image():
+    """O buffer de debounce junta tudo o que chegou na janela com um espaço
+    (app/buffer.py), então o comprovante pode vir depois de outra imagem."""
+    from app.media import is_payment_receipt_message
+    assert is_payment_receipt_message(
+        "[imagem]: EXAME: hemograma completo. [imagem]: COMPROVANTE DE PAGAMENTO: R$ 100,00."
+    )
+
+
+async def test_receipt_detector_accepts_receipt_followed_by_text():
+    from app.media import is_payment_receipt_message
+    assert is_payment_receipt_message(
+        "[imagem]: COMPROVANTE DE PAGAMENTO: R$ 100,00. já paguei, pode confirmar?"
+    )
+
+
+async def test_receipt_detector_still_requires_the_image_tag():
+    """Continua estrito: texto solto mencionando comprovante não conta — quem
+    digita 'segue o comprovante' sem anexar nada não pode disparar register_payment
+    nem bloquear o cancelamento automático."""
+    from app.media import is_payment_receipt_message
+    assert not is_payment_receipt_message("Segue o comprovante de pagamento")
+    assert not is_payment_receipt_message("Comprovante de pagamento")
+    assert not is_payment_receipt_message(
+        "Acabo de enviar acima o comprovante de pagamento via pix no valor de R$450,00"
+    )
+    assert not is_payment_receipt_message("[imagem]: EXAME: pedido de comprovante de pagamento antigo")
