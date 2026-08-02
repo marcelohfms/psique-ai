@@ -483,3 +483,62 @@ def test_format_schedules_no_exceptions_clean():
     # Regular Thursday schedule should be present
     quinta_line = next(l for l in text.splitlines() if "Quinta" in l)
     assert "manhã" in quinta_line
+
+
+# ── format_doctor_days_summary ─────────────────────────────────────────────────
+# Caso Elisabete/Isaac (5581987385089, 02/08/2026): na mesma conversa a Eva disse
+# "Dr. Júlio atende segunda, quarta e quinta" (correto) e, horas depois, "segundas,
+# quartas ou sextas, que são os dias de atendimento do Dr. Júlio" (errado — sexta é
+# da Dra. Bruna). A grade de dias precisa chegar ao prompt derivada de
+# DOCTOR_SCHEDULES, em uma frase fechada e explícita, em vez de ser inferida.
+
+def test_days_summary_julio_lists_only_his_real_weekdays():
+    from app.google_calendar import format_doctor_days_summary
+
+    julio_line = next(
+        l for l in format_doctor_days_summary().splitlines() if "Dr. Júlio" in l
+    )
+    assert "segunda" in julio_line
+    assert "quarta" in julio_line
+    assert "quinta" in julio_line
+    assert "sexta" not in julio_line, f"sexta é dia da Dra. Bruna: {julio_line!r}"
+    assert "terça" not in julio_line
+
+
+def test_days_summary_bruna_lists_only_her_real_weekdays():
+    from app.google_calendar import format_doctor_days_summary
+
+    bruna_line = next(
+        l for l in format_doctor_days_summary().splitlines() if "Dra. Bruna" in l
+    )
+    assert "segunda" in bruna_line
+    assert "quarta" in bruna_line
+    assert "sexta" in bruna_line
+    assert "quinta" not in bruna_line
+
+
+def test_days_summary_marks_shifts_per_weekday():
+    """Quarta do Dr. Júlio é só manhã — a súmula não pode generalizar 'manhã e
+    tarde' para todos os dias, como a Eva fez às 07:59."""
+    from app.google_calendar import format_doctor_days_summary
+
+    julio_line = next(
+        l for l in format_doctor_days_summary().splitlines() if "Dr. Júlio" in l
+    )
+    assert "quarta (só manhã)" in julio_line, julio_line
+    assert "segunda (manhã e tarde)" in julio_line, julio_line
+    assert "quinta (manhã, tarde e noite)" in julio_line, julio_line
+
+
+def test_days_summary_is_derived_from_doctor_schedules():
+    """Mudar DOCTOR_SCHEDULES muda a súmula — nada de texto fixo."""
+    from app.google_calendar import format_doctor_days_summary
+
+    fake = {"julio": {1: [(14, 0, 18, 0, "escolha")]}}
+    with patch("app.google_calendar.DOCTOR_SCHEDULES", fake):
+        text = format_doctor_days_summary()
+
+    assert "Dra. Bruna" not in text
+    julio_line = next(l for l in text.splitlines() if "Dr. Júlio" in l)
+    assert "terça (só tarde)" in julio_line, julio_line
+    assert "segunda" not in julio_line

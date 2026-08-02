@@ -224,6 +224,59 @@ def format_doctor_schedules() -> str:
     return "\n".join(lines)
 
 
+_SHIFT_ORDER = ("manhã", "tarde", "noite")
+
+
+def _shifts_for_windows(windows: list[tuple[int, int, int, int, str]]) -> list[str]:
+    """Turnos (manhã/tarde/noite) cobertos por uma lista de janelas, em ordem."""
+    found: set[str] = set()
+    for sh, _sm, eh, _em, _modality in windows:
+        for part in _shift_label(sh, eh).split(" e "):
+            found.add(part)
+    return [s for s in _SHIFT_ORDER if s in found]
+
+
+def _join_pt(items: list[str]) -> str:
+    if len(items) <= 1:
+        return "".join(items)
+    return ", ".join(items[:-1]) + " e " + items[-1]
+
+
+def format_doctor_days_summary() -> str:
+    """Uma linha fechada por médico com os dias da semana em que ele atende e o
+    turno de cada dia, derivada de DOCTOR_SCHEDULES.
+
+    format_doctor_schedules() já expõe a grade completa, mas em formato de lista
+    por dia — o LLM lê isso como referência e, ao responder de memória turnos
+    depois, generaliza ("atende de manhã e à tarde") ou inventa dias (caso
+    Elisabete/Isaac, 02/08/2026: "segundas, quartas ou sextas" para o Dr. Júlio,
+    sendo sexta dia da Dra. Bruna). Esta súmula dá a frase pronta, sem inferência.
+    """
+    today = date.today()
+    lines = [
+        "DIAS DE ATENDIMENTO — grade real do sistema. Esta é a ÚNICA fonte sobre "
+        "em que dias e turnos cada médico atende. NUNCA cite um dia que não esteja "
+        "aqui e NUNCA repita os turnos de um dia em outro:"
+    ]
+    for doctor_key in DOCTOR_SCHEDULES:
+        days = _get_doctor_schedule(doctor_key, today)
+        label = _DOCTOR_LABELS.get(doctor_key, doctor_key)
+        parts: list[str] = []
+        for weekday in sorted(days):
+            shifts = _shifts_for_windows(days[weekday])
+            if not shifts:
+                continue
+            desc = f"só {shifts[0]}" if len(shifts) == 1 else _join_pt(shifts)
+            parts.append(f"{_WEEKDAY_NAMES[weekday].lower()} ({desc})")
+        if not parts:
+            continue
+        lines.append(
+            f"- {label} atende SOMENTE: {'; '.join(parts)}. "
+            f"Não atende em nenhum outro dia."
+        )
+    return "\n".join(lines)
+
+
 def get_modality_for_slot(doctor_key: str, slot_dt: datetime) -> str:
     """Return the modality constraint for a given slot datetime."""
     weekday = slot_dt.weekday()
