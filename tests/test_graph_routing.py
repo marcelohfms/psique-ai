@@ -8,6 +8,8 @@ chamada, a taxa ficou NULL e o cron cancelou a consulta 4h depois.
 """
 from langchain_core.messages import AIMessage, HumanMessage
 
+from langgraph.graph import END
+
 from app.graph.graph import _route_entry
 
 RECEIPT = (
@@ -101,3 +103,61 @@ def test_typed_claim_of_payment_is_not_a_receipt():
 def test_complete_registration_still_routes_to_patient_agent():
     state = _state("patient_agent", [HumanMessage(content="oi")], guardian_relationship="mãe")
     assert _route_entry(state) == "patient_agent"
+
+
+# ─── _route_patient_agent: retomada após injeção de ToolMessage ────────────────
+#
+# Caso Elisabete/Isaac (5581987385089, 02/08/2026): a avó confirmou o novo horário
+# ("Sim") do reagendamento, o fast-path de pending_appointment chamou
+# confirm_appointment direto, a guarda "paciente já tem consulta agendada" disparou
+# e o node injetou (AIMessage com tool_call + ToolMessage com a instrução interna
+# "chame mark_reschedule_in_progress"). Só que _route_patient_agent olha apenas
+# tool_calls da ÚLTIMA mensagem — e a última era a ToolMessage. O turno terminou em
+# END: a LLM nunca viu a instrução e a paciente não recebeu nada. Eva travou.
+
+from langchain_core.messages import ToolMessage
+
+from app.graph.graph import _route_patient_agent
+from app.graph.nodes import RESUME_AFTER_TOOL
+
+
+def _injected_pair(content, *, resume):
+    ai = AIMessage(
+        content="",
+        tool_calls=[{"name": "confirm_appointment", "args": {}, "id": "tc1", "type": "tool_call"}],
+    )
+    tm = ToolMessage(
+        content=content,
+        tool_call_id="tc1",
+        additional_kwargs={RESUME_AFTER_TOOL: True} if resume else {},
+    )
+    return [ai, tm]
+
+
+def test_injected_tool_result_routes_back_to_the_llm():
+    """A instrução interna injetada precisa voltar para a LLM agir sobre ela."""
+    messages = _injected_pair(
+        "[INSTRUÇÃO INTERNA] O paciente já tem consulta(s) agendada(s): 03/08/2026 às 11:00. "
+        "OBRIGATÓRIO: chame imediatamente mark_reschedule_in_progress.",
+        resume=True,
+    )
+    assert _route_patient_agent({"messages": messages}) == "patient_agent"
+
+
+def test_unmarked_tool_result_still_ends_the_turn():
+    """A injeção do guard de transferência já enviou a mensagem e já executou a
+    transferência — retomar a LLM ali faria a Eva falar depois do handoff."""
+    messages = _injected_pair("Transferido para atendimento humano.", resume=False)
+    assert _route_patient_agent({"messages": messages}) == END
+
+
+def test_llm_tool_calls_still_route_to_tools():
+    ai = AIMessage(
+        content="",
+        tool_calls=[{"name": "get_available_slots", "args": {}, "id": "tc2", "type": "tool_call"}],
+    )
+    assert _route_patient_agent({"messages": [ai]}) == "tools"
+
+
+def test_plain_answer_ends_the_turn():
+    assert _route_patient_agent({"messages": [AIMessage(content="Bom dia!")]}) == END

@@ -3,7 +3,7 @@ import pytest
 from unittest.mock import AsyncMock, MagicMock, patch, call
 from langchain_core.messages import HumanMessage, AIMessage
 
-from tests.conftest import PHONE, CONFIG
+from tests.conftest import PHONE, CONFIG, make_supabase_client
 
 
 @pytest.fixture(autouse=True)
@@ -3586,3 +3586,183 @@ def test_medical_limits_forbid_proactively_offering_doctor_email():
     # O fluxo legítimo (paciente pede / problema de medicação) continua de pé.
     assert "dr.juliogouveia@gmail.com" in MEDICAL_LIMITS_RULE
     assert "brunalima.psiquiatra@gmail.com" in MEDICAL_LIMITS_RULE
+
+
+async def test_pending_appointment_reschedule_guard_resumes_the_llm():
+    """Caso Elisabete/Isaac (5581987385089, 02/08/2026): a avó pediu para remarcar,
+    escolheu 14/09 às 10:00 e confirmou ("Sim"). O fast-path de pending_appointment
+    chamou confirm_appointment, que bateu na guarda "paciente já tem consulta
+    agendada" e devolveu a instrução interna mandando chamar
+    mark_reschedule_in_progress. A instrução foi injetada como ToolMessage — mas
+    como ela ficava por último e ToolMessage não tem tool_calls, o grafo encerrava
+    o turno: a LLM nunca leu a instrução e a paciente não recebeu resposta nenhuma.
+
+    A ToolMessage injetada precisa vir marcada com RESUME_AFTER_TOOL para o
+    _route_patient_agent devolver o turno à LLM."""
+    from langchain_core.messages import ToolMessage
+    from app.graph.nodes import patient_agent_node, RESUME_AFTER_TOOL
+    from app.graph.graph import _route_patient_agent
+    from app.graph.tools import confirm_appointment
+
+    state = _make_patient_agent_state(
+        messages=[
+            AIMessage(content="Só confirmar antes de registrar: 14/09 às 10:00 ..."),
+            HumanMessage(content="Sim"),
+        ],
+        pending_appointment={
+            "slot_datetime": "2026-09-14T10:00:00",
+            "slot_duration_minutes": 60,
+            "modality": "presencial",
+        },
+    )
+
+    guard = (
+        "[INSTRUÇÃO INTERNA — NÃO ENVIE AO PACIENTE] "
+        "O paciente já tem consulta(s) agendada(s): 03/08/2026 às 11:00 (ID: abc123). "
+        "OBRIGATÓRIO: chame imediatamente mark_reschedule_in_progress com o "
+        "appointment_id da consulta existente, depois get_available_slots, depois "
+        "reschedule_appointment."
+    )
+    sent = []
+
+    async def fake_send_text(phone, text):
+        sent.append(text)
+
+    with patch.object(confirm_appointment, "coroutine", new_callable=AsyncMock, return_value=guard), \
+         patch("app.whatsapp.send_text", side_effect=fake_send_text), \
+         patch("app.database.save_message", new_callable=AsyncMock), \
+         patch("app.graph.nodes.get_upcoming_appointments", new_callable=AsyncMock, return_value=[]), \
+         patch("app.graph.nodes.get_user_by_phone", new_callable=AsyncMock, return_value={"price_adjustment_notified_at": "2026-01-01"}), \
+         patch("app.graph.nodes.get_last_assistant_message_time", new_callable=AsyncMock, return_value=None):
+        result = await patient_agent_node(state, CONFIG)
+
+    assert result.get("pending_appointment") is None
+    last = result["messages"][-1]
+    assert isinstance(last, ToolMessage), "a instrução interna deve chegar à LLM como ToolMessage"
+    assert "mark_reschedule_in_progress" in last.content
+    assert last.additional_kwargs.get(RESUME_AFTER_TOOL) is True
+    # E o grafo tem de voltar para a LLM em vez de encerrar o turno em silêncio.
+    assert _route_patient_agent({"messages": result["messages"]}) == "patient_agent"
+    assert not sent, "a instrução interna nunca pode ser enviada ao paciente"
+
+
+async def _run_pending_confirm_with_pending_reschedule(resched_rows, **tool_returns):
+    """patient_agent_node no fast-path de pending_appointment, com o banco
+    devolvendo `resched_rows` na consulta de agendamentos em pending_reschedule."""
+    from app.graph.nodes import patient_agent_node
+    from app.graph.tools import confirm_appointment, reschedule_appointment
+
+    state = _make_patient_agent_state(
+        user_db_id="pid-isaac",
+        messages=[
+            AIMessage(content="Só confirmar antes de registrar: 14/09 às 10:00 ..."),
+            HumanMessage(content="Sim"),
+        ],
+        pending_appointment={
+            "slot_datetime": "2026-09-14T10:00:00",
+            "slot_duration_minutes": 60,
+            "modality": "presencial",
+        },
+    )
+
+    client, table, execute = make_supabase_client()
+
+    def _from(name):
+        if name == "appointments":
+            table.execute = AsyncMock(return_value=MagicMock(data=resched_rows))
+        else:
+            table.execute = AsyncMock(return_value=MagicMock(data=[]))
+        return table
+
+    client.from_.side_effect = _from
+
+    sent = []
+
+    async def fake_send_text(phone, text):
+        sent.append(text)
+
+    confirm_mock = AsyncMock(return_value=tool_returns.get("confirm", "AGENDAMENTO_OK\nDr. Júlio — 14/09"))
+    resched_mock = AsyncMock(return_value=tool_returns.get("reschedule", "Consulta remarcada com sucesso! ✅\nDr. Júlio — segunda-feira, 14/09/2026 às 10:00"))
+
+    with patch.object(confirm_appointment, "coroutine", confirm_mock), \
+         patch.object(reschedule_appointment, "coroutine", resched_mock), \
+         patch("app.database.get_supabase", new_callable=AsyncMock, return_value=client), \
+         patch("app.whatsapp.send_text", side_effect=fake_send_text), \
+         patch("app.database.save_message", new_callable=AsyncMock), \
+         patch("app.graph.nodes.get_upcoming_appointments", new_callable=AsyncMock, return_value=[]), \
+         patch("app.graph.nodes.get_user_by_phone", new_callable=AsyncMock, return_value={"price_adjustment_notified_at": "2026-01-01"}), \
+         patch("app.graph.nodes.get_last_assistant_message_time", new_callable=AsyncMock, return_value=None):
+        result = await patient_agent_node(state, CONFIG)
+
+    return result, sent, confirm_mock, resched_mock
+
+
+async def test_pending_confirm_during_reschedule_calls_reschedule_not_confirm():
+    """Caso Elisabete/Isaac (5581987385089, 02/08/2026): a consulta do Isaac já
+    estava em pending_reschedule (taxa de 21/07 já paga) quando a avó confirmou o
+    novo horário. O fast-path chamava confirm_appointment — que por definição vai
+    bater na guarda de agendamento duplicado, porque o paciente JÁ TEM consulta.
+
+    Com pending_reschedule na mesa, o 'sim' confirma o novo horário de uma consulta
+    existente: a chamada certa é reschedule_appointment, que move o agendamento e
+    leva a taxa junto."""
+    result, sent, confirm_mock, resched_mock = await _run_pending_confirm_with_pending_reschedule(
+        [{"appointment_id": "lniem76lk5tus873ptcb68n02o"}]
+    )
+
+    confirm_mock.assert_not_called()
+    resched_mock.assert_called_once()
+    kwargs = resched_mock.call_args.kwargs
+    assert kwargs["appointment_id"] == "lniem76lk5tus873ptcb68n02o"
+    assert kwargs["new_slot_datetime"] == "2026-09-14T10:00:00"
+    assert kwargs["slot_duration_minutes"] == 60
+    assert kwargs["modality"] == "presencial"
+
+    assert sent and "remarcada com sucesso" in sent[0]
+    assert result.get("pending_appointment") is None
+
+
+async def test_pending_confirm_without_reschedule_still_confirms():
+    """Sem remarcação em andamento o caminho normal continua sendo
+    confirm_appointment — um paciente sem consulta ativa está agendando de novo."""
+    result, sent, confirm_mock, resched_mock = await _run_pending_confirm_with_pending_reschedule([])
+
+    resched_mock.assert_not_called()
+    confirm_mock.assert_called_once()
+
+
+async def test_pending_confirm_with_two_pending_reschedules_falls_back_to_guard():
+    """Com mais de uma remarcação em aberto não dá para adivinhar qual consulta o
+    'sim' está movendo. Cai no confirm_appointment: a guarda de duplicidade barra e
+    devolve à LLM a lista de IDs para ela resolver — nunca move a consulta errada."""
+    result, sent, confirm_mock, resched_mock = await _run_pending_confirm_with_pending_reschedule(
+        [{"appointment_id": "aaa"}, {"appointment_id": "bbb"}]
+    )
+
+    resched_mock.assert_not_called()
+    confirm_mock.assert_called_once()
+
+
+async def test_reschedule_internal_instruction_resumes_the_llm():
+    """Se o novo horário foi ocupado no meio do caminho, reschedule_appointment
+    devolve instrução interna. Ela não pode ser enviada à paciente nem virar
+    transferência para humano: volta para a LLM buscar outro horário."""
+    from langchain_core.messages import ToolMessage
+    from app.graph.nodes import RESUME_AFTER_TOOL
+    from app.graph.graph import _route_patient_agent
+
+    busy = (
+        "[INSTRUÇÃO INTERNA — NÃO ENVIE AO PACIENTE] Este horário (14/09/2026 às 10:00) "
+        "já está ocupado por outro agendamento. Avise o paciente com empatia e chame "
+        "get_available_slots para buscar outro horário disponível."
+    )
+    result, sent, confirm_mock, resched_mock = await _run_pending_confirm_with_pending_reschedule(
+        [{"appointment_id": "lniem76lk5tus873ptcb68n02o"}], reschedule=busy
+    )
+
+    resched_mock.assert_called_once()
+    assert not sent, "instrução interna nunca vai para a paciente"
+    last = result["messages"][-1]
+    assert isinstance(last, ToolMessage)
+    assert last.additional_kwargs.get(RESUME_AFTER_TOOL) is True
+    assert _route_patient_agent({"messages": result["messages"]}) == "patient_agent"

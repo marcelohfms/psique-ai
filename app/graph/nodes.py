@@ -42,6 +42,15 @@ TOOLS = [
 _collect_llm = None
 _agent_llm = None
 
+# Marca (em additional_kwargs) uma ToolMessage injetada por um guard do
+# patient_agent_node cujo resultado a LLM ainda precisa ler e agir sobre.
+# _route_patient_agent devolve o turno ao patient_agent quando a última mensagem
+# tem essa marca — sem ela o turno morre em END com a instrução interna sem leitor
+# (caso Elisabete/Isaac, 5581987385089, 02/08/2026). Injeções que já enviaram a
+# resposta ao paciente e já executaram a ação (guard de transferência) NÃO levam
+# a marca: retomar a LLM ali faria a Eva falar depois do handoff.
+RESUME_AFTER_TOOL = "eva_resume_after_tool"
+
 
 # ── History trimming helpers ──────────────────────────────────────────────────
 
@@ -1555,6 +1564,85 @@ async def patient_agent_node(state: ConversationState, config: RunnableConfig) -
             from app.graph.tools import confirm_appointment as _confirm_tool
             from app.whatsapp import send_text as _send_text
             from app.database import save_message as _save_msg
+
+            # ── Remarcação em andamento ───────────────────────────────────────
+            # Quando a consulta está em pending_reschedule, este "sim" confirma o
+            # NOVO horário de uma consulta que já existe e já teve taxa paga — não
+            # é um agendamento novo. Chamar confirm_appointment aqui bate sempre na
+            # guarda de agendamento duplicado (o paciente, por definição, já tem
+            # consulta), e a remarcação só andava depois de uma volta inteira pela
+            # LLM — volta que nem acontecia até a correção do roteamento
+            # (caso Elisabete/Isaac, 5581987385089, 02/08/2026).
+            # Só desviamos com UMA remarcação em aberto: com mais de uma não dá
+            # para saber qual consulta o "sim" está movendo, então deixamos a
+            # guarda de confirm_appointment devolver os IDs para a LLM decidir.
+            _resched_appt_id = None
+            try:
+                from app.database import get_supabase as _get_sb_r
+                _pid_r = state.get("user_db_id")
+                if _pid_r:
+                    _sb_r = await _get_sb_r()
+                    _r_rows = await _sb_r.from_("appointments").select(
+                        "appointment_id"
+                    ).eq("patient_id", _pid_r).eq("status", "pending_reschedule").execute()
+                    _r_data = _r_rows.data or []
+                    if len(_r_data) == 1:
+                        _resched_appt_id = _r_data[0]["appointment_id"]
+                    elif len(_r_data) > 1:
+                        _pa_logger.warning(
+                            "PENDING_APPT_CONFIRM %d remarcações em aberto — deixando a guarda decidir phone=%s",
+                            len(_r_data), state.get("phone"),
+                        )
+            except Exception:
+                _pa_logger.exception("PENDING_APPT_CONFIRM pending_reschedule lookup failed")
+
+            if _resched_appt_id:
+                _pa_logger.info(
+                    "PENDING_APPT_RESCHEDULE appt=%s slot=%s", _resched_appt_id, _pending_appt.get("slot_datetime")
+                )
+                from app.graph.tools import reschedule_appointment as _resched_tool
+                try:
+                    _result = await _resched_tool.coroutine(
+                        appointment_id=_resched_appt_id,
+                        new_slot_datetime=_pending_appt["slot_datetime"],
+                        slot_duration_minutes=_pending_appt["slot_duration_minutes"],
+                        modality=_pending_appt.get("modality", ""),
+                        state=state,
+                        config=config,
+                    )
+                except Exception:
+                    _pa_logger.exception("PENDING_APPT_RESCHEDULE failed")
+                    _result = "[INSTRUÇÃO INTERNA — NÃO ENVIE AO PACIENTE] Falha ao remarcar a consulta."
+
+                if _result.startswith("[INSTRUÇÃO INTERNA"):
+                    # Horário ocupado no meio do caminho, dia sem atendimento, etc.
+                    # Devolve à LLM (get_available_slots) em vez de enviar ao paciente.
+                    _pa_logger.warning("PENDING_APPT_RESCHEDULE internal instruction: %.200s", _result)
+                    from langchain_core.messages import AIMessage as _AIR, ToolMessage as _TMR
+                    import uuid as _uuid_r
+                    _tc_r = str(_uuid_r.uuid4())
+                    _ai_r = _AIR(content="", tool_calls=[{"name": "reschedule_appointment", "args": {}, "id": _tc_r, "type": "tool_use"}])
+                    _tm_r = _TMR(
+                        content=_result,
+                        tool_call_id=_tc_r,
+                        additional_kwargs={RESUME_AFTER_TOOL: True},
+                    )
+                    return {"pending_appointment": None, "messages": [_ai_r, _tm_r], "silent_mode": False, **_sync_updates}
+
+                await _send_text(state["phone"], _result)
+                await _save_msg(state["phone"], "assistant", _result)
+                from langchain_core.messages import AIMessage as _AIR2, ToolMessage as _TMR2
+                import uuid as _uuid_r2
+                _tc_r2 = str(_uuid_r2.uuid4())
+                _ai_r2 = _AIR2(content="", tool_calls=[{"name": "reschedule_appointment", "args": {}, "id": _tc_r2, "type": "tool_use"}])
+                _tm_r2 = _TMR2(content=_result, tool_call_id=_tc_r2)
+                return {
+                    "pending_appointment": None,
+                    "messages": [_ai_r2, _tm_r2, _AIR2(content=_result)],
+                    "silent_mode": False,
+                    **_sync_updates,
+                }
+
             try:
                 _result = await _confirm_tool.coroutine(
                     slot_datetime=_pending_appt["slot_datetime"],
@@ -1649,7 +1737,11 @@ async def patient_agent_node(state: ConversationState, config: RunnableConfig) -
                     import uuid as _uuid2
                     _tc2 = str(_uuid2.uuid4())
                     _ai2 = _AI2(content="", tool_calls=[{"name": "confirm_appointment", "args": {}, "id": _tc2, "type": "tool_use"}])
-                    _tm2 = _TM2(content=_result_body + "\nBusque novos horários automaticamente com get_available_slots.", tool_call_id=_tc2)
+                    _tm2 = _TM2(
+                        content=_result_body + "\nBusque novos horários automaticamente com get_available_slots.",
+                        tool_call_id=_tc2,
+                        additional_kwargs={RESUME_AFTER_TOOL: True},
+                    )
                     return {"pending_appointment": None, "messages": [_ai2, _tm2], "silent_mode": False, **_sync_updates}
                 elif "já tem consulta" in _result_body or "use mark_reschedule_in_progress" in _result_body:
                     # Guard fired: patient already has a scheduled appointment.
@@ -1659,7 +1751,11 @@ async def patient_agent_node(state: ConversationState, config: RunnableConfig) -
                     import uuid as _uuid3
                     _tc3 = str(_uuid3.uuid4())
                     _ai3 = _AI3(content="", tool_calls=[{"name": "confirm_appointment", "args": {}, "id": _tc3, "type": "tool_use"}])
-                    _tm3 = _TM3(content=_result_body, tool_call_id=_tc3)
+                    _tm3 = _TM3(
+                        content=_result_body,
+                        tool_call_id=_tc3,
+                        additional_kwargs={RESUME_AFTER_TOOL: True},
+                    )
                     return {"pending_appointment": None, "messages": [_ai3, _tm3], "silent_mode": False, **_sync_updates}
                 else:
                     # Unexpected error — notify attendant and transfer.
