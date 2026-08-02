@@ -1,5 +1,6 @@
 import asyncio
 import os
+import re
 from datetime import datetime, timedelta, date
 from zoneinfo import ZoneInfo
 
@@ -320,6 +321,46 @@ def _next_weekday_in_month(weekday: int, year: int, month: int) -> date:
     return d + timedelta(days=days_ahead)
 
 
+_YEAR_RE = re.compile(r"\b(20\d{2})\b")
+_DAY_BEFORE_MONTH_RE = re.compile(
+    r"(?<!\d)(\d{1,2})(?!\d)\s*(?:de\s+|/)?\s*(" + "|".join(_MONTHS_PT) + r")"
+)
+
+
+def month_and_year(s: str) -> tuple[int, int] | None:
+    """(year, month) do mês citado no texto, ou None se nenhum mês for citado.
+
+    O ano vem explícito no texto ("setembro de 2027") ou é inferido: mês já
+    totalmente passado neste ano → ano seguinte."""
+    s = s.lower().strip()
+    month_num = next((num for name, num in _MONTHS_PT.items() if name in s), None)
+    if month_num is None:
+        return None
+    year_match = _YEAR_RE.search(s)
+    if year_match:
+        return int(year_match.group(1)), month_num
+    today = datetime.now(TZ).date()
+    year = today.year + 1 if month_num < today.month else today.year
+    return year, month_num
+
+
+def is_month_only(s: str) -> bool:
+    """True quando o texto se refere a um MÊS INTEIRO ("setembro", "final de
+    agosto", "mês de outubro") e não a um dia específico dentro dele.
+
+    Um mês é um intervalo, não uma data: quem receber True deve varrer o mês
+    (ver _search_month_shift) em vez de chamar _parse_day."""
+    s = s.lower().strip()
+    if not any(name in s for name in _MONTHS_PT):
+        return False
+    if any(name in s for name in _WEEKDAYS_PT):
+        return False
+    if _DAY_BEFORE_MONTH_RE.search(s):
+        return False
+    # Qualquer outro número de 1–2 dígitos (fora um ano de 4) indica um dia.
+    return not re.search(r"(?<!\d)\d{1,2}(?!\d)", _YEAR_RE.sub("", s))
+
+
 def _parse_day(preferred_day: str) -> date | None:
     s = preferred_day.lower().strip()
     today = datetime.now(TZ).date()
@@ -370,26 +411,26 @@ def _parse_day(preferred_day: str) -> date | None:
             return d
     except (ValueError, IndexError):
         pass
-    # Handle month names (e.g. "outubro", "novembro") → first weekday of that month
-    for month_name, month_num in _MONTHS_PT.items():
-        if month_name in s:
-            year = today.year
-            if month_num < today.month:
-                # Month already fully passed this year -> next year's occurrence.
-                year += 1
-                d = date(year, month_num, 1)
-            else:
-                d = date(year, month_num, 1)
-                if d < today:
-                    # Same month as today, but day 1 already passed -> continue
-                    # searching from today onward instead of skipping to next year.
-                    d = today
-            if _wants_month_end(s):
-                d = max(d, _month_end_window_start(year, month_num))
-            # advance to first weekday (Mon-Fri) on/after d
-            while d.weekday() >= 5:  # skip weekends
-                d += timedelta(days=1)
-            return d
+    # Dia + nome do mês (ex: "15 de setembro", "dia 3 de outubro", "15/setembro")
+    _day_month = _DAY_BEFORE_MONTH_RE.search(s)
+    if _day_month:
+        day_num = int(_day_month.group(1))
+        month_num = _MONTHS_PT[_day_month.group(2)]
+        year_match = _YEAR_RE.search(s)
+        year = int(year_match.group(1)) if year_match else today.year
+        try:
+            d = date(year, month_num, day_num)
+        except ValueError:
+            return None
+        if not year_match and d < today:
+            d = date(year + 1, month_num, day_num)
+        return d
+
+    # Mês sozinho (ex: "setembro", "final de agosto") NÃO é um dia. Antes isto
+    # caía no dia 1º do mês e a Eva respondia sobre uma data que o paciente nunca
+    # pediu (caso 5581987385089, 02/08/2026: "setembro" → terça 01/09, dia em que
+    # o Dr. Júlio nem atende). Quem precisa varrer um mês inteiro deve usar
+    # is_month_only()/month_and_year() e percorrer os dias.
     return None
 
 

@@ -128,6 +128,8 @@ _MOD_LABELS = {
 _ANY_DAY_MAX_DAYS_CURRENT_WEEK = 3
 _ANY_DAY_MIN_DISTINCT_DAYS = 2
 _ANY_DAY_MAX_WEEKS = 8
+# "quais dias tem disponíveis em <mês>?" → quantos dias do mês listar de uma vez.
+_MONTH_MAX_DAYS_ANY_SHIFT = 5
 
 
 def _week_range(offset_weeks: int) -> tuple[date, date]:
@@ -228,31 +230,23 @@ async def _search_month_shift(
     slot_duration_minutes: int,
     _get_slots,
 ) -> str:
-    """Busca os primeiros dias de um mês com slots disponíveis para um turno específico.
+    """Busca os primeiros dias de um mês com slots disponíveis.
+    preferred_shift == "qualquer" → responde "quais dias tem em <mês>", listando
+    os dias com vaga em qualquer turno.
     Se o texto pedir o FINAL do mês ("final de agosto"), busca só a última semana.
     Retorna formatado ou mensagem de indisponibilidade."""
     from app.google_calendar import (
-        _MONTHS_PT,
         _month_end_window_start,
         _wants_month_end,
-        get_available_slots as _inner_get_slots,
+        month_and_year,
     )
 
-    # Extract month from preferred_month_str
-    month_num = None
-    for month_name, num in _MONTHS_PT.items():
-        if month_name in preferred_month_str.lower():
-            month_num = num
-            break
-
-    if month_num is None:
-        return f"Não entendi qual mês. Por favor informe (ex: 'agosto', 'setembro')."
-
-    # Determine year
+    parsed_month = month_and_year(preferred_month_str)
+    if parsed_month is None:
+        return "Não entendi qual mês. Por favor informe (ex: 'agosto', 'setembro')."
+    year, month_num = parsed_month
     today = datetime.now(TZ).date()
-    year = today.year
-    if month_num < today.month:
-        year += 1
+    any_shift = preferred_shift == "qualquer"
 
     # Iterate through all days of that month, collecting available slots.
     # "final de <mês>" = última semana do mês → only the last 7 calendar days.
@@ -260,6 +254,11 @@ async def _search_month_shift(
     _, days_in_month = monthrange(year, month_num)
     month_end_only = _wants_month_end(preferred_month_str)
     start_day = _month_end_window_start(year, month_num).day if month_end_only else 1
+
+    # Sem turno definido a pergunta é "quais DIAS tem no mês" → vale a pena
+    # mostrar mais dias (e menos horários por dia) do que numa busca por turno.
+    max_days = _MONTH_MAX_DAYS_ANY_SHIFT if any_shift else 3
+    max_slots_per_day = 3 if any_shift else 2
 
     slots_by_day = {}
     for day_num in range(start_day, days_in_month + 1):
@@ -278,39 +277,53 @@ async def _search_month_shift(
 
         if slots:
             slots_by_day[try_date] = slots
-            # Return first 3 days with available slots
-            if len(slots_by_day) >= 3:
+            if len(slots_by_day) >= max_days:
                 break
 
     month_name_pt = ["", "Janeiro", "Fevereiro", "Março", "Abril", "Maio", "Junho",
                      "Julho", "Agosto", "Setembro", "Outubro", "Novembro", "Dezembro"][month_num]
+    shift_suffix = "" if any_shift else f" para o turno da {preferred_shift}"
 
     if not slots_by_day:
         if month_end_only:
             return (
                 f"Não há horários disponíveis no final de {month_name_pt} "
-                f"(última semana do mês) para o turno da {preferred_shift}. "
+                f"(última semana do mês){shift_suffix}. "
                 "NÃO ofereça dias do início ou do meio do mês — o paciente pediu o final. "
                 "Pergunte se prefere outro turno, o início do mês seguinte ou outro período."
             )
         return (
-            f"Não há horários disponíveis em {month_name_pt} para o turno da {preferred_shift}. "
+            f"Não há horários disponíveis em {month_name_pt}{shift_suffix}. "
             "Deseja tentar outro turno ou outro mês?"
         )
 
     # Format the response
     if month_end_only:
-        lines = [f"Horários disponíveis no final de {month_name_pt} (última semana), turno da {preferred_shift}:"]
+        header_line = f"Horários disponíveis no final de {month_name_pt} (última semana){shift_suffix}:"
+    elif any_shift:
+        header_line = f"Dias com horários disponíveis em {month_name_pt}:"
     else:
-        lines = [f"Primeiros horários disponíveis em {preferred_shift}:"]
-    for day, day_slots in sorted(slots_by_day.items())[:3]:
+        header_line = f"Primeiros horários disponíveis em {preferred_shift}:"
+    lines = [header_line]
+    for day, day_slots in sorted(slots_by_day.items())[:max_days]:
         day_label = _WEEKDAY_LABELS_PT.get(day.weekday(), "")
         date_label = day.strftime("%d/%m")
         header = f"{day_label}, dia {date_label}" if day_label else date_label
-        for i, (slot, modality) in enumerate(day_slots[:2], 1):  # Show max 2 slots per day
-            lines.append(f"  {slot.strftime('%H:%M')} em {header} [{_MOD_LABELS.get(modality, modality)}]")
+        if any_shift:
+            times = ", ".join(s[0].strftime("%H:%M") for s in day_slots[:max_slots_per_day])
+            more = " (e outros)" if len(day_slots) > max_slots_per_day else ""
+            lines.append(f"- {header}: {times}{more}")
+        else:
+            for slot, modality in day_slots[:max_slots_per_day]:
+                lines.append(f"  {slot.strftime('%H:%M')} em {header} [{_MOD_LABELS.get(modality, modality)}]")
 
-    lines.append("\nQual horário o paciente prefere?")
+    if any_shift:
+        lines.append(
+            "\nEstes são os primeiros dias do mês com vaga (pode haver mais adiante). "
+            "Pergunte qual dia o paciente prefere."
+        )
+    else:
+        lines.append("\nQual horário o paciente prefere?")
     return "\n".join(lines)
 
 
@@ -409,6 +422,10 @@ async def get_available_slots(
     FORMATO DE DATAS:
     - Data específica: sempre dd/mm (ex: "17/06"), NUNCA nome do dia da semana.
     - Com mês: inclua o mês (ex: "quinta de agosto").
+    - "quais dias tem em <mês>?" / "disponibilidade de setembro": passe só o nome do
+      mês (ex: "setembro") e preferred_shift="qualquer" — a ferramenta varre o mês e
+      devolve os DIAS com vaga. Não converta o mês em uma data (isso responderia
+      sobre um dia que o paciente não pediu).
     - "final de <mês>": passe a expressão completa (ex: "final de agosto"), não só o mês.
     - Dia + número juntos (ex: "sexta, dia 14"): use dd/mm (ex: "14/08").
     - "próxima semana": inclua com o dia (ex: "quarta-feira da próxima semana").
@@ -464,6 +481,20 @@ async def get_available_slots(
         (wd for name, wd in _WEEKDAYS_PT.items() if name in preferred_day_norm),
         None,
     )
+
+    # ── Mês inteiro, sem dia ("setembro", "final de agosto", "quais dias tem em
+    # outubro") → varre o mês. Precisa vir ANTES dos ramos que chamam _parse_day:
+    # um mês não é uma data, e _parse_day devolve None para ele de propósito ─────
+    from app.google_calendar import is_month_only
+    if weekday_key is None and is_month_only(preferred_day_norm):
+        return await _search_month_shift(
+            calendar_id=calendar_id,
+            doctor=doctor,
+            preferred_month_str=preferred_day,
+            preferred_shift=preferred_shift,
+            slot_duration_minutes=slot_duration_minutes,
+            _get_slots=_get_slots,
+        )
 
     # ── No day preference (e.g. "qualquer dia", "tanto faz") → search upcoming
     # business days regardless of weekday, expanding to later weeks if needed ──
@@ -529,24 +560,6 @@ async def get_available_slots(
             # No slots at all this week — try the next occurrence (only for weekday names)
         return f"Não há horários disponíveis para {header}. Deseja tentar outro dia?"
 
-    # ── Month name only + specific shift: search that month for available slots ─────
-    from app.google_calendar import _MONTHS_PT
-    if weekday_key is None and preferred_shift != "qualquer":
-        month_match = next(
-            ((name, num) for name, num in _MONTHS_PT.items() if name in preferred_day_norm),
-            None,
-        )
-        if month_match:
-            # Has month + specific shift → search that month automatically
-            return await _search_month_shift(
-                calendar_id=calendar_id,
-                doctor=doctor,
-                preferred_month_str=preferred_day,
-                preferred_shift=preferred_shift,
-                slot_duration_minutes=slot_duration_minutes,
-                _get_slots=_get_slots,
-            )
-
     # ── Vague expressions (e.g. "próxima semana") → ask for specific day ─────
     _vague_patterns = ("semana", "em breve")
     if weekday_key is None and any(p in preferred_day_norm for p in _vague_patterns):
@@ -609,6 +622,15 @@ async def get_available_slots(
 
     # ── Specific day (hoje, amanhã, ISO date): single attempt ─────────────────
     target_date = _parse_day(preferred_day)
+    if target_date is None:
+        # Data não reconhecida (ex: "esse mês", "sei lá"). Não invente um dia —
+        # responder sobre uma data que o paciente não pediu é pior que perguntar.
+        return (
+            f"CLARIFICAÇÃO NECESSÁRIA: não consegui interpretar '{preferred_day}' como uma data. "
+            "Se o paciente falou de um mês inteiro, chame get_available_slots de novo com o nome do mês "
+            "(ex: 'setembro') e preferred_shift='qualquer'. Caso contrário, pergunte o dia desejado "
+            "(ex: 'quarta', '19/05', 'amanhã')."
+        )
     min_advance = now + timedelta(hours=4)
 
     slots = await _get_slots(
