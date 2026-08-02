@@ -3486,3 +3486,66 @@ async def test_every_required_field_has_a_deterministic_question():
                   "is_returning_patient", "patient_name", "guardian_name",
                   "guardian_relationship", "guardian_cpf"):
         assert _registration_question(field, {"patient_name": "Bernardo Lima"}), field
+
+
+# ── grade de dias do médico no prompt ─────────────────────────────────────────
+# Caso Elisabete/Isaac (5581987385089, 02/08/2026): a Eva afirmou que o Dr. Júlio
+# atende "segundas, quartas ou sextas". Sexta é dia da Dra. Bruna. A frase saiu
+# dos exemplos do próprio prompt ("se o médico atende segunda, quarta e sexta…",
+# "Dr. Júlio atende de manhã na segunda e quarta, e à tarde na terça") somados ao
+# COLLECT_SYSTEM, que nunca recebeu a grade real.
+
+def test_doctors_info_carries_derived_weekday_grid():
+    """get_doctors_info() precisa levar os dias reais, derivados de DOCTOR_SCHEDULES."""
+    from app.graph.prompts import get_doctors_info
+
+    text = get_doctors_info()
+    julio_line = next(l for l in text.splitlines() if "atende" in l and "Dr. Júlio" in l)
+    assert "quarta (só manhã)" in julio_line, julio_line
+    assert "sexta" not in julio_line, julio_line
+
+
+def test_doctors_info_reflects_schedule_changes():
+    from unittest.mock import patch as _patch
+    from app.graph.prompts import get_doctors_info
+
+    fake = {"julio": {1: [(14, 0, 18, 0, "escolha")]}}
+    with _patch("app.google_calendar.DOCTOR_SCHEDULES", fake):
+        text = get_doctors_info()
+    assert "terça (só tarde)" in text
+
+
+def test_no_prompt_invents_weekdays_for_a_named_doctor():
+    """Nenhum exemplo do prompt pode citar um médico real junto de dias de semana —
+    o LLM copia o exemplo como se fosse fato."""
+    import re
+    from app.graph import prompts
+
+    weekdays = ("segunda", "terça", "quarta", "quinta", "sexta")
+    offenders = []
+    for name in ("COLLECT_SYSTEM", "NEW_PATIENT_SYSTEM", "EXISTING_PATIENT_SYSTEM",
+                 "DOCTORS_INFO"):
+        content = getattr(prompts, name)
+        for line in content.splitlines():
+            if not re.search(r"Dr\. Júlio|Dra\. Bruna", line):
+                continue
+            if any(day in line.lower() for day in weekdays):
+                offenders.append(f"{name}: {line.strip()}")
+    assert not offenders, "prompt cita médico real + dia da semana:\n" + "\n".join(offenders)
+
+
+def test_collect_prompt_carries_upcoming_schedule_exceptions():
+    """O cadastro não recebe HORÁRIOS DE ATENDIMENTO (só o patient_agent recebe),
+    então as exceções de data precisam vir junto de get_doctors_info()."""
+    from unittest.mock import patch as _patch
+    from datetime import date as _date
+    from app.graph.prompts import get_doctors_info
+
+    with _patch("app.google_calendar.date") as mock_date:
+        mock_date.today.return_value = _date(2026, 8, 2)
+        mock_date.fromisoformat = _date.fromisoformat
+        mock_date.side_effect = lambda *a, **kw: _date(*a, **kw)
+        text = get_doctors_info()
+
+    assert "DATAS EXCEPCIONAIS" in text
+    assert "03/08 (segunda) sem atendimento" in text
