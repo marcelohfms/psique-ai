@@ -2120,13 +2120,45 @@ async def confirm_attendance(
     # loga de novo.
     existing = (
         await client.from_("appointments")
-        .select("confirmed_at")
+        .select("confirmed_at, status")
         .eq("appointment_id", appointment_id)
         .limit(1)
         .execute()
     )
     rows = existing.data or []
-    if rows and rows[0].get("confirmed_at"):
+
+    # Guarda contra appointment_id inexistente. O UPDATE abaixo é um no-op quando
+    # o ID não casa nenhuma linha, e antes desta guarda a tool devolvia
+    # "Presença confirmada! ✅" mesmo assim — o LLM então enviava a mensagem de
+    # confirmação (com endereço da clínica) para uma consulta que não existe.
+    # Caso Sayonara Lira (01/08/2026): sem nenhuma consulta agendada, a Eva
+    # respondeu a um "Confirmado" chamando confirm_attendance com
+    # 'bruna-20260802T1100' — o formato de SLOT LIVRE devolvido por
+    # get_available_slots, não o ID de evento do Google Calendar.
+    if not rows:
+        return (
+            "[INSTRUÇÃO INTERNA — NÃO ENVIE AO PACIENTE] Não existe nenhuma consulta "
+            f"com o ID '{appointment_id}'. NÃO confirme presença, NÃO diga "
+            '"presença confirmada" e NÃO envie o endereço da clínica. '
+            'Use APENAS um appointment_id que esteja listado em "Consultas agendadas" '
+            "no cabeçalho deste prompt — nunca invente um ID nem use o ID de um "
+            "horário livre. Se não houver nenhuma consulta agendada listada, diga ao "
+            "paciente que não encontrou consulta marcada e pergunte se ele deseja agendar."
+        )
+
+    status = rows[0].get("status")
+    if status in ("canceled", "completed"):
+        label = "cancelada" if status == "canceled" else "já realizada"
+        return (
+            "[INSTRUÇÃO INTERNA — NÃO ENVIE AO PACIENTE] A consulta "
+            f"'{appointment_id}' está {label}. NÃO confirme presença, NÃO diga "
+            '"presença confirmada" e NÃO envie o endereço da clínica. '
+            "Verifique se há outra consulta futura em \"Consultas agendadas\"; se não "
+            "houver, diga ao paciente que não encontrou consulta marcada e pergunte se "
+            "ele deseja agendar."
+        )
+
+    if rows[0].get("confirmed_at"):
         # A resposta NÃO pode ser igual à da primeira confirmação: o texto de
         # confirmação é um template verbatim no prompt (inclusive o bloco de
         # endereço), então repeti-lo produz uma mensagem byte a byte idêntica à
