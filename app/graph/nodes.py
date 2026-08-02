@@ -1,4 +1,5 @@
 import os
+import re as _re_mod
 from datetime import datetime
 from zoneinfo import ZoneInfo
 from langchain_openai import ChatOpenAI
@@ -185,7 +186,14 @@ _REGISTRATION_QUESTIONS = {
     ),
     "birth_date": "Qual a data de nascimento do paciente? (formato dd/mm/aaaa)",
     "doctor_id": "Você tem preferência pelo Dr. Júlio ou pela Dra. Bruna?",
-    "is_patient": "A consulta é para você ou para outra pessoa?",
+    # O texto precisa conter "agendando em nome" — é por essa frase que o bloco
+    # mais abaixo reconhece que a pergunta foi feita e aceita o is_patient extraído
+    # pela LLM. Com outra redação a resposta do paciente é descartada e a pergunta
+    # se repete para sempre.
+    "is_patient": (
+        "Só para eu registrar certo: você é o(a) paciente ou está agendando em "
+        "nome de outra pessoa?"
+    ),
     "is_returning_patient": (
         "É a primeira consulta ou o paciente já está em acompanhamento na clínica?"
     ),
@@ -194,6 +202,37 @@ _REGISTRATION_QUESTIONS = {
     "guardian_relationship": "E qual o seu parentesco com {patient_first}? (mãe, pai, avó, responsável legal...)",
     "guardian_cpf": "Qual é o CPF do responsável?",
 }
+
+
+# Parentescos reconhecidos, do mais específico para o mais genérico ("avó" antes
+# de "av" nunca; "irmã" antes de "irmão" é irrelevante — a ordem só importa para
+# prefixos como "madrasta"/"mãe").
+_RELATIONSHIP_KEYWORDS: list[tuple[tuple[str, ...], str]] = [
+    (("madrasta",), "madrasta"),
+    (("padrasto",), "padrasto"),
+    (("madrinha",), "madrinha"),
+    (("padrinho",), "padrinho"),
+    (("responsável legal", "responsavel legal", "tutor", "tutora", "guarda"), "responsável legal"),
+    (("mãe", "mae", "genitora"), "mãe"),
+    (("pai", "genitor"), "pai"),
+    (("avó", "avo", "avô"), "avó/avô"),
+    (("irmã", "irma", "irmão", "irmao"), "irmão/irmã"),
+    (("tia", "tio"), "tia/tio"),
+]
+
+
+def _normalize_relationship(text: str) -> str:
+    """Extrai o parentesco de uma resposta livre ("sou a mãe dele" → "mãe").
+
+    Nunca devolve vazio: se nada for reconhecido, guarda a resposta do paciente
+    como veio. Um retorno vazio faria o passo do cadastro repetir a mesma pergunta
+    indefinidamente — o modo de falha que este campo já causou uma vez."""
+    raw = (text or "").strip()
+    low = raw.lower()
+    for needles, label in _RELATIONSHIP_KEYWORDS:
+        if any(_re_mod.search(r'(?<!\w)' + _re_mod.escape(n) + r'(?!\w)', low) for n in needles):
+            return label
+    return raw
 
 
 def _registration_question(field: str, merged: dict) -> str:
@@ -619,8 +658,15 @@ async def collect_info_node(state: ConversationState, config: RunnableConfig) ->
     _NQ_KEYS = (
         "user_name", "is_patient", "patient_name", "birth_date",
         "is_returning_patient", "patient_cpf", "patient_age",
-        "guardian_name", "guardian_cpf", "preferred_doctor", "patient_email",
+        "guardian_name", "guardian_relationship", "guardian_cpf",
+        "preferred_doctor", "patient_email",
     )
+
+    def _guardian_rel_q(s: dict) -> str:
+        from app.utils import display_name as _dn
+        full = s.get("patient_name") or ""
+        quem = f"com {_dn(full)}" if full else "com o paciente"
+        return f"E qual o seu parentesco {quem}? (mãe, pai, avó, responsável legal...)"
 
     def _next_question(s: dict) -> str | None:
         age = s.get("patient_age") or 99
@@ -642,6 +688,15 @@ async def collect_info_node(state: ConversationState, config: RunnableConfig) ->
         is_third_party = s.get("is_patient") is False
         if minor and is_third_party and not s.get("guardian_name"):
             return _GUARDIAN_NAME_Q
+        # guardian_relationship é exigido por missing_registration_field() para todo
+        # menor com um terceiro conversando, mas nunca era perguntado aqui — o campo
+        # só era preenchido se a LLM conseguisse inferi-lo da conversa. Quando ela não
+        # conseguia ("Para meu filho" não diz mãe nem pai), o cadastro ficava
+        # eternamente incompleto e o _route_entry prendia a conversa no collect_info
+        # (caso Bernardo, 5581987415206, 31/07/2026). Esta é a correção de raiz; a
+        # pergunta determinística no fim do nó continua como rede de segurança.
+        if minor and is_third_party and not s.get("guardian_relationship"):
+            return _guardian_rel_q(s)
         if minor and is_third_party and is_new and not s.get("guardian_cpf"):
             return _GUARDIAN_CPF_Q
         if not s.get("preferred_doctor"):
@@ -933,6 +988,21 @@ async def collect_info_node(state: ConversationState, config: RunnableConfig) ->
                 )
             return await _ask(_GUARDIAN_NAME_Q)
 
+        # Step 6b: parentesco do responsável (menores com terceiro conversando).
+        # Perguntar sem um passo que capture a resposta faria a pergunta repetir
+        # para sempre, então este passo é obrigatório junto com _next_question.
+        if (state.get("patient_age") or 99) < 18 and state.get("is_patient") is False \
+                and not state.get("guardian_relationship"):
+            if last_ai and "parentesco" in last_ai.lower() and last_human:
+                _rel = _normalize_relationship(last_human)
+                return await _extract_and_ask(
+                    {"guardian_relationship": _rel},
+                    _nq(guardian_relationship=_rel),
+                )
+            return await _ask(_guardian_rel_q({
+                "patient_name": state.get("patient_name"),
+            }))
+
         # Step 7: guardian CPF (menores com terceiro conversando) — apenas
         # para pacientes NOVOS; opcional p/ estrangeiros
         if (state.get("patient_age") or 99) < 18 \
@@ -1086,7 +1156,14 @@ async def collect_info_node(state: ConversationState, config: RunnableConfig) ->
     # Diga à LLM, em texto, qual campo o gate determinístico ainda exige. Sem isso
     # ela declara o cadastro completo com um campo obrigatório vazio, o
     # _route_entry devolve todo turno para cá, e ninguém mais pergunta nada.
-    _still_missing = missing_registration_field(_registration_state_to_user(state))
+    # Só depois que a sequência programática se esgota (_nq() is None): as duas
+    # listas cobrem os mesmos campos em ordens diferentes (missing_registration_field
+    # cobra o e-mail em 2º, _next_question em último), e avisar antes faria a Eva
+    # furar a ordem canônica das perguntas.
+    _still_missing = (
+        missing_registration_field(_registration_state_to_user(state))
+        if _nq() is None else None
+    )
     if _still_missing and not _is_interruption:
         _collect_system += (
             f"\n\nCAMPO OBRIGATÓRIO AINDA FALTANDO: {_still_missing}. "

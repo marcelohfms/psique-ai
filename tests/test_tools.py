@@ -1182,6 +1182,81 @@ async def test_confirm_attendance_is_idempotent_when_already_confirmed():
     assert "NÃO repita" in result
 
 
+async def test_confirm_attendance_rejects_unknown_appointment_id():
+    """Caso Sayonara Lira (01/08/2026): sem consulta agendada, a Eva alucinou o
+    appointment_id 'bruna-20260802T1100' (formato de SLOT LIVRE, não de consulta).
+    O UPDATE não casou nenhuma linha e a tool ainda assim devolveu
+    'Presença confirmada! ✅' — a Eva confirmou presença e mandou o endereço da
+    clínica para uma consulta que não existe. A tool precisa recusar."""
+    from app.graph.tools import confirm_attendance
+    client, table, execute = _make_supabase_client()
+    execute.return_value = MagicMock(data=[])   # nenhuma consulta com esse ID
+    with patch("app.graph.tools.get_supabase", new_callable=AsyncMock, return_value=client), \
+         patch("app.graph.tools.log_event", new_callable=AsyncMock) as mock_log:
+        result = await confirm_attendance.coroutine(
+            appointment_id="bruna-20260802T1100",
+            state=_make_state(),
+            config=CONFIG,
+        )
+    table.update.assert_not_called()
+    mock_log.assert_not_awaited()
+    assert "INSTRUÇÃO INTERNA" in result
+    assert "NÃO confirme presença" in result
+    assert not result.startswith("Presença confirmada")
+
+
+async def test_confirm_attendance_rejects_canceled_appointment():
+    from app.graph.tools import confirm_attendance
+    client, table, execute = _make_supabase_client()
+    execute.return_value = MagicMock(data=[{"confirmed_at": None, "status": "canceled"}])
+    with patch("app.graph.tools.get_supabase", new_callable=AsyncMock, return_value=client), \
+         patch("app.graph.tools.log_event", new_callable=AsyncMock) as mock_log:
+        result = await confirm_attendance.coroutine(
+            appointment_id="evt-cancelada",
+            state=_make_state(),
+            config=CONFIG,
+        )
+    table.update.assert_not_called()
+    mock_log.assert_not_awaited()
+    assert "INSTRUÇÃO INTERNA" in result
+
+
+async def test_confirm_attendance_rejects_completed_appointment():
+    """Consulta já realizada (caso Sayonara: a única consulta dela, 17/06, está
+    'completed'). Confirmar presença nela faria a Eva dizer 'te esperamos hoje'
+    sobre uma consulta passada."""
+    from app.graph.tools import confirm_attendance
+    client, table, execute = _make_supabase_client()
+    execute.return_value = MagicMock(data=[{"confirmed_at": None, "status": "completed"}])
+    with patch("app.graph.tools.get_supabase", new_callable=AsyncMock, return_value=client), \
+         patch("app.graph.tools.log_event", new_callable=AsyncMock) as mock_log:
+        result = await confirm_attendance.coroutine(
+            appointment_id="evt-passada",
+            state=_make_state(),
+            config=CONFIG,
+        )
+    table.update.assert_not_called()
+    mock_log.assert_not_awaited()
+    assert "INSTRUÇÃO INTERNA" in result
+
+
+async def test_confirm_attendance_accepts_pending_reschedule():
+    """pending_reschedule ainda é uma consulta viva — não pode ser recusada."""
+    from app.graph.tools import confirm_attendance
+    client, table, execute = _make_supabase_client()
+    execute.return_value = MagicMock(data=[{"confirmed_at": None, "status": "pending_reschedule"}])
+    with patch("app.graph.tools.get_supabase", new_callable=AsyncMock, return_value=client), \
+         patch("app.graph.tools.log_event", new_callable=AsyncMock) as mock_log:
+        result = await confirm_attendance.coroutine(
+            appointment_id="evt-remarcar",
+            state=_make_state(),
+            config=CONFIG,
+        )
+    table.update.assert_called()
+    mock_log.assert_awaited()
+    assert "confirmada" in result.lower()
+
+
 # ── cancel_appointment ────────────────────────────────────────────────────────
 
 async def test_cancel_appointment_cancels_and_notifies():
@@ -1858,6 +1933,7 @@ async def test_transfer_to_human_sends_only_to_user():
 async def test_confirm_attendance_sets_confirmed_at():
     from app.graph.tools import confirm_attendance
     client, table, execute = _make_supabase_client()
+    execute.return_value = MagicMock(data=[{"confirmed_at": None, "status": "scheduled"}])
     with patch("app.graph.tools.get_supabase", new_callable=AsyncMock, return_value=client), \
          patch("app.graph.tools.log_event", new_callable=AsyncMock):
         result = await confirm_attendance.coroutine(

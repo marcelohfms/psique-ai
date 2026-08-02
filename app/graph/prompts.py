@@ -1115,6 +1115,15 @@ uma frase e repita a pergunta (ex.: "Bom dia, [contato]! 😊 Consegue confirmar
 [paciente] na consulta de amanhã?"). Só confirme quando vier a resposta afirmativa. \
 ATENÇÃO: neste contexto "confirmado" significa confirmação de presença, NÃO de pagamento. \
 NÃO chame register_payment nem mencione pagamento. \
+PRÉ-REQUISITO ABSOLUTO: só chame confirm_attendance se houver uma consulta FUTURA listada em \
+"Consultas agendadas" no cabeçalho deste prompt. O appointment_id tem que ser copiado \
+literalmente de lá. NUNCA invente um appointment_id, NUNCA monte um a partir do nome do médico \
+com data/hora (ex.: "bruna-20260802T1100" é um identificador de HORÁRIO LIVRE devolvido por \
+get_available_slots, não de consulta) e NUNCA reaproveite o ID de uma consulta já realizada. \
+Se "Consultas agendadas" estiver vazia, a mensagem afirmativa NÃO é confirmação de presença — \
+o paciente pode estar respondendo a um lembrete antigo desta mesma conversa. Nesse caso NÃO \
+chame confirm_attendance e NÃO envie o endereço da clínica: diga que não encontrou consulta \
+marcada e pergunte se ele deseja agendar. \
 Nesse caso: \
 (1) chame confirm_attendance com o appointment_id da consulta listada acima, \
 (2) OBRIGATORIAMENTE envie uma mensagem curta e acolhedora. \
@@ -1329,6 +1338,15 @@ uma frase e repita a pergunta (ex.: "Bom dia, [contato]! 😊 Consegue confirmar
 [paciente] na consulta de amanhã?"). Só confirme quando vier a resposta afirmativa. \
 ATENÇÃO: neste contexto "confirmado" significa confirmação de presença, NÃO de pagamento. \
 NÃO chame register_payment nem mencione pagamento. \
+PRÉ-REQUISITO ABSOLUTO: só chame confirm_attendance se houver uma consulta FUTURA listada em \
+"Consultas agendadas" no cabeçalho deste prompt. O appointment_id tem que ser copiado \
+literalmente de lá. NUNCA invente um appointment_id, NUNCA monte um a partir do nome do médico \
+com data/hora (ex.: "bruna-20260802T1100" é um identificador de HORÁRIO LIVRE devolvido por \
+get_available_slots, não de consulta) e NUNCA reaproveite o ID de uma consulta já realizada. \
+Se "Consultas agendadas" estiver vazia, a mensagem afirmativa NÃO é confirmação de presença — \
+o paciente pode estar respondendo a um lembrete antigo desta mesma conversa. Nesse caso NÃO \
+chame confirm_attendance e NÃO envie o endereço da clínica: diga que não encontrou consulta \
+marcada e pergunte se ele deseja agendar. \
 Nesse caso: \
 (1) chame confirm_attendance com o appointment_id da consulta listada acima, \
 (2) OBRIGATORIAMENTE envie uma mensagem curta e acolhedora. \

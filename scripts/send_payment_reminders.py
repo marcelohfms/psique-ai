@@ -144,29 +144,41 @@ async def find_receipt_in_conversation(client, phones: list[str], since_iso: str
     this job would otherwise cancel a consultation the patient already paid for (caso
     Bernardo Lima Beltrão Teixeira, 5581987415206, 2026-07-31).
     """
-    from app.media import RECEIPT_PREFIX
+    from app.media import RECEIPT_PREFIX, is_payment_receipt_message
+    from app.database import _phone_variants
 
     for phone in phones:
-        phone_clean = phone.replace("@s.whatsapp.net", "")
+        # `contacts.phone` and `messages.phone` disagree on the 9th digit for a
+        # large slice of the base (46 contatos em 1000 na auditoria de 31/07/2026):
+        # the contact is stored as 5581999999999 while the receipt was saved under
+        # 558199999999. An exact match makes this guard silently blind for exactly
+        # the patients it exists to protect, so query both variants.
+        variants = _phone_variants(phone)
         try:
             result = await (
                 client.from_("messages")
                 .select("phone, content, created_at")
-                .eq("phone", phone_clean)
+                .in_("phone", variants)
                 .eq("role", "user")
                 .ilike("content", f"%{RECEIPT_PREFIX}%")
                 .gte("created_at", since_iso)
                 .order("created_at", desc=True)
-                .limit(1)
+                .limit(20)
                 .execute()
             )
         except Exception as e:
             # Never let a lookup failure turn into a cancellation: treat an error
             # as "cannot prove there is no receipt" and block the cancel.
-            print(f"  [payment_cancel] Receipt lookup FAILED for {phone_clean}: {e}")
-            return {"phone": phone_clean, "content": "", "created_at": "", "lookup_failed": True}
-        if result.data:
-            return result.data[0]
+            print(f"  [payment_cancel] Receipt lookup FAILED for {variants}: {e}")
+            return {"phone": variants[0], "content": "", "created_at": "", "lookup_failed": True}
+        # The ilike above is only a cheap DB prefilter — it also matches a patient
+        # who merely TYPED "segue o comprovante de pagamento" with no image
+        # attached. Blocking on that would hold the slot forever with nothing for
+        # the clinic to check, so the actual decision uses the same detector the
+        # graph routes on.
+        for row in result.data or []:
+            if is_payment_receipt_message(row.get("content") or ""):
+                return row
     return None
 
 
@@ -183,19 +195,28 @@ async def _block_cancel_receipt_found(client, appt: dict, receipt: dict,
 
     already_flagged = False
     try:
+        # Filter by appointment_id in the DB, not in Python. The previous version
+        # selected only "id" and then read a column named "data" — but log_event
+        # writes to "metadata" (events has no "data" column at all), so the check
+        # was always False and the clinic got this same email every 30 minutes for
+        # as long as the pendência stayed open.
         existing = await (
             client.from_("events")
             .select("id")
             .eq("event_type", "payment_cancel_blocked_receipt_found")
-            .limit(50)
+            .contains("metadata", {"appointment_id": appointment_id})
+            .limit(1)
             .execute()
         )
-        already_flagged = any(
-            (e.get("data") or {}).get("appointment_id") == appointment_id
-            for e in (existing.data or [])
-        )
-    except Exception:
-        pass
+        already_flagged = bool(existing.data)
+    except Exception as e:
+        # Fail loud-ish: an unnoticed failure here silently restores the spam.
+        print(f"  [payment_cancel] flag lookup failed (email may repeat): {e}")
+
+    if already_flagged:
+        # Already registered and already emailed on an earlier run — logging again
+        # would just add one row per contact every 30 minutes to `events`.
+        return
 
     for phone in phones:
         try:
@@ -207,9 +228,6 @@ async def _block_cancel_receipt_found(client, appt: dict, receipt: dict,
             })
         except Exception as e:
             print(f"  [payment_cancel] log_event failed for {phone}: {e}")
-
-    if already_flagged:
-        return
 
     try:
         from app.email_sender import send_clinic_notification_email

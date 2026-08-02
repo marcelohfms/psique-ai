@@ -611,8 +611,12 @@ async def test_collect_info_asks_guardian_name_after_minor_birth_date():
     assert "primeira consulta" in sent or "já está em acompanhamento" in sent
 
 
-async def test_collect_info_asks_guardian_cpf_after_guardian_name():
-    """After guardian_name is collected for a minor, the next step must be guardian CPF."""
+async def test_collect_info_asks_guardian_relationship_after_guardian_name():
+    """Depois do nome do responsável vem o parentesco — campo exigido por
+    missing_registration_field() para todo menor com um terceiro conversando, e que
+    até 31/07/2026 nunca era perguntado (caso Bernardo: a LLM não conseguia inferir
+    "mãe" de "Para meu filho", o cadastro ficava incompleto para sempre e o
+    _route_entry prendia a conversa no collect_info)."""
     from app.graph.nodes import collect_info_node
     from langchain_core.messages import HumanMessage, AIMessage
 
@@ -637,7 +641,67 @@ async def test_collect_info_asks_guardian_cpf_after_guardian_name():
 
     assert result.get("guardian_name") == "Maria Souza"
     sent = mock_send.call_args[0][1]
-    assert "cpf" in sent.lower()
+    assert "parentesco" in sent.lower()
+
+
+async def test_collect_info_asks_guardian_cpf_after_guardian_relationship():
+    """E depois do parentesco vem o CPF do responsável — a resposta livre é
+    normalizada ("sou a mãe dele" → "mãe") e o cadastro segue."""
+    from app.graph.nodes import collect_info_node
+    from langchain_core.messages import HumanMessage, AIMessage
+
+    state = _base_minor_state(
+        user_name="Maria Souza",
+        patient_name="Pedro Lima",
+        patient_cpf="111.222.333-44",
+        guardian_name="Maria Souza",
+        is_patient=False,
+        is_returning_patient=False,
+        patient_age=10,
+        birth_date="15/03/2015",
+        messages=[
+            HumanMessage(content="quero agendar uma consulta"),
+            AIMessage(content="E qual o seu parentesco com Pedro? (mãe, pai, avó, responsável legal...)"),
+            HumanMessage(content="sou a mãe dele"),
+        ],
+    )
+    with patch("app.graph.nodes.send_text", new_callable=AsyncMock) as mock_send, \
+         patch("app.graph.nodes.save_message", new_callable=AsyncMock), \
+         patch("app.graph.nodes.get_users_by_phone", new_callable=AsyncMock, return_value=[]):
+        result = await collect_info_node(state, {})
+
+    assert result.get("guardian_relationship") == "mãe"
+    assert "cpf" in mock_send.call_args[0][1].lower()
+
+
+async def test_collect_info_keeps_unrecognized_relationship_verbatim():
+    """Nunca devolver vazio: um parentesco que não está na lista é guardado como
+    veio. Um retorno vazio faria o passo repetir a mesma pergunta para sempre."""
+    from app.graph.nodes import collect_info_node
+    from langchain_core.messages import HumanMessage, AIMessage
+
+    state = _base_minor_state(
+        user_name="Marta Nunes",
+        patient_name="Pedro Lima",
+        patient_cpf="111.222.333-44",
+        guardian_name="Marta Nunes",
+        is_patient=False,
+        is_returning_patient=False,
+        patient_age=10,
+        birth_date="15/03/2015",
+        messages=[
+            HumanMessage(content="quero agendar uma consulta"),
+            AIMessage(content="E qual o seu parentesco com Pedro? (mãe, pai, avó, responsável legal...)"),
+            HumanMessage(content="sou a cuidadora dele"),
+        ],
+    )
+    with patch("app.graph.nodes.send_text", new_callable=AsyncMock) as mock_send, \
+         patch("app.graph.nodes.save_message", new_callable=AsyncMock), \
+         patch("app.graph.nodes.get_users_by_phone", new_callable=AsyncMock, return_value=[]):
+        result = await collect_info_node(state, {})
+
+    assert result.get("guardian_relationship") == "sou a cuidadora dele"
+    assert "parentesco" not in mock_send.call_args[0][1].lower()
 
 
 async def test_collect_info_self_messaging_new_minor_skips_guardian_name_preview():
@@ -789,6 +853,7 @@ async def test_collect_info_new_minor_after_guardian_cpf_goes_to_doctor():
         patient_age=10,
         birth_date="15/03/2015",
         guardian_name="Maria Souza",
+        guardian_relationship="mãe",
         messages=[
             HumanMessage(content="quero agendar uma consulta"),
             AIMessage(content="Qual é o CPF do responsável?"),
@@ -2365,6 +2430,7 @@ async def test_collect_info_qualquer_um_under_12_forces_julio_without_availabili
         is_patient=False, patient_age=10, birth_date="22/08/2016",
         is_returning_patient=False, preferred_doctor=None,
         guardian_name="Ana", guardian_cpf="111.222.333-44",
+        guardian_relationship="mãe",
         messages=[
             HumanMessage(content="quero agendar"),
             AIMessage(content=_DOCTOR_Q),
@@ -2502,6 +2568,7 @@ async def test_collect_info_returning_minor_guardian_name_skips_guardian_cpf():
         user_name="Maria Souza", patient_name="Pedro Lima", patient_cpf=None,
         is_patient=False, patient_age=10, birth_date="15/03/2015",
         is_returning_patient=True, guardian_name=None, guardian_cpf=None,
+        guardian_relationship="mãe",
         messages=[
             HumanMessage(content="quero agendar"),
             AIMessage(content="Qual é o nome completo do responsável pelo paciente?"),
@@ -3077,6 +3144,7 @@ async def test_collect_info_explains_minor_first_consult_when_doctor_confirmed_l
         patient_age=10, birth_date="18/03/2016",
         guardian_name="Ana", guardian_cpf="111.222.333-44",
         preferred_doctor=None,
+        guardian_relationship="mãe",
         messages=[
             HumanMessage(content="quero agendar"),
             AIMessage(content=_DOCTOR_Q),
@@ -3175,6 +3243,7 @@ async def test_collect_info_does_not_explain_minor_rule_for_bruna():
         patient_age=14, birth_date="18/03/2012",
         guardian_name="Ana", guardian_cpf="111.222.333-44",
         preferred_doctor=None,
+        guardian_relationship="mãe",
         messages=[
             HumanMessage(content="quero agendar"),
             AIMessage(content=_DOCTOR_Q),
@@ -3207,6 +3276,7 @@ async def test_collect_info_does_not_explain_minor_rule_for_returning_patient():
         patient_age=14, birth_date="18/03/2012",
         guardian_name="Ana",
         preferred_doctor=None,
+        guardian_relationship="mãe",
         messages=[
             HumanMessage(content="quero agendar"),
             AIMessage(content=_DOCTOR_Q),
@@ -3302,10 +3372,14 @@ async def test_patient_agent_uses_full_minor_rule_when_not_yet_explained():
 # foi registrado.
 
 def _bernardo_state(**over):
+    # Sem palavra-chave de pedido ("agendar", "consulta", ...) nas mensagens: os
+    # passos programáticos do cadastro não rodam neste turno e quem responde é a
+    # LLM. É exatamente aí que a rede de segurança do fim do nó precisa valer —
+    # a sequência canônica de perguntas não está no comando.
     state = {
         "phone": PHONE,
         "messages": [
-            AIMessage(content="Qual o motivo da consulta?"),
+            AIMessage(content="Qual o motivo?"),
             HumanMessage(content="Dificuldade escolar"),
         ],
         "user_name": "Raphaelle Beltrão",
@@ -3387,3 +3461,28 @@ async def test_collect_info_uses_field_answered_in_this_turn():
 
     assert mock_send.call_args[0][1] == "Perfeito, tudo anotado! 😊"
     assert result.get("stage") == "patient_agent"
+
+
+async def test_forced_is_patient_question_is_recognized_when_answered():
+    """A pergunta determinística de is_patient precisa ser reconhecível pelo bloco
+    que aceita o is_patient extraído pela LLM — ele exige "agendando em nome" ou
+    ("você é" + "paciente") na última mensagem da Eva. Com outra redação a resposta
+    do paciente é descartada e a pergunta se repete para sempre: a mesma classe de
+    trava do caso Bernardo, só que num campo diferente."""
+    from app.graph.nodes import _registration_question
+
+    q = _registration_question("is_patient", {}).lower()
+
+    assert "agendando em nome" in q or ("você é" in q and "paciente" in q)
+
+
+async def test_every_required_field_has_a_deterministic_question():
+    """missing_registration_field() pode devolver qualquer campo obrigatório. Se um
+    deles não tiver pergunta, a rede de segurança não substitui a despedida da LLM
+    e a conversa trava exatamente como travou o cadastro do Bernardo."""
+    from app.graph.nodes import _registration_question
+
+    for field in ("name", "email", "birth_date", "doctor_id", "is_patient",
+                  "is_returning_patient", "patient_name", "guardian_name",
+                  "guardian_relationship", "guardian_cpf"):
+        assert _registration_question(field, {"patient_name": "Bernardo Lima"}), field

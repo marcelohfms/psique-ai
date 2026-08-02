@@ -85,25 +85,39 @@ _DOC_TYPE_PREFIXES: list[tuple[str, str]] = [
 
 
 RECEIPT_PREFIX = "COMPROVANTE DE PAGAMENTO"
+IMAGE_TAG = "[imagem]:"
 
 
 def is_payment_receipt_message(content: str) -> bool:
-    """True when `content` is a media message that the vision classifier tagged as
-    a payment receipt — i.e. exactly what describe_image_bytes() emits for
+    """True when `content` carries a media description that the vision classifier
+    tagged as a payment receipt — i.e. what describe_image_bytes() emits for
     CATEGORIA 1 ("[imagem]: COMPROVANTE DE PAGAMENTO: ...").
 
-    Deliberately strict: it is NOT "any image". A photo, sticker or bom-dia image
+    Deliberately strict: it is NOT "any image", and it is NOT "the words
+    comprovante de pagamento appear somewhere". A photo, sticker or bom-dia image
     is classified as IGNORAR and never reaches Eva; a medical document gets its
     own prefix (EXAME:, LAUDO:, ...). Only the classifier's own receipt prefix,
-    in the position it writes it, counts here.
+    written immediately after an [imagem]: tag, counts here.
+
+    The tag is searched for ANYWHERE in the message, not only at the start: what
+    reaches the graph is rarely the bare classifier output. A caption is prepended
+    by both webhooks ("Pagamento ok\\n[imagem]: COMPROVANTE DE PAGAMENTO: ...",
+    app/main.py) and the debounce buffer joins everything the patient sent in the
+    window into one string (app/buffer.py), so a receipt can sit after a caption,
+    after another image, or before a follow-up text. Anchoring on startswith()
+    made all of those invisible to _route_entry — the exact failure this
+    detector exists to prevent (4 casos reais em `messages` até 31/07/2026).
     """
     if not content:
         return False
-    text = content.strip()
-    if not text.startswith("[imagem]:"):
-        return False
-    description = text[len("[imagem]:"):].strip()
-    return description.upper().startswith(RECEIPT_PREFIX)
+    text = str(content)
+    idx = text.find(IMAGE_TAG)
+    while idx != -1:
+        description = text[idx + len(IMAGE_TAG):].lstrip()
+        if description.upper().startswith(RECEIPT_PREFIX):
+            return True
+        idx = text.find(IMAGE_TAG, idx + 1)
+    return False
 
 
 def _extract_doc_type(description: str) -> str:

@@ -20,17 +20,34 @@ def _appt(**kw):
     return base
 
 
-def _client(receipt_rows=None):
-    """Supabase double. `receipt_rows` feeds the messages/comprovante lookup;
-    the default (empty) means "no receipt in the conversation"."""
-    execute = AsyncMock(return_value=MagicMock(data=receipt_rows or []))
-    table = MagicMock()
-    for m in ("update", "eq", "select", "single", "ilike", "gte", "order", "limit"):
-        getattr(table, m).return_value = table
-    table.execute = execute
+_CHAINED = ("update", "eq", "select", "single", "ilike", "gte", "order", "limit",
+            "in_", "contains", "not_", "is_")
+
+
+def _table(rows):
+    t = MagicMock()
+    for m in _CHAINED:
+        getattr(t, m).return_value = t
+    t.execute = AsyncMock(return_value=MagicMock(data=rows))
+    return t
+
+
+def _client(receipt_rows=None, event_rows=None):
+    """Supabase double que despacha por tabela. `receipt_rows` alimenta a busca do
+    comprovante em `messages`; `event_rows` alimenta a checagem de "já avisei a
+    clínica sobre esta consulta" em `events` (default: nunca avisada).
+
+    Precisa ser por tabela: com um único double as duas consultas devolviam as
+    mesmas linhas, e um teste de comprovante encontrado passaria por acidente na
+    dedup de e-mail."""
+    default = _table(receipt_rows or [])
+    tables = {
+        "messages": default,
+        "events": _table(event_rows or []),
+    }
     client = MagicMock()
-    client.from_.return_value = table
-    return client, table
+    client.from_.side_effect = lambda name: tables.get(name, default)
+    return client, default
 
 
 @pytest.mark.asyncio
@@ -156,5 +173,119 @@ async def test_receipt_lookup_ignores_messages_older_than_the_booking():
     await spr.find_receipt_in_conversation(client, ["5581987415206@s.whatsapp.net"], since)
 
     table.gte.assert_called_once_with("created_at", since)
-    table.eq.assert_any_call("phone", "5581987415206")
     table.eq.assert_any_call("role", "user")
+
+
+@pytest.mark.asyncio
+async def test_receipt_lookup_covers_both_phone_variants():
+    """`contacts.phone` guarda 5581999999999 e `messages.phone` frequentemente
+    guarda 558199999999 (o 9 extra dos celulares brasileiros). Na auditoria de
+    31/07/2026, 46 de 1000 contatos tinham o comprovante gravado SÓ sob a outra
+    variante — para esses o guarda não achava nada e o cancelamento seguia."""
+    client, table = _client()
+
+    await spr.find_receipt_in_conversation(client, ["5581987415206@s.whatsapp.net"], "2026-07-31T14:30:44+00:00")
+
+    variants = table.in_.call_args[0][1]
+    assert "5581987415206" in variants
+    assert "558187415206" in variants
+
+
+@pytest.mark.asyncio
+async def test_receipt_lookup_skips_typed_claims_without_an_image():
+    """O ilike no banco é só um pré-filtro barato: ele casa com quem apenas digitou
+    "segue o comprovante de pagamento". Bloquear nesses casos seguraria a vaga para
+    sempre sem nada para a clínica conferir."""
+    client, _ = _client(receipt_rows=[
+        {"phone": "5581987415206", "content": "Segue o comprovante de pagamento",
+         "created_at": "2026-07-31T18:00:00+00:00"},
+    ])
+
+    found = await spr.find_receipt_in_conversation(
+        client, ["5581987415206@s.whatsapp.net"], "2026-07-31T14:30:44+00:00")
+
+    assert found is None
+
+
+@pytest.mark.asyncio
+async def test_receipt_lookup_picks_the_real_receipt_past_a_typed_claim():
+    """A busca traz várias linhas em ordem decrescente; a mais recente pode ser o
+    texto solto e o comprovante de verdade vir logo atrás."""
+    client, _ = _client(receipt_rows=[
+        {"phone": "5581987415206", "content": "já mandei o comprovante de pagamento",
+         "created_at": "2026-07-31T18:05:00+00:00"},
+        {"phone": "558187415206",
+         "content": "[imagem]: COMPROVANTE DE PAGAMENTO: R$ 100,00.",
+         "created_at": "2026-07-31T18:00:00+00:00"},
+    ])
+
+    found = await spr.find_receipt_in_conversation(
+        client, ["5581987415206@s.whatsapp.net"], "2026-07-31T14:30:44+00:00")
+
+    assert found is not None
+    assert found["created_at"] == "2026-07-31T18:00:00+00:00"
+
+
+@pytest.mark.asyncio
+async def test_receipt_with_caption_blocks_the_cancellation():
+    """Legenda + comprovante — o formato real que os webhooks gravam."""
+    client, table = _client(receipt_rows=[{
+        "phone": "5581987415206",
+        "content": "Pagamento ok\n[imagem]: COMPROVANTE DE PAGAMENTO: R$ 100,00.",
+        "created_at": "2026-07-31T17:27:29+00:00",
+    }])
+    now = datetime(2026, 7, 31, 20, 15, tzinfo=TZ)
+
+    with patch("scripts.send_payment_reminders.get_financial_contacts",
+               new_callable=AsyncMock,
+               return_value=[{"phone": "5581987415206", "name": "Raphaelle"}]), \
+         patch("scripts.send_payment_reminders.send_whatsapp", new_callable=AsyncMock) as mock_wpp, \
+         patch("scripts.send_payment_reminders.cancel_calendar_event", new_callable=AsyncMock), \
+         patch("app.database.log_event", new_callable=AsyncMock), \
+         patch("app.email_sender.send_clinic_notification_email", new_callable=AsyncMock):
+        await spr._cancel_unpaid_appointment(client, _appt(created_at="2026-07-31T14:30:44+00:00"), None, now)
+
+    mock_wpp.assert_not_awaited()
+    table.update.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_clinic_is_emailed_only_once_per_appointment():
+    """Este cron roda a cada 30 minutos e a pendência só sai com ação humana. A
+    dedup lia `events.data` — coluna que não existe (log_event grava em
+    `metadata`) — e por isso NUNCA acusava aviso anterior: a clínica recebia o
+    mesmo e-mail a cada meia hora."""
+    client, _ = _client(receipt_rows=_RECEIPT_ROW, event_rows=[{"id": "ev-1"}])
+    now = datetime(2026, 7, 31, 20, 45, tzinfo=TZ)
+
+    with patch("scripts.send_payment_reminders.get_financial_contacts",
+               new_callable=AsyncMock,
+               return_value=[{"phone": "5581987415206", "name": "Raphaelle"}]), \
+         patch("scripts.send_payment_reminders.send_whatsapp", new_callable=AsyncMock), \
+         patch("scripts.send_payment_reminders.cancel_calendar_event", new_callable=AsyncMock), \
+         patch("app.database.log_event", new_callable=AsyncMock) as mock_log_event, \
+         patch("app.email_sender.send_clinic_notification_email", new_callable=AsyncMock) as mock_email:
+        await spr._cancel_unpaid_appointment(client, _appt(created_at="2026-07-31T14:30:44+00:00"), None, now)
+
+    mock_email.assert_not_awaited()
+    mock_log_event.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_flag_lookup_filters_by_appointment_id_in_the_database():
+    """Sem filtrar por appointment_id no banco, um aviso de OUTRA consulta
+    silenciaria o e-mail desta."""
+    client, _ = _client(receipt_rows=_RECEIPT_ROW)
+    events = client.from_("events")
+    now = datetime(2026, 7, 31, 20, 45, tzinfo=TZ)
+
+    with patch("scripts.send_payment_reminders.get_financial_contacts",
+               new_callable=AsyncMock,
+               return_value=[{"phone": "5581987415206", "name": "Raphaelle"}]), \
+         patch("scripts.send_payment_reminders.send_whatsapp", new_callable=AsyncMock), \
+         patch("scripts.send_payment_reminders.cancel_calendar_event", new_callable=AsyncMock), \
+         patch("app.database.log_event", new_callable=AsyncMock), \
+         patch("app.email_sender.send_clinic_notification_email", new_callable=AsyncMock):
+        await spr._cancel_unpaid_appointment(client, _appt(created_at="2026-07-31T14:30:44+00:00"), None, now)
+
+    events.contains.assert_called_once_with("metadata", {"appointment_id": "evt-abc"})
