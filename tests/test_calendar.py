@@ -542,3 +542,56 @@ def test_days_summary_is_derived_from_doctor_schedules():
     julio_line = next(l for l in text.splitlines() if "Dr. Júlio" in l)
     assert "terça (só tarde)" in julio_line, julio_line
     assert "segunda" not in julio_line
+
+
+# ── format_doctor_days_summary: exceções de data ──────────────────────────────
+# A súmula de dias é a grade semanal permanente. Sem as exceções junto, no
+# cadastro (COLLECT_SYSTEM, que não recebe format_doctor_schedules) a Eva diz
+# "Dr. Júlio atende segunda" num feriado.
+
+def test_days_summary_lists_upcoming_blocked_dates():
+    from app.google_calendar import format_doctor_days_summary
+
+    with patch("app.google_calendar.date") as mock_date:
+        mock_date.today.return_value = date(2026, 8, 2)
+        mock_date.fromisoformat = date.fromisoformat
+        mock_date.side_effect = lambda *a, **kw: date(*a, **kw)
+        text = format_doctor_days_summary()
+
+    assert "DATAS EXCEPCIONAIS" in text
+    exc_lines = text.split("DATAS EXCEPCIONAIS")[1]
+    bruna_exc = next(l for l in exc_lines.splitlines() if "Dra. Bruna" in l)
+    assert "03/08 (segunda) sem atendimento" in bruna_exc, bruna_exc
+    assert "05/08 (quarta) sem atendimento" in bruna_exc, bruna_exc
+    assert "07/08 (sexta) sem atendimento" in bruna_exc, bruna_exc
+    # Dr. Júlio não tem exceção nessa janela — não deve aparecer no bloco
+    assert "Dr. Júlio" not in exc_lines
+
+
+def test_days_summary_lists_reduced_schedule_exception():
+    """31/08 é segunda, mas o Dr. Júlio só atende de manhã nessa data."""
+    from app.google_calendar import format_doctor_days_summary
+
+    with patch("app.google_calendar.date") as mock_date:
+        mock_date.today.return_value = date(2026, 8, 25)
+        mock_date.fromisoformat = date.fromisoformat
+        mock_date.side_effect = lambda *a, **kw: date(*a, **kw)
+        text = format_doctor_days_summary()
+
+    julio_exc = next(
+        l for l in text.split("DATAS EXCEPCIONAIS")[1].splitlines() if "Dr. Júlio" in l
+    )
+    assert "31/08 (segunda) atende só manhã" in julio_exc, julio_exc
+
+
+def test_days_summary_omits_exception_block_when_none_upcoming():
+    from app.google_calendar import format_doctor_days_summary
+
+    with patch("app.google_calendar.date") as mock_date:
+        mock_date.today.return_value = date(2026, 9, 15)
+        mock_date.fromisoformat = date.fromisoformat
+        mock_date.side_effect = lambda *a, **kw: date(*a, **kw)
+        text = format_doctor_days_summary()
+
+    assert "DATAS EXCEPCIONAIS" not in text
+    assert "Dr. Júlio atende SOMENTE" in text

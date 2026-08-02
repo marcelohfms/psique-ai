@@ -3532,3 +3532,20 @@ def test_no_prompt_invents_weekdays_for_a_named_doctor():
             if any(day in line.lower() for day in weekdays):
                 offenders.append(f"{name}: {line.strip()}")
     assert not offenders, "prompt cita médico real + dia da semana:\n" + "\n".join(offenders)
+
+
+def test_collect_prompt_carries_upcoming_schedule_exceptions():
+    """O cadastro não recebe HORÁRIOS DE ATENDIMENTO (só o patient_agent recebe),
+    então as exceções de data precisam vir junto de get_doctors_info()."""
+    from unittest.mock import patch as _patch
+    from datetime import date as _date
+    from app.graph.prompts import get_doctors_info
+
+    with _patch("app.google_calendar.date") as mock_date:
+        mock_date.today.return_value = _date(2026, 8, 2)
+        mock_date.fromisoformat = _date.fromisoformat
+        mock_date.side_effect = lambda *a, **kw: _date(*a, **kw)
+        text = get_doctors_info()
+
+    assert "DATAS EXCEPCIONAIS" in text
+    assert "03/08 (segunda) sem atendimento" in text

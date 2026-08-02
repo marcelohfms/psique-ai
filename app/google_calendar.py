@@ -242,15 +242,20 @@ def _join_pt(items: list[str]) -> str:
     return ", ".join(items[:-1]) + " e " + items[-1]
 
 
-def format_doctor_days_summary() -> str:
+def format_doctor_days_summary(days_ahead: int = 14) -> str:
     """Uma linha fechada por médico com os dias da semana em que ele atende e o
-    turno de cada dia, derivada de DOCTOR_SCHEDULES.
+    turno de cada dia, derivada de DOCTOR_SCHEDULES, seguida das exceções de
+    data (SCHEDULE_EXCEPTIONS) dos próximos `days_ahead` dias.
 
     format_doctor_schedules() já expõe a grade completa, mas em formato de lista
     por dia — o LLM lê isso como referência e, ao responder de memória turnos
     depois, generaliza ("atende de manhã e à tarde") ou inventa dias (caso
     Elisabete/Isaac, 02/08/2026: "segundas, quartas ou sextas" para o Dr. Júlio,
     sendo sexta dia da Dra. Bruna). Esta súmula dá a frase pronta, sem inferência.
+
+    As exceções vêm junto porque o COLLECT_SYSTEM não recebe
+    format_doctor_schedules() — só o patient_agent recebe. Sem elas, no cadastro
+    a Eva afirma "Dr. Júlio atende segunda" num feriado.
     """
     today = date.today()
     lines = [
@@ -274,6 +279,34 @@ def format_doctor_days_summary() -> str:
             f"- {label} atende SOMENTE: {'; '.join(parts)}. "
             f"Não atende em nenhum outro dia."
         )
+
+    exc_lines: list[str] = []
+    for doctor_key in DOCTOR_SCHEDULES:
+        label = _DOCTOR_LABELS.get(doctor_key, doctor_key)
+        entries: list[str] = []
+        for date_str, windows in sorted(SCHEDULE_EXCEPTIONS.get(doctor_key, {}).items()):
+            exc_date = date.fromisoformat(date_str)
+            if not 0 <= (exc_date - today).days <= days_ahead:
+                continue
+            weekday = _WEEKDAY_NAMES[exc_date.weekday()].lower()
+            when = f"{exc_date.strftime('%d/%m')} ({weekday})"
+            shifts = _shifts_for_windows(windows)
+            if not shifts:
+                entries.append(f"{when} sem atendimento")
+            else:
+                desc = f"só {shifts[0]}" if len(shifts) == 1 else _join_pt(shifts)
+                entries.append(f"{when} atende {desc}")
+        if entries:
+            exc_lines.append(f"- {label}: {'; '.join(entries)}.")
+
+    if exc_lines:
+        lines.append(
+            f"DATAS EXCEPCIONAIS (próximos {days_ahead} dias) — sobrepõem a grade "
+            f"acima NAQUELAS DATAS. Nunca ofereça uma data listada aqui como "
+            f"disponível se ela estiver marcada como sem atendimento:"
+        )
+        lines.extend(exc_lines)
+
     return "\n".join(lines)
 
 
