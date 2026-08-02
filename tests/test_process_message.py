@@ -3549,3 +3549,40 @@ def test_collect_prompt_carries_upcoming_schedule_exceptions():
 
     assert "DATAS EXCEPCIONAIS" in text
     assert "03/08 (segunda) sem atendimento" in text
+
+
+# ── limites médicos: documentos e e-mail do médico ────────────────────────────
+
+def test_medical_limits_forbid_proactively_offering_documents():
+    """Eva não pode se oferecer para pedir atestado/declaração ao médico. Caso
+    Elisabete/Isaac (5581987385089, 02/08/2026): o paciente contou que se
+    machucou e Eva ofereceu três vezes "posso solicitar um atestado para o
+    Dr. Júlio emitir" — documento só quando o paciente pede."""
+    from app.graph.prompts import MEDICAL_LIMITS_RULE
+
+    assert "NUNCA OFEREÇA DOCUMENTOS PROATIVAMENTE" in MEDICAL_LIMITS_RULE
+    assert "Atestado" in MEDICAL_LIMITS_RULE and "declaração" in MEDICAL_LIMITS_RULE
+    assert "PACIENTE OU RESPONSÁVEL PEDE" in MEDICAL_LIMITS_RULE
+
+
+def test_all_patient_prompts_carry_the_medical_limits_rule():
+    """A regra vive em MEDICAL_LIMITS_RULE; se algum prompt de paciente perder o
+    placeholder, a proibição some daquele fluxo sem quebrar nada visível."""
+    from app.graph.prompts import COLLECT_SYSTEM, EXISTING_PATIENT_SYSTEM, NEW_PATIENT_SYSTEM
+
+    for prompt in (COLLECT_SYSTEM, EXISTING_PATIENT_SYSTEM, NEW_PATIENT_SYSTEM):
+        assert "{medical_limits_rule}" in prompt
+
+
+def test_medical_limits_forbid_proactively_offering_doctor_email():
+    """Mesmo caso Elisabete/Isaac (5581987385089, 02/08/2026): sobre um machucado
+    tratado no UPA, Eva ofereceu por conta própria o e-mail do Dr. Júlio "para
+    tirar dúvidas sobre medicação ou cuidados". O e-mail do médico só vai quando
+    o paciente pede ou traz questão do próprio tratamento na clínica."""
+    from app.graph.prompts import MEDICAL_LIMITS_RULE
+
+    assert "NUNCA OFEREÇA O E-MAIL DO MÉDICO PROATIVAMENTE" in MEDICAL_LIMITS_RULE
+    assert "PRÓPRIO TRATAMENTO PSIQUIÁTRICO" in MEDICAL_LIMITS_RULE
+    # O fluxo legítimo (paciente pede / problema de medicação) continua de pé.
+    assert "dr.juliogouveia@gmail.com" in MEDICAL_LIMITS_RULE
+    assert "brunalima.psiquiatra@gmail.com" in MEDICAL_LIMITS_RULE
