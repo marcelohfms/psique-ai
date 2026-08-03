@@ -1,4 +1,5 @@
 import asyncio
+import contextlib
 import hashlib
 import hmac
 import json
@@ -19,7 +20,12 @@ from langchain_core.messages import HumanMessage
 
 from app.graph import graph as graph_module
 from app.database import get_user_by_phone, get_users_by_phone, get_contact_by_phone, log_event, DOCTOR_NAMES, save_message
-from app.buffer import push as buffer_push, drain as buffer_drain, get_phone_lock
+from app.buffer import (
+    push as buffer_push,
+    drain as buffer_drain,
+    get_phone_lock,
+    hold as buffer_hold,
+)
 from app.auth import router as auth_router
 from app.whatsapp import send_text
 
@@ -215,6 +221,26 @@ async def _notify_document_processing_failure(phone: str, media_id: str, mime: s
 
 
 # ── Message extraction from Meta Cloud API payload ────────────────────────────
+
+def _incoming_media_phone(payload: dict) -> str | None:
+    """Telefone de uma mensagem de mídia (imagem/documento), ou None.
+
+    Precisa ser lido do payload cru, ANTES de `extract_message`, porque é ela que
+    chama o Vision — e é justamente essa espera que precisa segurar o buffer.
+    """
+    try:
+        msg = payload["entry"][0]["changes"][0]["value"]["messages"][0]
+    except (KeyError, IndexError, TypeError):
+        return None
+    if not isinstance(msg, dict) or msg.get("type") not in ("image", "document"):
+        return None
+    from_number = msg.get("from", "")
+    if not from_number:
+        return None
+    from app.database import _phone_variants as _pv
+    variants = _pv(from_number)
+    return (variants[0] if variants else from_number) + "@s.whatsapp.net"
+
 
 async def extract_message(payload: dict) -> tuple[str, str] | None:
     """
@@ -721,20 +747,28 @@ async def _handle_payload(payload: dict) -> None:
         except (KeyError, IndexError):
             pass  # status/reaction payloads have no message id — let extract_message filter them
 
-        result = await extract_message(payload)
-        if result is None:
-            return
-        phone, text = result
+        # Segura o buffer enquanto o Vision lê a mídia: sem isso, um texto enviado
+        # segundos antes do comprovante dispara sozinho e a Eva responde cobrando
+        # um pagamento que já está na mão dela (caso 5581991320003, 03/08/2026).
+        media_phone = _incoming_media_phone(payload)
+        with contextlib.ExitStack() as stack:
+            if media_phone:
+                stack.enter_context(buffer_hold(media_phone))
 
-        logger.info("Incoming message from %s: %.80s", phone, text)
+            result = await extract_message(payload)
+            if result is None:
+                return
+            phone, text = result
 
-        # /reset command
-        if text.strip().lower() == "/reset":
-            await _reset_conversation(phone)
-            return
+            logger.info("Incoming message from %s: %.80s", phone, text)
 
-        await save_message(phone, "user", text)
-        await buffer_push(phone, text, process_message)
+            # /reset command
+            if text.strip().lower() == "/reset":
+                await _reset_conversation(phone)
+                return
+
+            await save_message(phone, "user", text)
+            await buffer_push(phone, text, process_message)
     except Exception:
         logger.exception("Error handling webhook payload")
 
@@ -944,12 +978,14 @@ async def _apply_eva_label_action(payload: dict, added: set, removed: set) -> bo
                 if last:
                     text = last["content"] or None
                     attachments = last["attachments"]
-                    if attachments:
-                        attachment_text = await _process_chatwoot_attachments(attachments, phone=phone)
-                        if attachment_text and attachment_text != "[audio-nao-suportado]":
-                            text = f"{text}\n{attachment_text}" if text else attachment_text
-                    if text:
-                        await buffer_push(phone, text, process_message)
+                    with contextlib.ExitStack() as stack:
+                        if attachments:
+                            stack.enter_context(buffer_hold(phone))
+                            attachment_text = await _process_chatwoot_attachments(attachments, phone=phone)
+                            if attachment_text and attachment_text != "[audio-nao-suportado]":
+                                text = f"{text}\n{attachment_text}" if text else attachment_text
+                        if text:
+                            await buffer_push(phone, text, process_message)
             except Exception:
                 logger.exception("Failed to fetch/reprocess last message for %s", phone)
 
@@ -1290,31 +1326,36 @@ async def _handle_chatwoot_payload(payload: dict) -> None:
             return
 
         attachments = payload.get("attachments", [])
-        if attachments:
-            # Process attachments whenever present — even if the message also has a
-            # caption (text). Previously this only ran when text was None, so a
-            # comprovante/document sent WITH a caption had its attachment silently
-            # dropped and only the caption text reached Eva.
-            caption = text
-            attachment_text = await _process_chatwoot_attachments(attachments, phone=phone)
-            if attachment_text == "[audio-nao-suportado]":
-                await send_text(phone, "Não consigo processar áudios. Por favor, envie sua mensagem em texto. 😊")
+        # Mesmo motivo do /webhook: enquanto o anexo é baixado e lido, ele não existe
+        # como texto. Segurar o buffer impede que um texto anterior dispare sozinho.
+        with contextlib.ExitStack() as stack:
+            if attachments:
+                stack.enter_context(buffer_hold(phone))
+
+                # Process attachments whenever present — even if the message also has a
+                # caption (text). Previously this only ran when text was None, so a
+                # comprovante/document sent WITH a caption had its attachment silently
+                # dropped and only the caption text reached Eva.
+                caption = text
+                attachment_text = await _process_chatwoot_attachments(attachments, phone=phone)
+                if attachment_text == "[audio-nao-suportado]":
+                    await send_text(phone, "Não consigo processar áudios. Por favor, envie sua mensagem em texto. 😊")
+                    return
+                if attachment_text:
+                    text = f"{caption}\n{attachment_text}" if caption else attachment_text
+                else:
+                    # Attachment processing failed, or was already fully handled elsewhere
+                    # (medical document: thank-you + clinic notification sent directly, or
+                    # an irrelevant image) — fall back to the caption so it isn't lost,
+                    # mirroring the Meta webhook's image-handling behavior.
+                    text = caption
+            if text is None:
                 return
-            if attachment_text:
-                text = f"{caption}\n{attachment_text}" if caption else attachment_text
-            else:
-                # Attachment processing failed, or was already fully handled elsewhere
-                # (medical document: thank-you + clinic notification sent directly, or
-                # an irrelevant image) — fall back to the caption so it isn't lost,
-                # mirroring the Meta webhook's image-handling behavior.
-                text = caption
-        if text is None:
-            return
 
-        logger.info("Chatwoot message from %s (conv=%s): %.80s", phone, conversation_id, text)
+            logger.info("Chatwoot message from %s (conv=%s): %.80s", phone, conversation_id, text)
 
-        await save_message(phone, "user", text)
-        await buffer_push(phone, text, process_message)
+            await save_message(phone, "user", text)
+            await buffer_push(phone, text, process_message)
     except Exception:
         logger.exception("Error handling Chatwoot webhook payload")
 

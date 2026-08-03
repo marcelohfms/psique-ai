@@ -241,6 +241,52 @@ async def test_duplicate_image_webhook_processes_media_only_once():
     assert mock_media.call_count == 1
 
 
+async def test_text_waits_for_the_receipt_being_read_and_both_land_in_one_turn():
+    """Caso 5581991320003 (03/08/2026): "Paciente Bernardo…" seguido do comprovante
+    2 s depois. O Vision levou ~9 s para ler a imagem, o debounce do texto expirou
+    antes disso, e a Eva abriu um turno sem o comprovante — respondendo com a
+    cobrança da taxa que a paciente acabara de pagar.
+
+    O hold de mídia tem que segurar o texto até a imagem entrar no buffer."""
+    import asyncio
+    import app.buffer as buf
+    from app.main import _handle_payload
+
+    turns: list[str] = []
+
+    async def fake_process_message(_phone: str, text: str) -> None:
+        turns.append(text)
+
+    async def slow_vision(*_args, **_kwargs) -> str:
+        await asyncio.sleep(0.2)  # leitura do comprovante pelo Vision
+        return "[imagem]: COMPROVANTE DE PAGAMENTO R$ 100,00"
+
+    buf._pending.clear()
+    buf._holds.clear()
+    try:
+        with patch("app.media.process_media", new=slow_vision), \
+             patch("app.main.save_message", new_callable=AsyncMock), \
+             patch("app.main.process_message", new=fake_process_message), \
+             patch("app.buffer.DEBOUNCE_SECONDS", 0.03), \
+             patch("app.buffer._DEFER_RETRY_SECONDS", 0.01):
+            text_payload = _meta_payload(body="Paciente Bernardo Rabelo Porto Ferreira")
+            text_payload["entry"][0]["changes"][0]["value"]["messages"][0]["id"] = "wamid.texto"
+            await _handle_payload(text_payload)
+
+            image_payload = _meta_payload(msg_type="image")
+            image_payload["entry"][0]["changes"][0]["value"]["messages"][0]["id"] = "wamid.imagem"
+            await _handle_payload(image_payload)
+
+            await asyncio.sleep(0.2)
+    finally:
+        buf._pending.clear()
+        buf._holds.clear()
+
+    assert len(turns) == 1, f"esperava 1 turno, veio {len(turns)}: {turns}"
+    assert "Paciente Bernardo" in turns[0]
+    assert "COMPROVANTE" in turns[0]
+
+
 async def test_duplicate_audio_webhook_sends_notice_only_once():
     """A retried audio webhook (same msg_id) must not send the notice twice."""
     from app.main import _handle_payload
