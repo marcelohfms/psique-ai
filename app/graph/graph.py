@@ -4,7 +4,7 @@ from langgraph.checkpoint.memory import MemorySaver
 from langgraph.prebuilt import ToolNode
 
 from app.graph.state import ConversationState
-from app.graph.nodes import collect_info_node, patient_agent_node, TOOLS
+from app.graph.nodes import collect_info_node, patient_agent_node, TOOLS, RESUME_AFTER_TOOL
 from app.database import is_registration_complete, DOCTOR_IDS
 
 
@@ -74,6 +74,15 @@ def _route_patient_agent(state: ConversationState) -> str:
     last = state["messages"][-1]
     if getattr(last, "tool_calls", None):
         return "tools"
+    # Guards do patient_agent_node que executam uma tool sem passar pela LLM
+    # injetam (AIMessage com tool_call + ToolMessage) e marcam a ToolMessage com
+    # RESUME_AFTER_TOOL quando a LLM ainda precisa agir sobre aquele resultado.
+    # Sem esse desvio o turno terminava aqui — a última mensagem é a ToolMessage,
+    # que não tem tool_calls — e a instrução interna morria sem leitor: a paciente
+    # confirmava a remarcação e não recebia resposta nenhuma (caso Elisabete/Isaac,
+    # 5581987385089, 02/08/2026).
+    if getattr(last, "additional_kwargs", None) and last.additional_kwargs.get(RESUME_AFTER_TOOL):
+        return "patient_agent"
     return END
 
 
@@ -99,7 +108,7 @@ def build_graph(checkpointer: BaseCheckpointSaver | None = None):
     g.add_conditional_edges(
         "patient_agent",
         _route_patient_agent,
-        {"tools": "tools", END: END},
+        {"tools": "tools", "patient_agent": "patient_agent", END: END},
     )
     g.add_edge("tools", "patient_agent")
 
