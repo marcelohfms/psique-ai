@@ -12,9 +12,11 @@ def clear_buffer():
     import app.buffer as buf
     buf._pending.clear()
     buf._phone_locks.clear()
+    buf._holds.clear()
     yield
     buf._pending.clear()
     buf._phone_locks.clear()
+    buf._holds.clear()
 
 
 async def test_single_message_delivered_after_debounce():
@@ -118,6 +120,74 @@ async def test_replays_paulo_diniz_incident_end_to_end():
     assert len(turns) == 2, f"esperava 2 turnos, veio {len(turns)}: {turns}"
     assert "COMPROVANTE" in turns[0]
     assert "Pix enviado" in turns[1] and "Saldo restante pago" in turns[1]
+
+
+async def test_media_hold_keeps_preceding_text_waiting_for_the_receipt():
+    """Caso 5581991320003 (03/08/2026, e igual em 09/07): a paciente mandou
+    "Paciente Bernardo…" e, 2s depois, o comprovante. A leitura da imagem pelo
+    Vision levou ~9s, então o debounce do texto expirou antes de a imagem existir
+    e a Eva respondeu cobrando a taxa que já tinha sido paga.
+
+    Com o hold, o texto espera a imagem e os dois viram UM turno."""
+    from app.buffer import push, hold
+
+    handler = AsyncMock()
+    with patch("app.buffer.DEBOUNCE_SECONDS", 0.03), \
+         patch("app.buffer._DEFER_RETRY_SECONDS", 0.01):
+        await push(PHONE, "Paciente Bernardo Rabelo Porto Ferreira", handler)
+        with hold(PHONE):  # webhook da imagem chegou; Vision começou a ler
+            await asyncio.sleep(0.2)  # OCR demorado — o debounce do texto já expirou
+            handler.assert_not_awaited()
+            await push(PHONE, "[imagem]: COMPROVANTE DE PAGAMENTO R$ 100,00", handler)
+        await asyncio.sleep(0.15)
+
+    handler.assert_awaited_once()
+    combined_text = handler.call_args[0][1]
+    assert "Paciente Bernardo" in combined_text
+    assert "COMPROVANTE" in combined_text
+
+
+async def test_media_hold_is_reentrant():
+    """Duas mídias em voo ao mesmo tempo: soltar a primeira não pode liberar o buffer
+    enquanto a segunda ainda está sendo lida."""
+    from app.buffer import push, hold
+
+    handler = AsyncMock()
+    with patch("app.buffer.DEBOUNCE_SECONDS", 0), \
+         patch("app.buffer._DEFER_RETRY_SECONDS", 0.01):
+        outer = hold(PHONE)
+        outer.__enter__()
+        inner = hold(PHONE)
+        inner.__enter__()
+        await push(PHONE, "oi", handler)
+        await asyncio.sleep(0.05)
+        inner.__exit__(None, None, None)
+        await asyncio.sleep(0.05)
+        handler.assert_not_awaited()
+        outer.__exit__(None, None, None)
+        await asyncio.sleep(0.05)
+
+    handler.assert_awaited_once_with(PHONE, "oi")
+
+
+async def test_media_hold_cap_dispatches_if_hold_never_released():
+    """Se a leitura da mídia travar e o hold nunca for solto, a mensagem do paciente
+    não pode ficar presa para sempre: passado o teto, o buffer despacha."""
+    from app.buffer import push, hold
+
+    handler = AsyncMock()
+    with patch("app.buffer.DEBOUNCE_SECONDS", 0), \
+         patch("app.buffer._DEFER_RETRY_SECONDS", 0.01), \
+         patch("app.buffer._MAX_DEFER_SECONDS", 0.05):
+        stuck = hold(PHONE)
+        stuck.__enter__()
+        try:
+            await push(PHONE, "alguém aí?", handler)
+            await asyncio.sleep(0.3)
+        finally:
+            stuck.__exit__(None, None, None)
+
+    handler.assert_awaited_once_with(PHONE, "alguém aí?")
 
 
 async def test_deferral_cap_dispatches_even_if_lock_never_released():

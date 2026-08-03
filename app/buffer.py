@@ -2,8 +2,9 @@ import asyncio
 import logging
 import os
 from collections import defaultdict
+from contextlib import contextmanager
 from dataclasses import dataclass, field
-from typing import Callable, Awaitable
+from typing import Callable, Awaitable, Iterator
 
 import openai
 
@@ -35,6 +36,43 @@ _phone_locks: dict[str, asyncio.Lock] = defaultdict(asyncio.Lock)
 
 def get_phone_lock(phone: str) -> asyncio.Lock:
     return _phone_locks[phone]
+
+
+# Uma imagem/PDF só vira texto depois de passar pelo OpenAI Vision, o que leva
+# 7-10 s. Nesse intervalo a mensagem é invisível para o buffer: um texto enviado
+# logo antes dela tem o debounce expirado e dispara um turno SEM o comprovante —
+# a Eva então cobra uma taxa que a paciente acabou de pagar (caso 5581991320003,
+# 03/08/2026, idêntico ao de 09/07/2026: "Paciente Bernardo…" + comprovante 2 s
+# depois → duas respostas, a primeira cobrando de novo).
+#
+# O hold é registrado assim que o webhook da mídia chega — antes da leitura — e
+# só é solto depois que o texto transcrito entrou no buffer. Enquanto ele existe,
+# `_fire` adia o despacho exatamente como faz com o lock do telefone, então o
+# texto anterior e o comprovante caem no mesmo turno.
+_holds: dict[str, int] = {}
+
+
+def is_held(phone: str) -> bool:
+    return _holds.get(phone, 0) > 0
+
+
+@contextmanager
+def hold(phone: str) -> Iterator[None]:
+    """Segura o despacho do buffer para `phone` enquanto uma mídia é processada.
+
+    Reentrante: duas mídias em voo ao mesmo tempo só liberam o buffer quando a
+    última terminar. O teto de `_MAX_DEFER_SECONDS` em `_fire` continua valendo,
+    então um hold que vaze (leitura travada) não prende a mensagem para sempre.
+    """
+    _holds[phone] = _holds.get(phone, 0) + 1
+    try:
+        yield
+    finally:
+        remaining = _holds.get(phone, 0) - 1
+        if remaining > 0:
+            _holds[phone] = remaining
+        else:
+            _holds.pop(phone, None)
 
 
 # How long the shutdown drain waits for the flushed handlers to finish before
@@ -83,9 +121,11 @@ async def push(
     loop = asyncio.get_running_loop()
 
     def _fire() -> None:
-        # An invoke is still running for this phone: keep accumulating instead of
-        # dispatching a second turn that would just queue on the phone lock.
-        if get_phone_lock(phone).locked():
+        # Um invoke ainda rodando (não adianta despachar: ficaria na fila do lock)
+        # ou uma mídia ainda sendo lida (o texto dela ainda não existe): em ambos
+        # os casos, continue acumulando em vez de abrir um segundo turno.
+        blocked = get_phone_lock(phone).locked() or is_held(phone)
+        if blocked:
             now = loop.time()
             if entry.deferred_since is None:
                 entry.deferred_since = now
@@ -93,8 +133,8 @@ async def push(
                 entry.handle = loop.call_later(_DEFER_RETRY_SECONDS, _fire)
                 return
             logger.warning(
-                "Buffer deferral cap (%.0fs) reached for %s while an invoke is "
-                "still in flight — dispatching anyway",
+                "Buffer deferral cap (%.0fs) reached for %s (invoke em voo ou "
+                "mídia em leitura) — dispatching anyway",
                 _MAX_DEFER_SECONDS, phone,
             )
 
