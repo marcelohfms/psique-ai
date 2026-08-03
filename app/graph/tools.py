@@ -1426,11 +1426,28 @@ async def change_modality(
     if not start_time_str:
         return "Não foi possível obter a data e hora da consulta."
 
-    start = datetime.fromisoformat(start_time_str).replace(tzinfo=TZ)
+    # start_time vem do banco em UTC — .astimezone(TZ) converte, .replace(tzinfo=TZ)
+    # reescreveria o evento 3h adiante do horário real da consulta.
+    start = datetime.fromisoformat(start_time_str).astimezone(TZ)
     slot_duration = 60  # Assume 1 hour by default
     if appt_result.data.get("end_time"):
-        end = datetime.fromisoformat(appt_result.data["end_time"]).replace(tzinfo=TZ)
+        end = datetime.fromisoformat(appt_result.data["end_time"]).astimezone(TZ)
         slot_duration = int((end - start).total_seconds() / 60)
+
+    # Mesma precedência de confirm_appointment/reschedule_appointment: restrição
+    # cadastral e grade do médico valem mais que a preferência do momento.
+    from app.google_calendar import get_modality_for_slot
+    restriction = state.get("modality_restriction")
+    if restriction in ("online", "presencial") and restriction != new_modality:
+        return (
+            f"Conforme o cadastro, as consultas deste paciente são {restriction}. "
+            "Não é possível alterar a modalidade por aqui — transfira para a atendente se o paciente insistir."
+        )
+    if get_modality_for_slot(doctor, start) == "online" and new_modality == "presencial":
+        return (
+            "Este horário é exclusivamente online na agenda do médico — não é possível "
+            "torná-lo presencial. Ofereça manter online ou remarcar para um horário presencial."
+        )
 
     _appt_patient = appt_result.data.get("patients") or {}
     patient_name = _appt_patient.get("name") or state.get("patient_name") or state.get("user_name") or "Paciente"
