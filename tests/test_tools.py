@@ -3488,3 +3488,112 @@ async def test_notify_clinic_does_not_raise_when_log_event_also_fails():
     with patch("app.email_sender.send_clinic_notification_email", side_effect=boom), \
          patch("app.graph.tools.log_event", side_effect=RuntimeError("db down")):
         await _notify_clinic("corpo", phone=PHONE, subject="qualquer")
+
+
+# ── change_modality ──────────────────────────────────────────────────────────
+
+def test_change_modality_is_bound_to_the_agent():
+    """Caso Maria Cecília (15139085575, 03/08/2026): a paciente avisou que a consulta
+    daquele dia seria online, a Eva respondeu "vou registrar" — e nada mudou. A tool
+    change_modality existia e o prompt mandava chamá-la, mas ela nunca foi incluída em
+    TOOLS, então a LLM não tinha como chamá-la: sobrava só o texto de confirmação."""
+    from app.graph.nodes import TOOLS
+    from app.graph.tools import change_modality
+    assert change_modality in TOOLS, "change_modality não está bound na LLM"
+
+
+@pytest.mark.asyncio
+async def test_change_modality_keeps_the_original_appointment_time():
+    """start_time vem do banco em UTC. Usar .replace(tzinfo=TZ) em vez de
+    .astimezone(TZ) reescrevia o evento 3h adiante do horário real."""
+    from app.graph.tools import change_modality
+    client, table, execute = _make_supabase_client()
+    execute.return_value = MagicMock(data={
+        "start_time": "2026-08-03T18:00:00+00:00",   # 15:00 em Recife
+        "end_time": "2026-08-03T19:00:00+00:00",
+        "patient_id": "user-1",
+        "modality": "presencial",
+        "patients": {"name": "Maria", "email": "maria@example.com"},
+    })
+    with patch("app.graph.tools._get_doctor_calendar_id", new_callable=AsyncMock, return_value="cal123"), \
+         patch("app.google_calendar.update_event", new_callable=AsyncMock) as mock_update, \
+         patch("app.google_calendar.get_modality_for_slot", return_value="escolha"), \
+         patch("app.graph.tools.get_supabase", new_callable=AsyncMock, return_value=client), \
+         patch("app.graph.tools.get_users_by_phone", new_callable=AsyncMock, return_value=[{"id": "user-1"}]), \
+         patch("app.graph.tools.log_event", new_callable=AsyncMock), \
+         patch("app.graph.tools._notify_clinic", new_callable=AsyncMock):
+        result = await change_modality.coroutine(
+            appointment_id="evt-abc",
+            new_modality="online",
+            state=_make_state(),
+            config=CONFIG,
+        )
+
+    mock_update.assert_awaited_once()
+    kwargs = mock_update.await_args.kwargs
+    assert kwargs["new_start"].astimezone(TZ).strftime("%H:%M") == "15:00"
+    assert kwargs["slot_minutes"] == 60
+    assert kwargs["modality"] == "online"
+    assert "15:00" in result
+
+
+@pytest.mark.asyncio
+async def test_change_modality_refuses_presencial_on_online_only_slot():
+    """O turno marcado como "apenas online" na grade do médico não vira presencial
+    só porque o paciente pediu — confirm_appointment já barrava isso."""
+    from app.graph.tools import change_modality
+    client, table, execute = _make_supabase_client()
+    execute.return_value = MagicMock(data={
+        "start_time": "2026-08-07T17:00:00+00:00",
+        "end_time": "2026-08-07T18:00:00+00:00",
+        "patient_id": "user-1",
+        "modality": "online",
+        "patients": {"name": "Maria", "email": "maria@example.com"},
+    })
+    with patch("app.graph.tools._get_doctor_calendar_id", new_callable=AsyncMock, return_value="cal123"), \
+         patch("app.google_calendar.update_event", new_callable=AsyncMock) as mock_update, \
+         patch("app.google_calendar.get_modality_for_slot", return_value="online"), \
+         patch("app.graph.tools.get_supabase", new_callable=AsyncMock, return_value=client), \
+         patch("app.graph.tools.get_users_by_phone", new_callable=AsyncMock, return_value=[{"id": "user-1"}]), \
+         patch("app.graph.tools.log_event", new_callable=AsyncMock), \
+         patch("app.graph.tools._notify_clinic", new_callable=AsyncMock):
+        result = await change_modality.coroutine(
+            appointment_id="evt-abc",
+            new_modality="presencial",
+            state=_make_state(),
+            config=CONFIG,
+        )
+
+    mock_update.assert_not_awaited()
+    assert "online" in result.lower()
+
+
+@pytest.mark.asyncio
+async def test_change_modality_refuses_when_registration_restricts_modality():
+    """modality_restriction do cadastro vale mais que a preferência do momento —
+    mesma precedência já aplicada em confirm_appointment e reschedule_appointment."""
+    from app.graph.tools import change_modality
+    client, table, execute = _make_supabase_client()
+    execute.return_value = MagicMock(data={
+        "start_time": "2026-08-03T18:00:00+00:00",
+        "end_time": "2026-08-03T19:00:00+00:00",
+        "patient_id": "user-1",
+        "modality": "online",
+        "patients": {"name": "Maria", "email": "maria@example.com"},
+    })
+    with patch("app.graph.tools._get_doctor_calendar_id", new_callable=AsyncMock, return_value="cal123"), \
+         patch("app.google_calendar.update_event", new_callable=AsyncMock) as mock_update, \
+         patch("app.google_calendar.get_modality_for_slot", return_value="escolha"), \
+         patch("app.graph.tools.get_supabase", new_callable=AsyncMock, return_value=client), \
+         patch("app.graph.tools.get_users_by_phone", new_callable=AsyncMock, return_value=[{"id": "user-1"}]), \
+         patch("app.graph.tools.log_event", new_callable=AsyncMock), \
+         patch("app.graph.tools._notify_clinic", new_callable=AsyncMock):
+        result = await change_modality.coroutine(
+            appointment_id="evt-abc",
+            new_modality="presencial",
+            state=_make_state(modality_restriction="online"),
+            config=CONFIG,
+        )
+
+    mock_update.assert_not_awaited()
+    assert "cadastro" in result.lower()

@@ -3035,6 +3035,49 @@ def test_social_name_instruction_in_prompts():
     )
 
 
+def test_modality_change_instruction_in_both_prompts():
+    """Caso Maria Cecília (15139085575, 03/08/2026): paciente já cadastrada avisou que
+    a consulta seria online e a Eva só respondeu que "ia registrar". A regra de
+    ALTERAÇÃO DE MODALIDADE existia apenas no NEW_PATIENT_SYSTEM — quem já é paciente
+    cai no EXISTING_PATIENT_SYSTEM e não tinha instrução nenhuma sobre change_modality."""
+    from app.graph.prompts import EXISTING_PATIENT_SYSTEM, NEW_PATIENT_SYSTEM
+
+    for name, block in (
+        ("EXISTING_PATIENT_SYSTEM", EXISTING_PATIENT_SYSTEM),
+        ("NEW_PATIENT_SYSTEM", NEW_PATIENT_SYSTEM),
+    ):
+        assert "{modality_change_rule}" in block, (
+            f"{name} não injeta a regra de alteração de modalidade"
+        )
+
+
+def test_modality_change_rule_covers_affirmations_not_only_questions():
+    """A paciente não pediu, avisou: "a consulta hoje vai ser online tá". A regra
+    só trazia exemplos em forma de pergunta/preferência, então o aviso declarativo
+    não era reconhecido como pedido de alteração."""
+    from app.graph.prompts import MODALITY_CHANGE_RULE
+
+    assert "change_modality" in MODALITY_CHANGE_RULE
+    assert "vai ser online" in MODALITY_CHANGE_RULE, (
+        "MODALITY_CHANGE_RULE não cobre o aviso declarativo do paciente"
+    )
+    assert "NUNCA responda que vai registrar" in MODALITY_CHANGE_RULE, (
+        "MODALITY_CHANGE_RULE não proíbe confirmar a mudança sem chamar a tool"
+    )
+
+
+def test_day_of_reminder_rule_does_not_swallow_real_requests():
+    """O lembrete do dia manda não iniciar outro fluxo. A paciente respondeu ao
+    lembrete pedindo mudança de modalidade — a regra não pode engolir um pedido real."""
+    from app.graph import prompts
+
+    for name in ("EXISTING_PATIENT_SYSTEM", "NEW_PATIENT_SYSTEM"):
+        block = getattr(prompts, name)
+        assert "nem inicie nenhum outro fluxo. Isso vale apenas para (a) e (b)" in block, (
+            f"{name}: a regra do lembrete do dia ainda bloqueia pedidos reais do paciente"
+        )
+
+
 def test_no_waitlist_promise_without_search_instruction_in_prompts():
     """Regressão: Eva não pode oferecer 'vou avisar depois' / lista de espera em
     resposta a indisponibilidade (ex: recesso do médico) sem antes ter chamado

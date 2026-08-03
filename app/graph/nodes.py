@@ -11,6 +11,7 @@ from app.graph.schemas import CollectInfoOutput
 from app.graph.tools import (
     get_available_slots, confirm_appointment,
     cancel_appointment, reschedule_appointment, mark_reschedule_in_progress,
+    change_modality,
     request_document, transfer_to_human, confirm_attendance,
     register_payment, update_preferred_doctor, save_patient_email,
     set_social_name,
@@ -20,7 +21,7 @@ from app.graph.tools import (
     request_external_contact, nudge_external_contact,
     _expected_consultation_amount,
 )
-from app.graph.prompts import COLLECT_SYSTEM, MINOR_RULE, MINOR_RETURNING_RULE, ADULT_RULE, GUARDIAN_RULE, EXISTING_PATIENT_SYSTEM, NEW_PATIENT_SYSTEM, CANCELLATION_RULES, CLINIC_ADDRESS, CLINIC_ADDRESS_TEXT, get_doctors_info, sanitize_clinic_address, get_booking_fee_rule, MEDICAL_LIMITS_RULE, AGE_EXCEPTION_RULE, DOCTOR_CORRECTION_RULE, EMAIL_RULE, get_pricing_rules, ATTENDANT_INSTRUCTION_RULE, get_pricing_exception_rule, CORRECT_PIX_KEY, SOCIAL_NAME_RULE, MINOR_FIRST_CONSULT_INFO, MINOR_RULE_SCHEDULING_ONLY
+from app.graph.prompts import COLLECT_SYSTEM, MINOR_RULE, MINOR_RETURNING_RULE, ADULT_RULE, GUARDIAN_RULE, EXISTING_PATIENT_SYSTEM, NEW_PATIENT_SYSTEM, CANCELLATION_RULES, MODALITY_CHANGE_RULE, CLINIC_ADDRESS, CLINIC_ADDRESS_TEXT, get_doctors_info, sanitize_clinic_address, get_booking_fee_rule, MEDICAL_LIMITS_RULE, AGE_EXCEPTION_RULE, DOCTOR_CORRECTION_RULE, EMAIL_RULE, get_pricing_rules, ATTENDANT_INSTRUCTION_RULE, get_pricing_exception_rule, CORRECT_PIX_KEY, SOCIAL_NAME_RULE, MINOR_FIRST_CONSULT_INFO, MINOR_RULE_SCHEDULING_ONLY
 from app.whatsapp import send_text
 from app.database import upsert_user, log_event, get_upcoming_appointments, get_user_by_phone, get_users_by_phone, DOCTOR_IDS, DOCTOR_NAMES, save_message, get_last_assistant_message_time, is_registration_complete, missing_registration_field
 from app.chatwoot import get_conversation_id, add_private_note
@@ -30,6 +31,7 @@ from app.chatwoot import get_conversation_id, add_private_note
 TOOLS = [
     get_available_slots, confirm_appointment,
     cancel_appointment, reschedule_appointment, mark_reschedule_in_progress,
+    change_modality,
     request_document, transfer_to_human, confirm_attendance,
     register_payment, update_preferred_doctor, save_patient_email,
     set_social_name,
@@ -1875,6 +1877,7 @@ async def patient_agent_node(state: ConversationState, config: RunnableConfig) -
         doctor_correction_rule=DOCTOR_CORRECTION_RULE,
         booking_fee_rule=get_booking_fee_rule(),
         cancellation_rules=CANCELLATION_RULES,
+        modality_change_rule=MODALITY_CHANGE_RULE,
         pricing_rules=get_pricing_rules(datetime.now()),
         clinic_address=CLINIC_ADDRESS,
         doctors_info=get_doctors_info(),
