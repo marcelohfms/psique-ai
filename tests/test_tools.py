@@ -2499,6 +2499,72 @@ async def test_register_payment_override_ambiguous_name_asks_for_clarification()
     mock_sheets.assert_not_awaited()  # must not register the payment against either candidate
 
 
+async def test_register_payment_multiple_patients_on_phone_demands_new_tool_call():
+    """Regressão (Juliana, 5581981845995, 04/08/2026): o telefone tem duas
+    pacientes (mãe e filha), então register_payment devolveu só a pergunta
+    'Para qual deles é o comprovante?'. Eva perguntou à paciente em forma de
+    sim/não, ela respondeu 'Sim' — e Eva escreveu 'sua taxa de reserva foi
+    recebida e sua consulta está garantida' SEM chamar register_payment de novo.
+    booking_fee_paid_at ficou nulo e o cron de cobrança disparou ~2h depois,
+    depois de Eva já ter confirmado o recebimento.
+
+    O retorno da desambiguação precisa dizer explicitamente que NADA foi
+    registrado e que a tool tem de ser chamada de novo com
+    patient_name_override — inclusive quando a resposta do paciente for um
+    'sim' a uma pergunta fechada."""
+    from app.graph.tools import register_payment
+    _mae = {"id": "mae-id", "patient_name": "Juliana Fernandes Feitosa de Souza"}
+    _filha = {"id": "filha-id", "patient_name": "Maria Júlia Fernandes Feitosa Lucena"}
+    client, _table, _execute = _make_supabase_client()
+    with patch("app.graph.tools.get_supabase", new_callable=AsyncMock, return_value=client), \
+         patch("app.graph.tools.get_users_by_phone", new_callable=AsyncMock, return_value=[_mae, _filha]), \
+         patch("app.graph.tools.log_event", new_callable=AsyncMock), \
+         patch("app.google_sheets.append_payment_receipt", new_callable=AsyncMock) as mock_sheets, \
+         patch("app.graph.tools._notify_clinic", new_callable=AsyncMock):
+        result = await register_payment.coroutine(
+            amount="100,00",
+            drive_link="https://drive.google.com/file/d/abc/view",
+            state=_make_state(),
+            config=CONFIG,
+        )
+
+    assert "Juliana Fernandes Feitosa de Souza" in result
+    assert "Maria Júlia Fernandes Feitosa Lucena" in result
+    mock_sheets.assert_not_awaited()
+    # o retorno é instrução interna, não texto pronto pro paciente
+    assert "INSTRUÇÃO INTERNA" in result
+    # e precisa exigir a nova chamada da tool, não só a pergunta
+    assert "register_payment" in result
+    assert "patient_name_override" in result
+
+
+async def test_register_payment_override_ambiguous_name_demands_new_tool_call():
+    """Mesmo buraco do teste acima, no ramo de nome ambíguo (ilike com vários
+    candidatos): a pergunta sozinha deixa Eva livre pra 'confirmar' o pagamento
+    sem registrar nada."""
+    from app.graph.tools import register_payment
+    client = _make_supabase_client_for_override([
+        {"id": "wrong-id", "name": "Francisco Fonseca Lima", "doctor_id": "d5baa58b-a788-4f40-b8c0-512c189150be"},
+        {"id": "right-id", "name": "Francisco Domingues Bruno de Faria", "doctor_id": "18b01f87-eacd-4905-bd4a-a8293991e6fd"},
+    ])
+    with patch("app.graph.tools.get_supabase", new_callable=AsyncMock, return_value=client), \
+         patch("app.patients.get_contact_by_phone", new_callable=AsyncMock, return_value=None), \
+         patch("app.graph.tools.log_event", new_callable=AsyncMock), \
+         patch("app.google_sheets.append_payment_receipt", new_callable=AsyncMock), \
+         patch("app.graph.tools._notify_clinic", new_callable=AsyncMock):
+        result = await register_payment.coroutine(
+            amount="550,00",
+            drive_link="https://drive.google.com/file/d/abc/view",
+            patient_name_override="Francisco",
+            state=_make_state(),
+            config=CONFIG,
+        )
+
+    assert "INSTRUÇÃO INTERNA" in result
+    assert "register_payment" in result
+    assert "patient_name_override" in result
+
+
 async def test_register_payment_override_disambiguates_via_sender_contact_link():
     """When multiple patients share the search name, but the sender's phone is
     already linked (patient_contacts) to exactly one of them, use that one

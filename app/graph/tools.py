@@ -2289,6 +2289,30 @@ def _parse_brl_amount(raw: str) -> float:
         return 0.0
 
 
+def _payment_disambiguation_prompt(context: str, names: str) -> str:
+    """Retorno de register_payment quando o paciente do comprovante é ambíguo.
+
+    Devolver só a pergunta ("para qual deles é o comprovante?") já custou caro:
+    Eva perguntava ao paciente, recebia a resposta e escrevia "taxa recebida,
+    consulta garantida" sem nunca chamar a tool de novo — o pagamento ficava
+    sem registro e o cron de cobrança disparava horas depois (caso Juliana,
+    5581981845995, 04/08/2026). Por isso o retorno é instrução interna e diz,
+    em vez de perguntar, o que precisa acontecer na próxima chamada.
+    """
+    return (
+        f"[INSTRUÇÃO INTERNA — NÃO ENVIE AO PACIENTE] {context} "
+        "NADA foi registrado: nenhum pagamento foi salvo e nenhuma vaga foi garantida. "
+        f"Pergunte ao paciente para qual deles é o comprovante (cite os nomes: {names}) e, "
+        "assim que ele responder, chame register_payment DE NOVO com "
+        "patient_name_override=[nome completo do paciente escolhido], mantendo amount, "
+        "drive_link e image_description da mensagem original. "
+        "Vale como resposta qualquer forma de identificar o paciente — o nome, o número da "
+        "opção, ou um 'sim' confirmando o nome que você citou numa pergunta fechada. "
+        "NUNCA diga que o comprovante foi recebido/registrado, nem que a consulta está "
+        "garantida, antes de uma chamada de register_payment retornar sucesso."
+    )
+
+
 @tool
 async def register_payment(
     amount: str,
@@ -2398,9 +2422,9 @@ async def register_payment(
                     candidates = linked
             if len(candidates) > 1:
                 names = ", ".join(c.get("name", "Paciente") for c in candidates)
-                return (
-                    f"Encontrei mais de um paciente com nome parecido a '{search_name}': {names}. "
-                    "Para qual deles é este comprovante? Por favor, confirme o nome completo."
+                return _payment_disambiguation_prompt(
+                    f"Encontrei mais de um paciente com nome parecido a '{search_name}': {names}.",
+                    names,
                 )
 
         matched = candidates[0]
@@ -2442,7 +2466,9 @@ async def register_payment(
             names = ", ".join(
                 u.get("patient_name") or u.get("name", "Paciente") for u in all_users
             )
-            return f"Encontrei mais de um paciente neste número: {names}. Para qual deles é o comprovante?"
+            return _payment_disambiguation_prompt(
+                f"Encontrei mais de um paciente neste número: {names}.", names
+            )
 
         user_ids = [u["id"] for u in all_users]
         _appt_lookback = (datetime.now(TZ) - timedelta(days=15)).isoformat()
@@ -2513,7 +2539,10 @@ async def register_payment(
                 (a.get("patients") or {}).get("name", "Paciente")
                 for a in seen_users.values()
             )
-            return f"Encontrei mais de um paciente com consulta agendada neste número: {names}. Para qual deles é o comprovante?"
+            return _payment_disambiguation_prompt(
+                f"Encontrei mais de um paciente com consulta agendada neste número: {names}.",
+                names,
+            )
 
         appt_ref = next(iter(seen_users.values()))
         appt_user = appt_ref.get("patients") or {}
