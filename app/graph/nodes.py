@@ -25,6 +25,7 @@ from app.graph.prompts import COLLECT_SYSTEM, MINOR_RULE, MINOR_RETURNING_RULE, 
 from app.whatsapp import send_text
 from app.database import upsert_user, log_event, get_upcoming_appointments, get_user_by_phone, get_users_by_phone, DOCTOR_IDS, DOCTOR_NAMES, save_message, get_last_assistant_message_time, is_registration_complete, missing_registration_field
 from app.chatwoot import get_conversation_id, add_private_note
+from app.utils import looks_like_name
 
 # ── LLM setup (lazy — instantiated on first use after .env is loaded) ─────────
 
@@ -608,46 +609,6 @@ async def collect_info_node(state: ConversationState, config: RunnableConfig) ->
     _IS_PATIENT_Q = "A consulta é para você ou para outra pessoa?"
     _PATIENT_NAME_Q = "Qual o nome completo do paciente?"
 
-    def _looks_like_name(text: str) -> bool:
-        """Return True if text plausibly looks like a person's name."""
-        import re as _re
-        t = text.strip()
-        # Camada 1: tamanho e caracteres
-        if len(t) < 3:
-            return False
-        if _re.search(r'\d', t):
-            return False
-        # Camada 1b: nomes não são notas/mensagens longas
-        # Se tem múltiplos sinais de pontuação (mais de 1 ponto/vírgula/exclamação/interrogação),
-        # provavelmente é uma frase completa, não um nome
-        _punct_count = sum(1 for c in t if c in '.!?,;')
-        if _punct_count > 1:
-            return False
-        # Se é muito longo (>80 chars), é provavelmente uma nota privada
-        if len(t) > 80:
-            return False
-        # Camada 2: frases claramente não-nomes
-        _non_name = [
-            "que coloquei", "o mesmo", "acima", "já disse", "ja disse",
-            "o de cima", "igual", "conforme", "como disse", "como coloquei",
-            "minha filha", "meu filho", "minha mae", "minha mãe", "meu pai",
-            "o paciente", "a paciente",
-        ]
-        tl = t.lower()
-        if any(p in tl for p in _non_name):
-            return False
-        # Camada 2b: respostas de confirmação isoladas
-        _confirmations = {"sim", "não", "nao", "isso", "exato", "correto", "ok",
-                          "ele", "ela", "eu", "certo", "isso mesmo"}
-        if tl in _confirmations:
-            return False
-        # Camada 3: pelo menos uma palavra com 2+ letras
-        if not _re.search(r'[a-zA-ZÀ-ú]{2,}', t):
-            return False
-        # Camada 3b: não começa com artigo genérico + substantivo
-        if _re.match(r'^(o|a|os|as|meu|minha|seu|sua)\s', tl):
-            return False
-        return True
     _CPF_Q = "Qual o CPF do paciente?"
     _BIRTH_Q = "Qual a data de nascimento do paciente? (formato dd/mm/aaaa)"
     _GUARDIAN_NAME_Q = "Qual é o nome completo do responsável pelo paciente?"
@@ -789,6 +750,16 @@ async def collect_info_node(state: ConversationState, config: RunnableConfig) ->
         # Step 2: contact name — saved to contacts.name only
         if not state.get("user_name"):
             if last_ai and _NAME_Q in last_ai and last_human:
+                # O caminho gêmeo do patient_name (Step 2c) já validava; este não,
+                # e gravava qualquer coisa que chegasse depois da pergunta. Foi
+                # assim que o texto de um comprovante virou nome de contato
+                # (5581991812399) — e o upsert_user copia o nome do contato para
+                # o paciente quando o paciente ainda não tem nome, então o valor
+                # ruim contaminava as duas tabelas de uma vez.
+                if not looks_like_name(last_human):
+                    return await _ask(
+                        "Não consegui identificar o nome. Pode me informar o seu nome completo?"
+                    )
                 _s2_extracted: dict = {"user_name": last_human}
                 if state.get("preferred_doctor"):
                     _s2_extracted["preferred_doctor"] = state["preferred_doctor"]
@@ -888,7 +859,7 @@ async def collect_info_node(state: ConversationState, config: RunnableConfig) ->
         # Step 2c: patient name (only when contact is scheduling for someone else)
         if state.get("is_patient") is False and not state.get("patient_name"):
             if last_ai and _PATIENT_NAME_Q in last_ai and last_human:
-                if _looks_like_name(last_human):
+                if looks_like_name(last_human):
                     return await _extract_and_ask(
                         {"patient_name": last_human}, _nq(patient_name=last_human)
                     )
@@ -1228,8 +1199,21 @@ async def collect_info_node(state: ConversationState, config: RunnableConfig) ->
         "consultation_reason", "referral_professional", "medication_note",
     ]:
         val = getattr(result, field, None)
-        if val is not None:
-            update[field] = val
+        if val is None:
+            continue
+        # Os passos programáticos validam o nome antes de gravar, mas a LLM
+        # escreve nestes mesmos campos por conta própria e ninguém conferia —
+        # a mesma porta com outra fechadura. Um nome que não parece nome é
+        # descartado aqui; o passo determinístico volta a perguntar no próximo
+        # turno, em vez de deixar o corpo de uma mensagem virar prontuário.
+        if field in ("user_name", "patient_name", "guardian_name") and not looks_like_name(val):
+            import logging as _log
+            _log.getLogger(__name__).warning(
+                "NOME_DESCARTADO: LLM extraiu %s=%r que não parece nome phone=%s",
+                field, val[:120], state["phone"],
+            )
+            continue
+        update[field] = val
 
     # is_patient must ONLY be set via programmatic steps (Step 4 for minors, Step 4d for adults).
     # The LLM must not infer it from context — this avoids silently setting is_patient=False

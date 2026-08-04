@@ -3902,3 +3902,104 @@ async def test_reschedule_internal_instruction_resumes_the_llm():
     assert isinstance(last, ToolMessage)
     assert last.additional_kwargs.get(RESUME_AFTER_TOOL) is True
     assert _route_patient_agent({"messages": result["messages"]}) == "patient_agent"
+
+
+# ── Validação de nome — mensagem gravada no lugar do nome ────────────────────
+# Quatro prontuários ficaram com o corpo de uma mensagem no campo do nome:
+# 'LAUDO DE AUTISMO - SUS.pdf\n[pdf-recebido]' (Eduardo, 5581999216258),
+# 'Seria a primeira\nConsulta' (Ana Luiza, 5581998748102) e o texto inteiro de
+# um comprovante de pagamento (5581991812399). Estes são os valores reais.
+
+_NOME_LAUDO = "LAUDO DE AUTISMO - SUS.pdf\n[pdf-recebido]"
+_NOME_PRIMEIRA = "Seria a primeira\nConsulta"
+_NOME_COMPROVANTE = (
+    "[imagem]: COMPROVANTE DE PAGAMENTO: valor transferido R$ 600,00, CNPJ do "
+    "destinatário 42.006.848/0001-78, nome do destinatário PSIQUE, data/hora da "
+    "transação 08/jul/26 11:11. [drive_link:https://drive.google.com/file/d/1Br2/view]"
+)
+
+
+@pytest.mark.parametrize("valor", [_NOME_LAUDO, _NOME_PRIMEIRA, _NOME_COMPROVANTE])
+def test_looks_like_name_rejeita_corpo_de_mensagem(valor):
+    from app.utils import looks_like_name
+
+    assert looks_like_name(valor) is False
+
+
+@pytest.mark.parametrize("nome", [
+    "Ana Luiza",
+    "Marcelo Rodrigues de Souza Brayner Filho",  # 6 palavras — não pode barrar
+    "maria do carmo",                            # minúsculas
+    "Raphaelle Beltrão",                         # acento
+    "Eduardo Araújo Emery",
+    "Jean-Pierre Silva",                         # hífen
+])
+def test_looks_like_name_aceita_nomes_reais(nome):
+    """Falso negativo aqui é pior que falso positivo: a Eva repergunta o nome
+    para sempre. A guarda precisa continuar passando nome de gente."""
+    from app.utils import looks_like_name
+
+    assert looks_like_name(nome) is True
+
+
+async def test_nome_do_contato_nao_aceita_anexo():
+    """O caminho do user_name gravava o que viesse depois da pergunta, sem
+    validar — foi assim que um comprovante virou nome de contato
+    (5581991812399). Agora a Eva repergunta em vez de gravar."""
+    from app.graph.nodes import collect_info_node
+    from app.graph.schemas import CollectInfoOutput
+
+    state = {
+        "phone": PHONE,
+        "messages": [
+            # O pedido destrava os passos programáticos do cadastro; sem ele
+            # quem responde o turno é a LLM e o Step 2 nem chega a rodar.
+            HumanMessage(content="Gostaria de agendar uma consulta"),
+            AIMessage(content="Pode me informar o seu nome completo?"),
+            HumanMessage(content=_NOME_COMPROVANTE),
+        ],
+    }
+    with patch("app.graph.nodes._get_collect_llm") as mock_llm_fn, \
+         patch("app.graph.nodes.send_text", new_callable=AsyncMock) as mock_send, \
+         patch("app.graph.nodes.save_message", new_callable=AsyncMock), \
+         patch("app.graph.nodes.get_users_by_phone", new_callable=AsyncMock, return_value=[]), \
+         patch("app.graph.nodes.upsert_user", new_callable=AsyncMock, return_value="p1"), \
+         patch("app.graph.nodes.log_event", new_callable=AsyncMock):
+        mock_llm = MagicMock()
+        mock_llm.ainvoke = AsyncMock(return_value=CollectInfoOutput(reply="ok", is_complete=False))
+        mock_llm_fn.return_value = mock_llm
+        result = await collect_info_node(state, {})
+
+    assert result.get("user_name") is None, "comprovante não pode virar nome"
+    assert "nome" in mock_send.call_args[0][1].lower()
+
+
+async def test_nome_extraido_pela_llm_tambem_e_validado():
+    """A LLM também escreve user_name/patient_name direto no update. O laço de
+    extração não validava nada — mesma porta, outra fechadura."""
+    from app.graph.nodes import collect_info_node
+    from app.graph.schemas import CollectInfoOutput
+
+    state = {
+        "phone": PHONE,
+        "messages": [
+            AIMessage(content="Certo!"),
+            HumanMessage(content="pode ser"),
+        ],
+        "user_name": "Marta de Souza Araújo Emery",
+        "is_patient": False,
+        "_is_patient_confirmed": True,
+    }
+    with patch("app.graph.nodes._get_collect_llm") as mock_llm_fn, \
+         patch("app.graph.nodes.send_text", new_callable=AsyncMock), \
+         patch("app.graph.nodes.save_message", new_callable=AsyncMock), \
+         patch("app.graph.nodes.get_users_by_phone", new_callable=AsyncMock, return_value=[]), \
+         patch("app.graph.nodes.upsert_user", new_callable=AsyncMock, return_value="p1"), \
+         patch("app.graph.nodes.log_event", new_callable=AsyncMock):
+        mock_llm = MagicMock()
+        mock_llm.ainvoke = AsyncMock(return_value=CollectInfoOutput(
+            reply="ok", patient_name=_NOME_LAUDO, is_complete=False))
+        mock_llm_fn.return_value = mock_llm
+        result = await collect_info_node(state, {})
+
+    assert result.get("patient_name") != _NOME_LAUDO
