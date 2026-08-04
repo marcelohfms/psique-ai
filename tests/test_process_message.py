@@ -4108,3 +4108,58 @@ async def test_valor_repetido_nao_gera_escrita_nova():
     )
 
     assert not mock_upsert.called
+# ── ADULT_RULE — guard anti-"consulta infantil" ───────────────────────────────
+# Regressão do caso Beatriz (5587996089614, 04/08/2026): paciente de 20 anos,
+# mãe agendando "para minha filha". A idade estava correta no estado (20) e a
+# seleção de regra já devolvia ADULT_RULE, mas ADULT_RULE só dizia
+# "slot_duration_minutes=60" — sem nada que impedisse a Eva de chamar a consulta
+# de "infantil". Ela ofereceu 2h e cobrou R$ 850,00 (valor de menor de 18).
+
+def test_adult_rule_proibe_tratar_adulto_como_consulta_infantil():
+    from app.graph.prompts import ADULT_RULE
+
+    assert "slot_duration_minutes=60" in ADULT_RULE
+    assert "NÃO É CONSULTA INFANTIL" in ADULT_RULE
+    # As três formas concretas em que o erro apareceu na conversa real:
+    assert '"infantil"' in ADULT_RULE                    # a palavra na fala
+    assert "slot_duration_minutes=120" in ADULT_RULE     # a duração de 2h
+    assert "valor de 1ª consulta infantil" in ADULT_RULE  # o preço errado
+    # E a causa da confusão: ser filho(a) de quem está no WhatsApp.
+    assert "filho(a)" in ADULT_RULE
+
+
+def test_duration_rule_paciente_de_20_anos_com_responsavel_recebe_adult_rule():
+    """Mesmo com responsável na conversa e primeira consulta com o Dr. Júlio,
+    um paciente de 20 anos recebe ADULT_RULE — nunca MINOR_RULE."""
+    from app.graph.nodes import _duration_rule_for
+    from app.graph.prompts import ADULT_RULE
+
+    state = {
+        "is_returning_patient": False,
+        "preferred_doctor": "julio",
+        "guardian_relationship": "mãe",
+        "guardian_name": "Leni Gomes",
+    }
+    assert _duration_rule_for(state, 20, "Beatriz") is ADULT_RULE
+
+
+def test_duration_rule_menor_primeira_consulta_com_julio_recebe_minor_rule():
+    """O caminho do menor continua intacto: 15 anos, 1ª consulta, Dr. Júlio →
+    explicação das duas partes de 1 hora."""
+    from app.graph.nodes import _duration_rule_for
+
+    state = {"is_returning_patient": False, "preferred_doctor": "julio"}
+    rule = _duration_rule_for(state, 15, "Clara")
+
+    assert "duas partes de 1 hora" in rule
+    assert "Clara" in rule
+
+
+def test_duration_rule_menor_em_acompanhamento_usa_60_minutos():
+    from app.graph.nodes import _duration_rule_for
+
+    state = {"is_returning_patient": True, "preferred_doctor": "julio"}
+    rule = _duration_rule_for(state, 15, "Clara")
+
+    assert "slot_duration_minutes=60" in rule
+    assert "acompanhamento" in rule

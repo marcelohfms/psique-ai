@@ -279,7 +279,21 @@ REGRA — PACIENTE MENOR DE IDADE ({patient_age} anos) em consulta de acompanham
 Use slot_duration_minutes=60 ao chamar get_available_slots e confirm_appointment.
 """
 
-ADULT_RULE = "Use slot_duration_minutes=60 ao chamar get_available_slots e confirm_appointment."
+# Injetado quando patient_age >= 18. O bloco "NÃO É INFANTIL" existe porque o
+# contexto da conversa (mãe agendando "para minha filha", "é a primeira consulta",
+# pergunta de parentesco) fazia a Eva classificar um adulto como consulta infantil
+# mesmo com "idade: 20 anos" no cabeçalho — caso Beatriz/5587996089614, 04/08/2026:
+# ofereceu 2h e cobrou R$ 850,00 de uma paciente de 20 anos.
+ADULT_RULE = """\
+Use slot_duration_minutes=60 ao chamar get_available_slots e confirm_appointment.
+
+⛔ ESTE PACIENTE É ADULTO (18 anos ou mais) — NÃO É CONSULTA INFANTIL:
+- NUNCA use as palavras "infantil", "consulta infantil" ou "primeira consulta infantil".
+- NUNCA ofereça duração de 2 horas nem slot_duration_minutes=120. A consulta é de 1 hora.
+- NUNCA informe o valor de 1ª consulta infantil. Use o valor de ADULTO da tabela de preços.
+- O paciente ser filho(a) de quem está no WhatsApp, ter um responsável na conversa, ou ser \
+primeira consulta NÃO o torna menor de idade. A ÚNICA coisa que define isso é a idade no \
+cabeçalho desta conversa."""
 
 GUARDIAN_RULE = """\
 
