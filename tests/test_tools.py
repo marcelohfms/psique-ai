@@ -4154,3 +4154,96 @@ async def test_falha_no_prefetch_nao_derruba_a_busca_de_horarios():
 
     assert "07/07" in result
     assert "08/07" in result
+# ── Match de paciente por nome em telefone compartilhado ─────────────────────
+# A busca por nome desempata qual paciente de um contato está sendo agendado.
+# Ela roda em três passadas (nome civil exato, nome social exato, substring) e
+# desde o #131 vale também para o guard de consulta duplicada, não só para o
+# insert — então um match errado passou a poder bloquear ou liberar o irmão
+# errado. São 23 contatos com mais de um paciente (famílias que dividem um
+# telefone), incluindo o caso Daniela/Silvia Passos (5581981179458, 3 pacientes).
+
+def test_match_por_nome_respeita_limite_de_palavra():
+    """"Ana" casava com "Mariana Silva": a busca por substring não olhava limite
+    de palavra e anexava a consulta ao irmão errado."""
+    from app.graph.tools import _match_patient_by_name
+
+    pacientes = [
+        {"id": "p1", "patient_name": "Mariana Silva"},
+        {"id": "p2", "patient_name": "Ana Souza"},
+    ]
+
+    assert _match_patient_by_name(pacientes, "Ana")["id"] == "p2"
+
+
+def test_match_por_nome_nao_escolhe_pela_ordem_da_lista():
+    """Com três irmãs "Maria ...", o alvo "Maria" casava com todas e a escolhida
+    era só a primeira que o Supabase devolvesse. Sem critério para decidir, a
+    busca desiste em vez de chutar."""
+    from app.graph.tools import _match_patient_by_name
+
+    irmas = [
+        {"id": "p1", "patient_name": "Maria Clara Passos"},
+        {"id": "p2", "patient_name": "Maria Eduarda Passos"},
+        {"id": "p3", "patient_name": "Maria Luiza Passos"},
+    ]
+
+    assert _match_patient_by_name(irmas, "Maria") is None
+
+
+def test_match_por_nome_ainda_casa_quando_so_uma_irma_bate():
+    """O aperto não pode quebrar o caso normal: substring que identifica UMA
+    paciente continua valendo."""
+    from app.graph.tools import _match_patient_by_name
+
+    irmas = [
+        {"id": "p1", "patient_name": "Maria Clara Passos"},
+        {"id": "p2", "patient_name": "Joana Eduarda Passos"},
+    ]
+
+    assert _match_patient_by_name(irmas, "Clara")["id"] == "p1"
+
+
+def test_match_por_nome_exato_vence_ambiguidade_de_substring():
+    """Nome civil exato é a primeira passada — a ambiguidade da terceira não
+    pode atrapalhar quem já foi identificado com precisão."""
+    from app.graph.tools import _match_patient_by_name
+
+    pacientes = [
+        {"id": "p1", "patient_name": "Maria"},
+        {"id": "p2", "patient_name": "Maria Eduarda"},
+    ]
+
+    assert _match_patient_by_name(pacientes, "Maria")["id"] == "p1"
+
+
+def test_match_por_nome_lida_com_acento():
+    from app.graph.tools import _match_patient_by_name
+
+    pacientes = [
+        {"id": "p1", "patient_name": "Luciana Araújo"},
+        {"id": "p2", "patient_name": "Ana Araújo"},
+    ]
+
+    assert _match_patient_by_name(pacientes, "Ana")["id"] == "p2"
+
+
+async def test_resolve_patient_com_varios_pacientes_e_nada_identificando_prefere_o_ativo():
+    """Caminho que ficou descoberto no #131: contato com vários pacientes, sem
+    override da atendente, com user_db_id órfão e nome que não identifica ninguém.
+    Não dá para saber qual irmã é — mas guard e insert usam o MESMO resolvedor,
+    então pelo menos concordam, e a escolha cai numa regra definida (o paciente
+    ativo) em vez da ordem em que o Supabase respondeu."""
+    from app.graph.tools import _resolve_patient_for_booking
+    _clara = {"id": "clara-id", "patient_name": "Maria Clara Passos", "active": False}
+    _duda = {"id": "duda-id", "patient_name": "Maria Eduarda Passos", "active": True}
+
+    with patch("app.graph.tools.get_users_by_phone", new_callable=AsyncMock,
+               return_value=[_clara, _duda]), \
+         patch("app.graph.tools.get_user_by_phone", new_callable=AsyncMock,
+               return_value=_duda):
+        user = await _resolve_patient_for_booking(
+            "5581981179458",
+            {"user_db_id": "id-fantasma", "patient_name": "Maria"},
+        )
+
+    assert user["id"] == "duda-id"
