@@ -1347,6 +1347,39 @@ async def collect_info_node(state: ConversationState, config: RunnableConfig) ->
         except Exception:
             import logging as _log
             _log.getLogger(__name__).exception("Failed to upsert user after collect_info")
+    else:
+        # Os passos programáticos gravam os campos que coletam a cada turno (ver
+        # _STATE_TO_DB em _extract_and_ask), mas o motivo da consulta e o
+        # profissional que encaminhou são colhidos pela LLM e só chegavam ao banco
+        # no bloco acima, quando o cadastro fecha. Se o turno não fecha o cadastro,
+        # eles ficavam apenas no checkpoint do LangGraph: o Marcelo Brayner Filho
+        # (5581999865181, 04/08/2026) teve a consulta marcada e paga com o
+        # prontuário sem o motivo, e a clínica preencheu à mão.
+        # Só os campos novos deste turno entram no payload — mandar os outros como
+        # None sobrescreveria dado bom que já está gravado. E só quando o valor
+        # mudou: a LLM re-extrai esses campos do histórico a cada turno, e sem
+        # essa checagem cada turno viraria uma escrita repetida do mesmo valor.
+        _incremental = {
+            db_key: update[state_key]
+            for state_key, db_key in (
+                ("consultation_reason", "consultation_reason"),
+                ("referral_professional", "referral_professional"),
+            )
+            if update.get(state_key) is not None
+            and update[state_key] != state.get(state_key)
+        }
+        if _incremental:
+            try:
+                _returned_id = await upsert_user(
+                    state["phone"], _incremental, user_id=state.get("user_db_id")
+                )
+                if _returned_id and not state.get("user_db_id"):
+                    update["user_db_id"] = _returned_id
+            except Exception:
+                import logging as _log
+                _log.getLogger(__name__).exception(
+                    "Failed to persist partial LLM-collected fields in collect_info"
+                )
 
     await send_text(state["phone"], reply)
     await save_message(state["phone"], "assistant", reply)

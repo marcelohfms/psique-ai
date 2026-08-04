@@ -4003,3 +4003,108 @@ async def test_nome_extraido_pela_llm_tambem_e_validado():
         result = await collect_info_node(state, {})
 
     assert result.get("patient_name") != _NOME_LAUDO
+
+
+# ── Gravação incremental do motivo e do encaminhamento ───────────────────────
+# Os passos programáticos já gravam os 11 campos que coletam, a cada turno, via
+# _extract_and_ask. Mas consultation_reason e referral_professional são colhidos
+# pela LLM e só chegavam ao banco quando o cadastro fechava. Quando o turno
+# travava antes disso, o motivo da consulta ficava só no checkpoint e o médico
+# abria o prontuário sem ele (caso Marcelo Brayner Filho, 5581999865181).
+
+async def _run_collect_capturing_upsert(state, llm_result):
+    from app.graph.nodes import collect_info_node
+    with patch("app.graph.nodes._get_collect_llm") as mock_llm_fn, \
+         patch("app.graph.nodes.send_text", new_callable=AsyncMock), \
+         patch("app.graph.nodes.save_message", new_callable=AsyncMock), \
+         patch("app.graph.nodes.get_users_by_phone", new_callable=AsyncMock, return_value=[]), \
+         patch("app.graph.nodes.upsert_user", new_callable=AsyncMock,
+               return_value="patient-uuid") as mock_upsert, \
+         patch("app.graph.nodes.log_event", new_callable=AsyncMock):
+        mock_llm = MagicMock()
+        mock_llm.ainvoke = AsyncMock(return_value=llm_result)
+        mock_llm_fn.return_value = mock_llm
+        result = await collect_info_node(state, {})
+    return result, mock_upsert
+
+
+async def test_motivo_da_consulta_e_gravado_antes_do_cadastro_fechar():
+    """Cadastro ainda incompleto (falta o parentesco), mas o motivo já foi dito:
+    ele precisa ir para o banco neste turno, não esperar o cadastro fechar."""
+    from app.graph.schemas import CollectInfoOutput
+
+    _, mock_upsert = await _run_collect_capturing_upsert(
+        _bernardo_state(),  # guardian_relationship=None -> cadastro incompleto
+        CollectInfoOutput(
+            reply="Entendi! E qual o seu parentesco com Bernardo?",
+            consultation_reason="Dificuldade escolar e ansiedade.",
+            is_complete=False,
+        ),
+    )
+
+    assert mock_upsert.called, "motivo da consulta não pode esperar o cadastro fechar"
+    salvo = mock_upsert.call_args[0][1]
+    assert salvo["consultation_reason"] == "Dificuldade escolar e ansiedade."
+
+
+async def test_profissional_que_encaminhou_e_gravado_antes_do_cadastro_fechar():
+    from app.graph.schemas import CollectInfoOutput
+
+    _, mock_upsert = await _run_collect_capturing_upsert(
+        _bernardo_state(),
+        CollectInfoOutput(
+            reply="Anotado! E qual o seu parentesco com Bernardo?",
+            referral_professional="Dra. Guiomar",
+            is_complete=False,
+        ),
+    )
+
+    assert mock_upsert.called
+    assert mock_upsert.call_args[0][1]["referral_professional"] == "Dra. Guiomar"
+
+
+async def test_turno_sem_campo_novo_nao_escreve_no_banco():
+    """Sem nada novo para gravar, o turno não pode gastar uma escrita à toa."""
+    from app.graph.schemas import CollectInfoOutput
+
+    _, mock_upsert = await _run_collect_capturing_upsert(
+        _bernardo_state(),
+        CollectInfoOutput(reply="Qual o seu parentesco com Bernardo?", is_complete=False),
+    )
+
+    assert not mock_upsert.called
+
+
+async def test_gravacao_incremental_nao_apaga_o_que_ja_existe():
+    """O upsert parcial só pode carregar o campo novo — mandar os outros como
+    None sobrescreveria dado bom no banco."""
+    from app.graph.schemas import CollectInfoOutput
+
+    _, mock_upsert = await _run_collect_capturing_upsert(
+        _bernardo_state(),
+        CollectInfoOutput(
+            reply="Certo! E qual o seu parentesco com Bernardo?",
+            consultation_reason="Dificuldade escolar.",
+            is_complete=False,
+        ),
+    )
+
+    salvo = mock_upsert.call_args[0][1]
+    assert None not in salvo.values(), f"payload parcial não pode conter None: {salvo}"
+
+
+async def test_valor_repetido_nao_gera_escrita_nova():
+    """A LLM re-extrai o motivo a cada turno a partir do histórico. Se o valor
+    já está no state, ele já foi gravado — não pode virar uma escrita por turno."""
+    from app.graph.schemas import CollectInfoOutput
+
+    _, mock_upsert = await _run_collect_capturing_upsert(
+        _bernardo_state(consultation_reason="Dificuldade escolar."),
+        CollectInfoOutput(
+            reply="E qual o seu parentesco com Bernardo?",
+            consultation_reason="Dificuldade escolar.",  # mesmo valor
+            is_complete=False,
+        ),
+    )
+
+    assert not mock_upsert.called
