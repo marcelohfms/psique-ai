@@ -608,8 +608,9 @@ def test_days_summary_lists_upcoming_blocked_dates():
     assert "03/08 (segunda) sem atendimento" in bruna_exc, bruna_exc
     assert "05/08 (quarta) sem atendimento" in bruna_exc, bruna_exc
     assert "07/08 (sexta) sem atendimento" in bruna_exc, bruna_exc
-    # Dr. Júlio não tem exceção nessa janela — não deve aparecer no bloco
-    assert "Dr. Júlio" not in exc_lines
+    # Dr. Júlio tem 03/08 com a tarde reduzida (17h bloqueado)
+    julio_exc = next(l for l in exc_lines.splitlines() if "Dr. Júlio" in l)
+    assert "03/08 (segunda) atende manhã e tarde" in julio_exc, julio_exc
 
 
 def test_days_summary_lists_reduced_schedule_exception():
