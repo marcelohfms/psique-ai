@@ -1455,6 +1455,27 @@ def _extract_pending_appointment(text: str, state: dict) -> dict | None:
     }
 
 
+def _duration_rule_for(state: dict, patient_age: int, first_name: str) -> str:
+    """Escolhe a regra de duração/perfil injetada no prompt do patient_agent.
+
+    A idade é o ÚNICO critério para menor de idade. Ter responsável na conversa
+    ou ser primeira consulta não torna o paciente menor — ver ADULT_RULE (caso
+    Beatriz, 20 anos, 04/08/2026)."""
+    is_minor = patient_age < 18
+    is_minor_first = (
+        is_minor
+        and not state.get("is_returning_patient", False)
+        and state.get("preferred_doctor") == "julio"
+    )
+    if is_minor_first:
+        if state.get("minor_first_consult_explained"):
+            return MINOR_RULE_SCHEDULING_ONLY.format(patient_name=first_name, patient_age=patient_age)
+        return MINOR_RULE.format(patient_name=first_name, patient_age=patient_age)
+    if is_minor:
+        return MINOR_RETURNING_RULE.format(patient_age=patient_age)
+    return ADULT_RULE
+
+
 async def patient_agent_node(state: ConversationState, config: RunnableConfig) -> dict:
     """
     Single LLM call per turn. If the LLM returns tool calls, the graph routes
@@ -1855,20 +1876,7 @@ async def patient_agent_node(state: ConversationState, config: RunnableConfig) -
     contact_first_name = _dn(_contact_full)
     contact_name = _contact_full
     is_minor = patient_age < 18
-    is_minor_first = (
-        is_minor
-        and not state.get("is_returning_patient", False)
-        and state.get("preferred_doctor") == "julio"
-    )
-    if is_minor_first:
-        if state.get("minor_first_consult_explained"):
-            duration_rule = MINOR_RULE_SCHEDULING_ONLY.format(patient_name=first_name, patient_age=patient_age)
-        else:
-            duration_rule = MINOR_RULE.format(patient_name=first_name, patient_age=patient_age)
-    elif is_minor:
-        duration_rule = MINOR_RETURNING_RULE.format(patient_age=patient_age)
-    else:
-        duration_rule = ADULT_RULE
+    duration_rule = _duration_rule_for(state, patient_age, first_name)
 
     # ── Auto-extract birth_date from recent messages if still missing ─────────
     # Handles the case where the LLM asked for birth_date but the node never
