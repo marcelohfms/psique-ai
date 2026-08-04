@@ -125,6 +125,19 @@ _MOD_LABELS = {
     "presencial_sob_consulta": "online ou presencial",
 }
 
+
+def _times_with_modality(slots: list[tuple[datetime, str]]) -> str:
+    """"HH:MM [modalidade], HH:MM [modalidade]" — usado no resumo por turno.
+    A etiqueta de modalidade NUNCA pode ser omitida: sem ela a Eva não tem como
+    aplicar a regra de MODALIDADE DE ATENDIMENTO do prompt e passa a adivinhar
+    (caso 5587996089614, 04/08/2026: um slot "escolha" virou "exclusivamente
+    online" na fala da Eva)."""
+    return ", ".join(
+        f"{slot.strftime('%H:%M')} [{_MOD_LABELS.get(modality, modality)}]"
+        for slot, modality in slots
+    )
+
+
 _ANY_DAY_MAX_DAYS_CURRENT_WEEK = 3
 _ANY_DAY_MIN_DISTINCT_DAYS = 2
 _ANY_DAY_MAX_WEEKS = 8
@@ -193,8 +206,7 @@ def _format_any_day_section(day: date, day_shifts: dict, preferred_shift: str) -
         for shift_key, shift_label in [("manha", "manhã"), ("tarde", "tarde"), ("noite", "noite")]:
             slots = day_shifts.get(shift_key)
             if slots:
-                times = ", ".join(s[0].strftime("%H:%M") for s in slots)
-                lines.append(f"  - {shift_label.capitalize()}: {times}")
+                lines.append(f"  - {shift_label.capitalize()}: {_times_with_modality(slots)}")
         return "\n".join(lines)
     slots = day_shifts.get(preferred_shift, [])
     lines = [f"{header} ({preferred_shift}):"]
@@ -310,7 +322,7 @@ async def _search_month_shift(
         date_label = day.strftime("%d/%m")
         header = f"{day_label}, dia {date_label}" if day_label else date_label
         if any_shift:
-            times = ", ".join(s[0].strftime("%H:%M") for s in day_slots[:max_slots_per_day])
+            times = _times_with_modality(day_slots[:max_slots_per_day])
             more = " (e outros)" if len(day_slots) > max_slots_per_day else ""
             lines.append(f"- {header}: {times}{more}")
         else:
@@ -532,8 +544,7 @@ async def get_available_slots(
                 )
                 logger.info("GET_SLOTS_RESULT date=%s shift=%s slots=%s", try_date, shift_key, [s[0].strftime("%H:%M") for s in slots])
                 if slots:
-                    times = ", ".join(s[0].strftime("%H:%M") for s in slots)
-                    sections.append(f"- {shift_label.capitalize()}: {times}")
+                    sections.append(f"- {shift_label.capitalize()}: {_times_with_modality(slots)}")
             if sections:
                 return f"Horários disponíveis para {header}:\n" + "\n".join(sections)
             # No 2h blocks found — check if there are 1h slots (non-consecutive case)
@@ -548,8 +559,7 @@ async def get_available_slots(
                         doctor_key=doctor,
                     )
                     if slots_1h:
-                        times = ", ".join(s[0].strftime("%H:%M") for s in slots_1h)
-                        single_sections.append(f"- {shift_label.capitalize()}: {times}")
+                        single_sections.append(f"- {shift_label.capitalize()}: {_times_with_modality(slots_1h)}")
                 if single_sections:
                     return (
                         f"Há horários disponíveis em {header}, mas não em bloco de 2 horas seguidas:\n"
