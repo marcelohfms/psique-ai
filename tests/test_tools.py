@@ -312,6 +312,7 @@ async def test_get_available_slots_qualquer_dia_extends_to_next_week_when_few():
 async def test_get_available_slots_final_de_agosto_only_offers_last_week():
     """'final de agosto' + tarde → só dias da última semana de agosto (25–31)."""
     from datetime import date as _date
+    from datetime import date as _date
     from app.graph.tools import get_available_slots
 
     async def _fake_slots(*, calendar_id, preferred_day, preferred_shift, slot_minutes, doctor_key):
@@ -367,6 +368,7 @@ async def test_get_available_slots_final_de_agosto_no_slots_says_final_do_mes():
 async def test_get_available_slots_mes_sem_qualificador_ainda_busca_do_inicio():
     """'agosto' sem qualificador segue devolvendo os primeiros dias do mês."""
     from datetime import date as _date
+    from datetime import date as _date
     from app.graph.tools import get_available_slots
 
     async def _fake_slots(*, calendar_id, preferred_day, preferred_shift, slot_minutes, doctor_key):
@@ -407,6 +409,7 @@ class _FrozenDTAugustSunday(_real_dt):
 async def test_get_available_slots_mes_sem_turno_lista_dias_do_mes():
     """'setembro' + turno 'qualquer' → varre o mês e lista os DIAS com vaga,
     em vez de responder sobre o dia 1º."""
+    from datetime import date as _date
     from datetime import date as _date
     from app.graph.tools import get_available_slots
 
@@ -510,6 +513,7 @@ async def test_get_available_slots_data_ininteligivel_pede_clarificacao():
 
 async def test_get_available_slots_qualquer_dia_de_setembro_busca_o_mes():
     """'qualquer dia de setembro' é sobre setembro, não sobre a semana atual."""
+    from datetime import date as _date
     from datetime import date as _date
     from app.graph.tools import get_available_slots
 
@@ -615,6 +619,63 @@ async def test_get_available_slots_qualquer_dia_e_qualquer_turno_shows_per_shift
 
     assert "Tarde: 14:00" in result
     assert "Manhã: 09:00" in result
+
+
+async def test_get_available_slots_turno_qualquer_inclui_modalidade_por_horario():
+    """Caso real (5587996089614, 04/08/2026): dia específico + turno "qualquer"
+    devolvia só "Manhã: 09:00, 10:00 / Noite: 18:00", sem nenhuma etiqueta de
+    modalidade. Sem essa informação a Eva inventou que o horário era
+    "exclusivamente online". Todo horário listado precisa vir etiquetado."""
+    from datetime import date as _date
+    from app.graph.tools import get_available_slots
+
+    async def _fake_slots(*, calendar_id, preferred_day, preferred_shift, slot_minutes, doctor_key):
+        d = _date.fromisoformat(preferred_day)
+        if preferred_shift == "manha":
+            return [(datetime(d.year, d.month, d.day, 9, 0, tzinfo=TZ), "escolha")]
+        if preferred_shift == "noite":
+            return [(datetime(d.year, d.month, d.day, 18, 0, tzinfo=TZ), "online")]
+        return []
+
+    with patch("app.graph.tools._get_doctor_calendar_id", new_callable=AsyncMock, return_value="cal123"), \
+         patch("app.graph.tools._get_doctor_calendar_id", new_callable=AsyncMock, return_value="cal123"), \
+         patch("app.google_calendar.get_available_slots", new_callable=AsyncMock, side_effect=_fake_slots):
+        result = await get_available_slots.coroutine(
+            preferred_day="quinta",
+            preferred_shift="qualquer",
+            slot_duration_minutes=60,
+            state=_make_state(),
+            config=CONFIG,
+        )
+
+    assert "09:00 [online ou presencial — paciente escolhe livremente]" in result
+    assert "18:00 [apenas online]" in result
+
+
+async def test_get_available_slots_turno_qualquer_fallback_1h_inclui_modalidade():
+    """Mesmo no fallback de 1h (quando não há bloco de 2h seguidas), os horários
+    precisam vir com a modalidade — senão a Eva volta a adivinhar."""
+    from datetime import date as _date
+    from app.graph.tools import get_available_slots
+
+    async def _fake_slots(*, calendar_id, preferred_day, preferred_shift, slot_minutes, doctor_key):
+        d = _date.fromisoformat(preferred_day)
+        if slot_minutes == 60 and preferred_shift == "manha":
+            return [(datetime(d.year, d.month, d.day, 9, 0, tzinfo=TZ), "escolha")]
+        return []
+
+    with patch("app.graph.tools._get_doctor_calendar_id", new_callable=AsyncMock, return_value="cal123"), \
+         patch("app.graph.tools._get_doctor_calendar_id", new_callable=AsyncMock, return_value="cal123"), \
+         patch("app.google_calendar.get_available_slots", new_callable=AsyncMock, side_effect=_fake_slots):
+        result = await get_available_slots.coroutine(
+            preferred_day="quinta",
+            preferred_shift="qualquer",
+            slot_duration_minutes=120,
+            state=_make_state(),
+            config=CONFIG,
+        )
+
+    assert "09:00 [online ou presencial — paciente escolhe livremente]" in result
 
 
 async def test_pick_doctor_by_earliest_availability_picks_earlier_doctor():

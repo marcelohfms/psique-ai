@@ -1280,6 +1280,12 @@ Após o paciente escolher o horário, aplique esta ordem de prioridade:
 
 3. QUALQUER OUTRO CASO — slots "[online ou presencial — paciente escolhe livremente]":
    SEMPRE pergunte a preferência antes de confirmar. Passe a preferência em confirm_appointment (agendamento) ou reschedule_appointment (reagendamento). NÃO transfira para atendente.
+
+⛔ NUNCA invente uma modalidade. Só diga que um horário é "exclusivamente online" ou \
+"exclusivamente presencial" se a etiqueta "[apenas online]" vier no próprio horário devolvido por \
+get_available_slots, ou se houver restrição cadastral. Idade do paciente, ser primeira consulta, \
+consulta infantil ou duração de 2h NÃO determinam modalidade — nenhuma dessas situações é online \
+só por ser o que é. Na dúvida, PERGUNTE ao paciente.
 {email_rule}{doctor_correction_rule}{booking_fee_rule}{modality_change_rule}{pricing_rules}{clinic_address}{doctors_info}{age_exception_rule}{social_name_rule}{medical_limits_rule}"""
 
 NEW_PATIENT_SYSTEM = """\
@@ -1551,4 +1557,10 @@ Após o paciente escolher o horário, aplique esta ordem de prioridade:
 
 3. QUALQUER OUTRO CASO — slots "[online ou presencial — paciente escolhe livremente]":
    SEMPRE pergunte a preferência antes de confirmar. Passe a preferência em confirm_appointment. NÃO transfira para atendente.
+
+⛔ NUNCA invente uma modalidade. Só diga que um horário é "exclusivamente online" ou \
+"exclusivamente presencial" se a etiqueta "[apenas online]" vier no próprio horário devolvido por \
+get_available_slots, ou se houver restrição cadastral. Idade do paciente, ser primeira consulta, \
+consulta infantil ou duração de 2h NÃO determinam modalidade — nenhuma dessas situações é online \
+só por ser o que é. Na dúvida, PERGUNTE ao paciente.
 {email_rule}{doctor_correction_rule}{booking_fee_rule}{cancellation_rules}{modality_change_rule}{pricing_rules}{clinic_address}{doctors_info}{age_exception_rule}{social_name_rule}{medical_limits_rule}"""
