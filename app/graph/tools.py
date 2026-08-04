@@ -104,6 +104,84 @@ async def _resolve_doctor(state: dict, config: RunnableConfig) -> str:
     return doctor
 
 
+def _match_patient_by_name(all_users: list[dict], target: str) -> dict | None:
+    """Match a patient record by name among a contact's patients.
+    Passes, in order: exact civil name, exact social name, substring civil name.
+    """
+    target = (target or "").strip().lower()
+    if not target:
+        return None
+    for _u in all_users:
+        _pname = (_u.get("patient_name") or _u.get("name") or "").strip().lower()
+        if _pname == target:
+            return _u
+    for _u in all_users:
+        _sname = (_u.get("social_name") or "").strip().lower()
+        if _sname and _sname == target:
+            return _u
+    for _u in all_users:
+        _pname = (_u.get("patient_name") or _u.get("name") or "").strip().lower()
+        if target in _pname:
+            return _u
+    return None
+
+
+async def _resolve_patient_for_booking(
+    phone: str,
+    state: dict,
+    patient_name_override: str = "",
+) -> dict | None:
+    """Resolve WHICH patient record a booking refers to, from the contact's phone.
+
+    Single source of truth for confirm_appointment: both the "patient already has an
+    appointment" guard and the appointments insert MUST call this, so they can never
+    disagree about who is being booked.
+
+    They used to resolve independently — the guard read state["user_db_id"] while the
+    insert resolved by phone. state["user_db_id"] is only refreshed by collect_info_node,
+    which stops running once stage == "patient_agent", so it freezes at whatever it held
+    when registration closed. After the users→patients migration those frozen ids stopped
+    matching patients.id (101 of 491 threads em 03/08/2026: 83 apontando para
+    patients.legacy_user_id, 18 para ids inexistentes). The guard's .eq("patient_id", <id
+    órfão>) then returned nothing, so it never fired, while the insert resolved the right
+    patient by phone and created a SECOND active appointment (caso Dione/Pedro Lins De
+    Araújo, 5581999578203, 30/07/2026: agendamento de 10/08 ficou órfão, recebeu cobrança
+    de taxa e foi auto-cancelado, disparando aviso indevido de "vaga liberada").
+
+    Resolution order (phone first, user_db_id only as a tiebreaker):
+      - contact with a single patient (1351 de 1374 contatos): resolved purely by phone,
+        so a stale/orphan user_db_id cannot affect it;
+      - contact with several patients (23 contatos — famílias que usam um telefone só):
+        attendant override → state["user_db_id"] → patient_name. Blocking on ANY of the
+        contact's patients would break booking for a sibling (caso Daniela/Silvia Passos,
+        5581981179458, onde 3 pacientes dividem o telefone).
+    """
+    all_users = await get_users_by_phone(phone)
+    user = None
+    if len(all_users) > 1:
+        if patient_name_override.strip():
+            # Attendant explicitly named a different patient than the one in
+            # conversation context — honor the override.
+            user = _match_patient_by_name(all_users, patient_name_override)
+        if user is None:
+            # Prefer the patient already resolved for this conversation
+            # (state["user_db_id"]) over re-deriving from patient_name — patient_name
+            # is a plain string that can go stale independently of user_db_id (caso
+            # Renata Monteiro / Laila+Suzi Viana, 5581996962165, 08/07/2026: a stale
+            # patient_name silently overwrote by app/main.py's DB-sync made this
+            # matching attach a new appointment to the wrong twin's patient_id).
+            _uid = state.get("user_db_id")
+            if _uid:
+                user = next((_u for _u in all_users if _u["id"] == _uid), None)
+        if user is None:
+            _name = state.get("patient_name") or state.get("user_name") or ""
+            user = _match_patient_by_name(all_users, _name)
+    if user is None:
+        # Single-patient contact (or no match above): get_user_by_phone is authoritative.
+        user = await get_user_by_phone(phone)
+    return user
+
+
 async def _get_doctor_calendar_id(preferred_doctor: str) -> str | None:
     """Fetch agenda_id (Google Calendar ID) for a doctor from Supabase."""
     doctor_id = DOCTOR_IDS.get(preferred_doctor)
@@ -836,7 +914,13 @@ async def confirm_appointment(
         # Guard should block only if THIS patient already has a future appointment, not if
         # another patient in the contact does (caso Daniela/Silvia: Silvia has appointment
         # on 20/07, but Daniela is free on 26/08 — must allow booking for Daniela).
-        _patient_id = state.get("user_db_id")
+        #
+        # Resolves through the SAME helper the insert below uses. Reading
+        # state["user_db_id"] directly here made the guard blind whenever that id was
+        # stale, while the insert still resolved the patient correctly by phone — see
+        # _resolve_patient_for_booking for the full failure mode.
+        _patient = await _resolve_patient_for_booking(_phone_clean, state, patient_name_override)
+        _patient_id = (_patient or {}).get("id")
         if _patient_id:
             _appts_r = await _supabase.from_("appointments").select("appointment_id, start_time, status").eq("patient_id", _patient_id).in_("status", ["scheduled", "pending_reschedule"]).execute()
             # Filtro por data feito aqui (não com .gte na query) para diferenciar por status:
@@ -876,7 +960,14 @@ async def confirm_appointment(
                         "Nunca retorne erro ao paciente por causa disso."
                     )
     except Exception:
-        pass  # Non-fatal — proceed
+        # Non-fatal — proceed, but never silently. A swallowed error here means the
+        # "patient already has an appointment" guard did not run at all, and the only
+        # symptom is a duplicate appointment discovered days later. Deliberately NOT
+        # fail-closed: a transient Supabase error must not block a legitimate booking.
+        _logger.exception(
+            "confirm_appointment: guard de agendamento existente FALHOU (seguindo sem bloquear) phone=%s",
+            config["configurable"]["phone"],
+        )
 
     # Double-check slot is still free before booking — skipped for encaixe
     if not force_encaixe:
@@ -1021,52 +1112,8 @@ async def confirm_appointment(
 
         # When the contact has multiple patients, resolve the correct patient record.
         # get_user_by_phone returns an arbitrary record — wrong when contact has e.g. parent + child.
-        all_users = await get_users_by_phone(phone)
-        user = None
-        if len(all_users) > 1:
-            def _match_by_name(target: str) -> dict | None:
-                target = target.strip().lower()
-                if not target:
-                    return None
-                # First pass: exact match on civil name (patient_name or name)
-                for _u in all_users:
-                    _pname = (_u.get("patient_name") or _u.get("name") or "").strip().lower()
-                    if _pname == target:
-                        return _u
-                # Second pass: exact match on social name (new in Task 8)
-                for _u in all_users:
-                    _sname = (_u.get("social_name") or "").strip().lower()
-                    if _sname and _sname == target:
-                        return _u
-                # Third pass: substring match on civil name
-                for _u in all_users:
-                    _sname = (_u.get("social_name") or "").strip().lower()
-                    if _sname and _sname == target:
-                        return _u
-                for _u in all_users:
-                    _pname = (_u.get("patient_name") or _u.get("name") or "").strip().lower()
-                    if target in _pname:
-                        return _u
-                return None
-
-            if patient_name_override.strip():
-                # Attendant explicitly named a different patient than the one in
-                # conversation context — honor the override.
-                user = _match_by_name(patient_name_override)
-            if user is None:
-                # Prefer the patient already resolved for this conversation
-                # (state["user_db_id"]) over re-deriving from patient_name — patient_name
-                # is a plain string that can go stale independently of user_db_id (caso
-                # Renata Monteiro / Laila+Suzi Viana, 5581996962165, 08/07/2026: a stale
-                # patient_name silently overwrote by app/main.py's DB-sync made this
-                # matching attach a new appointment to the wrong twin's patient_id).
-                _uid = state.get("user_db_id")
-                if _uid:
-                    user = next((_u for _u in all_users if _u["id"] == _uid), None)
-            if user is None:
-                user = _match_by_name(patient_name)
-        if user is None:
-            user = await get_user_by_phone(phone)
+        # Same helper the guard above uses: the two MUST agree on who is being booked.
+        user = await _resolve_patient_for_booking(phone, state, patient_name_override)
 
         # Determine consultation_type for minor patients with Dr. Júlio.
         # Two signals are combined:
