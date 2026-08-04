@@ -3506,6 +3506,99 @@ async def test_collect_info_uses_field_answered_in_this_turn():
     assert result.get("stage") == "patient_agent"
 
 
+# ── O lado espelhado: LLM diz is_complete=false e não pergunta nada ──────────
+# Caso Marcelo Brayner Filho (5581999865181, 04/08/2026): último campo do cadastro
+# respondido (motivo da consulta), o gate determinístico já dava o cadastro por
+# completo, mas a LLM devolveu is_complete=false com uma resposta que não pergunta
+# coisa alguma ("Entendi, obrigada por compartilhar. Isso já me ajuda bastante
+# para o cadastro."). O stage ficou em collect_info, o _route_after_collect mandou
+# o turno para o END e o agendamento nunca começou — a conversa só voltou a andar
+# quando uma atendente injetou "Eva, iniciar fluxo de agendamento" na mão.
+
+async def test_collect_info_advances_when_llm_stalls_without_asking_anything():
+    """is_complete=false + nada faltando no gate + resposta sem pergunta: quem
+    manda é o gate. O cadastro avança para o patient_agent em vez de morrer num
+    nó sem ferramentas."""
+    from app.graph.schemas import CollectInfoOutput
+
+    result, mock_send = await _run_collect(
+        _bernardo_state(guardian_relationship="pai"),
+        CollectInfoOutput(
+            reply="Entendi, obrigada por compartilhar. Isso já me ajuda bastante para o cadastro.",
+            consultation_reason="Sinais de quadro de depressão.",
+            is_complete=False,
+        ),
+    )
+
+    assert mock_send.call_args[0][1].startswith("Entendi, obrigada por compartilhar")
+    assert result.get("stage") == "patient_agent"
+
+
+async def test_collect_info_persists_cadastro_when_llm_stalls():
+    """O mesmo travamento também engolia o cadastro: o upsert_user e o evento
+    info_collected só rodam quando o cadastro fecha, então motivo da consulta e
+    CPF do paciente ficavam só no checkpoint e nunca chegavam ao banco — a clínica
+    teve que preencher na mão (caso Marcelo Brayner Filho)."""
+    from app.graph.nodes import collect_info_node
+    from app.graph.schemas import CollectInfoOutput
+
+    with patch("app.graph.nodes._get_collect_llm") as mock_llm_fn, \
+         patch("app.graph.nodes.send_text", new_callable=AsyncMock), \
+         patch("app.graph.nodes.save_message", new_callable=AsyncMock), \
+         patch("app.graph.nodes.get_users_by_phone", new_callable=AsyncMock, return_value=[]), \
+         patch("app.graph.nodes.upsert_user", new_callable=AsyncMock,
+               return_value="patient-uuid") as mock_upsert, \
+         patch("app.graph.nodes.log_event", new_callable=AsyncMock) as mock_event:
+        mock_llm = MagicMock()
+        mock_llm.ainvoke = AsyncMock(return_value=CollectInfoOutput(
+            reply="Entendi, obrigada por compartilhar. Isso já me ajuda bastante para o cadastro.",
+            consultation_reason="Sinais de quadro de depressão.",
+            is_complete=False,
+        ))
+        mock_llm_fn.return_value = mock_llm
+        await collect_info_node(_bernardo_state(guardian_relationship="pai"), {})
+
+    assert mock_upsert.called
+    saved = mock_upsert.call_args[0][1]
+    assert saved["consultation_reason"] == "Sinais de quadro de depressão."
+    assert saved["patient_cpf"] == "13716254410"
+    assert mock_event.call_args[0][0] == "info_collected"
+
+
+async def test_collect_info_does_not_advance_when_llm_still_asks_something():
+    """Enquanto a LLM ainda pergunta, o cadastro continua no collect_info — a rede
+    não pode atropelar uma pergunta pendente."""
+    from app.graph.schemas import CollectInfoOutput
+
+    result, _ = await _run_collect(
+        _bernardo_state(guardian_relationship="pai"),
+        CollectInfoOutput(
+            reply="Foi encaminhado por algum profissional?",
+            consultation_reason="Sinais de quadro de depressão.",
+            is_complete=False,
+        ),
+    )
+
+    assert result.get("stage") != "patient_agent"
+
+
+async def test_collect_info_does_not_advance_on_a_plain_sign_off():
+    """Despedida legítima com o cadastro já pronto e nenhum campo novo neste turno
+    ("fico à disposição!"): o turno encerra sem a Eva emendar outra mensagem."""
+    from app.graph.schemas import CollectInfoOutput
+
+    result, _ = await _run_collect(
+        _bernardo_state(guardian_relationship="pai",
+                        consultation_reason="Dificuldade escolar"),
+        CollectInfoOutput(
+            reply="Perfeito! Fico à disposição para quando decidirem agendar. 😊",
+            is_complete=False,
+        ),
+    )
+
+    assert result.get("stage") != "patient_agent"
+
+
 async def test_forced_is_patient_question_is_recognized_when_answered():
     """A pergunta determinística de is_patient precisa ser reconhecível pelo bloco
     que aceita o is_patient extraído pela LLM — ele exige "agendando em nome" ou

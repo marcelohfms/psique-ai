@@ -1306,7 +1306,33 @@ async def collect_info_node(state: ConversationState, config: RunnableConfig) ->
             )
             reply = _forced_q
 
-    if result.is_complete and not birth_date_invalid and not _missing:
+    _complete = result.is_complete and not birth_date_invalid and not _missing
+
+    # O lado espelhado do desempate acima. Aqui a LLM diz is_complete=false, o gate
+    # diz que não falta nada e a resposta dela não pergunta coisa alguma: ela agradece
+    # o último dado ("Entendi, obrigada por compartilhar.") e cala. O stage fica em
+    # collect_info, o _route_after_collect manda o turno para o END e o agendamento
+    # nunca começa — a conversa só volta a andar quando uma atendente injeta uma
+    # instrução na mão (caso Marcelo Brayner Filho, 5581999865181, 04/08/2026;
+    # a LLM tinha esquecido de emendar a pergunta do profissional que encaminhou).
+    # Sem pergunta pendente e sem campo faltando, quem manda é o gate.
+    # A rede só vale quando o turno de fato coletou um campo novo: assim uma
+    # despedida legítima com o cadastro já pronto ("fico à disposição!") continua
+    # encerrando o turno sem a Eva emendar outra mensagem por conta própria.
+    if not _complete and not birth_date_invalid and not _missing and "?" not in reply:
+        _collected_new_field = any(
+            state.get(k) != v for k, v in update.items() if k not in ("messages", "stage")
+        )
+        if _collected_new_field:
+            import logging as _log
+            _log.getLogger(__name__).warning(
+                "COLLECT_INFO_STALLED: LLM marcou is_complete=false sem perguntar nada "
+                "e sem campo faltando phone=%s — cadastro dado por completo",
+                state["phone"],
+            )
+            _complete = True
+
+    if _complete:
         update["stage"] = "patient_agent"
         if _is_document:
             update["pending_action"] = "request_document"
