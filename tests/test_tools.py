@@ -838,6 +838,93 @@ async def test_confirm_appointment_multi_patient_override_beats_user_db_id():
     assert _insert_payload.get("patient_id") == "laila-id"
 
 
+async def test_guard_blocks_second_appointment_when_user_db_id_is_orphan():
+    """A guarda de "paciente já tem consulta" resolve o paciente pelo TELEFONE, não por
+    state["user_db_id"] — que congela quando a conversa sai do collect_info e passou a
+    apontar para ids inexistentes após a migração users→patients (101 de 491 threads em
+    03/08/2026).
+
+    Caso Dione / Pedro Lins De Araújo (5581999578203, 30/07/2026): o state carregava
+    user_db_id=67b1673f (fantasma), a guarda consultou appointments por esse id, não achou
+    nada e liberou um SEGUNDO agendamento ativo — enquanto o insert, que resolvia por
+    telefone, gravou o patient_id correto. O agendamento antigo ficou órfão, recebeu
+    cobrança de taxa e foi auto-cancelado, disparando "sua vaga foi liberada" para uma
+    paciente que estava em dia."""
+    from app.graph.tools import confirm_appointment
+    client, table, execute = _make_supabase_client()
+    _pedro = {"id": "pedro-id", "patient_name": "Pedro Lins De Araújo", "_contact_id": "c-dione"}
+    # Consulta futura JÁ existente do Pedro (outro horário) — a guarda tem de vê-la.
+    execute.return_value = MagicMock(data=[
+        {"appointment_id": "appt-existente", "start_time": "2027-01-15T14:00:00+00:00", "status": "scheduled"},
+    ])
+    with patch("app.graph.tools._get_doctor_calendar_id", new_callable=AsyncMock, return_value="cal123"), \
+         patch("app.google_calendar.create_event", new_callable=AsyncMock) as mock_create, \
+         patch("app.graph.tools.get_supabase", new_callable=AsyncMock, return_value=client), \
+         patch("app.graph.tools.get_users_by_phone", new_callable=AsyncMock, return_value=[_pedro]), \
+         patch("app.graph.tools.get_user_by_phone", new_callable=AsyncMock, return_value=_pedro), \
+         patch("app.graph.tools.log_event", new_callable=AsyncMock), \
+         patch("app.graph.tools._notify_clinic", new_callable=AsyncMock):
+        result = await confirm_appointment.coroutine(
+            slot_datetime="2026-03-23T09:00:00",
+            slot_duration_minutes=60,
+            state=_make_state(user_db_id="67b1673f-fantasma", patient_name="Pedro Lins De Araújo"),
+            config=CONFIG,
+        )
+    # A guarda resolveu pelo telefone e consultou o patient_id REAL, não o fantasma.
+    _eq_args = [c.args for c in table.eq.call_args_list if c.args and c.args[0] == "patient_id"]
+    assert ("patient_id", "pedro-id") in _eq_args
+    assert ("patient_id", "67b1673f-fantasma") not in _eq_args
+    # E bloqueou: nenhum evento criado, instrução interna de remarcar devolvida.
+    assert "já tem consulta" in result
+    mock_create.assert_not_called()
+
+
+async def test_guard_does_not_block_sibling_on_shared_phone():
+    """Contraprova da guarda acima: 23 contatos têm mais de um paciente (famílias que
+    usam um telefone só). Resolver pelo telefone NÃO pode bloquear o agendamento de um
+    irmão porque outro tem consulta marcada — a guarda precisa mirar exatamente o
+    paciente desta conversa (caso Daniela/Silvia/Flavia Passos, 5581981179458)."""
+    from app.graph.tools import confirm_appointment
+    client, table, execute = _make_supabase_client()
+    _silvia = {"id": "silvia-id", "patient_name": "Silvia De Souza Passos", "name": "Daniela Passos"}
+    _flavia = {"id": "flavia-id", "patient_name": "Flavia Souza Passos", "name": "Daniela Passos"}
+    _daniela = {"id": "daniela-id", "patient_name": "Daniela De Souza Passos", "name": "Daniela Passos"}
+    with patch("app.graph.tools._get_doctor_calendar_id", new_callable=AsyncMock, return_value="cal123"), \
+         patch("app.google_calendar.create_event", new_callable=AsyncMock, return_value="evt-flavia") as mock_create, \
+         patch("app.graph.tools.get_supabase", new_callable=AsyncMock, return_value=client), \
+         patch("app.graph.tools.get_users_by_phone", new_callable=AsyncMock,
+               return_value=[_silvia, _flavia, _daniela]), \
+         patch("app.graph.tools.get_user_by_phone", new_callable=AsyncMock, return_value=_silvia), \
+         patch("app.graph.tools.log_event", new_callable=AsyncMock), \
+         patch("app.graph.tools._notify_clinic", new_callable=AsyncMock):
+        result = await confirm_appointment.coroutine(
+            slot_datetime="2026-03-23T09:00:00",
+            slot_duration_minutes=60,
+            state=_make_state(user_db_id="flavia-id", patient_name="Flavia Souza Passos"),
+            config=CONFIG,
+        )
+    # Consultou a agenda da Flavia — não a da Silvia (que get_user_by_phone devolveria).
+    _eq_args = [c.args for c in table.eq.call_args_list if c.args and c.args[0] == "patient_id"]
+    assert ("patient_id", "flavia-id") in _eq_args
+    assert ("patient_id", "silvia-id") not in _eq_args
+    assert "já tem consulta" not in result
+    mock_create.assert_called()
+    assert table.insert.call_args[0][0].get("patient_id") == "flavia-id"
+
+
+async def test_resolve_patient_for_booking_ignores_orphan_id_for_single_patient_contact():
+    """Contato com um único paciente (1351 de 1374): a resolução é puramente pelo
+    telefone, então um user_db_id órfão no state não tem como influenciar."""
+    from app.graph.tools import _resolve_patient_for_booking
+    _pedro = {"id": "pedro-id", "patient_name": "Pedro Lins De Araújo"}
+    with patch("app.graph.tools.get_users_by_phone", new_callable=AsyncMock, return_value=[_pedro]), \
+         patch("app.graph.tools.get_user_by_phone", new_callable=AsyncMock, return_value=_pedro):
+        user = await _resolve_patient_for_booking(
+            "5581999578203", {"user_db_id": "67b1673f-fantasma", "patient_name": "Pedro Lins De Araújo"},
+        )
+    assert user["id"] == "pedro-id"
+
+
 async def test_confirm_appointment_matches_sibling_by_social_name():
     """Duas pacientes no mesmo telefone (irmãs); uma tem social_name. Um override
     usando o nome social deve resolver para a paciente certa, não para a outra
@@ -1129,8 +1216,11 @@ async def test_confirm_appointment_blocks_when_patient_has_pending_reschedule():
         MagicMock(data=[{"appointment_id": "old-evt-1", "start_time": _past,
                           "status": "pending_reschedule"}]),   # appointments guard 0
     ]
+    _patient = {"id": "patient-1", "patient_name": "Maria"}
     with patch("app.graph.tools._get_doctor_calendar_id", new_callable=AsyncMock, return_value="cal123"), \
          patch("app.graph.tools.get_supabase", new_callable=AsyncMock, return_value=client), \
+         patch("app.graph.tools.get_users_by_phone", new_callable=AsyncMock, return_value=[_patient]), \
+         patch("app.graph.tools.get_user_by_phone", new_callable=AsyncMock, return_value=_patient), \
          patch("app.google_calendar.create_event", new_callable=AsyncMock) as mock_create:
         result = await confirm_appointment.coroutine(
             slot_datetime="2026-03-23T09:00:00",
@@ -1193,8 +1283,11 @@ async def test_confirm_appointment_guard0_applies_even_with_force_encaixe():
         MagicMock(data=[{"appointment_id": "old-evt-1", "start_time": _future,
                           "status": "scheduled"}]),   # appointments guard 0
     ]
+    _patient = {"id": "patient-1", "patient_name": "Maria"}
     with patch("app.graph.tools._get_doctor_calendar_id", new_callable=AsyncMock, return_value="cal123"), \
          patch("app.graph.tools.get_supabase", new_callable=AsyncMock, return_value=client), \
+         patch("app.graph.tools.get_users_by_phone", new_callable=AsyncMock, return_value=[_patient]), \
+         patch("app.graph.tools.get_user_by_phone", new_callable=AsyncMock, return_value=_patient), \
          patch("app.google_calendar.create_event", new_callable=AsyncMock) as mock_create:
         result = await confirm_appointment.coroutine(
             slot_datetime="2026-07-08T13:20:00",
