@@ -599,3 +599,59 @@ def test_missing_registration_field_agrees_with_is_registration_complete():
         {},
     ):
         assert is_registration_complete(user) is (missing_registration_field(user) is None)
+
+
+# ── Propagação de nome corrompido contato → paciente ─────────────────────────
+# Quando o paciente ainda não tem nome próprio, o shim copia o nome do contato.
+# Um valor ruim no contato virava dois prontuários errados de uma vez: foi o que
+# aconteceu com 5581991812399, cujo nome (contato E paciente) virou o texto de um
+# comprovante de pagamento.
+
+@pytest.mark.asyncio
+async def test_upsert_user_nao_copia_nome_invalido_do_contato_para_o_paciente():
+    contact = {"id": "c1", "phone": "5583988887777", "active": True}
+    captured = {}
+    lixo = "[imagem]: COMPROVANTE DE PAGAMENTO: valor transferido R$ 600,00, PSIQUE."
+
+    async def fake_upsert_contact(phone, data):
+        captured["contact_data"] = data
+        return "c1"
+
+    async def fake_upsert_patient(data, patient_id=None):
+        captured["patient_data"] = data
+        return patient_id or "p-new"
+
+    with patch("app.database.get_contact_by_phone", new_callable=AsyncMock, return_value=contact), \
+         patch("app.database.upsert_contact", side_effect=fake_upsert_contact), \
+         patch("app.database.upsert_patient", side_effect=fake_upsert_patient), \
+         patch("app.database.link_patient_contact", new_callable=AsyncMock), \
+         patch("app.patients.resolve_active_patient", new_callable=AsyncMock,
+               return_value={"patient": None}):
+        await database.upsert_user("5583988887777", {"name": lixo, "email": "j@x.com"})
+
+    assert captured.get("patient_data", {}).get("name") != lixo
+
+
+@pytest.mark.asyncio
+async def test_upsert_user_continua_copiando_nome_valido_do_contato():
+    """A cópia é o comportamento normal para quem agenda para si — só o valor
+    que não parece nome é barrado."""
+    contact = {"id": "c1", "phone": "5583988887777", "active": True}
+    captured = {}
+
+    async def fake_upsert_contact(phone, data):
+        return "c1"
+
+    async def fake_upsert_patient(data, patient_id=None):
+        captured["patient_data"] = data
+        return patient_id or "p-new"
+
+    with patch("app.database.get_contact_by_phone", new_callable=AsyncMock, return_value=contact), \
+         patch("app.database.upsert_contact", side_effect=fake_upsert_contact), \
+         patch("app.database.upsert_patient", side_effect=fake_upsert_patient), \
+         patch("app.database.link_patient_contact", new_callable=AsyncMock), \
+         patch("app.patients.resolve_active_patient", new_callable=AsyncMock,
+               return_value={"patient": None}):
+        await database.upsert_user("5583988887777", {"name": "Ana Luiza", "email": "j@x.com"})
+
+    assert captured["patient_data"]["name"] == "Ana Luiza"

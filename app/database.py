@@ -175,7 +175,21 @@ async def upsert_user(phone: str, data: dict, user_id: str | None = None) -> str
     if "patient_name" in patient_data:
         patient_data["name"] = patient_data.pop("patient_name")
     elif "name" in data and user_id is None:
-        patient_data.setdefault("name", data["name"])
+        # Esta cópia implícita (contato → paciente, para quem agenda para si) é
+        # o que transformava UM nome ruim em DOIS prontuários errados. O texto
+        # de um comprovante virou nome do contato e do paciente de uma vez só
+        # (5581991812399). Um nome explícito continua passando sem filtro — a
+        # validação de quem informou é responsabilidade de quem chama.
+        from app.utils import looks_like_name
+        if looks_like_name(data["name"]):
+            patient_data.setdefault("name", data["name"])
+        else:
+            import logging as _log
+            _log.getLogger(__name__).warning(
+                "NOME_NAO_PROPAGADO: nome do contato não parece nome, "
+                "não copiado para o paciente phone=%s valor=%r",
+                phone, str(data["name"])[:120],
+            )
     patient_data.pop("is_patient", None)
 
     # roteia dados do responsável para o contato
