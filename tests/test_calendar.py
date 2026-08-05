@@ -811,3 +811,91 @@ async def test_no_supabase_crosscheck_without_doctor_key(freeze_calendar_now):
         )
 
     supabase.from_.assert_not_called()
+
+
+# ── slot que atravessa a borda do turno ───────────────────────────────────────
+# A segunda da Dra. Bruna vai das 16:30 às 18:30, mas "tarde" termina às 18:00 e
+# "noite" começa às 18:00. O recorte cortava o FIM da janela, então o 17:30
+# (17:30→18:30) estourava a tarde e não cabia na noite (18:00→18:30 é curto
+# demais): o horário sumia dos dois turnos e não era ofertado a ninguém.
+# Vale para qualquer janela que cruze 12:00, 13:00 ou 18:00.
+
+
+async def test_slot_que_termina_depois_do_turno_ainda_e_ofertado(freeze_calendar_now):
+    """Bruna, segunda 16:30-18:30, tarde: 16:30 E 17:30 — o 17:30 termina 18:30."""
+    from app.google_calendar import get_available_slots
+
+    with patch("app.google_calendar._credentials", return_value=MagicMock()), \
+         patch("app.google_calendar.build", return_value=_make_service([])):
+        slots = await get_available_slots(
+            calendar_id="cal-test",
+            preferred_day="2026-03-23",  # segunda
+            preferred_shift="tarde",
+            slot_minutes=60,
+            doctor_key="bruna",
+        )
+
+    assert [dt.strftime("%H:%M") for dt, _ in slots] == ["16:30", "17:30"]
+
+
+async def test_slot_que_atravessa_a_borda_nao_aparece_tambem_no_turno_seguinte(freeze_calendar_now):
+    """O 17:30 é da tarde (é onde ele COMEÇA). A noite não pode repeti-lo, senão o
+    mesmo horário aparece duas vezes para a paciente."""
+    from app.google_calendar import get_available_slots
+
+    with patch("app.google_calendar._credentials", return_value=MagicMock()), \
+         patch("app.google_calendar.build", return_value=_make_service([])):
+        slots = await get_available_slots(
+            calendar_id="cal-test",
+            preferred_day="2026-03-23",
+            preferred_shift="noite",
+            slot_minutes=60,
+            doctor_key="bruna",
+        )
+
+    assert slots == []
+
+
+async def test_slot_na_borda_das_18h_pertence_a_noite_e_nao_duplica(freeze_calendar_now):
+    """Dr. Júlio na quinta atende 14:00-18:00 e 18:00-20:00. O 18:00 começa na noite,
+    então é da noite — e a tarde, que termina às 18:00, não pode ofertá-lo também."""
+    from app.google_calendar import get_available_slots
+
+    async def _slots(shift):
+        with patch("app.google_calendar._credentials", return_value=MagicMock()), \
+             patch("app.google_calendar.build", return_value=_make_service([])):
+            got = await get_available_slots(
+                calendar_id="cal-test",
+                preferred_day="2026-03-26",  # quinta
+                preferred_shift=shift,
+                slot_minutes=60,
+                doctor_key="julio",
+            )
+        return [dt.strftime("%H:%M") for dt, _ in got]
+
+    tarde = await _slots("tarde")
+    noite = await _slots("noite")
+
+    assert "18:00" in noite
+    assert "18:00" not in tarde
+    assert not (set(tarde) & set(noite)), f"horário duplicado entre turnos: {set(tarde) & set(noite)}"
+
+
+async def test_slot_de_2h_que_atravessa_a_borda_do_turno(freeze_calendar_now):
+    """A consulta de 2h da primeira consulta de menor também atravessa a borda:
+    na segunda da Bruna, 16:30→18:30 cabe na janela e não pode sumir só porque a
+    tarde termina às 18:00."""
+    from app.google_calendar import get_available_slots
+
+    with patch("app.google_calendar._credentials", return_value=MagicMock()), \
+         patch("app.google_calendar.build", return_value=_make_service([])):
+        slots = await get_available_slots(
+            calendar_id="cal-test",
+            preferred_day="2026-03-23",  # Bruna: segunda 16:30-18:30
+            preferred_shift="tarde",
+            slot_minutes=120,
+            doctor_key="bruna",
+        )
+
+    horas = [dt.strftime("%H:%M") for dt, _ in slots]
+    assert horas == ["16:30"], f"16:30→18:30 cabe inteiro na janela: {horas}"

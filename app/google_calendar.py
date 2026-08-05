@@ -711,6 +711,10 @@ async def get_available_slots(
     else:
         day_windows_raw = None
 
+    # Último horário em que um slot pode COMEÇAR, quando um turno foi pedido. None =
+    # sem limite ("qualquer" turno, ou médico sem grade cadastrada).
+    latest_start_dt: datetime | None = None
+
     if doctor_schedule or date_key in doctor_exceptions:
         if day_windows_raw is None:
             return []  # doctor doesn't work on this day
@@ -729,14 +733,20 @@ async def get_available_slots(
                 return []  # doctor doesn't work this shift on this day
             shift_start_dt = datetime(target_date.year, target_date.month, target_date.day, shift_start_h, 0, tzinfo=TZ)
             shift_end_dt   = datetime(target_date.year, target_date.month, target_date.day, shift_end_h,   0, tzinfo=TZ)
+            # Um slot pertence ao turno em que ele COMEÇA. É só o início que precisa
+            # ser recortado — é ele que evita o mesmo horário aparecer em dois turnos
+            # (uma janela 14h-19h não pode oferecer 18:00 na tarde E na noite).
+            #
+            # Recortar também o FIM apagava o slot que atravessa a borda: a segunda da
+            # Dra. Bruna vai das 16:30 às 18:30, e o 17:30 (17:30→18:30) estourava a
+            # tarde, que termina às 18:00, e não cabia na noite, que começava às 18:00
+            # com só meia hora de janela. O horário não existia para ninguém.
+            latest_start_dt = shift_end_dt
             windows = []
             for entry in filtered:
                 ws = datetime(target_date.year, target_date.month, target_date.day, entry[0], entry[1], tzinfo=TZ)
                 we = datetime(target_date.year, target_date.month, target_date.day, entry[2], entry[3], tzinfo=TZ)
-                # Clip window to the requested shift so a 14h–19h window doesn't bleed
-                # into a "manhã" or "noite" query (avoids duplicate slots across shifts).
                 ws = max(ws, shift_start_dt)
-                we = min(we, shift_end_dt)
                 if ws < we:
                     windows.append((ws, we, entry[4]))
         else:
@@ -822,6 +832,9 @@ async def get_available_slots(
     for window_start, window_end, modality in windows:
         current = window_start
         while current + slot_delta <= window_end:
+            # O slot é do turno em que começa; passou da borda, é do turno seguinte.
+            if latest_start_dt is not None and current >= latest_start_dt:
+                break
             slot_end = current + slot_delta
             if current >= min_start and not any(current < be and slot_end > bs for bs, be in busy_ranges):
                 slots.append((current, modality))
