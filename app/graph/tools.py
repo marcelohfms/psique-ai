@@ -106,7 +106,15 @@ async def _resolve_doctor(state: dict, config: RunnableConfig) -> str:
 
 def _match_patient_by_name(all_users: list[dict], target: str) -> dict | None:
     """Match a patient record by name among a contact's patients.
+
     Passes, in order: exact civil name, exact social name, substring civil name.
+    Returns None when the target does not single out exactly one patient — the
+    caller then falls back to get_user_by_phone, which prefers the ACTIVE patient.
+
+    Desde o #131 esta busca decide também o guard de consulta duplicada, não só o
+    insert: um match errado passou a poder bloquear ou liberar o irmão errado. São
+    23 contatos com mais de um paciente (famílias que dividem um telefone),
+    incluindo o caso Daniela/Silvia Passos (5581981179458, 3 pacientes).
     """
     target = (target or "").strip().lower()
     if not target:
@@ -119,10 +127,26 @@ def _match_patient_by_name(all_users: list[dict], target: str) -> dict | None:
         _sname = (_u.get("social_name") or "").strip().lower()
         if _sname and _sname == target:
             return _u
-    for _u in all_users:
-        _pname = (_u.get("patient_name") or _u.get("name") or "").strip().lower()
-        if target in _pname:
-            return _u
+    # Substring com limite de palavra: sem \b, "Ana" casava com "Mariana Silva" e
+    # anexava a consulta ao irmão errado. \b usa \w, que em str Python já inclui
+    # letras acentuadas — "Araújo" não quebra o limite.
+    _pattern = re.compile(rf"\b{re.escape(target)}\b")
+    _hits = [
+        _u for _u in all_users
+        if _pattern.search((_u.get("patient_name") or _u.get("name") or "").strip().lower())
+    ]
+    if len(_hits) == 1:
+        return _hits[0]
+    if len(_hits) > 1:
+        # Antes devolvia o primeiro da lista — ou seja, a ordem em que o Supabase
+        # respondeu decidia qual irmã era agendada. Sem critério para desempatar,
+        # desistir é melhor que chutar: quem chama cai no get_user_by_phone, que
+        # ao menos prefere o paciente ATIVO, uma regra definida.
+        logger.warning(
+            "MATCH_PACIENTE_AMBIGUO: %r casa com %d pacientes do mesmo contato (%s) — "
+            "sem desempate, deixando para o get_user_by_phone",
+            target, len(_hits), [_u.get("id") for _u in _hits],
+        )
     return None
 
 
