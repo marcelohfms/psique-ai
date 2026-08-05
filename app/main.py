@@ -975,6 +975,23 @@ async def _apply_eva_label_action(payload: dict, added: set, removed: set) -> bo
             try:
                 from app.chatwoot import get_last_patient_message
                 last = await get_last_patient_message(conversation_id)
+                # Uma nota privada posterior à última mensagem do paciente significa que a
+                # atendente já resolveu o caso e mandou a instrução para a Eva — aquele
+                # turno é o que vale. Reprocessar a mensagem antiga aqui abre um SEGUNDO
+                # turno em cima do mesmo assunto e a paciente recebe a confirmação e o PIX
+                # duas vezes (caso 5581979037093, 05/08/2026).
+                _note_at = last.get("last_note_at") if last else None
+                if _note_at and _note_at >= (last.get("created_at") or 0):
+                    logger.info(
+                        "EVA_ATIVA_REPLAY_SKIPPED phone=%s conv=%s — nota da atendente "
+                        "posterior à mensagem do paciente: %.60s",
+                        phone, conversation_id, last.get("content"),
+                    )
+                    await log_event("eva_ativa_replay_skipped", phone, {
+                        "content": (last.get("content") or "")[:300],
+                        "conversation_id": conversation_id,
+                    })
+                    last = None
                 if last:
                     text = last["content"] or None
                     attachments = last["attachments"]
@@ -990,6 +1007,60 @@ async def _apply_eva_label_action(payload: dict, added: set, removed: set) -> bo
                 logger.exception("Failed to fetch/reprocess last message for %s", phone)
 
     return True
+
+
+def _payload_labels(payload: dict) -> frozenset | None:
+    """Labels carried by the payload, or None when it doesn't mention labels at all.
+
+    The distinction matters: an event without a `labels` key says nothing about the
+    conversation's labels. Reading it as "no labels" wipes the tracker and makes the
+    next event look like every label was just added.
+    """
+    conv = payload.get("conversation")
+    if isinstance(conv, dict) and "labels" in conv:
+        return frozenset(conv.get("labels") or [])
+    if "labels" in payload:
+        return frozenset(payload.get("labels") or [])
+    return None
+
+
+async def _label_delta_against_tracker(conv_id: str, labels_now: frozenset) -> tuple[set, set] | None:
+    """Diff the conversation's labels against the last state we recorded.
+
+    Returns None the first time a conversation is seen: its current labels are the
+    starting state, not a change. Treating them as freshly added is what made Eva
+    reprocess the last patient message whenever an attendant merely changed the
+    conversation's priority or resolved it.
+
+    Os dois casos que interessam viram evento no Supabase, não só linha de log:
+      - `label_tracker_seeded` com uma label de controle: o tracker é um dict em memória
+        e zera a cada deploy, então uma conversa semeada já com eva-ativa PODE ser uma
+        reativação de verdade engolida como "primeira observação".
+      - `label_delta_from_tracker`: prova que o fallback é quem detectou um add real —
+        ou seja, que o changed_attributes do Chatwoot não cobriu o caso.
+    Sem isso a única forma de medir a frequência é SSH no VPS, dentro da janela de
+    retenção do Docker.
+    """
+    previous = _conv_labels.get(conv_id)
+    _conv_labels[conv_id] = labels_now
+    if previous is None:
+        logger.info("LABEL_SEED conv=%s labels=%s", conv_id, sorted(labels_now))
+        _control = labels_now & {_EVA_ACTIVE_LABEL, _EVA_INACTIVE_LABEL}
+        if _control:
+            await log_event("label_tracker_seeded", "", {
+                "conversation_id": conv_id,
+                "labels": sorted(_control),
+            })
+        return None
+
+    added, removed = labels_now - previous, previous - labels_now
+    if (added | removed) & {_EVA_ACTIVE_LABEL, _EVA_INACTIVE_LABEL}:
+        await log_event("label_delta_from_tracker", "", {
+            "conversation_id": conv_id,
+            "added": sorted(added),
+            "removed": sorted(removed),
+        })
+    return added, removed
 
 
 async def _handle_label_change(payload: dict) -> bool:
@@ -1011,21 +1082,33 @@ async def _handle_label_change(payload: dict) -> bool:
         logger.info("CONV_UPDATED_CHANGED_ATTRS type=%s value=%s", type(changed).__name__, changed)
         delta = _extract_label_delta(changed)
         if delta is None:
-            # Fallback: if eva-ativa is in current labels and not tracked yet, treat as added
             conv_id = str(_extract_conversation_id(payload) or "")
-            labels_now = frozenset(
-                payload.get("conversation", {}).get("labels")
-                or payload.get("labels")
-                or []
-            )
-            if conv_id:
-                previous = _conv_labels.get(conv_id, frozenset())
-                _conv_labels[conv_id] = labels_now
-                added = labels_now - previous
-                removed = previous - labels_now
-                logger.info("CONV_UPDATED_FALLBACK conv=%s added=%s removed=%s", conv_id, added, removed)
-                if _EVA_ACTIVE_LABEL in added or _EVA_INACTIVE_LABEL in added or _EVA_INACTIVE_LABEL in removed:
-                    return await _apply_eva_label_action(payload, added, removed)
+            labels_now = _payload_labels(payload)
+
+            # Chatwoot listed exactly what changed and labels weren't in it: the
+            # attendant touched priority, status, assignee… Record the labels as the
+            # current state, but never act — nothing was added or removed.
+            if changed:
+                if conv_id and labels_now is not None:
+                    _conv_labels[conv_id] = labels_now
+                logger.info(
+                    "CONV_UPDATED_NO_LABEL_CHANGE conv=%s changed=%s labels=%s",
+                    conv_id,
+                    [k for entry in changed if isinstance(entry, dict) for k in entry],
+                    sorted(labels_now) if labels_now is not None else None,
+                )
+                return False
+
+            # No changed_attributes at all — fall back to diffing against the tracker.
+            if not conv_id or labels_now is None:
+                return False
+            tracker_delta = await _label_delta_against_tracker(conv_id, labels_now)
+            if tracker_delta is None:
+                return False
+            added, removed = tracker_delta
+            logger.info("CONV_UPDATED_FALLBACK conv=%s added=%s removed=%s", conv_id, added, removed)
+            if _EVA_ACTIVE_LABEL in added or _EVA_INACTIVE_LABEL in added or _EVA_INACTIVE_LABEL in removed:
+                return await _apply_eva_label_action(payload, added, removed)
             return False
 
         labels_before, labels_now = delta
@@ -1054,17 +1137,18 @@ async def _handle_label_change(payload: dict) -> bool:
         conv = payload.get("conversation") or {}
         conv_id = str(conv.get("id") or payload.get("id") or "")
         # Labels live inside conversation{} for message_updated, at top level for conversation_resolved
-        labels_now = frozenset(conv.get("labels") or payload.get("labels") or [])
+        labels_now = _payload_labels(payload)
+        if not conv_id or labels_now is None:
+            return False
 
-        previous = _conv_labels.get(conv_id, frozenset())
-        _conv_labels[conv_id] = labels_now
-
-        added = labels_now - previous
-        removed = previous - labels_now
+        tracker_delta = await _label_delta_against_tracker(conv_id, labels_now)
+        if tracker_delta is None:
+            return False
+        added, removed = tracker_delta
 
         logger.info(
-            "LABEL_CHANGE %s conv=%s labels_now=%s previous=%s added=%s removed=%s",
-            event, conv_id, labels_now, previous, added, removed,
+            "LABEL_CHANGE %s conv=%s labels_now=%s added=%s removed=%s",
+            event, conv_id, labels_now, added, removed,
         )
 
         # eva-ativa takes priority: resume always beats pause
@@ -1191,6 +1275,15 @@ async def _handle_chatwoot_payload(payload: dict) -> None:
             payload.get("conversation", {}).get("labels"),
             list(payload.keys()),
         )
+
+        # Ordinary traffic records the conversation's labels so that a label added
+        # later is seen as a change, not as the first sighting of that conversation.
+        if payload.get("event") == "message_created":
+            _seed_conv_id = str(_extract_conversation_id(payload) or "")
+            _seed_labels = _payload_labels(payload)
+            if _seed_conv_id and _seed_labels is not None:
+                _conv_labels.setdefault(_seed_conv_id, _seed_labels)
+
         # Accept both integer (1) and string ("1" / "outgoing") variants — Chatwoot
         # versions differ on whether message_type is serialised as int or string.
         _mt = payload.get("message_type")
