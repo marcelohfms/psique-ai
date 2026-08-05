@@ -593,12 +593,11 @@ def _update_event(service, calendar_id: str, event_id: str, patch: dict) -> None
     service.events().patch(calendarId=calendar_id, eventId=event_id, body=patch).execute()
 
 
-async def _get_supabase_busy(
+async def fetch_supabase_busy(
     doctor_key: str,
     window_start: datetime,
     window_end: datetime,
-    calendar_busy: list[tuple[datetime, datetime]],
-) -> list[tuple[datetime, datetime]]:
+) -> list[tuple[datetime, datetime, str]]:
     """Faixas ocupadas segundo a tabela `appointments`, para cruzar com o Calendar.
 
     O Calendar sozinho não é fonte confiável de ocupação: qualquer linha `scheduled`
@@ -612,9 +611,14 @@ async def _get_supabase_busy(
     de propósito enquanto o paciente escolhe o novo horário, e bloquear ali impediria a
     própria remarcação.
 
-    Toda linha sem faixa correspondente no Calendar vira `CALENDAR_DIVERGENCE` no log de
-    erro. Bloquear em silêncio esconderia a inconsistência — que é um bug em si — até
-    alguém rodar uma auditoria na mão ou uma paciente reclamar.
+    Devolve `(início, fim, appointment_id)`. A checagem de divergência contra o Calendar
+    é separada (`_log_calendar_divergence`) justamente porque esta busca é feita UMA vez
+    para o horizonte inteiro de uma varredura, enquanto a divergência precisa ser avaliada
+    janela a janela, contra o busy daquele dia.
+
+    Cada query custa ~260 ms. Chamar por dia e por turno numa varredura de 8 semanas
+    daria 120 queries (~31 s só de espera), então quem varre busca uma vez e repassa o
+    resultado via `supabase_busy` em `get_available_slots`.
     """
     import logging as _log_sb
     _logger_sb = _log_sb.getLogger(__name__)
@@ -637,7 +641,7 @@ async def _get_supabase_busy(
         .execute()
     )
 
-    ranges: list[tuple[datetime, datetime]] = []
+    ranges: list[tuple[datetime, datetime, str]] = []
     for row in (result.data or []):
         try:
             bs = datetime.fromisoformat(row["start_time"]).astimezone(TZ)
@@ -645,15 +649,31 @@ async def _get_supabase_busy(
         except (TypeError, ValueError, KeyError):
             _logger_sb.error("SUPABASE_BUSY_BAD_ROW doctor=%s row=%s", doctor_key, row)
             continue
-        ranges.append((bs, be))
+        ranges.append((bs, be, str(row.get("appointment_id") or "")))
+    return ranges
+
+
+def _log_calendar_divergence(
+    doctor_key: str,
+    supabase_busy: list[tuple[datetime, datetime, str]],
+    calendar_busy: list[tuple[datetime, datetime]],
+) -> None:
+    """Registra as linhas `scheduled` que não têm evento correspondente no Calendar.
+
+    A inconsistência é um bug em si: bloquear em silêncio esconderia o problema até
+    alguém rodar uma auditoria na mão ou uma paciente reclamar — que foi exatamente como
+    o caso Maria Clara apareceu, tarde demais, com duas pacientes já tendo pago.
+    """
+    import logging as _log_dv
+    _logger_dv = _log_dv.getLogger(__name__)
+    for bs, be, appointment_id in supabase_busy:
         if not any(cs < be and ce > bs for cs, ce in calendar_busy):
-            _logger_sb.error(
+            _logger_dv.error(
                 "CALENDAR_DIVERGENCE doctor=%s appointment_id=%s %s→%s está scheduled no "
                 "Supabase mas não tem evento correspondente no Calendar",
-                doctor_key, row.get("appointment_id"),
+                doctor_key, appointment_id,
                 bs.strftime("%d/%m/%Y %H:%M"), be.strftime("%H:%M"),
             )
-    return ranges
 
 
 async def get_available_slots(
@@ -662,8 +682,13 @@ async def get_available_slots(
     preferred_shift: str,
     slot_minutes: int = 60,
     doctor_key: str | None = None,
+    supabase_busy: list[tuple[datetime, datetime, str]] | None = None,
 ) -> list[tuple[datetime, str]]:
-    """Return list of (slot_start, modality) pairs for available slots."""
+    """Return list of (slot_start, modality) pairs for available slots.
+
+    `supabase_busy`: faixas já buscadas por quem varre vários dias, para não repetir a
+    query (~260 ms) em cada dia e cada turno. Quando None, esta chamada busca as suas.
+    """
     target_date = _parse_day(preferred_day)
     if not target_date:
         return []
@@ -771,9 +796,15 @@ async def get_available_slots(
     # evento sumiu, e o slot fantasma é oferecido e vendido de novo.
     if doctor_key:
         try:
-            busy_ranges.extend(
-                await _get_supabase_busy(doctor_key, overall_start, overall_end, busy_ranges)
-            )
+            if supabase_busy is None:
+                supabase_busy = await fetch_supabase_busy(doctor_key, overall_start, overall_end)
+            # Quem varre repassa o horizonte inteiro; só interessa o que cruza ESTA janela.
+            in_window = [
+                (bs, be, aid) for bs, be, aid in supabase_busy
+                if bs < overall_end and be > overall_start
+            ]
+            _log_calendar_divergence(doctor_key, in_window, busy_ranges)
+            busy_ranges.extend((bs, be) for bs, be, _ in in_window)
         except Exception as _e:
             # Fail-open, mesmo tratamento dado a _get_busy: derrubar toda a oferta de
             # horários por uma falha de banco é pior que o risco residual.

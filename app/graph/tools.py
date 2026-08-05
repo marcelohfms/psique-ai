@@ -246,12 +246,36 @@ def _business_days(start: date, end: date):
         day += timedelta(days=1)
 
 
+async def _prefetch_supabase_busy(doctor: str, first_day: date, last_day: date):
+    """Busca UMA vez as faixas ocupadas do Supabase para toda a varredura.
+
+    Cada query custa ~260 ms. Sem isso, uma varredura de 8 semanas em 3 turnos faria
+    120 queries — ~31 s de espera do paciente para ler sempre os mesmos dados. O
+    horizonte inteiro cabe numa consulta só.
+
+    Fail-open: qualquer erro devolve None, e cada dia volta a buscar por conta própria
+    (ou segue só com o Calendar). Nunca derruba a busca de horários."""
+    try:
+        from app.google_calendar import fetch_supabase_busy
+        start = datetime(first_day.year, first_day.month, first_day.day, 0, 0, tzinfo=TZ)
+        end = datetime(last_day.year, last_day.month, last_day.day, 23, 59, 59, tzinfo=TZ)
+        return await fetch_supabase_busy(doctor, start, end)
+    except Exception:
+        logging.getLogger(__name__).exception(
+            "PREFETCH_SUPABASE_BUSY falhou doctor=%s", doctor
+        )
+        return None
+
+
 async def _slots_for_any_day(
     day: date, calendar_id: str, doctor: str, preferred_shift: str,
-    slot_duration_minutes: int, _get_slots,
+    slot_duration_minutes: int, _get_slots, supabase_busy=None,
 ) -> dict:
     """Retorna {turno: slots} para o dia informado. Consulta apenas o turno
-    pedido, ou os três turnos quando preferred_shift == "qualquer"."""
+    pedido, ou os três turnos quando preferred_shift == "qualquer".
+
+    `supabase_busy` é repassado adiante para que a varredura inteira use UMA busca
+    ao Supabase — sem isso, os três turnos de cada dia repetiriam a mesma query."""
     if preferred_shift != "qualquer":
         slots = await _get_slots(
             calendar_id=calendar_id,
@@ -259,6 +283,7 @@ async def _slots_for_any_day(
             preferred_shift=preferred_shift,
             slot_minutes=slot_duration_minutes,
             doctor_key=doctor,
+            supabase_busy=supabase_busy,
         )
         return {preferred_shift: slots} if slots else {}
     result: dict = {}
@@ -269,6 +294,7 @@ async def _slots_for_any_day(
             preferred_shift=shift_key,
             slot_minutes=slot_duration_minutes,
             doctor_key=doctor,
+            supabase_busy=supabase_busy,
         )
         if slots:
             result[shift_key] = slots
@@ -300,11 +326,16 @@ async def _earliest_slot_dt(calendar_id: str, doctor: str, slot_duration_minutes
     cedo. None se nada for encontrado dentro do horizonte."""
     from app.google_calendar import get_available_slots as _get_slots
 
+    _horizon_start, _ = _week_range(0)
+    _, _horizon_end = _week_range(_ANY_DAY_MAX_WEEKS)
+    _sb_busy = await _prefetch_supabase_busy(doctor, _horizon_start, _horizon_end)
+
     for offset in range(0, _ANY_DAY_MAX_WEEKS + 1):
         start, end = _week_range(offset)
         for day in _business_days(start, end):
             day_shifts = await _slots_for_any_day(
-                day, calendar_id, doctor, "qualquer", slot_duration_minutes, _get_slots
+                day, calendar_id, doctor, "qualquer", slot_duration_minutes, _get_slots,
+                supabase_busy=_sb_busy,
             )
             slots = [s[0] for lst in day_shifts.values() for s in lst]
             if slots:
@@ -350,6 +381,10 @@ async def _search_month_shift(
     max_days = _MONTH_MAX_DAYS_ANY_SHIFT if any_shift else 3
     max_slots_per_day = 3 if any_shift else 2
 
+    _sb_busy = await _prefetch_supabase_busy(
+        doctor, date(year, month_num, start_day), date(year, month_num, days_in_month)
+    )
+
     slots_by_day = {}
     for day_num in range(start_day, days_in_month + 1):
         try_date = date(year, month_num, day_num)
@@ -363,6 +398,7 @@ async def _search_month_shift(
             preferred_shift=preferred_shift,
             slot_minutes=slot_duration_minutes,
             doctor_key=doctor,
+            supabase_busy=_sb_busy,
         )
 
         if slots:
@@ -448,12 +484,17 @@ async def _search_any_day(calendar_id: str, doctor: str, preferred_shift: str, s
     nunca informa ao paciente que "não encontrou"."""
     from app.google_calendar import get_available_slots as _get_slots
 
+    _horizon_start, _ = _week_range(0)
+    _, _horizon_end = _week_range(_ANY_DAY_MAX_WEEKS)
+    _sb_busy = await _prefetch_supabase_busy(doctor, _horizon_start, _horizon_end)
+
     found: list[tuple[date, dict]] = []
 
     start, end = _week_range(0)
     for day in _business_days(start, end):
         day_shifts = await _slots_for_any_day(
-            day, calendar_id, doctor, preferred_shift, slot_duration_minutes, _get_slots
+            day, calendar_id, doctor, preferred_shift, slot_duration_minutes, _get_slots,
+            supabase_busy=_sb_busy,
         )
         if day_shifts:
             found.append((day, day_shifts))
@@ -466,7 +507,8 @@ async def _search_any_day(calendar_id: str, doctor: str, preferred_shift: str, s
         start, end = _week_range(1)
         for day in _business_days(start, end):
             day_shifts = await _slots_for_any_day(
-                day, calendar_id, doctor, preferred_shift, slot_duration_minutes, _get_slots
+                day, calendar_id, doctor, preferred_shift, slot_duration_minutes, _get_slots,
+                supabase_busy=_sb_busy,
             )
             if day_shifts:
                 found.append((day, day_shifts))
@@ -477,7 +519,8 @@ async def _search_any_day(calendar_id: str, doctor: str, preferred_shift: str, s
         start, end = _week_range(week_offset)
         for day in _business_days(start, end):
             day_shifts = await _slots_for_any_day(
-                day, calendar_id, doctor, preferred_shift, slot_duration_minutes, _get_slots
+                day, calendar_id, doctor, preferred_shift, slot_duration_minutes, _get_slots,
+                supabase_busy=_sb_busy,
             )
             if day_shifts:
                 found.append((day, day_shifts))
