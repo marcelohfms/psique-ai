@@ -22,6 +22,18 @@ def freeze_calendar_now():
         yield
 
 
+@pytest.fixture(autouse=True)
+def _no_real_supabase():
+    """Nenhum teste deste arquivo pode falar com o Supabase de verdade.
+
+    O cruzamento com `appointments` roda em TODA chamada de get_available_slots, então
+    sem esse guard os testes que só mockam o Google passariam a abrir cliente e a
+    consultar o banco de produção. Os testes do cruzamento sobrescrevem este patch."""
+    with patch("app.database.get_supabase", new_callable=AsyncMock,
+               return_value=_make_supabase([])):
+        yield
+
+
 # ── _parse_day ────────────────────────────────────────────────────────────────
 
 def test_parse_day_iso_date():
@@ -640,3 +652,162 @@ def test_days_summary_omits_exception_block_when_none_upcoming():
 
     assert "DATAS EXCEPCIONAIS" not in text
     assert "Dr. Júlio atende SOMENTE" in text
+
+
+# ── cruzamento com appointments do Supabase ───────────────────────────────────
+#
+# Caso Maria Clara Ramos Perecmanis (03/08/2026 17h, Dr. Júlio, taxa paga em
+# 18/05): os eventos foram deletados do Calendar durante um ajuste de agenda em
+# 28-29/07, mas a linha em `appointments` seguiu `scheduled`. Como a
+# disponibilidade saía só do Calendar, em 30/07 a Eva ofereceu e vendeu o mesmo
+# 17h para outra paciente — as duas pagaram.
+
+
+def _make_supabase(rows: list[dict]) -> MagicMock:
+    """Cliente Supabase mockado que devolve `rows` para a query de appointments."""
+    from tests.conftest import make_supabase_client
+    client, _table, execute = make_supabase_client()
+    execute.return_value = MagicMock(data=rows)
+    return client
+
+
+def _appt_row(start_iso: str, end_iso: str, appointment_id: str = "evt-123") -> dict:
+    return {"appointment_id": appointment_id, "start_time": start_iso, "end_time": end_iso}
+
+
+async def test_slots_blocked_by_supabase_row_without_calendar_event(freeze_calendar_now):
+    """Consulta `scheduled` sem evento no Calendar (slot fantasma) não pode ser oferecida."""
+    from app.google_calendar import get_available_slots
+
+    service = _make_service([])  # Calendar vazio — o evento foi deletado
+    supabase = _make_supabase([
+        _appt_row("2026-03-23T10:00:00-03:00", "2026-03-23T11:00:00-03:00"),
+    ])
+    with patch("app.google_calendar._credentials", return_value=MagicMock()), \
+         patch("app.google_calendar.build", return_value=service), \
+         patch("app.database.get_supabase", new_callable=AsyncMock, return_value=supabase):
+        slots = await get_available_slots(
+            calendar_id="cal-test",
+            preferred_day="2026-03-23",  # segunda, Dr. Júlio atende 9-12
+            preferred_shift="manha",
+            slot_minutes=60,
+            doctor_key="julio",
+        )
+
+    hours = [dt.hour for dt, _ in slots]
+    assert 10 not in hours, f"slot fantasma das 10h foi oferecido: {hours}"
+    assert hours == [9, 11]
+
+
+async def test_supabase_crosscheck_queries_only_scheduled(freeze_calendar_now):
+    """`pending_reschedule` não pode bloquear: nesse estado o slot é liberado de
+    propósito enquanto o paciente escolhe o novo horário. O filtro é `eq`, não `in_`."""
+    from app.google_calendar import get_available_slots
+
+    supabase = _make_supabase([])
+    with patch("app.google_calendar._credentials", return_value=MagicMock()), \
+         patch("app.google_calendar.build", return_value=_make_service([])), \
+         patch("app.database.get_supabase", new_callable=AsyncMock, return_value=supabase):
+        await get_available_slots(
+            calendar_id="cal-test",
+            preferred_day="2026-03-23",
+            preferred_shift="manha",
+            slot_minutes=60,
+            doctor_key="julio",
+        )
+
+    query = supabase.from_.return_value
+    status_filters = [c for c in query.eq.call_args_list if c.args[0] == "status"]
+    assert status_filters, "a query não filtrou por status"
+    assert all(c.args[1] == "scheduled" for c in status_filters)
+    query.in_.assert_not_called()
+
+
+async def test_supabase_row_without_calendar_event_logs_divergence(freeze_calendar_now, caplog):
+    """A inconsistência em si é um bug que alguém precisa ver — bloquear em silêncio
+    esconderia o problema até virar duas pacientes pagando o mesmo horário."""
+    import logging
+    from app.google_calendar import get_available_slots
+
+    supabase = _make_supabase([
+        _appt_row("2026-03-23T10:00:00-03:00", "2026-03-23T11:00:00-03:00", "appt-fantasma"),
+    ])
+    with caplog.at_level(logging.ERROR, logger="app.google_calendar"), \
+         patch("app.google_calendar._credentials", return_value=MagicMock()), \
+         patch("app.google_calendar.build", return_value=_make_service([])), \
+         patch("app.database.get_supabase", new_callable=AsyncMock, return_value=supabase):
+        await get_available_slots(
+            calendar_id="cal-test",
+            preferred_day="2026-03-23",
+            preferred_shift="manha",
+            slot_minutes=60,
+            doctor_key="julio",
+        )
+
+    assert "CALENDAR_DIVERGENCE" in caplog.text
+    assert "appt-fantasma" in caplog.text
+
+
+async def test_no_divergence_logged_when_calendar_covers_the_row(freeze_calendar_now, caplog):
+    """O caso normal — linha no Supabase E evento no Calendar — não pode poluir o log
+    de erro, senão o alerta de divergência vira ruído e ninguém olha."""
+    import logging
+    from app.google_calendar import get_available_slots
+
+    busy = [{"start": "2026-03-23T10:00:00-03:00", "end": "2026-03-23T11:00:00-03:00"}]
+    supabase = _make_supabase([
+        _appt_row("2026-03-23T10:00:00-03:00", "2026-03-23T11:00:00-03:00"),
+    ])
+    with caplog.at_level(logging.ERROR, logger="app.google_calendar"), \
+         patch("app.google_calendar._credentials", return_value=MagicMock()), \
+         patch("app.google_calendar.build", return_value=_make_service(busy)), \
+         patch("app.database.get_supabase", new_callable=AsyncMock, return_value=supabase):
+        slots = await get_available_slots(
+            calendar_id="cal-test",
+            preferred_day="2026-03-23",
+            preferred_shift="manha",
+            slot_minutes=60,
+            doctor_key="julio",
+        )
+
+    assert "CALENDAR_DIVERGENCE" not in caplog.text
+    assert [dt.hour for dt, _ in slots] == [9, 11]
+
+
+async def test_supabase_failure_keeps_calendar_slots(freeze_calendar_now):
+    """Fail-open: derrubar toda a oferta de horários por uma falha de banco é pior
+    que o risco residual do slot fantasma."""
+    from app.google_calendar import get_available_slots
+
+    with patch("app.google_calendar._credentials", return_value=MagicMock()), \
+         patch("app.google_calendar.build", return_value=_make_service([])), \
+         patch("app.database.get_supabase", new_callable=AsyncMock,
+               side_effect=RuntimeError("supabase fora do ar")):
+        slots = await get_available_slots(
+            calendar_id="cal-test",
+            preferred_day="2026-03-23",
+            preferred_shift="manha",
+            slot_minutes=60,
+            doctor_key="julio",
+        )
+
+    assert [dt.hour for dt, _ in slots] == [9, 10, 11]
+
+
+async def test_no_supabase_crosscheck_without_doctor_key(freeze_calendar_now):
+    """Sem doctor_key não há como identificar o médico — pula a checagem em vez de
+    bloquear com dados de outra agenda."""
+    from app.google_calendar import get_available_slots
+
+    supabase = _make_supabase([])
+    with patch("app.google_calendar._credentials", return_value=MagicMock()), \
+         patch("app.google_calendar.build", return_value=_make_service([])), \
+         patch("app.database.get_supabase", new_callable=AsyncMock, return_value=supabase):
+        await get_available_slots(
+            calendar_id="cal-test",
+            preferred_day="2026-03-23",
+            preferred_shift="manha",
+            slot_minutes=60,
+        )
+
+    supabase.from_.assert_not_called()

@@ -246,7 +246,7 @@ async def test_get_available_slots_qualquer_dia_uses_current_week_when_enough_da
     """'qualquer dia' com >=2 dias distintos disponíveis nesta semana NÃO deve buscar a semana seguinte."""
     from app.graph.tools import get_available_slots
 
-    async def _fake_slots(*, calendar_id, preferred_day, preferred_shift, slot_minutes, doctor_key):
+    async def _fake_slots(*, calendar_id, preferred_day, preferred_shift, slot_minutes, doctor_key, **_kw):
         if preferred_shift == "manha" and preferred_day in ("2026-07-07", "2026-07-08"):
             day = int(preferred_day[-2:])
             return [(datetime(2026, 7, day, 9, 0, tzinfo=TZ), "escolha")]
@@ -275,7 +275,7 @@ async def test_get_available_slots_qualquer_dia_extends_to_next_week_when_few():
     """Menos de 2 dias distintos nesta semana → soma a semana seguinte inteira."""
     from app.graph.tools import get_available_slots
 
-    async def _fake_slots(*, calendar_id, preferred_day, preferred_shift, slot_minutes, doctor_key):
+    async def _fake_slots(*, calendar_id, preferred_day, preferred_shift, slot_minutes, doctor_key, **_kw):
         if preferred_shift != "manha":
             return []
         if preferred_day == "2026-07-07":  # só terça nesta semana
@@ -315,7 +315,7 @@ async def test_get_available_slots_final_de_agosto_only_offers_last_week():
     from datetime import date as _date
     from app.graph.tools import get_available_slots
 
-    async def _fake_slots(*, calendar_id, preferred_day, preferred_shift, slot_minutes, doctor_key):
+    async def _fake_slots(*, calendar_id, preferred_day, preferred_shift, slot_minutes, doctor_key, **_kw):
         d = _date.fromisoformat(preferred_day)
         if preferred_shift == "tarde" and d.month == 8:
             return [(datetime(2026, 8, d.day, 14, 0, tzinfo=TZ), "escolha")]
@@ -348,7 +348,7 @@ async def test_get_available_slots_final_de_agosto_no_slots_says_final_do_mes():
     dias do início/meio como fallback silencioso."""
     from app.graph.tools import get_available_slots
 
-    async def _fake_slots(*, calendar_id, preferred_day, preferred_shift, slot_minutes, doctor_key):
+    async def _fake_slots(*, calendar_id, preferred_day, preferred_shift, slot_minutes, doctor_key, **_kw):
         return []
 
     with patch("app.graph.tools.datetime", _FrozenDTTuesday), \
@@ -371,7 +371,7 @@ async def test_get_available_slots_mes_sem_qualificador_ainda_busca_do_inicio():
     from datetime import date as _date
     from app.graph.tools import get_available_slots
 
-    async def _fake_slots(*, calendar_id, preferred_day, preferred_shift, slot_minutes, doctor_key):
+    async def _fake_slots(*, calendar_id, preferred_day, preferred_shift, slot_minutes, doctor_key, **_kw):
         d = _date.fromisoformat(preferred_day)
         if preferred_shift == "tarde" and d.month == 8:
             return [(datetime(2026, 8, d.day, 14, 0, tzinfo=TZ), "escolha")]
@@ -413,7 +413,7 @@ async def test_get_available_slots_mes_sem_turno_lista_dias_do_mes():
     from datetime import date as _date
     from app.graph.tools import get_available_slots
 
-    async def _fake_slots(*, calendar_id, preferred_day, preferred_shift, slot_minutes, doctor_key):
+    async def _fake_slots(*, calendar_id, preferred_day, preferred_shift, slot_minutes, doctor_key, **_kw):
         d = _date.fromisoformat(preferred_day)
         if d.weekday() == 1:  # terça: Dr. Júlio não atende
             return []
@@ -446,7 +446,7 @@ async def test_get_available_slots_mes_sem_turno_sem_vaga_fala_do_mes():
     """Mês sem nenhuma vaga → a mensagem cita o MÊS, nunca um dia específico."""
     from app.graph.tools import get_available_slots
 
-    async def _fake_slots(*, calendar_id, preferred_day, preferred_shift, slot_minutes, doctor_key):
+    async def _fake_slots(*, calendar_id, preferred_day, preferred_shift, slot_minutes, doctor_key, **_kw):
         return []
 
     with patch("app.graph.tools.datetime", _FrozenDTAugustSunday), \
@@ -470,7 +470,7 @@ async def test_get_available_slots_dia_com_nome_do_mes_vai_para_a_data():
     """'15 de setembro' é uma data, não um mês: consulta só esse dia."""
     from app.graph.tools import get_available_slots
 
-    async def _fake_slots(*, calendar_id, preferred_day, preferred_shift, slot_minutes, doctor_key):
+    async def _fake_slots(*, calendar_id, preferred_day, preferred_shift, slot_minutes, doctor_key, **_kw):
         return [(datetime(2026, 9, 15, 9, 0, tzinfo=TZ), "escolha")]
 
     with patch("app.graph.tools.datetime", _FrozenDTAugustSunday), \
@@ -517,7 +517,7 @@ async def test_get_available_slots_qualquer_dia_de_setembro_busca_o_mes():
     from datetime import date as _date
     from app.graph.tools import get_available_slots
 
-    async def _fake_slots(*, calendar_id, preferred_day, preferred_shift, slot_minutes, doctor_key):
+    async def _fake_slots(*, calendar_id, preferred_day, preferred_shift, slot_minutes, doctor_key, **_kw):
         d = _date.fromisoformat(preferred_day)
         return [(datetime(d.year, d.month, d.day, 9, 0, tzinfo=TZ), "escolha")]
 
@@ -543,7 +543,7 @@ async def test_get_available_slots_qualquer_dia_keeps_expanding_until_found():
     a busca deve continuar expandindo até achar algo."""
     from app.graph.tools import get_available_slots
 
-    async def _fake_slots(*, calendar_id, preferred_day, preferred_shift, slot_minutes, doctor_key):
+    async def _fake_slots(*, calendar_id, preferred_day, preferred_shift, slot_minutes, doctor_key, **_kw):
         if preferred_shift == "manha" and preferred_day == "2026-07-20":  # 3ª semana, segunda
             return [(datetime(2026, 7, 20, 9, 0, tzinfo=TZ), "escolha")]
         return []
@@ -569,7 +569,7 @@ async def test_get_available_slots_qualquer_dia_continues_past_blocked_week_when
     menos _ANY_DAY_MIN_DISTINCT_DAYS dias distintos, mesmo já tendo achado algo antes."""
     from app.graph.tools import get_available_slots
 
-    async def _fake_slots(*, calendar_id, preferred_day, preferred_shift, slot_minutes, doctor_key):
+    async def _fake_slots(*, calendar_id, preferred_day, preferred_shift, slot_minutes, doctor_key, **_kw):
         if preferred_shift != "manha":
             return []
         if preferred_day == "2026-07-07":  # só terça nesta semana
@@ -599,7 +599,7 @@ async def test_get_available_slots_qualquer_dia_e_qualquer_turno_shows_per_shift
     que a Eva pergunta o dia antes do turno) deve mostrar o detalhamento por turno."""
     from app.graph.tools import get_available_slots
 
-    async def _fake_slots(*, calendar_id, preferred_day, preferred_shift, slot_minutes, doctor_key):
+    async def _fake_slots(*, calendar_id, preferred_day, preferred_shift, slot_minutes, doctor_key, **_kw):
         if preferred_day == "2026-07-07" and preferred_shift == "tarde":
             return [(datetime(2026, 7, 7, 14, 0, tzinfo=TZ), "escolha")]
         if preferred_day == "2026-07-08" and preferred_shift == "manha":
@@ -629,7 +629,7 @@ async def test_get_available_slots_turno_qualquer_inclui_modalidade_por_horario(
     from datetime import date as _date
     from app.graph.tools import get_available_slots
 
-    async def _fake_slots(*, calendar_id, preferred_day, preferred_shift, slot_minutes, doctor_key):
+    async def _fake_slots(*, calendar_id, preferred_day, preferred_shift, slot_minutes, doctor_key, **_kw):
         d = _date.fromisoformat(preferred_day)
         if preferred_shift == "manha":
             return [(datetime(d.year, d.month, d.day, 9, 0, tzinfo=TZ), "escolha")]
@@ -658,7 +658,7 @@ async def test_get_available_slots_turno_qualquer_fallback_1h_inclui_modalidade(
     from datetime import date as _date
     from app.graph.tools import get_available_slots
 
-    async def _fake_slots(*, calendar_id, preferred_day, preferred_shift, slot_minutes, doctor_key):
+    async def _fake_slots(*, calendar_id, preferred_day, preferred_shift, slot_minutes, doctor_key, **_kw):
         d = _date.fromisoformat(preferred_day)
         if slot_minutes == 60 and preferred_shift == "manha":
             return [(datetime(d.year, d.month, d.day, 9, 0, tzinfo=TZ), "escolha")]
@@ -683,7 +683,7 @@ async def test_pick_doctor_by_earliest_availability_picks_earlier_doctor():
     Bruna tem vaga na terça (07/07); Júlio só na quinta (09/07) → retorna 'bruna'."""
     from app.graph.tools import pick_doctor_by_earliest_availability
 
-    async def _fake_slots(*, calendar_id, preferred_day, preferred_shift, slot_minutes, doctor_key):
+    async def _fake_slots(*, calendar_id, preferred_day, preferred_shift, slot_minutes, doctor_key, **_kw):
         if doctor_key == "bruna" and preferred_day == "2026-07-07" and preferred_shift == "manha":
             return [(datetime(2026, 7, 7, 9, 0, tzinfo=TZ), "escolha")]
         if doctor_key == "julio" and preferred_day == "2026-07-09" and preferred_shift == "manha":
@@ -705,7 +705,7 @@ async def test_pick_doctor_by_earliest_availability_bruna_uses_60min():
 
     seen: list[tuple[str, int]] = []
 
-    async def _fake_slots(*, calendar_id, preferred_day, preferred_shift, slot_minutes, doctor_key):
+    async def _fake_slots(*, calendar_id, preferred_day, preferred_shift, slot_minutes, doctor_key, **_kw):
         seen.append((doctor_key, slot_minutes))
         return []
 
@@ -4062,3 +4062,95 @@ async def test_change_modality_refuses_when_registration_restricts_modality():
 
     mock_update.assert_not_awaited()
     assert "cadastro" in result.lower()
+
+
+# ── custo do cruzamento com o Supabase ────────────────────────────────────────
+# Cada query ao Supabase custa ~260 ms. Uma varredura de "qualquer dia" consulta
+# vários dias e, em "qualquer" turno, três turnos por dia — buscar por chamada
+# daria 120 queries (~31 s) para ler sempre os mesmos dados.
+
+async def test_qualquer_dia_busca_o_supabase_uma_vez_so():
+    """A varredura semanal faz UMA busca ao Supabase, não uma por dia/turno."""
+    from app.graph.tools import get_available_slots
+
+    async def _fake_slots(*, calendar_id, preferred_day, preferred_shift, slot_minutes,
+                          doctor_key, **_kw):
+        return []  # nada disponível → força a varredura a expandir ao máximo
+
+    with patch("app.graph.tools.datetime", _FrozenDTTuesday), \
+         patch("app.graph.tools._get_doctor_calendar_id", new_callable=AsyncMock, return_value="cal123"), \
+         patch("app.google_calendar.fetch_supabase_busy", new_callable=AsyncMock,
+               return_value=[]) as mock_fetch, \
+         patch("app.google_calendar.get_available_slots", new_callable=AsyncMock,
+               side_effect=_fake_slots) as mock_slots:
+        await get_available_slots.coroutine(
+            preferred_day="qualquer dia",
+            preferred_shift="qualquer",
+            slot_duration_minutes=60,
+            state=_make_state(),
+            config=CONFIG,
+        )
+
+    assert mock_slots.await_count > 10, "a varredura deveria ter consultado vários dias"
+    assert mock_fetch.await_count == 1, (
+        f"esperava 1 busca ao Supabase para a varredura inteira, "
+        f"houve {mock_fetch.await_count} para {mock_slots.await_count} consultas de dia/turno"
+    )
+
+
+async def test_varredura_repassa_as_faixas_do_supabase_para_cada_dia():
+    """As faixas buscadas uma vez precisam chegar a cada chamada — se ficarem pelo
+    caminho, o cruzamento silenciosamente para de valer e o slot fantasma volta."""
+    from app.graph.tools import get_available_slots
+
+    faixas = [(datetime(2026, 7, 8, 9, 0, tzinfo=TZ), datetime(2026, 7, 8, 10, 0, tzinfo=TZ), "evt-1")]
+
+    async def _fake_slots(*, calendar_id, preferred_day, preferred_shift, slot_minutes,
+                          doctor_key, **_kw):
+        return []
+
+    with patch("app.graph.tools.datetime", _FrozenDTTuesday), \
+         patch("app.graph.tools._get_doctor_calendar_id", new_callable=AsyncMock, return_value="cal123"), \
+         patch("app.google_calendar.fetch_supabase_busy", new_callable=AsyncMock,
+               return_value=faixas), \
+         patch("app.google_calendar.get_available_slots", new_callable=AsyncMock,
+               side_effect=_fake_slots) as mock_slots:
+        await get_available_slots.coroutine(
+            preferred_day="qualquer dia",
+            preferred_shift="manha",
+            slot_duration_minutes=60,
+            state=_make_state(),
+            config=CONFIG,
+        )
+
+    assert mock_slots.call_args_list
+    assert all(c.kwargs.get("supabase_busy") == faixas for c in mock_slots.call_args_list)
+
+
+async def test_falha_no_prefetch_nao_derruba_a_busca_de_horarios():
+    """Fail-open: se o Supabase cair, a varredura segue com os dados do Calendar."""
+    from app.graph.tools import get_available_slots
+
+    async def _fake_slots(*, calendar_id, preferred_day, preferred_shift, slot_minutes,
+                          doctor_key, **_kw):
+        if preferred_shift == "manha" and preferred_day in ("2026-07-07", "2026-07-08"):
+            day = int(preferred_day[-2:])
+            return [(datetime(2026, 7, day, 9, 0, tzinfo=TZ), "escolha")]
+        return []
+
+    with patch("app.graph.tools.datetime", _FrozenDTTuesday), \
+         patch("app.graph.tools._get_doctor_calendar_id", new_callable=AsyncMock, return_value="cal123"), \
+         patch("app.google_calendar.fetch_supabase_busy", new_callable=AsyncMock,
+               side_effect=RuntimeError("supabase fora do ar")), \
+         patch("app.google_calendar.get_available_slots", new_callable=AsyncMock,
+               side_effect=_fake_slots):
+        result = await get_available_slots.coroutine(
+            preferred_day="qualquer dia",
+            preferred_shift="manha",
+            slot_duration_minutes=60,
+            state=_make_state(),
+            config=CONFIG,
+        )
+
+    assert "07/07" in result
+    assert "08/07" in result
