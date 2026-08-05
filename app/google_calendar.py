@@ -593,6 +593,69 @@ def _update_event(service, calendar_id: str, event_id: str, patch: dict) -> None
     service.events().patch(calendarId=calendar_id, eventId=event_id, body=patch).execute()
 
 
+async def _get_supabase_busy(
+    doctor_key: str,
+    window_start: datetime,
+    window_end: datetime,
+    calendar_busy: list[tuple[datetime, datetime]],
+) -> list[tuple[datetime, datetime]]:
+    """Faixas ocupadas segundo a tabela `appointments`, para cruzar com o Calendar.
+
+    O Calendar sozinho não é fonte confiável de ocupação: qualquer linha `scheduled`
+    cujo evento não exista — deletado por engano, falha no create_event, linha criada
+    por script one-off — deixa o horário parecendo livre, e a Eva vende o mesmo slot de
+    novo (caso Maria Clara Ramos Perecmanis, 03/08/2026 17h com o Dr. Júlio: os eventos
+    foram deletados num ajuste de agenda em 28-29/07, a linha seguiu `scheduled` e em
+    30/07 o horário foi vendido para outra paciente — as duas pagaram a taxa).
+
+    `status == "scheduled"` é `eq`, não `in_`: em `pending_reschedule` o slot é liberado
+    de propósito enquanto o paciente escolhe o novo horário, e bloquear ali impediria a
+    própria remarcação.
+
+    Toda linha sem faixa correspondente no Calendar vira `CALENDAR_DIVERGENCE` no log de
+    erro. Bloquear em silêncio esconderia a inconsistência — que é um bug em si — até
+    alguém rodar uma auditoria na mão ou uma paciente reclamar.
+    """
+    import logging as _log_sb
+    _logger_sb = _log_sb.getLogger(__name__)
+
+    from app.database import DOCTOR_IDS, get_supabase
+    doctor_id = DOCTOR_IDS.get(doctor_key)
+    if not doctor_id:
+        # Sem médico identificado não dá para consultar a agenda certa; manter o
+        # comportamento atual é melhor que bloquear com dados de outra pessoa.
+        return []
+
+    client = await get_supabase()
+    result = await (
+        client.from_("appointments")
+        .select("appointment_id, start_time, end_time")
+        .eq("doctor_id", doctor_id)
+        .eq("status", "scheduled")
+        .lt("start_time", window_end.isoformat())
+        .gt("end_time", window_start.isoformat())
+        .execute()
+    )
+
+    ranges: list[tuple[datetime, datetime]] = []
+    for row in (result.data or []):
+        try:
+            bs = datetime.fromisoformat(row["start_time"]).astimezone(TZ)
+            be = datetime.fromisoformat(row["end_time"]).astimezone(TZ)
+        except (TypeError, ValueError, KeyError):
+            _logger_sb.error("SUPABASE_BUSY_BAD_ROW doctor=%s row=%s", doctor_key, row)
+            continue
+        ranges.append((bs, be))
+        if not any(cs < be and ce > bs for cs, ce in calendar_busy):
+            _logger_sb.error(
+                "CALENDAR_DIVERGENCE doctor=%s appointment_id=%s %s→%s está scheduled no "
+                "Supabase mas não tem evento correspondente no Calendar",
+                doctor_key, row.get("appointment_id"),
+                bs.strftime("%d/%m/%Y %H:%M"), be.strftime("%H:%M"),
+            )
+    return ranges
+
+
 async def get_available_slots(
     calendar_id: str,
     preferred_day: str,
@@ -703,6 +766,20 @@ async def get_available_slots(
         if (be - bs).total_seconds() < 60:
             be = bs + timedelta(hours=1)
         busy_ranges.append((bs, be))
+
+    # Cruza com a tabela `appointments`: o Calendar sozinho não vê a consulta cujo
+    # evento sumiu, e o slot fantasma é oferecido e vendido de novo.
+    if doctor_key:
+        try:
+            busy_ranges.extend(
+                await _get_supabase_busy(doctor_key, overall_start, overall_end, busy_ranges)
+            )
+        except Exception as _e:
+            # Fail-open, mesmo tratamento dado a _get_busy: derrubar toda a oferta de
+            # horários por uma falha de banco é pior que o risco residual.
+            _log2.getLogger(__name__).error(
+                "GET_SLOTS_SUPABASE_ERROR doctor=%s error=%s", doctor_key, _e
+            )
 
     min_start = datetime.now(TZ) + timedelta(hours=4)
 

@@ -31,7 +31,7 @@ def make_supabase_client():
     execute = AsyncMock(return_value=MagicMock(data=[]))
     table = MagicMock()
     for method in ("select", "eq", "limit", "single", "maybe_single",
-                   "gte", "order", "insert", "update", "upsert"):
+                   "gte", "lt", "gt", "order", "insert", "update", "upsert"):
         getattr(table, method).return_value = table
     table.execute = execute
     client = MagicMock()
