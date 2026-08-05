@@ -197,12 +197,18 @@ async def add_label(conversation_id: int, label: str) -> None:
 
 
 async def get_last_patient_message(conversation_id: int) -> dict | None:
-    """Return the last incoming message from the patient as {"content", "attachments"},
-    or None if there isn't one.
+    """Return the last incoming message from the patient as
+    {"content", "attachments", "created_at", "last_note_at"}, or None if there isn't one.
 
     Includes attachment-only messages (empty content, e.g. a payment receipt image
     sent without a caption) — otherwise reactivating Eva via the eva-ativa label can
     never recover them, since there'd be nothing left to reprocess.
+
+    `last_note_at` é o timestamp da nota privada mais recente escrita por uma atendente
+    humana (as notas da própria Eva, "📋 Transferido pelo bot", não contam). Quem reativa
+    a Eva pelo label usa isso para saber se a mensagem ainda está pendente: uma nota
+    escrita DEPOIS dela já levou a instrução da atendente ao grafo, e reprocessar a
+    mensagem antiga só faz a Eva responder de novo (caso 5581979037093, 05/08/2026).
     """
     url = f"{_base_url()}/api/v1/accounts/{_account_id()}/conversations/{conversation_id}/messages"
     async with httpx.AsyncClient(timeout=10) as client:
@@ -221,9 +227,15 @@ async def get_last_patient_message(conversation_id: int) -> dict | None:
     if not incoming:
         return None
     last = max(incoming, key=lambda m: m.get("created_at", 0))
+    notes = [
+        m for m in messages
+        if m.get("private") and (m.get("sender") or {}).get("type") == "user"
+    ]
     return {
         "content": (last.get("content") or "").strip(),
         "attachments": last.get("attachments") or [],
+        "created_at": last.get("created_at") or 0,
+        "last_note_at": max((m.get("created_at") or 0) for m in notes) if notes else None,
     }
 
 

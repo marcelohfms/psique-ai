@@ -1101,7 +1101,9 @@ async def test_conv_updated_eva_ativa_added_resumes_and_reprocesses():
     with patch("app.main._resume_bot_for_patient", new_callable=AsyncMock) as mock_resume, \
          patch("app.chatwoot.get_last_patient_message", new_callable=AsyncMock) as mock_last, \
          patch("app.main.buffer_push", new_callable=AsyncMock) as mock_push:
-        mock_last.return_value = {"content": "oi, tudo bem?", "attachments": []}
+        mock_last.return_value = {
+            "content": "oi, tudo bem?", "attachments": [], "created_at": 100, "last_note_at": None,
+        }
         handled = await _handle_label_change(payload)
 
     assert handled is True
@@ -1109,6 +1111,66 @@ async def test_conv_updated_eva_ativa_added_resumes_and_reprocesses():
     mock_last.assert_awaited_once_with(42)
     assert mock_push.await_args[0][0] == _LABEL_PHONE_JID
     assert mock_push.await_args[0][1] == "oi, tudo bem?"
+
+
+async def test_conv_updated_eva_ativa_skips_replay_when_note_is_newer():
+    """A atendente respondeu o paciente na mão, mandou a nota "Eva, agende..." e só
+    então devolveu a conversa. A nota já virou um turno; reprocessar a última mensagem
+    do paciente faz a Eva mandar a confirmação e o PIX duas vezes (caso 5581979037093,
+    05/08/2026: "Presencial" 12:17:57 → nota 12:18:09 → eva-ativa 12:18:27)."""
+    from app.main import _handle_label_change
+
+    payload = _conv_updated_payload(previous_labels=[], current_labels=["eva-ativa"], conversation_id=4201)
+    with patch("app.main._resume_bot_for_patient", new_callable=AsyncMock) as mock_resume, \
+         patch("app.chatwoot.get_last_patient_message", new_callable=AsyncMock) as mock_last, \
+         patch("app.main.buffer_push", new_callable=AsyncMock) as mock_push:
+        mock_last.return_value = {
+            "content": "Presencial", "attachments": [], "created_at": 100, "last_note_at": 112,
+        }
+        handled = await _handle_label_change(payload)
+
+    assert handled is True
+    mock_resume.assert_awaited_once_with(_LABEL_PHONE_JID)
+    mock_push.assert_not_awaited()
+
+
+async def test_conv_updated_eva_ativa_replays_when_note_is_older():
+    """Nota antiga não bloqueia nada: se o paciente escreveu DEPOIS dela, a mensagem
+    continua sem resposta e é exatamente o que a reativação existe para recuperar."""
+    from app.main import _handle_label_change
+
+    payload = _conv_updated_payload(previous_labels=[], current_labels=["eva-ativa"], conversation_id=4202)
+    with patch("app.main._resume_bot_for_patient", new_callable=AsyncMock), \
+         patch("app.chatwoot.get_last_patient_message", new_callable=AsyncMock) as mock_last, \
+         patch("app.main.buffer_push", new_callable=AsyncMock) as mock_push:
+        mock_last.return_value = {
+            "content": "Pode ser amanhã?", "attachments": [], "created_at": 200, "last_note_at": 112,
+        }
+        handled = await _handle_label_change(payload)
+
+    assert handled is True
+    assert mock_push.await_args[0][1] == "Pode ser amanhã?"
+
+
+async def test_conv_updated_eva_ativa_skipped_replay_does_not_read_attachments():
+    """O comprovante já foi tratado no turno da nota — reprocessá-lo aqui gastaria uma
+    leitura do Vision e ainda produziria a segunda resposta."""
+    from app.main import _handle_label_change
+
+    payload = _conv_updated_payload(previous_labels=[], current_labels=["eva-ativa"], conversation_id=4203)
+    attachments = [{"file_type": "image", "data_url": "https://cw.example/comprovante.jpg"}]
+    with patch("app.main._resume_bot_for_patient", new_callable=AsyncMock), \
+         patch("app.chatwoot.get_last_patient_message", new_callable=AsyncMock) as mock_last, \
+         patch("app.main._process_chatwoot_attachments", new_callable=AsyncMock) as mock_process, \
+         patch("app.main.buffer_push", new_callable=AsyncMock) as mock_push:
+        mock_last.return_value = {
+            "content": "", "attachments": attachments, "created_at": 100, "last_note_at": 112,
+        }
+        handled = await _handle_label_change(payload)
+
+    assert handled is True
+    mock_process.assert_not_awaited()
+    mock_push.assert_not_awaited()
 
 
 async def test_conv_updated_eva_ativa_added_reprocesses_attachment_only_receipt():
@@ -1124,7 +1186,9 @@ async def test_conv_updated_eva_ativa_added_reprocesses_attachment_only_receipt(
          patch("app.chatwoot.get_last_patient_message", new_callable=AsyncMock) as mock_last, \
          patch("app.main._process_chatwoot_attachments", new_callable=AsyncMock) as mock_process, \
          patch("app.main.buffer_push", new_callable=AsyncMock) as mock_push:
-        mock_last.return_value = {"content": "", "attachments": attachments}
+        mock_last.return_value = {
+            "content": "", "attachments": attachments, "created_at": 100, "last_note_at": None,
+        }
         mock_process.return_value = "[imagem]: COMPROVANTE DE PAGAMENTO: R$100 [drive_link:https://drive/x]"
         handled = await _handle_label_change(payload)
 
@@ -1160,3 +1224,210 @@ async def test_conv_updated_unrelated_label_change_is_ignored():
     assert handled is False
     mock_pause.assert_not_awaited()
     mock_resume.assert_not_awaited()
+
+
+# ── Attendant changing priority/status must not wake Eva up ────────────────────
+
+
+@pytest.fixture(autouse=True)
+def _clear_conv_labels():
+    """The label tracker is process-global; each test starts from a clean slate."""
+    from app.main import _conv_labels
+    _conv_labels.clear()
+    yield
+    _conv_labels.clear()
+
+
+def _conv_updated_non_label_payload(changed_key: str, current_labels: list[str],
+                                    conversation_id: int = 42) -> dict:
+    """conversation_updated fired by a priority/status change: changed_attributes
+    names the field that changed and never mentions labels, while the payload still
+    carries the conversation's (unchanged) labels."""
+    payload = _conv_updated_payload(previous_labels=current_labels, current_labels=current_labels,
+                                    conversation_id=conversation_id)
+    payload["changed_attributes"] = [
+        {"updated_at": {"previous_value": 1753723751, "current_value": 1753723752}},
+        {changed_key: {"previous_value": None, "current_value": "urgent"}},
+    ]
+    return payload
+
+
+@pytest.mark.parametrize("changed_key", ["priority", "status"])
+async def test_conv_updated_priority_or_status_change_does_not_replay(changed_key):
+    """A atendente mudou só a prioridade/status de uma conversa que já tinha a label
+    eva-ativa: nada mudou nas labels, então Eva não pode reprocessar nada."""
+    from app.main import _handle_label_change
+
+    payload = _conv_updated_non_label_payload(changed_key, current_labels=["eva-ativa"])
+    with patch("app.main._resume_bot_for_patient", new_callable=AsyncMock) as mock_resume, \
+         patch("app.chatwoot.get_last_patient_message", new_callable=AsyncMock) as mock_last, \
+         patch("app.main.buffer_push", new_callable=AsyncMock) as mock_push:
+        handled = await _handle_label_change(payload)
+
+    assert handled is False
+    mock_resume.assert_not_awaited()
+    mock_last.assert_not_awaited()
+    mock_push.assert_not_awaited()
+
+
+async def test_conversation_resolved_does_not_replay_labels_seen_for_the_first_time():
+    """Regressão da conversa 344: a atendente marcou como resolvida e Eva respondeu
+    ao comprovante do dia anterior. Labels vistas pela primeira vez são estado inicial,
+    não labels recém-adicionadas."""
+    from app.main import _handle_label_change
+
+    payload = {
+        "event": "conversation_resolved",
+        "id": 344,
+        "status": "resolved",
+        "labels": ["eva-ativa"],
+        "meta": {"sender": {"phone_number": _LABEL_PHONE}},
+    }
+    with patch("app.main._resume_bot_for_patient", new_callable=AsyncMock) as mock_resume, \
+         patch("app.chatwoot.get_last_patient_message", new_callable=AsyncMock) as mock_last, \
+         patch("app.main.buffer_push", new_callable=AsyncMock) as mock_push:
+        handled = await _handle_label_change(payload)
+
+    assert handled is False
+    mock_resume.assert_not_awaited()
+    mock_last.assert_not_awaited()
+    mock_push.assert_not_awaited()
+
+
+async def test_message_updated_still_reacts_to_a_real_eva_ativa_add():
+    """Depois que as labels da conversa já são conhecidas, adicionar eva-ativa continua
+    reativando Eva e reprocessando a última mensagem do paciente."""
+    from app.main import _handle_label_change
+
+    def _payload(labels: list[str]) -> dict:
+        return {
+            "event": "message_updated",
+            "id": 999,
+            "conversation": {"id": 42, "labels": labels,
+                             "meta": {"sender": {"phone_number": _LABEL_PHONE}}},
+        }
+
+    with patch("app.main._resume_bot_for_patient", new_callable=AsyncMock) as mock_resume, \
+         patch("app.chatwoot.get_last_patient_message", new_callable=AsyncMock) as mock_last, \
+         patch("app.main.buffer_push", new_callable=AsyncMock) as mock_push:
+        mock_last.return_value = {"content": "oi", "attachments": []}
+        assert await _handle_label_change(_payload([])) is False   # primeira vez: só registra
+        handled = await _handle_label_change(_payload(["eva-ativa"]))
+
+    assert handled is True
+    mock_resume.assert_awaited_once_with(_LABEL_PHONE_JID)
+    mock_push.assert_awaited_once()
+
+
+async def test_payload_without_labels_key_does_not_reset_the_tracker():
+    """Um evento que não carrega `labels` não diz nada sobre as labels da conversa —
+    zerar o tracker faria o próximo evento parecer que tudo foi adicionado."""
+    from app.main import _handle_label_change, _conv_labels
+
+    seed = {
+        "event": "message_updated",
+        "id": 999,
+        "conversation": {"id": 42, "labels": ["eva-ativa"],
+                         "meta": {"sender": {"phone_number": _LABEL_PHONE}}},
+    }
+    no_labels = {
+        "event": "message_updated",
+        "id": 1000,
+        "conversation": {"id": 42, "meta": {"sender": {"phone_number": _LABEL_PHONE}}},
+    }
+    with patch("app.main._resume_bot_for_patient", new_callable=AsyncMock), \
+         patch("app.chatwoot.get_last_patient_message", new_callable=AsyncMock), \
+         patch("app.main.buffer_push", new_callable=AsyncMock):
+        await _handle_label_change(seed)
+        await _handle_label_change(no_labels)
+
+    assert _conv_labels["42"] == frozenset({"eva-ativa"})
+
+
+async def test_seed_carrying_a_control_label_is_logged_as_event():
+    """A primeira observação de uma conversa não age — mas se ela já chega com eva-ativa
+    ou eva-inativa, é exatamente o caso em que uma reativação de verdade PODE ter sido
+    engolida (tracker vazio depois de um restart). Precisa virar evento no Supabase, e
+    não só linha de log no container: sem isso a única forma de medir a frequência é SSH
+    no VPS, dentro da janela de retenção do Docker."""
+    from app.main import _handle_label_change
+
+    payload = {
+        "event": "message_updated",
+        "id": 999,
+        "conversation": {"id": 42, "labels": ["eva-ativa"],
+                         "meta": {"sender": {"phone_number": _LABEL_PHONE}}},
+    }
+    with patch("app.main.log_event", new_callable=AsyncMock) as mock_log, \
+         patch("app.main._resume_bot_for_patient", new_callable=AsyncMock) as mock_resume:
+        assert await _handle_label_change(payload) is False
+
+    mock_resume.assert_not_awaited()
+    _names = [c.args[0] for c in mock_log.await_args_list]
+    assert "label_tracker_seeded" in _names
+    _meta = next(c.args[2] for c in mock_log.await_args_list if c.args[0] == "label_tracker_seeded")
+    assert sorted(_meta["labels"]) == ["eva-ativa"]
+    assert _meta["conversation_id"] == "42"
+
+
+async def test_seed_without_control_labels_is_not_logged():
+    """Semear conversa sem eva-ativa/eva-inativa é o caso comum e inofensivo — logar
+    todas encheria a tabela de events com ruído e esconderia justamente as que importam."""
+    from app.main import _handle_label_change
+
+    payload = {
+        "event": "message_updated",
+        "id": 999,
+        "conversation": {"id": 42, "labels": ["financeiro"],
+                         "meta": {"sender": {"phone_number": _LABEL_PHONE}}},
+    }
+    with patch("app.main.log_event", new_callable=AsyncMock) as mock_log:
+        assert await _handle_label_change(payload) is False
+
+    assert "label_tracker_seeded" not in [c.args[0] for c in mock_log.await_args_list]
+
+
+async def test_real_delta_from_tracker_is_logged_as_event():
+    """Quando o caminho do tracker (e não o changed_attributes do Chatwoot) é quem
+    detecta um add real de eva-ativa, isso vira evento. É a medida que responde se o
+    fallback está em uso de verdade — e portanto se o risco do restart é real."""
+    from app.main import _handle_label_change
+
+    def _payload(labels: list[str]) -> dict:
+        return {
+            "event": "message_updated",
+            "id": 999,
+            "conversation": {"id": 42, "labels": labels,
+                             "meta": {"sender": {"phone_number": _LABEL_PHONE}}},
+        }
+
+    with patch("app.main.log_event", new_callable=AsyncMock) as mock_log, \
+         patch("app.main._resume_bot_for_patient", new_callable=AsyncMock), \
+         patch("app.chatwoot.get_last_patient_message", new_callable=AsyncMock) as mock_last, \
+         patch("app.main.buffer_push", new_callable=AsyncMock):
+        mock_last.return_value = {"content": "oi", "attachments": []}
+        await _handle_label_change(_payload([]))                 # semeia
+        await _handle_label_change(_payload(["eva-ativa"]))      # add real via tracker
+
+    _meta = next(c.args[2] for c in mock_log.await_args_list
+                 if c.args[0] == "label_delta_from_tracker")
+    assert _meta["added"] == ["eva-ativa"]
+    assert _meta["conversation_id"] == "42"
+
+
+async def test_message_created_seeds_the_label_tracker():
+    """Mensagens comuns registram as labels da conversa, para que uma label realmente
+    adicionada depois seja vista como mudança e não como primeira observação."""
+    from app.main import _handle_chatwoot_payload, _conv_labels
+
+    payload = {
+        "event": "message_created",
+        "id": 1,
+        "message_type": 0,
+        "content": "oi",
+        "conversation": {"id": 42, "labels": ["eva-inativa"], "status": "open",
+                         "meta": {"sender": {"phone_number": _LABEL_PHONE}}},
+    }
+    await _handle_chatwoot_payload(payload)
+
+    assert _conv_labels["42"] == frozenset({"eva-inativa"})
