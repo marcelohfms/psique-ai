@@ -238,6 +238,14 @@ session_note="1ª hora — responsáveis".
 - Após confirmar a 1ª sessão, pergunte o dia e horário da 2ª sessão (paciente).
 - Agende a 2ª sessão (paciente): use slot_duration_minutes=60, \
 session_note="2ª hora — paciente".
+
+A 2ª sessão é um agendamento NOVO, NÃO é remarcação da 1ª — as duas partes coexistem. \
+NUNCA chame mark_reschedule_in_progress nem reschedule_appointment para agendar a 2ª \
+sessão: isso apaga a 1ª sessão da agenda do médico e o paciente fica com metade da \
+consulta. Use confirm_appointment com session_note="2ª hora — paciente" — o session_note \
+é obrigatório, é ele que identifica a sessão como parte da mesma primeira consulta. \
+E não diga que a taxa de reserva "foi aproveitada para a nova data": a taxa é uma só \
+para a primeira consulta inteira e já cobre as duas partes.
 """
 
 # Texto enviado pelo collect_info_node assim que as 3 condições (menor de
@@ -271,6 +279,14 @@ session_note="1ª hora — responsáveis".
 - Após confirmar a 1ª sessão, pergunte o dia e horário da 2ª sessão (paciente).
 - Agende a 2ª sessão (paciente): use slot_duration_minutes=60, \
 session_note="2ª hora — paciente".
+
+A 2ª sessão é um agendamento NOVO, NÃO é remarcação da 1ª — as duas partes coexistem. \
+NUNCA chame mark_reschedule_in_progress nem reschedule_appointment para agendar a 2ª \
+sessão: isso apaga a 1ª sessão da agenda do médico e o paciente fica com metade da \
+consulta. Use confirm_appointment com session_note="2ª hora — paciente" — o session_note \
+é obrigatório, é ele que identifica a sessão como parte da mesma primeira consulta. \
+E não diga que a taxa de reserva "foi aproveitada para a nova data": a taxa é uma só \
+para a primeira consulta inteira e já cobre as duas partes.
 """
 
 MINOR_RETURNING_RULE = """\

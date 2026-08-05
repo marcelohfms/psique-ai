@@ -913,6 +913,10 @@ async def confirm_appointment(
     # checks below, never the "patient already has an appointment" check (caso Gustavo
     # Lapenda, 06/07/2026: atendente pediu para "encaixar" um novo horário em vez de
     # remarcar, e o encaixe pulou esse guard, criando dois agendamentos ativos).
+    #
+    # A 1ª sessão da consulta dividida, quando o guard libera a 2ª (ver exceção abaixo).
+    # Fica fora do try para o insert conseguir ler a taxa já paga mesmo se o guard falhar.
+    _split_sibling: dict | None = None
     try:
         _supabase = await get_supabase()
         _phone = config["configurable"]["phone"]
@@ -932,7 +936,10 @@ async def confirm_appointment(
         _patient = await _resolve_patient_for_booking(_phone_clean, state, patient_name_override)
         _patient_id = (_patient or {}).get("id")
         if _patient_id:
-            _appts_r = await _supabase.from_("appointments").select("appointment_id, start_time, status").eq("patient_id", _patient_id).in_("status", ["scheduled", "pending_reschedule"]).execute()
+            _appts_r = await _supabase.from_("appointments").select(
+                "appointment_id, start_time, status, consultation_type, "
+                "booking_fee_paid_at, booking_fee_waived"
+            ).eq("patient_id", _patient_id).in_("status", ["scheduled", "pending_reschedule"]).execute()
             # Filtro por data feito aqui (não com .gte na query) para diferenciar por status:
             #   - pending_reschedule bloqueia SEMPRE, independente da data. É o sinal durável
             #     "remarcação pendente, taxa já paga", e seu start_time é o do slot ANTIGO —
@@ -950,6 +957,43 @@ async def confirm_appointment(
                     _other_appts.append(_a)
                 elif _a.get("status") == "scheduled" and _a["start_time"] >= _now_iso:
                     _other_appts.append(_a)
+            # EXCEÇÃO — 2ª sessão da 1ª consulta de menor dividida em duas partes de 1h.
+            # A Eva oferece explicitamente dividir a primeira consulta do menor com o
+            # Dr. Júlio (1h com os responsáveis + 1h com o paciente), inclusive em dias
+            # diferentes. Sem essa exceção o Guard 0 lê a 1ª sessão como "paciente já tem
+            # consulta futura" e manda remarcar: a Eva chama reschedule_appointment, o
+            # evento da 1ª sessão é apagado do Calendar e a MESMA linha é movida para a
+            # data da 2ª — o paciente fica com metade da consulta que agendou (caso
+            # Marcelo Rodrigues de Souza Brayner Filho, 5581999865181, 04/08/2026: a
+            # sessão de 06/08 09:00 com os responsáveis sumiu da agenda do Dr. Júlio).
+            #
+            # Estreita de propósito, para não reabrir os buracos que o guard fecha:
+            #   - session_note preenchido (é o único sinal explícito de "isto é uma das
+            #     partes", e é o mesmo que já governa consultation_type no insert);
+            #   - menor, primeira consulta, Dr. Júlio, sessão de 1h;
+            #   - exatamente UMA consulta existente conflitando (a 1ª parte) — a consulta
+            #     dividida tem duas partes, uma terceira volta a ser bloqueada;
+            #   - essa consulta é `scheduled` e `primeira_consulta`. pending_reschedule
+            #     nunca entra na exceção: é remarcação de verdade em curso, com taxa presa
+            #     à linha, e criar uma linha nova perderia a taxa (caso Tiago Perrelli).
+            if (
+                session_note
+                and _other_appts
+                and len(_other_appts) == 1
+                and slot_duration_minutes == 60
+                and (state.get("patient_age") or 99) < 18
+                and state.get("preferred_doctor") == "julio"
+                and _other_appts[0].get("status") == "scheduled"
+                and _other_appts[0].get("consultation_type") == "primeira_consulta"
+            ):
+                _split_sibling = _other_appts[0]
+                _other_appts = []
+                _logger.info(
+                    "confirm_appointment: 2ª sessão da 1ª consulta dividida liberada — "
+                    "patient=%s sibling=%s session_note=%s",
+                    _patient_id, _split_sibling.get("appointment_id"), session_note,
+                )
+
             if _other_appts:
                     from zoneinfo import ZoneInfo as _ZI
                     _TZ = _ZI("America/Recife")
@@ -959,9 +1003,28 @@ async def confirm_appointment(
                         for a in _other_appts
                     )
                     _logger.warning("confirm_appointment: patient already has scheduled appt(s) — blocking phone=%s", _phone_clean)
+                    # Menor em 1ª consulta dividida que chegou aqui SEM session_note: a
+                    # instrução genérica abaixo ("remarque") é exatamente o caminho errado
+                    # (caso Marcelo Filho). Diz antes como agendar a 2ª sessão direito.
+                    _split_hint = ""
+                    if (
+                        not session_note
+                        and slot_duration_minutes == 60
+                        and (state.get("patient_age") or 99) < 18
+                        and state.get("preferred_doctor") == "julio"
+                        and any(a.get("consultation_type") == "primeira_consulta"
+                                and a.get("status") == "scheduled" for a in _other_appts)
+                    ):
+                        _split_hint = (
+                            "ATENÇÃO: se este agendamento é a 2ª parte da primeira consulta "
+                            "dividida (1h com os responsáveis + 1h com o paciente), NÃO remarque — "
+                            "chame confirm_appointment de novo com "
+                            'session_note="2ª hora — paciente". '
+                        )
                     return (
                         f"[INSTRUÇÃO INTERNA — NÃO ENVIE AO PACIENTE] "
                         f"O paciente já tem consulta(s) agendada(s): {_existing_dates}. "
+                        f"{_split_hint}"
                         "NÃO crie um novo agendamento, mesmo que a atendente tenha pedido para "
                         "'encaixar' um novo horário — isso significa remarcar a consulta existente, "
                         "não criar uma segunda. OBRIGATÓRIO: chame imediatamente "
@@ -1155,6 +1218,15 @@ async def confirm_appointment(
 
         _bfw = bool((user or {}).get("booking_fee_waived", False))
         _bfp_at = datetime.now(TZ).isoformat() if _bfw else None
+
+        # 2ª sessão da 1ª consulta dividida: a taxa de reserva é UMA só para a primeira
+        # consulta inteira e já foi paga na 1ª sessão. Sem herdar o timestamp, a linha da
+        # 2ª sessão nasce com booking_fee_paid_at nulo, send_payment_reminders cobra a
+        # taxa de novo e acaba auto-cancelando um horário que está pago.
+        if _split_sibling:
+            _bfw = _bfw or bool(_split_sibling.get("booking_fee_waived"))
+            _bfp_at = _split_sibling.get("booking_fee_paid_at") or _bfp_at
+
         await client.from_("appointments").insert({
             "patient_id": user["id"] if user else None,
             "contact_id": user.get("_contact_id") if user else None,

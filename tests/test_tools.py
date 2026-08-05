@@ -1301,6 +1301,251 @@ async def test_confirm_appointment_guard0_applies_even_with_force_encaixe():
     mock_create.assert_not_called()
 
 
+# ── confirm_appointment: 1ª consulta de menor dividida em duas sessões ─────────
+
+def _split_state(**kwargs) -> dict:
+    """State de menor agendando com o Dr. Júlio a 1ª consulta dividida em 2 sessões."""
+    base = dict(patient_age=15, is_patient=False, preferred_doctor="julio",
+                user_db_id="patient-1", patient_name="Marcelo Filho")
+    base.update(kwargs)
+    return _make_state(**base)
+
+
+async def test_confirm_appointment_allows_second_split_session_of_minor_first():
+    """A 1ª consulta de menor com o Dr. Júlio pode ser dividida em duas sessões de 1h em
+    dias diferentes (1h com os responsáveis + 1h com o paciente) — a própria Eva oferece
+    isso. Ao confirmar a 2ª sessão, o Guard 0 via "paciente já tem consulta futura" e
+    mandava remarcar: a Eva chamava reschedule_appointment, o evento da 1ª sessão era
+    apagado do Calendar e a MESMA linha era movida para a data da 2ª (caso Marcelo
+    Rodrigues de Souza Brayner Filho, 5581999865181, 04/08/2026 — a consulta de 06/08
+    09:00 com os responsáveis sumiu da agenda do Dr. Júlio).
+
+    Com session_note preenchido e a consulta existente sendo a outra metade da mesma
+    primeira consulta, o guard deve liberar o INSERT de uma segunda linha."""
+    from datetime import timezone as _tz
+    from app.graph.tools import confirm_appointment
+    client, table, execute = _make_supabase_client()
+    _future = (datetime.now(_tz.utc) + timedelta(days=8)).strftime("%Y-%m-%dT%H:%M:%S+00:00")
+    _guard0 = MagicMock(data=[{
+        "appointment_id": "evt-1a-sessao", "start_time": _future, "status": "scheduled",
+        "consultation_type": "primeira_consulta",
+        "booking_fee_paid_at": "2026-08-04T20:58:25+00:00", "booking_fee_waived": False,
+    }])
+    _calls = {"n": 0}
+
+    def _side(*a, **k):
+        _calls["n"] += 1
+        return _guard0 if _calls["n"] == 1 else MagicMock(data=[])
+    execute.side_effect = _side
+    _patient = {"id": "patient-1", "patient_name": "Marcelo Filho", "_contact_id": "c-1"}
+    with patch("app.graph.tools._get_doctor_calendar_id", new_callable=AsyncMock, return_value="cal123"), \
+         patch("app.google_calendar.create_event", new_callable=AsyncMock, return_value="evt-2a-sessao") as mock_create, \
+         patch("app.graph.tools.get_supabase", new_callable=AsyncMock, return_value=client), \
+         patch("app.graph.tools.get_users_by_phone", new_callable=AsyncMock, return_value=[_patient]), \
+         patch("app.graph.tools.get_user_by_phone", new_callable=AsyncMock, return_value=_patient), \
+         patch("app.graph.tools.log_event", new_callable=AsyncMock), \
+         patch("app.graph.tools._notify_clinic", new_callable=AsyncMock):
+        result = await confirm_appointment.coroutine(
+            slot_datetime="2026-03-23T09:00:00",
+            slot_duration_minutes=60,
+            state=_split_state(),
+            config=CONFIG,
+            session_note="2ª hora — paciente",
+        )
+    assert "NÃO crie um novo agendamento" not in result
+    assert "evt-2a-sessao" in result
+    mock_create.assert_called()
+    assert table.insert.call_args[0][0].get("consultation_type") == "primeira_consulta"
+
+
+async def test_second_split_session_inherits_booking_fee_from_first():
+    """A taxa de reserva de R$ 100 é uma só para a primeira consulta inteira, paga na 1ª
+    sessão. Se a linha da 2ª sessão entrasse com booking_fee_paid_at nulo,
+    send_payment_reminders cobraria a taxa de novo e auto-cancelaria a sessão — logo a 2ª
+    sessão herda o timestamp da 1ª."""
+    from datetime import timezone as _tz
+    from app.graph.tools import confirm_appointment
+    client, table, execute = _make_supabase_client()
+    _future = (datetime.now(_tz.utc) + timedelta(days=8)).strftime("%Y-%m-%dT%H:%M:%S+00:00")
+    _guard0 = MagicMock(data=[{
+        "appointment_id": "evt-1a-sessao", "start_time": _future, "status": "scheduled",
+        "consultation_type": "primeira_consulta",
+        "booking_fee_paid_at": "2026-08-04T20:58:25+00:00", "booking_fee_waived": False,
+    }])
+    _calls = {"n": 0}
+
+    def _side(*a, **k):
+        _calls["n"] += 1
+        return _guard0 if _calls["n"] == 1 else MagicMock(data=[])
+    execute.side_effect = _side
+    _patient = {"id": "patient-1", "patient_name": "Marcelo Filho", "_contact_id": "c-1"}
+    with patch("app.graph.tools._get_doctor_calendar_id", new_callable=AsyncMock, return_value="cal123"), \
+         patch("app.google_calendar.create_event", new_callable=AsyncMock, return_value="evt-2a"), \
+         patch("app.graph.tools.get_supabase", new_callable=AsyncMock, return_value=client), \
+         patch("app.graph.tools.get_users_by_phone", new_callable=AsyncMock, return_value=[_patient]), \
+         patch("app.graph.tools.get_user_by_phone", new_callable=AsyncMock, return_value=_patient), \
+         patch("app.graph.tools.log_event", new_callable=AsyncMock), \
+         patch("app.graph.tools._notify_clinic", new_callable=AsyncMock):
+        await confirm_appointment.coroutine(
+            slot_datetime="2026-03-23T09:00:00",
+            slot_duration_minutes=60,
+            state=_split_state(),
+            config=CONFIG,
+            session_note="2ª hora — paciente",
+        )
+    assert table.insert.call_args[0][0].get("booking_fee_paid_at") == "2026-08-04T20:58:25+00:00"
+
+
+async def test_split_session_exception_requires_session_note():
+    """A exceção é estreita de propósito: sem session_note não há como distinguir a 2ª
+    sessão de um agendamento duplicado comum, então o Guard 0 continua bloqueando."""
+    from datetime import timezone as _tz
+    from app.graph.tools import confirm_appointment
+    client, table, execute = _make_supabase_client()
+    _future = (datetime.now(_tz.utc) + timedelta(days=8)).strftime("%Y-%m-%dT%H:%M:%S+00:00")
+    execute.side_effect = [MagicMock(data=[{
+        "appointment_id": "evt-1a-sessao", "start_time": _future, "status": "scheduled",
+        "consultation_type": "primeira_consulta",
+        "booking_fee_paid_at": "2026-08-04T20:58:25+00:00", "booking_fee_waived": False,
+    }])]
+    _patient = {"id": "patient-1", "patient_name": "Marcelo Filho"}
+    with patch("app.graph.tools._get_doctor_calendar_id", new_callable=AsyncMock, return_value="cal123"), \
+         patch("app.google_calendar.create_event", new_callable=AsyncMock) as mock_create, \
+         patch("app.graph.tools.get_supabase", new_callable=AsyncMock, return_value=client), \
+         patch("app.graph.tools.get_users_by_phone", new_callable=AsyncMock, return_value=[_patient]), \
+         patch("app.graph.tools.get_user_by_phone", new_callable=AsyncMock, return_value=_patient):
+        result = await confirm_appointment.coroutine(
+            slot_datetime="2026-03-23T09:00:00",
+            slot_duration_minutes=60,
+            state=_split_state(),
+            config=CONFIG,
+        )
+    assert "NÃO crie um novo agendamento" in result
+    # ...mas a mensagem de bloqueio ensina o caminho certo, em vez de só mandar remarcar —
+    # foi obedecendo ao "remarque" genérico que a Eva apagou a 1ª sessão do Marcelo.
+    assert 'session_note="2ª hora — paciente"' in result
+    mock_create.assert_not_called()
+
+
+async def test_split_session_exception_does_not_apply_to_pending_reschedule():
+    """pending_reschedule é remarcação de verdade em curso, com taxa já paga presa à
+    linha. Mesmo com session_note, o guard tem de bloquear — senão a exceção reabre o
+    buraco do caso Tiago Perrelli (linha nova em vez de update, taxa perdida)."""
+    from datetime import timezone as _tz
+    from app.graph.tools import confirm_appointment
+    client, table, execute = _make_supabase_client()
+    _future = (datetime.now(_tz.utc) + timedelta(days=8)).strftime("%Y-%m-%dT%H:%M:%S+00:00")
+    execute.side_effect = [MagicMock(data=[{
+        "appointment_id": "evt-1a-sessao", "start_time": _future, "status": "pending_reschedule",
+        "consultation_type": "primeira_consulta",
+        "booking_fee_paid_at": "2026-08-04T20:58:25+00:00", "booking_fee_waived": False,
+    }])]
+    _patient = {"id": "patient-1", "patient_name": "Marcelo Filho"}
+    with patch("app.graph.tools._get_doctor_calendar_id", new_callable=AsyncMock, return_value="cal123"), \
+         patch("app.google_calendar.create_event", new_callable=AsyncMock) as mock_create, \
+         patch("app.graph.tools.get_supabase", new_callable=AsyncMock, return_value=client), \
+         patch("app.graph.tools.get_users_by_phone", new_callable=AsyncMock, return_value=[_patient]), \
+         patch("app.graph.tools.get_user_by_phone", new_callable=AsyncMock, return_value=_patient):
+        result = await confirm_appointment.coroutine(
+            slot_datetime="2026-03-23T09:00:00",
+            slot_duration_minutes=60,
+            state=_split_state(),
+            config=CONFIG,
+            session_note="2ª hora — paciente",
+        )
+    assert "NÃO crie um novo agendamento" in result
+    mock_create.assert_not_called()
+
+
+async def test_split_session_exception_blocks_third_session():
+    """A 1ª consulta dividida tem exatamente duas partes. Com duas já no banco, uma
+    terceira com session_note é agendamento indevido e volta a ser bloqueada."""
+    from datetime import timezone as _tz
+    from app.graph.tools import confirm_appointment
+    client, table, execute = _make_supabase_client()
+    _f1 = (datetime.now(_tz.utc) + timedelta(days=8)).strftime("%Y-%m-%dT%H:%M:%S+00:00")
+    _f2 = (datetime.now(_tz.utc) + timedelta(days=15)).strftime("%Y-%m-%dT%H:%M:%S+00:00")
+    _row = {"status": "scheduled", "consultation_type": "primeira_consulta",
+            "booking_fee_paid_at": "2026-08-04T20:58:25+00:00", "booking_fee_waived": False}
+    execute.side_effect = [MagicMock(data=[
+        dict(_row, appointment_id="evt-1a", start_time=_f1),
+        dict(_row, appointment_id="evt-2a", start_time=_f2),
+    ])]
+    _patient = {"id": "patient-1", "patient_name": "Marcelo Filho"}
+    with patch("app.graph.tools._get_doctor_calendar_id", new_callable=AsyncMock, return_value="cal123"), \
+         patch("app.google_calendar.create_event", new_callable=AsyncMock) as mock_create, \
+         patch("app.graph.tools.get_supabase", new_callable=AsyncMock, return_value=client), \
+         patch("app.graph.tools.get_users_by_phone", new_callable=AsyncMock, return_value=[_patient]), \
+         patch("app.graph.tools.get_user_by_phone", new_callable=AsyncMock, return_value=_patient):
+        result = await confirm_appointment.coroutine(
+            slot_datetime="2026-03-23T09:00:00",
+            slot_duration_minutes=60,
+            state=_split_state(),
+            config=CONFIG,
+            session_note="3ª hora — extra",
+        )
+    assert "NÃO crie um novo agendamento" in result
+    mock_create.assert_not_called()
+
+
+async def test_split_session_exception_does_not_apply_to_adult():
+    """session_note não pode virar bypass genérico do Guard 0: paciente adulto com
+    consulta futura continua bloqueado, independentemente da nota."""
+    from datetime import timezone as _tz
+    from app.graph.tools import confirm_appointment
+    client, table, execute = _make_supabase_client()
+    _future = (datetime.now(_tz.utc) + timedelta(days=8)).strftime("%Y-%m-%dT%H:%M:%S+00:00")
+    execute.side_effect = [MagicMock(data=[{
+        "appointment_id": "evt-adulto", "start_time": _future, "status": "scheduled",
+        "consultation_type": "primeira_consulta",
+        "booking_fee_paid_at": "2026-08-04T20:58:25+00:00", "booking_fee_waived": False,
+    }])]
+    _patient = {"id": "patient-1", "patient_name": "Maria"}
+    with patch("app.graph.tools._get_doctor_calendar_id", new_callable=AsyncMock, return_value="cal123"), \
+         patch("app.google_calendar.create_event", new_callable=AsyncMock) as mock_create, \
+         patch("app.graph.tools.get_supabase", new_callable=AsyncMock, return_value=client), \
+         patch("app.graph.tools.get_users_by_phone", new_callable=AsyncMock, return_value=[_patient]), \
+         patch("app.graph.tools.get_user_by_phone", new_callable=AsyncMock, return_value=_patient):
+        result = await confirm_appointment.coroutine(
+            slot_datetime="2026-03-23T09:00:00",
+            slot_duration_minutes=60,
+            state=_make_state(user_db_id="patient-1"),  # 30 anos, is_patient=True
+            config=CONFIG,
+            session_note="2ª hora — paciente",
+        )
+    assert "NÃO crie um novo agendamento" in result
+    mock_create.assert_not_called()
+
+
+async def test_split_session_exception_does_not_apply_to_acompanhamento():
+    """A consulta existente ser 'acompanhamento' significa que não há primeira consulta
+    dividida em curso — é um retorno já marcado, e um novo agendamento é remarcação."""
+    from datetime import timezone as _tz
+    from app.graph.tools import confirm_appointment
+    client, table, execute = _make_supabase_client()
+    _future = (datetime.now(_tz.utc) + timedelta(days=8)).strftime("%Y-%m-%dT%H:%M:%S+00:00")
+    execute.side_effect = [MagicMock(data=[{
+        "appointment_id": "evt-retorno", "start_time": _future, "status": "scheduled",
+        "consultation_type": "acompanhamento",
+        "booking_fee_paid_at": "2026-08-04T20:58:25+00:00", "booking_fee_waived": False,
+    }])]
+    _patient = {"id": "patient-1", "patient_name": "Marcelo Filho"}
+    with patch("app.graph.tools._get_doctor_calendar_id", new_callable=AsyncMock, return_value="cal123"), \
+         patch("app.google_calendar.create_event", new_callable=AsyncMock) as mock_create, \
+         patch("app.graph.tools.get_supabase", new_callable=AsyncMock, return_value=client), \
+         patch("app.graph.tools.get_users_by_phone", new_callable=AsyncMock, return_value=[_patient]), \
+         patch("app.graph.tools.get_user_by_phone", new_callable=AsyncMock, return_value=_patient):
+        result = await confirm_appointment.coroutine(
+            slot_datetime="2026-03-23T09:00:00",
+            slot_duration_minutes=60,
+            state=_split_state(),
+            config=CONFIG,
+            session_note="2ª hora — paciente",
+        )
+    assert "NÃO crie um novo agendamento" in result
+    mock_create.assert_not_called()
+
+
 # ── confirm_appointment: guard de duração do slot (Dr. Júlio) ──────────────────
 
 async def test_confirm_appointment_julio_rejects_slot_that_overruns_window():

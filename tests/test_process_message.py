@@ -4155,6 +4155,22 @@ def test_duration_rule_menor_primeira_consulta_com_julio_recebe_minor_rule():
     assert "Clara" in rule
 
 
+def test_minor_split_rule_proibe_tratar_2a_sessao_como_remarcacao():
+    """Caso Marcelo Rodrigues de Souza Brayner Filho (5581999865181, 04/08/2026): a 1ª
+    consulta foi dividida em 06/08 09:00 (responsáveis) e 13/08 14:00 (paciente). Ao
+    confirmar a 2ª, o Guard 0 devolveu "paciente já tem consulta" e a Eva remarcou a 1ª —
+    o evento de 06/08 sumiu do Calendar e a linha foi movida para 13/08. As duas regras
+    do menor precisam dizer explicitamente que a 2ª sessão é um agendamento NOVO e que
+    session_note é obrigatório (é o que destrava a exceção do Guard 0)."""
+    from app.graph.prompts import MINOR_RULE, MINOR_RULE_SCHEDULING_ONLY
+
+    for rule in (MINOR_RULE, MINOR_RULE_SCHEDULING_ONLY):
+        assert 'session_note="2ª hora — paciente"' in rule
+        assert "NÃO é remarcação" in rule
+        assert "reschedule_appointment" in rule
+        assert "mark_reschedule_in_progress" in rule
+
+
 def test_duration_rule_menor_em_acompanhamento_usa_60_minutos():
     from app.graph.nodes import _duration_rule_for
 
