@@ -23,6 +23,29 @@ _CONFIRMATIONS = {
     "ele", "ela", "eu", "certo", "isso mesmo",
 }
 
+# Palavras gramaticais que não aparecem em nome de pessoa. As partículas que de
+# fato aparecem — de/do/da/dos/das/e, ver _LINKING_WORDS — ficam DE FORA desta
+# lista de propósito: "Maria da Conceição dos Santos" é nome.
+# Uma frase educada e bem formada passava por todas as outras camadas: nenhum
+# dígito, uma vírgula só, menos de 80 caracteres e sem começar por artigo
+# (caso Beatriz, 5587996089614: "Por gentileza, veja se ele consegue atender na
+# quinta-feira" virou guardian_name).
+_FUNCTION_WORDS = {
+    "o", "a", "os", "as", "ao", "aos", "à", "às", "um", "uma", "uns", "umas",
+    "em", "na", "no", "nas", "nos", "num", "numa", "pelo", "pela", "pelos", "pelas",
+    "com", "sem", "por", "para", "pra", "pro", "até", "desde", "sobre",
+    "que", "qual", "quais", "quando", "onde", "como", "porque", "pois",
+    "mas", "ou", "se", "já", "ainda", "também", "só", "muito", "mais", "menos",
+    "eu", "tu", "você", "voce", "vc", "ele", "ela", "eles", "elas", "nós", "vocês",
+    "me", "te", "lhe", "meu", "minha", "meus", "minhas", "seu", "sua", "seus", "suas",
+    "este", "esta", "esse", "essa", "isso", "isto", "aquele", "aquela", "aquilo",
+    "é", "são", "foi", "seja", "ser", "está", "estar", "tem", "ter", "tenho",
+    "pode", "poder", "posso", "quer", "quero", "vai", "vou", "ir", "fica", "ficar",
+    "favor", "gentileza", "obrigado", "obrigada", "por favor",
+}
+
+_MAX_NAME_WORDS = 7
+
 
 def looks_like_name(text: str) -> bool:
     """True quando o texto plausivelmente é o nome de uma pessoa.
@@ -63,6 +86,15 @@ def looks_like_name(text: str) -> bool:
         return False
     # Não começa com artigo/possessivo genérico ("o paciente", "minha filha").
     if _re.match(r'^(o|a|os|as|meu|minha|seu|sua)\s', tl):
+        return False
+    # Uma palavra gramatical em qualquer posição denuncia uma frase. As partículas
+    # legítimas de nome (de/do/da/dos/das/e) não estão em _FUNCTION_WORDS.
+    _palavras = _re.findall(r"[0-9a-zA-ZÀ-ú'’-]+", tl)
+    if any(p in _FUNCTION_WORDS for p in _palavras):
+        return False
+    # Teto de palavras: "Marcelo Rodrigues de Souza Brayner Filho" tem 6. Acima de
+    # sete não é nome, é frase — e é o segundo sinal para as que escapam da lista.
+    if len(_palavras) > _MAX_NAME_WORDS:
         return False
     return True
 
