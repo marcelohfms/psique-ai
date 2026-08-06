@@ -325,6 +325,50 @@ def _normalize_relationship(text: str) -> str:
     return raw
 
 
+_NOT_PATIENT_KWS = (
+    "não", "nao", "mãe", "mae", "pai", "filho", "filha",
+    "em nome", "para meu", "para minha", "esposo", "esposa",
+    "marido", "irmão", "irmao", "irma", "outra", "outra pessoa",
+)
+
+# Precisam de limite de palavra: "eu" está dentro de "meu", e "meu" aparece em
+# "para meu filho", que significa exatamente o contrário.
+_SELF_PATIENT_KWS = ("sim", "eu", "mim", "comigo", "minha consulta", "própria", "propria")
+
+
+def _classify_is_patient_answer(text: str, user_name: str) -> tuple[bool | None, str | None]:
+    """Lê a resposta de "A consulta é para você ou para outra pessoa?".
+
+    Devolve (is_patient, patient_name). is_patient=None significa que a resposta
+    não decide nada e a pergunta deve ser refeita.
+
+    Antes era só lista negra — is_pat = not any(palavra_de_negação) — então a
+    AUSÊNCIA de negação virava afirmação. Responder com o nome do paciente, que é
+    resposta natural, caía no lado errado: caso Beatriz (5587996089614,
+    04/08/2026), a mãe respondeu "Beatriz Loyola Gomes de Vasconcélos", o passo
+    concluiu is_patient=True (invertendo um False já correto) e copiou o user_name
+    para patient_name.
+
+    True é o lado destrutivo: copia user_name para patient_name e pula a pergunta
+    do nome do paciente, sem recuperação. Por isso ele agora exige sinal positivo;
+    na dúvida, pergunta de novo.
+    """
+    h = (text or "").strip().lower()
+    if not h:
+        return None, None
+    if any(kw in h for kw in _NOT_PATIENT_KWS):
+        return False, None
+    if any(_re_mod.search(rf'(?<!\w){_re_mod.escape(kw)}(?!\w)', h) for kw in _SELF_PATIENT_KWS):
+        return True, None
+    # Responder com um nome quer dizer "é para essa pessoa" — a menos que seja o
+    # próprio nome de quem está no WhatsApp, que quer dizer "sou eu".
+    if looks_like_name(text):
+        if h == (user_name or "").strip().lower():
+            return True, None
+        return False, text.strip()
+    return None, None
+
+
 def _registration_question(field: str, merged: dict) -> str:
     """Deterministic question for a missing registration field."""
     from app.utils import display_name as _dn
@@ -860,12 +904,14 @@ async def collect_info_node(state: ConversationState, config: RunnableConfig) ->
             )
             if _asked_confirm and last_human:
                 h = last_human.lower()
-                _not_patient_kws = [
-                    "não", "nao", "mãe", "mae", "pai", "filho", "filha",
-                    "em nome", "para meu", "para minha", "esposo", "esposa",
-                    "marido", "irmão", "irmao", "irma", "outra", "outra pessoa",
-                ]
-                is_pat = not any(kw in h for kw in _not_patient_kws)
+                is_pat, _answered_name = _classify_is_patient_answer(
+                    last_human, state.get("user_name") or ""
+                )
+                if is_pat is None:
+                    # Nem negação, nem afirmação, nem nome: reperguntar é melhor que
+                    # assumir. Ver _classify_is_patient_answer para o porquê de True
+                    # ser o lado destrutivo.
+                    return await _ask(_registration_question("is_patient", state))
                 if is_pat:
                     _uname = state.get("user_name", "")
                     return await _extract_and_ask(
@@ -883,6 +929,12 @@ async def collect_info_node(state: ConversationState, config: RunnableConfig) ->
                     # instead of silently keeping the contact's name as the patient's.
                     if state.get("patient_name") and state.get("patient_name") == state.get("user_name"):
                         _not_patient_update["patient_name"] = None
+                    # A resposta JÁ trouxe o nome do paciente ("Beatriz Loyola Gomes
+                    # de Vasconcélos" para "é para você ou para outra pessoa?").
+                    # Aproveitar evita repetir a pergunta que a pessoa acabou de
+                    # responder.
+                    if _answered_name:
+                        _not_patient_update["patient_name"] = _answered_name
                     return await _extract_and_ask(_not_patient_update, _nq(**_not_patient_update))
             return await _ask(_IS_PATIENT_CONFIRM_Q)
 
@@ -894,12 +946,14 @@ async def collect_info_node(state: ConversationState, config: RunnableConfig) ->
             )
             if _asked_is_patient and last_human:
                 h = last_human.lower()
-                _not_patient_kws = [
-                    "não", "nao", "mãe", "mae", "pai", "filho", "filha",
-                    "em nome", "para meu", "para minha", "esposo", "esposa",
-                    "marido", "irmão", "irmao", "irma", "outra", "outra pessoa",
-                ]
-                is_pat = not any(kw in h for kw in _not_patient_kws)
+                is_pat, _answered_name = _classify_is_patient_answer(
+                    last_human, state.get("user_name") or ""
+                )
+                if is_pat is None:
+                    # Nem negação, nem afirmação, nem nome: reperguntar é melhor que
+                    # assumir. Ver _classify_is_patient_answer para o porquê de True
+                    # ser o lado destrutivo.
+                    return await _ask(_registration_question("is_patient", state))
                 if is_pat:
                     _uname = state.get("user_name", "")
                     return await _extract_and_ask(
@@ -933,6 +987,12 @@ async def collect_info_node(state: ConversationState, config: RunnableConfig) ->
                     # patient-name question now that we know it's for someone else.
                     if state.get("patient_name") and state.get("patient_name") == state.get("user_name"):
                         _not_patient_update["patient_name"] = None
+                    # A resposta JÁ trouxe o nome do paciente ("Beatriz Loyola Gomes
+                    # de Vasconcélos" para "é para você ou para outra pessoa?").
+                    # Aproveitar evita repetir a pergunta que a pessoa acabou de
+                    # responder.
+                    if _answered_name:
+                        _not_patient_update["patient_name"] = _answered_name
                     return await _extract_and_ask(
                         _not_patient_update, _nq(**_not_patient_update)
                     )
