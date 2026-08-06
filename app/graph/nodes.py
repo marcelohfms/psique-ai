@@ -1106,6 +1106,18 @@ async def collect_info_node(state: ConversationState, config: RunnableConfig) ->
                 or "nome completo do" in last_ai.lower()
             )
             if _last_ai_asked_guardian_name and last_human:
+                # Quarto caminho que gravava nome sem validar — o #126 fechou os do
+                # user_name, do patient_name e o da extração da LLM, e este ficou de
+                # fora. Pior: ele escreve em guardian_name E user_name, passando por
+                # cima da validação do Step 2 e corrompendo também o nome do contato,
+                # que o upsert_user então copia para o paciente. Caso Beatriz
+                # (5587996089614, 04/08/2026): "Por gentileza, veja se ele consegue
+                # atender na quinta-feira" virou nome do responsável.
+                if not looks_like_name(last_human):
+                    return await _ask(
+                        "Não consegui identificar o nome. Qual é o nome completo "
+                        "do responsável pelo paciente?"
+                    )
                 return await _extract_and_ask(
                     {"guardian_name": last_human, "user_name": last_human},
                     _nq(guardian_name=last_human),
