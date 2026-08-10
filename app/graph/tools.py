@@ -2485,6 +2485,15 @@ def _parse_brl_amount(raw: str) -> float:
         return 0.0
 
 
+# Fragmento-sentinela do branch "horário já ocupado" da reativação por comprovante
+# (register_payment abaixo). patient_agent_node usa este texto para detectar o
+# resultado e enviá-lo ao paciente VERBATIM, sem re-síntese pela LLM: sobre
+# disponibilidade, a conversa não pode vencer a tool — a LLM já reescreveu esse
+# resultado como "Vou seguir com a reativação da consulta... conforme combinado"
+# (caso Ricardo José Vieira Cunha Filho, contato 5581988912861, 10/08/2026).
+REACTIVATION_SLOT_TAKEN_MARKER = "não está mais disponível"
+
+
 def _payment_disambiguation_prompt(context: str, names: str) -> str:
     """Retorno de register_payment quando o paciente do comprovante é ambíguo.
 
@@ -2921,7 +2930,7 @@ async def register_payment(
                     confirmation_msg = (
                         f"Comprovante recebido e registrado! ✅\n"
                         f"Infelizmente o horário original ({appointment_dt} com {canceled_doctor_label}) "
-                        f"não está mais disponível. Vou verificar os próximos horários disponíveis "
+                        f"{REACTIVATION_SLOT_TAKEN_MARKER}. Vou verificar os próximos horários disponíveis "
                         f"para remarcar sua consulta — sua taxa de reserva já está registrada e "
                         f"não precisará ser paga novamente. 🙏"
                     )

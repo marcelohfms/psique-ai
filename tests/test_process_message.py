@@ -1481,6 +1481,105 @@ async def test_pending_appointment_success_with_internal_prefix():
     assert result.get("pending_appointment") is None
 
 
+# ── Guard: resultado slot-taken de register_payment vai ao paciente verbatim ─
+
+
+def _slot_taken_tool_turn():
+    """AIMessage(tool_call register_payment) + ToolMessage do branch slot-taken
+    (tools.py ~2912), como o ToolNode as deixa no histórico."""
+    from langchain_core.messages import ToolMessage
+    from app.graph.tools import REACTIVATION_SLOT_TAKEN_MARKER
+
+    tool_content = (
+        "Comprovante recebido e registrado! ✅\n"
+        "Infelizmente o horário original (13/08/2026 14:00 com Dr. Júlio) "
+        f"{REACTIVATION_SLOT_TAKEN_MARKER}. Vou verificar os próximos horários "
+        "disponíveis para remarcar sua consulta — sua taxa de reserva já está "
+        "registrada e não precisará ser paga novamente. 🙏\n\n"
+        "Valor pago: R$ 100,00 — taxa de reserva registrada. "
+        "Saldo restante para quitação no dia da consulta: R$ 400,00 (com desconto PIX)."
+    )
+    ai = AIMessage(content="", tool_calls=[{
+        "name": "register_payment",
+        "args": {"amount": "100,00", "drive_link": "https://drive.google.com/file/d/abc/view"},
+        "id": "call_rp_slot_taken",
+        "type": "tool_call",
+    }])
+    tool_msg = ToolMessage(content=tool_content, name="register_payment",
+                           tool_call_id="call_rp_slot_taken")
+    return ai, tool_msg, tool_content
+
+
+async def test_register_payment_slot_taken_sent_verbatim_without_llm():
+    """Regressão (caso Ricardo José Vieira Cunha Filho, contato 5581988912861,
+    10/08/2026, appt bs4ol154f07522csare0jitk48): comprovante de consulta cancelada
+    com o horário original já ocupado — register_payment tomou o branch correto
+    (pending_reschedule + mensagem de indisponibilidade), mas a re-síntese pela LLM
+    disse o OPOSTO ("Vou seguir com a reativação da consulta para o dia 13/08, às
+    14:00... conforme combinado"). O resultado slot-taken deve ir ao paciente
+    VERBATIM, sem nova chamada à LLM."""
+    from app.graph.nodes import patient_agent_node
+
+    ai, tool_msg, tool_content = _slot_taken_tool_turn()
+    state = _make_patient_agent_state(
+        messages=[
+            HumanMessage(content="[imagem]: comprovante PIX R$ 100,00 [drive_link:https://drive.google.com/file/d/abc/view]"),
+            ai,
+            tool_msg,
+        ],
+        # Um pending_appointment antigo não pode sobreviver ao guard: um "sim" na
+        # próxima mensagem confirmaria programaticamente um horário indisponível.
+        pending_appointment={
+            "slot_datetime": "2026-08-13T14:00:00",
+            "slot_duration_minutes": 60,
+            "modality": "presencial",
+        },
+    )
+
+    with patch("app.graph.nodes._get_agent_llm") as mock_llm_fn, \
+         patch("app.graph.nodes.send_text", new_callable=AsyncMock) as mock_send, \
+         patch("app.graph.nodes.save_message", new_callable=AsyncMock) as mock_save:
+        mock_llm_fn.side_effect = AssertionError(
+            "a LLM não pode re-sintetizar o resultado slot-taken de register_payment"
+        )
+        result = await patient_agent_node(state, CONFIG)
+
+    mock_send.assert_awaited_once_with(PHONE, tool_content)
+    mock_save.assert_awaited_once_with(PHONE, "assistant", tool_content)
+    assert "não está mais disponível" in mock_send.await_args.args[1]
+    assert result["messages"][-1].content == tool_content
+    assert result.get("pending_appointment") is None
+
+
+async def test_register_payment_normal_result_still_synthesized_by_llm():
+    """Resultado comum de register_payment (sem o branch slot-taken) segue o fluxo
+    normal: a LLM lê a ToolMessage e redige a resposta — o guard não pode sequestrar
+    qualquer retorno da tool."""
+    from langchain_core.messages import ToolMessage
+
+    ai = AIMessage(content="", tool_calls=[{
+        "name": "register_payment",
+        "args": {"amount": "100,00", "drive_link": ""},
+        "id": "call_rp_ok",
+        "type": "tool_call",
+    }])
+    tool_msg = ToolMessage(
+        content=(
+            "Comprovante recebido e registrado com sucesso! ✅\n\n"
+            "Valor pago: R$ 100,00 — taxa de reserva registrada. "
+            "Saldo restante para quitação no dia da consulta: R$ 400,00 (com desconto PIX)."
+        ),
+        name="register_payment",
+        tool_call_id="call_rp_ok",
+    )
+    state = _make_patient_agent_state(
+        messages=[HumanMessage(content="[imagem]: comprovante PIX R$ 100,00"), ai, tool_msg],
+    )
+
+    system_msg = await _run_patient_agent(state, last_assistant_time=None)
+    assert system_msg is not None, "resultado normal de register_payment deve passar pela LLM"
+
+
 async def test_silent_mode_survives_when_response_has_tool_calls():
     """Regressão: quando a atendente envia uma instrução (silent_mode=True) e a LLM
     responde com uma tool_call (ex: confirm_appointment com force_encaixe=True), o node

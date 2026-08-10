@@ -1496,6 +1496,50 @@ async def patient_agent_node(state: ConversationState, config: RunnableConfig) -
         )
         return {"messages": [AIMessage(content=result)]}
 
+    # ── Guard: resultado slot-taken de register_payment vai ao paciente verbatim ─
+    # Comprovante de consulta cancelada cujo horário original já foi ocupado:
+    # register_payment marca pending_reschedule e devolve a mensagem dizendo que o
+    # horário não está mais disponível (taxa preservada). Deixar a LLM re-sintetizar
+    # esse resultado já produziu o OPOSTO — "Vou seguir com a reativação da consulta
+    # para o dia 13/08, às 14:00... conforme combinado" (caso Ricardo José Vieira
+    # Cunha Filho, contato 5581988912861, 10/08/2026): o contexto da conversa pesa
+    # mais que a ToolMessage. Sobre disponibilidade a tool é a única fonte de
+    # verdade, então o texto dela vai direto ao paciente e o turno termina aqui.
+    from app.graph.tools import REACTIVATION_SLOT_TAKEN_MARKER as _SLOT_TAKEN_MARKER
+    _msgs_rp = list(state.get("messages") or [])
+    _trailing_tools = []
+    for _m_rp in reversed(_msgs_rp):
+        if getattr(_m_rp, "type", "") == "tool":
+            _trailing_tools.append(_m_rp)
+        else:
+            break
+    if _trailing_tools:
+        # Nome da tool: o ToolNode preenche .name; fallback via tool_calls da
+        # AIMessage imediatamente anterior ao bloco de ToolMessages.
+        _prev_ai_rp = _msgs_rp[-len(_trailing_tools) - 1] if len(_msgs_rp) > len(_trailing_tools) else None
+        _tc_names_rp = {
+            tc.get("id"): tc.get("name")
+            for tc in (getattr(_prev_ai_rp, "tool_calls", None) or [])
+        }
+        for _tm_rp in _trailing_tools:
+            _tm_name = getattr(_tm_rp, "name", None) or _tc_names_rp.get(getattr(_tm_rp, "tool_call_id", None))
+            _tm_content = str(getattr(_tm_rp, "content", "") or "")
+            if _tm_name == "register_payment" and _SLOT_TAKEN_MARKER in _tm_content:
+                _pa_logger.info(
+                    "GUARD_SLOT_TAKEN_VERBATIM: sending register_payment slot-taken result "
+                    "directly to patient phone=%s", state.get("phone"),
+                )
+                await send_text(state["phone"], _tm_content)
+                await save_message(state["phone"], "assistant", _tm_content)
+                # pending_appointment antigo não pode sobreviver: um "sim" na próxima
+                # mensagem confirmaria programaticamente um horário que acabou de se
+                # provar indisponível.
+                return {
+                    "messages": [AIMessage(content=_tm_content)],
+                    "pending_appointment": None,
+                    "silent_mode": False,
+                }
+
     # ── DB ↔ checkpoint hydration ─────────────────────────────────────────────
     # Hydrates missing fields from DB using the new patients/contacts schema.
     # Only runs when at least one field is absent — once set, the checkpoint is trusted.
