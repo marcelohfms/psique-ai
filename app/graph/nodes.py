@@ -11,6 +11,7 @@ from app.graph.schemas import CollectInfoOutput
 from app.graph.tools import (
     get_available_slots, confirm_appointment,
     cancel_appointment, reschedule_appointment, mark_reschedule_in_progress,
+    keep_original_appointment,
     change_modality,
     request_document, transfer_to_human, confirm_attendance,
     register_payment, update_preferred_doctor, save_patient_email,
@@ -32,6 +33,7 @@ from app.utils import looks_like_name
 TOOLS = [
     get_available_slots, confirm_appointment,
     cancel_appointment, reschedule_appointment, mark_reschedule_in_progress,
+    keep_original_appointment,
     change_modality,
     request_document, transfer_to_human, confirm_attendance,
     register_payment, update_preferred_doctor, save_patient_email,

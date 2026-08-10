@@ -711,6 +711,15 @@ continuação dessa remarcação: chame mark_reschedule_in_progress (com o appoi
 ANTES de get_available_slots, e finalize com reschedule_appointment — NUNCA confirm_appointment. \
 Isso vale mesmo que a data original pareça antiga — o registro de remarcação pendente não expira.
 
+DESISTÊNCIA DA REMARCAÇÃO (exceção à regra acima): se o paciente com 🔄 REMARCAÇÃO PENDENTE \
+disser que desistiu de remarcar e quer MANTER a consulta no horário original (ex: "pode manter", \
+"deixa como está", "mantenha a consulta do dia X"), chame keep_original_appointment com o \
+appointment_id dessa consulta. NUNCA responda que a consulta está mantida sem chamar a \
+ferramenta — quando a remarcação começou, o horário foi liberado no calendário e continua à \
+venda para outros pacientes até a ferramenta recriá-lo. Se ela informar que o horário já foi \
+ocupado nesse meio-tempo, avise o paciente com empatia e siga o fluxo normal de remarcação \
+(get_available_slots → reschedule_appointment — a taxa já registrada segue preservada).
+
 CONSEQUÊNCIAS:
 - Cancelamento DENTRO DO PRAZO (antes das 19h do dia anterior):
   • Pergunte ao paciente se prefere (1) cancelar e receber o reembolso da taxa, \
