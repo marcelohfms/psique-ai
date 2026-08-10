@@ -601,6 +601,161 @@ def test_missing_registration_field_agrees_with_is_registration_complete():
         assert is_registration_complete(user) is (missing_registration_field(user) is None)
 
 
+# ── Reconciliação de paciente retornante (caso Maria José, 10/08/2026) ───────
+# Contato NOVO (5581982131153) agendou para paciente que JÁ era da clínica
+# (cadastrada em 23/06 sob o telefone da nora, 5581981139373). upsert_user só
+# resolvia por telefone, então gravou is_returning_patient=True mas criou um
+# paciente duplicado. Quando is_returning_patient=True, deve buscar por nome
+# normalizado + data de nascimento e reusar o cadastro existente.
+
+def _reconcile_mocks(captured, resolved_patient=None):
+    """Patches comuns dos testes de reconciliação; devolve o dict de patches."""
+    async def fake_upsert_contact(phone, data):
+        return "c-novo"
+
+    async def fake_upsert_patient(data, patient_id=None):
+        captured["patient_data"] = data
+        captured["patient_id"] = patient_id
+        return patient_id or "p-criado-novo"
+
+    async def fake_link(patient_id, contact_id, role, is_self=False, relationship=None):
+        captured.setdefault("links", []).append({"patient_id": patient_id, "role": role})
+
+    return {
+        "contact": patch("app.database.get_contact_by_phone", new_callable=AsyncMock,
+                         return_value={"id": "c-novo", "phone": "5581982131153"}),
+        "upsert_contact": patch("app.database.upsert_contact", side_effect=fake_upsert_contact),
+        "upsert_patient": patch("app.database.upsert_patient", side_effect=fake_upsert_patient),
+        "link": patch("app.database.link_patient_contact", side_effect=fake_link),
+        "resolve": patch("app.patients.resolve_active_patient", new_callable=AsyncMock,
+                         return_value={"patient": resolved_patient}),
+    }
+
+
+@pytest.mark.asyncio
+async def test_upsert_user_returning_vincula_paciente_existente_por_nome_e_nascimento():
+    """Telefone novo não resolve ninguém + is_returning_patient=True + payload com
+    nome e nascimento → reusa o paciente existente em vez de inserir um novo."""
+    captured = {}
+    mocks = _reconcile_mocks(captured, resolved_patient=None)
+    existing = {"id": "p-real", "name": "Maria José Alves de Farias", "birth_date": "20/08/1956"}
+    with mocks["contact"], mocks["upsert_contact"], mocks["upsert_patient"], \
+         mocks["link"], mocks["resolve"], \
+         patch("app.patients.find_patient_by_name_birth", new_callable=AsyncMock,
+               return_value=existing) as mock_find, \
+         patch("app.patients.merge_duplicate_patient", new_callable=AsyncMock) as mock_merge:
+        pid = await database.upsert_user("5581982131153", {
+            "patient_name": "Maria Jose Alves de Farias",
+            "birth_date": "20/08/1956",
+            "is_returning_patient": True,
+            "is_patient": False,
+            "guardian_name": "Cláudia Farias",
+            "guardian_relationship": "nora",
+        })
+
+    assert pid == "p-real"
+    # o update foi aplicado ao paciente existente (nada de INSERT de novo paciente)
+    assert captured["patient_id"] == "p-real"
+    # o contato novo foi vinculado ao paciente existente
+    assert all(l["patient_id"] == "p-real" for l in captured["links"])
+    # sem duplicado criado nesta conversa, não há o que mesclar
+    mock_merge.assert_not_awaited()
+    # a busca exigiu nome + data de nascimento (proteção contra homônimos)
+    args, kwargs = mock_find.call_args
+    assert "Maria Jose Alves de Farias" in args
+    assert "20/08/1956" in args
+
+
+@pytest.mark.asyncio
+async def test_upsert_user_returning_mescla_duplicado_recem_criado():
+    """Fluxo real do chat: o paciente duplicado já foi criado no passo do nome
+    (antes de sabermos is_returning_patient). Quando a resposta 'já é paciente'
+    chega, o duplicado deve ser mesclado no cadastro existente."""
+    captured = {}
+    mocks = _reconcile_mocks(captured)
+    dup = {"id": "p-dup", "name": "Maria Jose Alves de Farias", "birth_date": "20/08/1956"}
+    existing = {"id": "p-real", "name": "Maria José Alves de Farias", "birth_date": "20/08/1956"}
+    with mocks["contact"], mocks["upsert_contact"], mocks["upsert_patient"], \
+         mocks["link"], mocks["resolve"], \
+         patch("app.patients.get_patient_by_id", new_callable=AsyncMock,
+               return_value=dup), \
+         patch("app.patients.find_patient_by_name_birth", new_callable=AsyncMock,
+               return_value=existing), \
+         patch("app.patients.merge_duplicate_patient", new_callable=AsyncMock,
+               return_value=True) as mock_merge:
+        pid = await database.upsert_user(
+            "5581982131153", {"is_returning_patient": True}, user_id="p-dup",
+        )
+
+    assert pid == "p-real"
+    mock_merge.assert_awaited_once_with("p-dup", "p-real")
+    # o update deste turno foi aplicado ao paciente real, não ao duplicado
+    assert captured["patient_id"] == "p-real"
+
+
+@pytest.mark.asyncio
+async def test_upsert_user_returning_sem_match_segue_fluxo_normal():
+    captured = {}
+    mocks = _reconcile_mocks(captured)
+    with mocks["contact"], mocks["upsert_contact"], mocks["upsert_patient"], \
+         mocks["link"], mocks["resolve"], \
+         patch("app.patients.find_patient_by_name_birth", new_callable=AsyncMock,
+               return_value=None), \
+         patch("app.patients.merge_duplicate_patient", new_callable=AsyncMock) as mock_merge:
+        pid = await database.upsert_user("5581982131153", {
+            "patient_name": "Paciente Realmente Novo",
+            "birth_date": "01/01/1990",
+            "is_returning_patient": True,
+            "is_patient": True,
+        })
+
+    assert pid == "p-criado-novo"
+    assert captured["patient_id"] is None  # insert normal
+    mock_merge.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_upsert_user_returning_nao_mescla_quando_dup_tem_consulta():
+    """merge_duplicate_patient recusou (paciente atual tem consultas — pode ser
+    legítimo): mantém o id atual e não reponta nada."""
+    captured = {}
+    mocks = _reconcile_mocks(captured)
+    dup = {"id": "p-atual", "name": "Maria José", "birth_date": "20/08/1956"}
+    existing = {"id": "p-real", "name": "Maria José", "birth_date": "20/08/1956"}
+    with mocks["contact"], mocks["upsert_contact"], mocks["upsert_patient"], \
+         mocks["link"], mocks["resolve"], \
+         patch("app.patients.get_patient_by_id", new_callable=AsyncMock, return_value=dup), \
+         patch("app.patients.find_patient_by_name_birth", new_callable=AsyncMock,
+               return_value=existing), \
+         patch("app.patients.merge_duplicate_patient", new_callable=AsyncMock,
+               return_value=False):
+        pid = await database.upsert_user(
+            "5581982131153", {"is_returning_patient": True}, user_id="p-atual",
+        )
+
+    assert pid == "p-atual"
+    assert captured["patient_id"] == "p-atual"
+
+
+@pytest.mark.asyncio
+async def test_upsert_user_nao_reconcilia_quando_nao_e_returning():
+    """Paciente novo (is_returning_patient ausente ou False) nunca dispara a
+    busca por nome+nascimento — cadastro novo segue criando paciente novo."""
+    for payload in (
+        {"patient_name": "Ana Nova", "birth_date": "01/01/2000", "is_patient": True},
+        {"patient_name": "Ana Nova", "birth_date": "01/01/2000",
+         "is_returning_patient": False, "is_patient": True},
+    ):
+        captured = {}
+        mocks = _reconcile_mocks(captured)
+        with mocks["contact"], mocks["upsert_contact"], mocks["upsert_patient"], \
+             mocks["link"], mocks["resolve"], \
+             patch("app.patients.find_patient_by_name_birth",
+                   new_callable=AsyncMock) as mock_find:
+            await database.upsert_user("5581982131153", dict(payload))
+        mock_find.assert_not_awaited()
+
+
 # ── Propagação de nome corrompido contato → paciente ─────────────────────────
 # Quando o paciente ainda não tem nome próprio, o shim copia o nome do contato.
 # Um valor ruim no contato virava dois prontuários errados de uma vez: foi o que
