@@ -166,10 +166,12 @@ async def test_upsert_patient_insert_returns_id():
 @pytest.mark.asyncio
 async def test_upsert_patient_dedups_by_name_and_birth_date():
     """Mesmo nome + mesma data de nascimento = mesma pessoa; não cria duplicata."""
-    select_exec = AsyncMock(return_value=MagicMock(data=[{"id": "p-existing"}]))
+    select_exec = AsyncMock(return_value=MagicMock(
+        data=[{"id": "p-existing", "name": "Jonas Santos Ferreira", "birth_date": "09/07/1987"}]
+    ))
     update_exec = AsyncMock(return_value=MagicMock(data=[{"id": "p-existing"}]))
     table = MagicMock()
-    for m in ("select", "eq", "insert"):
+    for m in ("select", "eq", "in_", "insert"):
         getattr(table, m).return_value = table
     table.execute = select_exec
     table.update.return_value.eq.return_value.execute = update_exec
@@ -183,11 +185,34 @@ async def test_upsert_patient_dedups_by_name_and_birth_date():
 
 
 @pytest.mark.asyncio
+async def test_upsert_patient_dedup_ignora_acentos_e_caixa():
+    """A grafia do nome varia entre conversas ('José' vs 'Jose', caixa alta) —
+    a mesma pessoa não pode virar dois prontuários por causa de acento."""
+    select_exec = AsyncMock(return_value=MagicMock(
+        data=[{"id": "p-existing", "name": "MARIA JOSÉ ALVES DE FARIAS", "birth_date": "20/08/1956"}]
+    ))
+    update_exec = AsyncMock(return_value=MagicMock(data=[{"id": "p-existing"}]))
+    table = MagicMock()
+    for m in ("select", "eq", "in_", "insert"):
+        getattr(table, m).return_value = table
+    table.execute = select_exec
+    table.update.return_value.eq.return_value.execute = update_exec
+    client = MagicMock()
+    client.from_.return_value = table
+    with patch("app.patients.get_supabase", new_callable=AsyncMock, return_value=client):
+        pid = await patients.upsert_patient(
+            {"name": "Maria Jose Alves de Farias", "birth_date": "20/08/1956"}
+        )
+    assert pid == "p-existing"
+    table.insert.assert_not_called()
+
+
+@pytest.mark.asyncio
 async def test_upsert_patient_inserts_when_no_name_birth_date_match():
     select_exec = AsyncMock(return_value=MagicMock(data=[]))
     insert_exec = AsyncMock(return_value=MagicMock(data=[{"id": "p-new"}]))
     table = MagicMock()
-    for m in ("select", "eq"):
+    for m in ("select", "eq", "in_"):
         getattr(table, m).return_value = table
     table.execute = select_exec
     table.insert.return_value.execute = insert_exec
@@ -244,6 +269,136 @@ async def test_upsert_contact_persists_cpf():
     table.update.assert_called_once()
     args, _ = table.update.call_args
     assert args[0]["cpf"] == "555"
+
+
+# ── Reconciliação de paciente retornante (caso Maria José, 5581982131153) ────
+# Um contato NOVO agendando para um paciente que JÁ é da clínica não pode gerar
+# um segundo prontuário: buscamos por nome normalizado + data de nascimento.
+
+def test_normalize_person_name_ignora_acentos_caixa_e_espacos():
+    assert patients.normalize_person_name("  Maria  JOSÉ Alves   de Farias ") == \
+        "maria jose alves de farias"
+    assert patients.normalize_person_name("João") == patients.normalize_person_name("JOAO")
+    assert patients.normalize_person_name(None) == ""
+
+
+def _client_multi_table(rows_by_table):
+    """Client mockado que devolve linhas diferentes por tabela."""
+    client = MagicMock()
+    tables = {}
+
+    def _from(name):
+        if name not in tables:
+            table = MagicMock()
+            for m in ("select", "eq", "neq", "in_", "insert", "update", "delete",
+                      "limit", "order", "upsert"):
+                getattr(table, m).return_value = table
+            table.execute = AsyncMock(return_value=MagicMock(data=rows_by_table.get(name, [])))
+            tables[name] = table
+        return tables[name]
+
+    client.from_.side_effect = _from
+    return client, tables
+
+
+async def test_find_patient_by_name_birth_casa_sem_acentos_e_caixa():
+    client, tables = _client_multi_table({"patients": [
+        {"id": "p-existing", "name": "MARIA JOSÉ ALVES DE FARIAS", "birth_date": "20/08/1956"},
+        {"id": "p-outro", "name": "Pedro Lima", "birth_date": "20/08/1956"},
+    ]})
+    with patch("app.patients.get_supabase", new_callable=AsyncMock, return_value=client):
+        found = await patients.find_patient_by_name_birth(
+            "maria jose alves de farias", "20/08/1956"
+        )
+    assert found["id"] == "p-existing"
+
+
+async def test_find_patient_by_name_birth_consulta_ambos_formatos_de_data():
+    """patients.birth_date convive com dd/mm/aaaa (fluxo do chat) e ISO (imports);
+    a busca deve cobrir os dois formatos da mesma data."""
+    client, tables = _client_multi_table({"patients": [
+        {"id": "p-iso", "name": "Maria José Alves de Farias", "birth_date": "1956-08-20"},
+    ]})
+    with patch("app.patients.get_supabase", new_callable=AsyncMock, return_value=client):
+        found = await patients.find_patient_by_name_birth(
+            "Maria José Alves de Farias", "20/08/1956"
+        )
+    assert found["id"] == "p-iso"
+    args, _ = tables["patients"].in_.call_args
+    assert args[0] == "birth_date"
+    assert set(args[1]) == {"20/08/1956", "1956-08-20"}
+
+
+async def test_find_patient_by_name_birth_none_sem_match_ou_homonimos():
+    # Nenhuma linha com a data → None.
+    client, _ = _client_multi_table({"patients": []})
+    with patch("app.patients.get_supabase", new_callable=AsyncMock, return_value=client):
+        assert await patients.find_patient_by_name_birth("Maria José", "20/08/1956") is None
+
+    # Dois homônimos com a MESMA data de nascimento → ambíguo, não escolhe.
+    client, _ = _client_multi_table({"patients": [
+        {"id": "p1", "name": "Maria José", "birth_date": "20/08/1956"},
+        {"id": "p2", "name": "Maria José", "birth_date": "20/08/1956"},
+    ]})
+    with patch("app.patients.get_supabase", new_callable=AsyncMock, return_value=client):
+        assert await patients.find_patient_by_name_birth("Maria José", "20/08/1956") is None
+
+
+async def test_find_patient_by_name_birth_exclui_o_proprio_id():
+    client, _ = _client_multi_table({"patients": [
+        {"id": "p-dup", "name": "Maria José", "birth_date": "20/08/1956"},
+        {"id": "p-real", "name": "Maria José", "birth_date": "20/08/1956"},
+    ]})
+    with patch("app.patients.get_supabase", new_callable=AsyncMock, return_value=client):
+        found = await patients.find_patient_by_name_birth(
+            "Maria José", "20/08/1956", exclude_id="p-dup"
+        )
+    assert found["id"] == "p-real"
+
+
+async def test_merge_duplicate_patient_reponta_links_e_apaga_duplicado():
+    client, tables = _client_multi_table({
+        "appointments": [],  # duplicado recém-criado, sem consultas
+        "patient_contacts": [
+            {"patient_id": "p-dup", "contact_id": "c-nora", "role": "agendamento",
+             "is_self": False, "relationship": "nora"},
+        ],
+        "patients": [],
+    })
+    with patch("app.patients.get_supabase", new_callable=AsyncMock, return_value=client), \
+         patch("app.patients.link_patient_contact", new_callable=AsyncMock) as mock_link:
+        merged = await patients.merge_duplicate_patient("p-dup", "p-real")
+
+    assert merged is True
+    # link do contato foi recriado apontando para o paciente REAL
+    mock_link.assert_awaited_once_with(
+        "p-real", "c-nora", "agendamento", is_self=False, relationship="nora"
+    )
+    # links e linha do duplicado foram removidos
+    tables["patient_contacts"].delete.assert_called_once()
+    tables["patients"].delete.assert_called_once()
+
+
+async def test_merge_duplicate_patient_aborta_se_dup_tem_consulta():
+    """Guard anti-engano: se o 'duplicado' tem QUALQUER consulta, pode ser um
+    paciente legítimo de longa data — não mesclar."""
+    client, tables = _client_multi_table({
+        "appointments": [{"id": "a1"}],
+    })
+    with patch("app.patients.get_supabase", new_callable=AsyncMock, return_value=client), \
+         patch("app.patients.link_patient_contact", new_callable=AsyncMock) as mock_link:
+        merged = await patients.merge_duplicate_patient("p-dup", "p-real")
+
+    assert merged is False
+    mock_link.assert_not_awaited()
+    # nada além da checagem de appointments foi consultado — nenhum delete
+    assert "patients" not in tables and "patient_contacts" not in tables
+
+
+async def test_merge_duplicate_patient_recusa_ids_iguais_ou_vazios():
+    assert await patients.merge_duplicate_patient("p1", "p1") is False
+    assert await patients.merge_duplicate_patient(None, "p1") is False
+    assert await patients.merge_duplicate_patient("p1", None) is False
 
 
 @pytest.mark.asyncio

@@ -2,9 +2,13 @@
 
 Substitui gradualmente o modelo antigo de `users` (ver app/database.py).
 """
+import logging
+import unicodedata
 from datetime import datetime, timezone
 
 from app.database import get_supabase
+
+logger = logging.getLogger(__name__)
 
 
 def _strip_phone(phone: str) -> str:
@@ -101,6 +105,124 @@ async def get_contacts_for_patient(patient_id: str, role: str, include_inactive:
     return out
 
 
+def normalize_person_name(name: str | None) -> str:
+    """Forma canônica de um nome para COMPARAÇÃO (nunca para gravação):
+    sem acentos, minúsculas, espaços internos colapsados."""
+    stripped = "".join(
+        c for c in unicodedata.normalize("NFKD", name or "")
+        if not unicodedata.combining(c)
+    )
+    return " ".join(stripped.lower().split())
+
+
+def _birth_date_variants(birth_date: str) -> list[str]:
+    """`patients.birth_date` convive com dd/mm/aaaa (fluxo do chat) e ISO
+    (imports/scripts). Devolve as duas grafias da mesma data para a busca."""
+    raw = (birth_date or "").strip()
+    for fmt in ("%d/%m/%Y", "%Y-%m-%d"):
+        try:
+            d = datetime.strptime(raw, fmt)
+            return [d.strftime("%d/%m/%Y"), d.strftime("%Y-%m-%d")]
+        except ValueError:
+            continue
+    return [raw]
+
+
+async def get_patient_by_id(patient_id: str) -> dict | None:
+    """Retorna a linha de `patients` por id, ou None."""
+    client = await get_supabase()
+    result = (
+        await client.from_("patients")
+        .select("*")
+        .eq("id", patient_id)
+        .execute()
+    )
+    rows = result.data or []
+    return rows[0] if rows else None
+
+
+async def find_patient_by_name_birth(
+    name: str, birth_date: str, exclude_id: str | None = None,
+) -> dict | None:
+    """Busca UM paciente por nome normalizado + data de nascimento.
+
+    Data de nascimento igual é obrigatória (proteção contra homônimos); se mais
+    de um paciente casar, é ambíguo e devolve None — melhor não vincular do que
+    vincular ao homônimo errado.
+    """
+    target = normalize_person_name(name)
+    if not target or not birth_date:
+        return None
+    client = await get_supabase()
+    result = (
+        await client.from_("patients")
+        .select("*")
+        .in_("birth_date", _birth_date_variants(birth_date))
+        .execute()
+    )
+    hits = [
+        row for row in (result.data or [])
+        if row.get("id") != exclude_id
+        and normalize_person_name(row.get("name")) == target
+    ]
+    if len(hits) == 1:
+        return hits[0]
+    if len(hits) > 1:
+        logger.warning(
+            "PACIENTE_HOMONIMO_AMBIGUO: %r + %s casa com %d pacientes (%s) — "
+            "nenhum vínculo feito",
+            name, birth_date, len(hits), [h.get("id") for h in hits],
+        )
+    return None
+
+
+async def _patient_has_any_appointment(patient_id: str) -> bool:
+    """True se existe QUALQUER appointment (qualquer status) para o paciente."""
+    client = await get_supabase()
+    result = (
+        await client.from_("appointments")
+        .select("id")
+        .eq("patient_id", patient_id)
+        .limit(1)
+        .execute()
+    )
+    return bool(result.data)
+
+
+async def merge_duplicate_patient(dup_id: str | None, target_id: str | None) -> bool:
+    """Mescla um paciente DUPLICADO recém-criado no cadastro existente.
+
+    Reponta os vínculos de patient_contacts do duplicado para o alvo e apaga o
+    duplicado. Recusa (False) quando o duplicado tem qualquer consulta — nesse
+    caso pode ser um paciente legítimo de longa data, não um duplicado de
+    cadastro (só o fluxo de cadastro cria pacientes sem consulta alguma).
+    """
+    if not dup_id or not target_id or dup_id == target_id:
+        return False
+    if await _patient_has_any_appointment(dup_id):
+        logger.warning(
+            "MERGE_PACIENTE_RECUSADO: %s tem consultas — não é duplicado seguro "
+            "de mesclar em %s", dup_id, target_id,
+        )
+        return False
+    client = await get_supabase()
+    links = (
+        await client.from_("patient_contacts")
+        .select("*")
+        .eq("patient_id", dup_id)
+        .execute()
+    )
+    for row in (links.data or []):
+        await link_patient_contact(
+            target_id, row["contact_id"], row["role"],
+            is_self=row.get("is_self"), relationship=row.get("relationship"),
+        )
+    await client.from_("patient_contacts").delete().eq("patient_id", dup_id).execute()
+    await client.from_("patients").delete().eq("id", dup_id).execute()
+    logger.info("MERGE_PACIENTE: duplicado %s mesclado em %s", dup_id, target_id)
+    return True
+
+
 async def upsert_contact(phone: str, data: dict) -> str | None:
     """Insere ou atualiza um contato pelo número canônico. Retorna o id."""
     client = await get_supabase()
@@ -126,20 +248,15 @@ async def upsert_patient(data: dict, patient_id: str | None = None) -> str | Non
 
     # Evita duplicar paciente já cadastrado sob outro contato (ex: cônjuge agendando
     # pelo próprio número) — mesmo nome + mesma data de nascimento é considerado a
-    # mesma pessoa. Se achar, atualiza o existente em vez de inserir um novo.
+    # mesma pessoa. A comparação de nome é normalizada (acentos/caixa/espaços): a
+    # grafia varia entre conversas e "Maria Jose" não pode virar um segundo
+    # prontuário de "Maria José". Se achar match único, atualiza o existente.
     birth_date = data.get("birth_date")
     if birth_date:
-        existing = (
-            await client.from_("patients")
-            .select("id")
-            .eq("name", data["name"])
-            .eq("birth_date", birth_date)
-            .execute()
-        )
-        if existing.data:
-            existing_id = existing.data[0]["id"]
-            await client.from_("patients").update(data).eq("id", existing_id).execute()
-            return existing_id
+        existing = await find_patient_by_name_birth(data["name"], birth_date)
+        if existing:
+            await client.from_("patients").update(data).eq("id", existing["id"]).execute()
+            return existing["id"]
 
     result = await client.from_("patients").insert(data).execute()
     inserted = (result.data or [{}])[0]

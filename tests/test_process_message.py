@@ -769,6 +769,43 @@ async def test_collect_info_self_messaging_returning_minor_skips_guardian_name_p
     assert "júlio" in sent or "bruna" in sent
 
 
+async def test_collect_info_atualiza_user_db_id_quando_upsert_reconcilia_paciente():
+    """Caso Maria José (5581982131153, 10/08/2026): a resposta 'já é paciente'
+    faz o upsert_user reconciliar com o cadastro existente (nome + nascimento) e
+    devolver OUTRO patient_id. O state precisa trocar user_db_id para o id
+    devolvido — senão o agendamento seguiria preso ao duplicado."""
+    from app.graph.nodes import collect_info_node
+    from langchain_core.messages import HumanMessage, AIMessage
+
+    state = _base_minor_state(
+        user_name="Cláudia Farias",
+        patient_name="Maria Jose Alves de Farias",
+        patient_cpf=None,
+        birth_date="20/08/1956",
+        patient_age=69,
+        is_patient=False,
+        guardian_name="Cláudia Farias",
+        user_db_id="p-dup",  # duplicado criado no passo do nome do paciente
+        messages=[
+            HumanMessage(content="quero agendar uma consulta"),
+            AIMessage(content="É a primeira consulta ou o paciente já está em acompanhamento na clínica?"),
+            HumanMessage(content="ela já está em acompanhamento"),
+        ],
+    )
+    with patch("app.graph.nodes.send_text", new_callable=AsyncMock), \
+         patch("app.graph.nodes.save_message", new_callable=AsyncMock), \
+         patch("app.graph.nodes.get_users_by_phone", new_callable=AsyncMock, return_value=[]), \
+         patch("app.graph.nodes.upsert_user", new_callable=AsyncMock,
+               return_value="p-real") as mock_upsert:
+        result = await collect_info_node(state, {})
+
+    assert result.get("is_returning_patient") is True
+    # o upsert deste turno recebeu o id do duplicado…
+    assert mock_upsert.call_args.kwargs.get("user_id") == "p-dup"
+    # …mas devolveu o paciente real, e o state precisa acompanhar
+    assert result.get("user_db_id") == "p-real"
+
+
 async def test_collect_info_persists_doctor_when_mentioned():
     """Mentioning a doctor sets preferred_doctor in state.
 

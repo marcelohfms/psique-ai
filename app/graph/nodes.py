@@ -584,7 +584,11 @@ async def collect_info_node(state: ConversationState, config: RunnableConfig) ->
         if db_payload:
             try:
                 returned_id = await upsert_user(state["phone"], db_payload, user_id=state.get("user_db_id"))
-                if returned_id and not state.get("user_db_id"):
+                # O id devolvido pode DIFERIR do enviado: quando o usuário afirma
+                # já ser da clínica, o upsert_user reconcilia por nome+nascimento
+                # e devolve o cadastro existente (caso Maria José, 10/08/2026).
+                # O state precisa acompanhar, senão o agendamento segue no duplicado.
+                if returned_id and returned_id != state.get("user_db_id"):
                     result_update["user_db_id"] = returned_id
             except Exception:
                 import logging as _log
@@ -1323,7 +1327,7 @@ async def collect_info_node(state: ConversationState, config: RunnableConfig) ->
         if _is_document:
             update["pending_action"] = "request_document"
         try:
-            await upsert_user(state["phone"], {
+            _final_id = await upsert_user(state["phone"], {
                 "name": merged.get("user_name"),
                 "patient_name": merged.get("patient_name"),
                 "age": merged.get("patient_age"),
@@ -1340,6 +1344,10 @@ async def collect_info_node(state: ConversationState, config: RunnableConfig) ->
                 "referral_professional": merged.get("referral_professional"),
                 "active": True,
             }, user_id=state.get("user_db_id"))
+            # A reconciliação de retornante pode devolver um id diferente do
+            # enviado (cadastro existente sob outro telefone) — ver _extract_and_ask.
+            if _final_id and _final_id != state.get("user_db_id"):
+                update["user_db_id"] = _final_id
             await log_event("info_collected", state["phone"], {
                 "patient_name": merged.get("patient_name"),
                 "patient_age": merged.get("patient_age"),
@@ -1375,7 +1383,7 @@ async def collect_info_node(state: ConversationState, config: RunnableConfig) ->
                 _returned_id = await upsert_user(
                     state["phone"], _incremental, user_id=state.get("user_db_id")
                 )
-                if _returned_id and not state.get("user_db_id"):
+                if _returned_id and _returned_id != state.get("user_db_id"):
                     update["user_db_id"] = _returned_id
             except Exception:
                 import logging as _log
