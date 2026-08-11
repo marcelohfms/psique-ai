@@ -61,6 +61,8 @@ def pending_template(today: date, row: dict) -> tuple[str, str] | None:
     """Retorna (template_name, coluna_de_flag) a disparar hoje para esta linha, ou None."""
     if row.get("return_interval") == "15_dias":
         return None
+    if row.get("return_interval") == "alta":
+        return None
 
     next_return_date = date.fromisoformat(row["next_return_date"])
     current_key = _month_key(today)
