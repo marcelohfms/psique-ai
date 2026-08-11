@@ -159,6 +159,7 @@ function pagamentoCard(p) {
         <input type="file" accept="image/*,.pdf" class="comprovante-input hidden">
       </label>
       <button onclick="marcarPago(this)" class="bg-wa-green hover:bg-wa-green-dk text-white text-xs px-3 py-1.5 rounded ml-auto">Marcar pago</button>
+      <button onclick="marcarNoShowPag(this)" class="bg-gray-200 hover:bg-red-100 dark:bg-gray-700 dark:hover:bg-red-900 text-gray-700 hover:text-red-700 dark:text-gray-200 dark:hover:text-red-300 text-xs px-3 py-1.5 rounded">Não compareceu</button>
       ${isentarBtn}
     </div>
     <div class="comprovante-nome text-xs text-gray-400 dark:text-gray-500 mt-1"></div>
@@ -206,6 +207,17 @@ async function marcarPago(btn) {
     }),
   });
   if (!r.ok) { alert("Erro ao registrar pagamento."); btn.disabled = false; return; }
+  card.remove();
+}
+
+async function marcarNoShowPag(btn) {
+  const card = btn.closest("[data-appt]");
+  if (!confirm(`Marcar ${card.dataset.paciente} como NÃO COMPARECEU? A pendência sai da lista e a taxa paga fica retida.`)) return;
+  btn.disabled = true;
+  const r = await fetch(`/api/atendente/pagamentos/${card.dataset.appt}/no-show?token=${encodeURIComponent(TOKEN)}`, {
+    method: "POST",
+  });
+  if (!r.ok) { alert("Erro ao marcar não compareceu."); btn.disabled = false; return; }
   card.remove();
 }
 

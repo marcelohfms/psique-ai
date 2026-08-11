@@ -14,6 +14,7 @@ from pydantic import BaseModel
 import attendant_db
 import chatwoot_client
 import payments
+import return_reminders
 from db_client import get_client
 
 router = APIRouter(prefix="/api/atendente")
@@ -161,6 +162,18 @@ async def pagar(appointment_id: str, body: AtendentePagarBody, _: None = Depends
     await attendant_db.log_event("attendant_pagamento_registrado", body.phone, {
         "appointment_id": appointment_id, "tipo": body.tipo, "valor": body.valor,
     })
+    return {"ok": True}
+
+
+@router.post("/pagamentos/{appointment_id}/no-show")
+async def pagamentos_no_show(appointment_id: str, _: None = Depends(verify_token)):
+    """Marca a consulta como falta (no_show) a partir do painel embutido no Chatwoot.
+
+    Espelha a rota HTTP-Basic `/api/pagamentos/{id}/no-show` do painel completo,
+    mas com auth por token (o iframe do Chatwoot não tem as credenciais Basic).
+    Fonte única da verdade: `return_reminders.mark_no_show`."""
+    client = await get_client()
+    await return_reminders.mark_no_show(client, appointment_id)
     return {"ok": True}
 
 
