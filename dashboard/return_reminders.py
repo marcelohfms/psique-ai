@@ -12,6 +12,8 @@ _TZ = ZoneInfo("America/Recife")
 
 RETURN_INTERVALS = ("15_dias", "1_mes", "2_meses", "3_meses", "4_meses", "6_meses")
 
+ALTA = "alta"  # sentinela em return_interval: paciente recebeu alta, sem próximo retorno
+
 RETURN_INTERVAL_LABELS = {
     "15_dias": "15 dias",
     "1_mes": "1 mês",
@@ -178,6 +180,44 @@ async def save_classification(
     elif return_interval == "1_mes":
         payload["month_before_sent_at"] = now
 
+    existing = await (
+        client.from_("return_reminders").select("id").eq("patient_id", patient_id).execute()
+    )
+    if existing.data:
+        result = await (
+            client.from_("return_reminders").update(payload).eq("patient_id", patient_id).execute()
+        )
+    else:
+        result = await client.from_("return_reminders").insert(payload).execute()
+    return (result.data or [payload])[0]
+
+
+async def save_discharge(
+    client,
+    patient_id: str,
+    doctor_id: str,
+    appointment_id: str,
+) -> dict:
+    """Registra ALTA do paciente: para os lembretes de retorno sem agendar um novo.
+
+    Grava a mesma linha 1-por-paciente de `save_classification`, mas com o
+    sentinela `return_interval="alta"` e `next_return_date=None`. O
+    `last_classified_appointment_id` é o que tira a consulta da fila do
+    /retornos. Não valida contra RETURN_INTERVALS de propósito — "alta" é um
+    desfecho terminal, não um intervalo.
+    """
+    now = datetime.now(_TZ).isoformat()
+    payload = {
+        "patient_id": patient_id,
+        "doctor_id": doctor_id,
+        "return_interval": ALTA,
+        "next_return_date": None,
+        "last_classified_appointment_id": appointment_id,
+        "month_before_sent_at": now,
+        "month_of_sent_at": now,
+        "overdue_sent_at": now,
+        "updated_at": now,
+    }
     existing = await (
         client.from_("return_reminders").select("id").eq("patient_id", patient_id).execute()
     )

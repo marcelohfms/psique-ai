@@ -250,3 +250,40 @@ async def test_save_classification_interval_invalido_levanta_erro(fake_client):
             fake_client, patient_id="p1", doctor_id=JULIO_ID, appointment_id="a1",
             appointment_date=date(2026, 7, 13), return_interval="5_meses",
         )
+
+
+# ── save_discharge (alta) ──────────────────────────────────────────────────
+
+
+async def test_save_discharge_grava_sentinela_alta_sem_next_return_date(fake_client):
+    saved = await rr.save_discharge(fake_client, "p1", JULIO_ID, "a1")
+    assert saved["return_interval"] == "alta"
+    assert saved["next_return_date"] is None
+    assert saved["last_classified_appointment_id"] == "a1"
+    # gravou de fato 1 linha
+    rows = fake_client.store["return_reminders"]
+    assert len(rows) == 1
+    assert rows[0]["patient_id"] == "p1"
+
+
+async def test_save_discharge_atualiza_linha_existente(fake_client):
+    fake_client.store["return_reminders"] = [{
+        "id": "rr1", "patient_id": "p1", "doctor_id": JULIO_ID,
+        "return_interval": "1_mes", "next_return_date": "2026-09-13",
+        "last_classified_appointment_id": "a0",
+    }]
+    await rr.save_discharge(fake_client, "p1", JULIO_ID, "a1")
+    rows = fake_client.store["return_reminders"]
+    assert len(rows) == 1  # upsert, não insere segunda linha
+    assert rows[0]["return_interval"] == "alta"
+    assert rows[0]["next_return_date"] is None
+    assert rows[0]["last_classified_appointment_id"] == "a1"
+
+
+async def test_save_discharge_tira_paciente_da_fila(fake_client):
+    fake_client.store["appointments"] = [
+        _appt("a1", "p1", "João", status="completed", start_time="2026-07-01T12:00:00+00:00"),
+    ]
+    await rr.save_discharge(fake_client, "p1", JULIO_ID, "a1")
+    out = await rr.get_pending_classification(fake_client, JULIO_ID)
+    assert out == []
