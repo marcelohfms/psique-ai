@@ -287,3 +287,23 @@ async def test_save_discharge_tira_paciente_da_fila(fake_client):
     await rr.save_discharge(fake_client, "p1", JULIO_ID, "a1")
     out = await rr.get_pending_classification(fake_client, JULIO_ID)
     assert out == []
+
+
+# ── mark_no_show ───────────────────────────────────────────────────────────
+
+
+async def test_mark_no_show_muda_status(fake_client):
+    fake_client.store["appointments"] = [
+        _appt("a1", "p1", "João", status="completed"),
+    ]
+    await rr.mark_no_show(fake_client, "a1")
+    assert fake_client.store["appointments"][0]["status"] == "no_show"
+
+
+async def test_mark_no_show_tira_da_fila(fake_client):
+    fake_client.store["appointments"] = [
+        _appt("a1", "p1", "João", status="completed", start_time="2026-07-01T12:00:00+00:00"),
+    ]
+    await rr.mark_no_show(fake_client, "a1")
+    out = await rr.get_pending_classification(fake_client, JULIO_ID)
+    assert out == []

@@ -103,7 +103,7 @@ async def get_pending_classification(client, doctor_id: str) -> list[dict]:
     """
     appts_result = await (
         client.from_("appointments")
-        .select("appointment_id, start_time, patient_id, patients(name)")
+        .select("appointment_id, start_time, patient_id, status, patients(name)")
         .eq("doctor_id", doctor_id)
         .eq("status", "completed")
         .order("start_time")
@@ -111,6 +111,8 @@ async def get_pending_classification(client, doctor_id: str) -> list[dict]:
     )
     latest_by_patient: dict[str, dict] = {}
     for appt in appts_result.data or []:
+        if appt.get("status") == "no_show":
+            continue  # falta nunca entra na fila de classificação
         patient_id = appt.get("patient_id")
         if not patient_id:
             continue
@@ -190,6 +192,23 @@ async def save_classification(
     else:
         result = await client.from_("return_reminders").insert(payload).execute()
     return (result.data or [payload])[0]
+
+
+async def mark_no_show(client, appointment_id: str) -> None:
+    """Marca a consulta como falta (`status='no_show'`).
+
+    Registro durável e de primeira classe: distingue quem faltou de quem
+    compareceu. Como `get_pending_classification` e `compute_pendencias` só
+    olham `completed`/`scheduled`, isso tira a consulta da fila do médico e
+    das pendências da atendente. A taxa já paga fica retida (default passivo);
+    override é manual, pela atendente, no fluxo de reembolso existente.
+    """
+    await (
+        client.from_("appointments")
+        .update({"status": "no_show", "updated_at": datetime.now(_TZ).isoformat()})
+        .eq("appointment_id", appointment_id)
+        .execute()
+    )
 
 
 async def save_discharge(
