@@ -346,6 +346,13 @@ async def api_pagar(
     return {"ok": True}
 
 
+@app.post("/api/pagamentos/{appointment_id}/no-show")
+async def api_pagamentos_no_show(appointment_id: str, username: str = Depends(verify_credentials)):
+    client = get_supabase()
+    await return_reminders.mark_no_show(client, appointment_id)
+    return {"ok": True}
+
+
 # ── WebSocket ─────────────────────────────────────────────────────────────────
 
 @app.websocket("/ws")

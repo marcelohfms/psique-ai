@@ -142,6 +142,20 @@ async def test_compute_pendencias_nao_agrupa_pacientes_diferentes(fake_client):
     assert {p["appointment_id"] for p in out if p["tipo"] == "consulta"} == {"a1", "a2"}
 
 
+async def test_compute_pendencias_ignora_no_show(fake_client):
+    # Regressão: uma consulta marcada como falta (status='no_show') não pode
+    # gerar pendência de taxa nem de consulta. compute_pendencias filtra
+    # status IN ('scheduled','completed'), então no_show fica de fora. Este
+    # teste trava esse comportamento para que ninguém amplie o filtro sem perceber.
+    fake_client.store["appointments"] = [
+        _appt("a1", "p1", "João", "5581999990000",
+              status="no_show",
+              consultation_type="acompanhamento"),
+    ]
+    out = await payments.compute_pendencias(fake_client)
+    assert out == []
+
+
 async def test_compute_pendencias_fallback_telefone_sem_is_self(fake_client):
     appt = _appt("a1", "p1", "João", "5581999990000")
     appt["patients"]["patient_contacts"] = [
