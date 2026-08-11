@@ -101,3 +101,39 @@ def test_retornos_page_medico_desconhecido_cai_para_julio(monkeypatch):
     r = _client().get("/retornos", auth=AUTH, params={"medico": "julioo"})
     assert r.status_code == 200
     assert calls["doctor_id"] == JULIO_ID
+
+
+def test_api_alta_grava_e_responde_ok(monkeypatch, fake_client):
+    fake_client.store["appointments"] = [
+        {"appointment_id": "a1", "patient_id": "p1", "doctor_id": JULIO_ID,
+         "status": "completed", "start_time": "2026-07-01T12:00:00+00:00",
+         "patients": {"name": "João"}},
+    ]
+    monkeypatch.setattr(dashboard_main, "get_supabase", lambda: fake_client)
+
+    r = _client().post(
+        "/api/retornos/p1/alta",
+        auth=AUTH,
+        json={"doctor_id": JULIO_ID, "appointment_id": "a1"},
+    )
+    assert r.status_code == 200
+    assert r.json()["ok"] is True
+    assert fake_client.store["return_reminders"][0]["return_interval"] == "alta"
+
+
+def test_api_no_show_muda_status(monkeypatch, fake_client):
+    fake_client.store["appointments"] = [
+        {"appointment_id": "a1", "patient_id": "p1", "doctor_id": JULIO_ID,
+         "status": "completed", "start_time": "2026-07-01T12:00:00+00:00",
+         "patients": {"name": "João"}},
+    ]
+    monkeypatch.setattr(dashboard_main, "get_supabase", lambda: fake_client)
+
+    r = _client().post(
+        "/api/retornos/p1/no-show",
+        auth=AUTH,
+        json={"appointment_id": "a1"},
+    )
+    assert r.status_code == 200
+    assert r.json()["ok"] is True
+    assert fake_client.store["appointments"][0]["status"] == "no_show"
