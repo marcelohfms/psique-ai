@@ -4,7 +4,7 @@ Substitui gradualmente o modelo antigo de `users` (ver app/database.py).
 """
 import logging
 import unicodedata
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 
 from app.database import get_supabase
 
@@ -126,6 +126,26 @@ def _birth_date_variants(birth_date: str) -> list[str]:
         except ValueError:
             continue
     return [raw]
+
+
+def _compute_age(birth_date: str | None) -> int | None:
+    """Idade em anos completos a partir de `patients.birth_date`.
+
+    Aceita as duas grafias que convivem no banco (dd/mm/aaaa do chat e ISO de
+    imports). Retorna None quando ausente ou não parseável — o chamador trata
+    None como "idade desconhecida" e NÃO suprime contatos nesse caso.
+    """
+    raw = (birth_date or "").strip()
+    for fmt in ("%d/%m/%Y", "%Y-%m-%d"):
+        try:
+            bd = datetime.strptime(raw, fmt).date()
+            break
+        except ValueError:
+            continue
+    else:
+        return None
+    today = date.today()
+    return today.year - bd.year - ((today.month, today.day) < (bd.month, bd.day))
 
 
 async def get_patient_by_id(patient_id: str) -> dict | None:

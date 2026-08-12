@@ -459,3 +459,41 @@ async def test_resolve_active_patient_ambiguous_when_multiple_upcoming():
         result = await patients.resolve_active_patient("5583988887777")
     assert result["patient"] is None
     assert result["ambiguous"] is True
+
+
+# --- Task 1: _compute_age ---
+from datetime import date
+from unittest.mock import patch
+from app.patients import _compute_age
+
+
+class _FixedDate(date):
+    @classmethod
+    def today(cls):
+        return cls(2026, 8, 12)
+
+
+def test_compute_age_ddmmyyyy():
+    with patch("app.patients.date", _FixedDate):
+        assert _compute_age("15/01/1990") == 36
+
+
+def test_compute_age_iso():
+    with patch("app.patients.date", _FixedDate):
+        assert _compute_age("1990-01-15") == 36
+
+
+def test_compute_age_exactly_18_on_birthday():
+    with patch("app.patients.date", _FixedDate):
+        assert _compute_age("12/08/2008") == 18
+
+
+def test_compute_age_day_before_18th_birthday():
+    with patch("app.patients.date", _FixedDate):
+        assert _compute_age("13/08/2008") == 17
+
+
+def test_compute_age_none_and_garbage():
+    assert _compute_age(None) is None
+    assert _compute_age("") is None
+    assert _compute_age("não sei") is None
