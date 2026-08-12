@@ -6,6 +6,7 @@ estas usam o token (mais limpo dentro de um iframe do Chatwoot).
 """
 import logging
 import os
+from datetime import date as _date
 from secrets import compare_digest
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile, status
@@ -71,6 +72,25 @@ async def update_paciente(patient_id: str, body: UpdateBody, _: None = Depends(v
     await attendant_db.log_event("attendant_edit_patient", body.phone,
                                  {"patient_id": patient_id, "fields": list(body.data.keys())})
     return {"ok": True}
+
+
+@router.post("/paciente/{patient_id}/retorno")
+async def update_return_date(patient_id: str, body: UpdateBody, _: None = Depends(verify_token)):
+    """Atualiza a data de retorno do paciente (tabela return_reminders).
+
+    Só edita retorno já classificado pela médica; realinha os lembretes.
+    """
+    raw = body.data.get("next_return_date")
+    if not raw:
+        raise HTTPException(status_code=400, detail="next_return_date obrigatório")
+    try:
+        _date.fromisoformat(raw)
+    except (ValueError, TypeError):
+        raise HTTPException(status_code=400, detail="next_return_date deve ser YYYY-MM-DD")
+    updated = await attendant_db.update_return_reminder(patient_id, {"next_return_date": raw})
+    await attendant_db.log_event("attendant_edit_return_date", body.phone,
+                                 {"patient_id": patient_id, "next_return_date": raw, "updated": updated})
+    return {"ok": True, "updated": updated}
 
 
 @router.post("/vinculo/{pc_id}")

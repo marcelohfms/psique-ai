@@ -105,6 +105,47 @@ def test_update_patient_requires_token(client):
     assert r.status_code == 401
 
 
+def test_update_return_date_ok(client, monkeypatch):
+    calls = {}
+    async def fake_update(pid, data):
+        calls["update"] = (pid, data)
+        return True
+    async def fake_log(event_type, phone, metadata):
+        calls["log"] = (event_type, phone, metadata)
+    monkeypatch.setattr(attendant_db, "update_return_reminder", fake_update)
+    monkeypatch.setattr(attendant_db, "log_event", fake_log)
+    r = client.post("/api/atendente/paciente/p1/retorno",
+                    params={"token": "test-token"},
+                    json={"phone": "5581999998888", "data": {"next_return_date": "2026-10-15"}})
+    assert r.status_code == 200
+    assert r.json() == {"ok": True, "updated": True}
+    assert calls["update"] == ("p1", {"next_return_date": "2026-10-15"})
+    assert calls["log"][0] == "attendant_edit_return_date"
+
+
+def test_update_return_date_invalid_date_400(client, monkeypatch):
+    async def fake_update(pid, data):
+        raise AssertionError("não deve chamar o db com data inválida")
+    monkeypatch.setattr(attendant_db, "update_return_reminder", fake_update)
+    r = client.post("/api/atendente/paciente/p1/retorno",
+                    params={"token": "test-token"},
+                    json={"phone": "x", "data": {"next_return_date": "15/10/2026"}})
+    assert r.status_code == 400
+
+
+def test_update_return_date_missing_field_400(client):
+    r = client.post("/api/atendente/paciente/p1/retorno",
+                    params={"token": "test-token"},
+                    json={"phone": "x", "data": {}})
+    assert r.status_code == 400
+
+
+def test_update_return_date_requires_token(client):
+    r = client.post("/api/atendente/paciente/p1/retorno",
+                    json={"phone": "x", "data": {"next_return_date": "2026-10-15"}})
+    assert r.status_code == 401
+
+
 def test_reset_checkpoint_endpoint(client, monkeypatch):
     calls = {}
     async def fake_reset(phone):
