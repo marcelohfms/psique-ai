@@ -34,8 +34,8 @@ async def send_no_show_message(phone: str, first_name: str) -> None:
         f"muito continuar cuidando de você.\n\n"
         f"Como não houve aviso com antecedência, a taxa de reserva foi retida "
         f"desta vez.\n\n"
-        f"Se quiser remarcar, é só responder por aqui que a gente te ajuda! "
-        f"Será um novo agendamento, com uma nova taxa de reserva.\n\n"
+        f"Para agendar uma nova consulta, é só responder por aqui que a gente "
+        f"te ajuda!\n\n"
         f"Estamos à disposição. 💜"
     )
     await send_template_message(
