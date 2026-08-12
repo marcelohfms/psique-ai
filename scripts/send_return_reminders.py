@@ -35,7 +35,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 import app.database  # noqa: F401 — carrega database antes de patients (evita import circular)
-from app.patients import get_contacts_for_patient
+from app.patients import get_reminder_contacts
 
 TZ = ZoneInfo("America/Recife")
 # Envio individual (1 por vez) com pausa entre cada mensagem — evita rajadas
@@ -273,7 +273,7 @@ async def _send_for_row(client, row: dict, template_name: str, sent_col: str, gr
     send_appointment_reminders.py: acesso a medicação controlada depende de
     retorno em dia (Art. 37 CEM, citado no próprio corpo do lembrete), então
     pausa do bot não deve silenciar esse aviso — mesma lógica de
-    app/patients.py::get_contacts_for_patient para lembretes transacionais.
+    app/patients.py::get_reminder_contacts para lembretes transacionais.
     """
     patient_id = row.get("patient_id")
     patient = row.get("patients") or {}
@@ -282,7 +282,7 @@ async def _send_for_row(client, row: dict, template_name: str, sent_col: str, gr
     doctor_label = DOCTOR_LABELS.get(row.get("doctor_id", ""), "médico(a)")
     doctor_key = DOCTOR_KEYS.get(row.get("doctor_id", ""), "")
 
-    contacts = await get_contacts_for_patient(patient_id, "consulta", include_inactive=True) if patient_id else []
+    contacts = await get_reminder_contacts(patient_id, "consulta", include_inactive=True) if patient_id else []
     if not contacts:
         print(f"  [SKIP] return_reminder {row.get('id')} sem contato de consulta (patient_id={patient_id})")
         return
