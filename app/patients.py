@@ -148,12 +148,12 @@ async def get_reminder_contacts(
             seen.add(contact["id"])
             rows.append({"is_self": bool(row.get("is_self")), "contact": contact})
 
-    patient = await get_patient_by_id(patient_id)
-    age = _compute_age((patient or {}).get("birth_date"))
-
     self_contacts = [r["contact"] for r in rows if r["is_self"]]
-    if age is not None and age >= 18 and self_contacts:
-        return self_contacts
+    if self_contacts:
+        patient = await get_patient_by_id(patient_id)
+        age = _compute_age((patient or {}).get("birth_date"))
+        if age is not None and age >= 18:
+            return self_contacts
     return [r["contact"] for r in rows]
 
 
