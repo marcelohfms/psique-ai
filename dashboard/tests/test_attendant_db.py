@@ -185,6 +185,19 @@ async def test_update_return_reminder_empty_data_noop(patched_client):
     assert patched_client.store["return_reminders"][0]["next_return_date"] == "2026-09-15"
 
 
+async def test_update_return_reminder_whitelist(patched_client):
+    patched_client.store["return_reminders"] = [
+        {"id": "r1", "patient_id": "p1", "next_return_date": "2026-09-15", "doctor_id": "d1"},
+    ]
+    updated = await attendant_db.update_return_reminder(
+        "p1", {"next_return_date": "2026-10-15", "doctor_id": "hacker"}
+    )
+    assert updated is True
+    row = patched_client.store["return_reminders"][0]
+    assert row["next_return_date"] == "2026-10-15"
+    assert row["doctor_id"] == "d1"  # fora da whitelist, não alterado
+
+
 # ── Auditoria ─────────────────────────────────────────────────────────────────
 
 

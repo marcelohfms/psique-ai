@@ -91,6 +91,10 @@ async def get_return_reminder(patient_id: str) -> dict | None:
     """Linha de return_reminders do paciente (1 por paciente) ou None.
 
     A data de retorno mora nesta tabela separada, não em `patients`.
+
+    SELECT escopado (diferente dos `get_*` irmãos, que usam `*`): não vaza ao
+    painel campos internos como `last_classified_appointment_id` e as flags de
+    envio (`month_before_sent_at`, `month_of_sent_at`, `overdue_sent_at`).
     """
     client = await get_client()
     res = (
@@ -149,6 +153,10 @@ async def update_return_reminder(patient_id: str, data: dict) -> bool:
     Só faz UPDATE (não cria linha): se o paciente ainda não foi classificado
     pela médica, nada acontece e retorna False. Zerar as flags realinha o cron
     `scripts/send_return_reminders.py` para disparar os lembretes na nova data.
+
+    Retorna `bool` (diferente de `update_contact`/`update_patient`/`update_link`,
+    que retornam None): o chamador precisa distinguir "não existe linha ainda"
+    de "atualizado".
     """
     payload = _filter(data, _RETURN_FIELDS)
     if not payload:
