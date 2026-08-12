@@ -289,3 +289,122 @@ async def test_flag_lookup_filters_by_appointment_id_in_the_database():
         await spr._cancel_unpaid_appointment(client, _appt(created_at="2026-07-31T14:30:44+00:00"), None, now)
 
     events.contains.assert_called_once_with("metadata", {"appointment_id": "evt-abc"})
+
+
+# ── Guarda: comprovante na conversa bloqueia também o LEMBRETE de cobrança ───
+# Caso Isadora de Sousa Costa (5581988417858, 07/08/2026): a paciente enviou o
+# comprovante às 15:01, Eva não chamou register_payment, e às 17:04 este cron
+# cobrou a taxa que já tinha sido paga ("De novo?"). O lembrete precisa da mesma
+# guarda que o cancelamento: comprovante na conversa → não cobrar, avisar a clínica.
+
+
+@pytest.mark.asyncio
+async def test_reminder_blocked_when_receipt_found_in_conversation():
+    """Com comprovante na conversa, o cron NÃO envia o lembrete de cobrança e NÃO
+    marca payment_reminder_sent_at — avisa a clínica para registrar na mão."""
+    client, table = _client(receipt_rows=_RECEIPT_ROW)
+    now = datetime(2026, 8, 7, 17, 4, tzinfo=TZ)
+    appt = _appt(created_at="2026-08-07T14:58:26+00:00")
+
+    with patch("scripts.send_payment_reminders.get_financial_contacts",
+               new_callable=AsyncMock,
+               return_value=[{"phone": "5581987415206", "name": "Janaina"}]), \
+         patch("scripts.send_payment_reminders.send_whatsapp", new_callable=AsyncMock) as mock_wpp, \
+         patch("app.database.log_event", new_callable=AsyncMock) as mock_log_event, \
+         patch("app.email_sender.send_clinic_notification_email", new_callable=AsyncMock) as mock_email:
+        await spr._send_payment_reminder(client, appt, None, now)
+
+    mock_wpp.assert_not_awaited()
+    table.update.assert_not_called()
+    mock_email.assert_awaited_once()
+    assert "bloquead" in mock_email.await_args.args[0].lower()
+    mock_log_event.assert_awaited_once()
+    assert mock_log_event.await_args.args[0] == "payment_reminder_blocked_receipt_found"
+
+
+@pytest.mark.asyncio
+async def test_reminder_sent_when_no_receipt_in_conversation():
+    """Sem comprovante na conversa, o lembrete segue normalmente e
+    payment_reminder_sent_at é marcado."""
+    client, table = _client()
+    now = datetime(2026, 8, 7, 17, 4, tzinfo=TZ)
+    appt = _appt(created_at="2026-08-07T14:58:26+00:00")
+
+    with patch("scripts.send_payment_reminders.get_financial_contacts",
+               new_callable=AsyncMock,
+               return_value=[{"phone": "5581987415206", "name": "Janaina"}]), \
+         patch("scripts.send_payment_reminders.send_whatsapp", new_callable=AsyncMock) as mock_wpp, \
+         patch("app.email_sender.send_clinic_notification_email", new_callable=AsyncMock):
+        await spr._send_payment_reminder(client, appt, None, now)
+
+    mock_wpp.assert_awaited_once()
+    table.update.assert_called_once()
+
+
+# ── Guarda: paciente cortesia (custom_price == 0) nunca é cobrado nem cancelado ─
+# Caso Lucas Raphael de Oliveira Pereira e Silva (contato Silvana, 5581973460726,
+# 11/08/2026): paciente cortesia (patients.custom_price == 0) foi agendado com
+# booking_fee_waived=False, o cron cobrou a taxa de reserva ("a vaga só fica
+# garantida após o pagamento") e ficou a ~35min de auto-cancelar a consulta.
+# Cortesia não deve nenhuma taxa — o cron precisa pular tanto o lembrete quanto o
+# cancelamento, independentemente de booking_fee_waived.
+
+
+@pytest.mark.asyncio
+async def test_reminder_skipped_for_courtesy_patient():
+    """Paciente cortesia (custom_price == 0): nenhum lembrete de cobrança, nenhum
+    marca de payment_reminder_sent_at, e nem sequer buscamos os contatos."""
+    client, table = _client()
+    now = datetime(2026, 8, 11, 12, 55, tzinfo=TZ)
+    appt = _appt(patients={"name": "Lucas Raphael", "custom_price": 0})
+
+    with patch("scripts.send_payment_reminders.get_financial_contacts",
+               new_callable=AsyncMock) as mock_contacts, \
+         patch("scripts.send_payment_reminders.send_whatsapp", new_callable=AsyncMock) as mock_wpp:
+        await spr._send_payment_reminder(client, appt, None, now)
+
+    mock_contacts.assert_not_awaited()
+    mock_wpp.assert_not_awaited()
+    table.update.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_cancel_skipped_for_courtesy_patient():
+    """Paciente cortesia (custom_price == 0): o cron não cancela a consulta, não
+    mexe no Calendar e não notifica ninguém."""
+    client, table = _client()
+    now = datetime(2026, 8, 11, 14, 55, tzinfo=TZ)
+    appt = _appt(patients={"name": "Lucas Raphael", "custom_price": 0})
+
+    with patch("scripts.send_payment_reminders.get_financial_contacts",
+               new_callable=AsyncMock) as mock_contacts, \
+         patch("scripts.send_payment_reminders.send_whatsapp", new_callable=AsyncMock) as mock_wpp, \
+         patch("scripts.send_payment_reminders.cancel_calendar_event", new_callable=AsyncMock) as mock_cal:
+        await spr._cancel_unpaid_appointment(client, appt, None, now)
+
+    mock_contacts.assert_not_awaited()
+    mock_wpp.assert_not_awaited()
+    mock_cal.assert_not_awaited()
+    table.update.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_reminder_deferred_when_receipt_lookup_fails():
+    """Se a busca pelo comprovante falhar, o lembrete é adiado para a próxima
+    execução (sem e-mail — diferente do cancelamento, adiar uma cobrança em 30min
+    é inofensivo e não precisa de intervenção humana)."""
+    client, table = _client()
+    table.execute = AsyncMock(side_effect=Exception("supabase down"))
+    now = datetime(2026, 8, 7, 17, 4, tzinfo=TZ)
+    appt = _appt(created_at="2026-08-07T14:58:26+00:00")
+
+    with patch("scripts.send_payment_reminders.get_financial_contacts",
+               new_callable=AsyncMock,
+               return_value=[{"phone": "5581987415206", "name": "Janaina"}]), \
+         patch("scripts.send_payment_reminders.send_whatsapp", new_callable=AsyncMock) as mock_wpp, \
+         patch("app.email_sender.send_clinic_notification_email", new_callable=AsyncMock) as mock_email:
+        await spr._send_payment_reminder(client, appt, None, now)
+
+    mock_wpp.assert_not_awaited()
+    table.update.assert_not_called()
+    mock_email.assert_not_awaited()
