@@ -42,7 +42,7 @@ async def send_no_show_message(phone: str, first_name: str) -> None:
         conv_id,
         template_name="no_show",
         language="pt_BR",
-        category="UTILITY",
+        category="MARKETING",
         body_params={"1": first_name},
         content=content,
     )
