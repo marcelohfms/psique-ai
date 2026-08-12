@@ -11,6 +11,7 @@ from app.graph.schemas import CollectInfoOutput
 from app.graph.tools import (
     get_available_slots, confirm_appointment,
     cancel_appointment, reschedule_appointment, mark_reschedule_in_progress,
+    keep_original_appointment,
     change_modality,
     request_document, transfer_to_human, confirm_attendance,
     register_payment, update_preferred_doctor, save_patient_email,
@@ -32,6 +33,7 @@ from app.utils import looks_like_name
 TOOLS = [
     get_available_slots, confirm_appointment,
     cancel_appointment, reschedule_appointment, mark_reschedule_in_progress,
+    keep_original_appointment,
     change_modality,
     request_document, transfer_to_human, confirm_attendance,
     register_payment, update_preferred_doctor, save_patient_email,
@@ -582,7 +584,11 @@ async def collect_info_node(state: ConversationState, config: RunnableConfig) ->
         if db_payload:
             try:
                 returned_id = await upsert_user(state["phone"], db_payload, user_id=state.get("user_db_id"))
-                if returned_id and not state.get("user_db_id"):
+                # O id devolvido pode DIFERIR do enviado: quando o usuário afirma
+                # já ser da clínica, o upsert_user reconcilia por nome+nascimento
+                # e devolve o cadastro existente (caso Maria José, 10/08/2026).
+                # O state precisa acompanhar, senão o agendamento segue no duplicado.
+                if returned_id and returned_id != state.get("user_db_id"):
                     result_update["user_db_id"] = returned_id
             except Exception:
                 import logging as _log
@@ -1321,7 +1327,7 @@ async def collect_info_node(state: ConversationState, config: RunnableConfig) ->
         if _is_document:
             update["pending_action"] = "request_document"
         try:
-            await upsert_user(state["phone"], {
+            _final_id = await upsert_user(state["phone"], {
                 "name": merged.get("user_name"),
                 "patient_name": merged.get("patient_name"),
                 "age": merged.get("patient_age"),
@@ -1338,6 +1344,10 @@ async def collect_info_node(state: ConversationState, config: RunnableConfig) ->
                 "referral_professional": merged.get("referral_professional"),
                 "active": True,
             }, user_id=state.get("user_db_id"))
+            # A reconciliação de retornante pode devolver um id diferente do
+            # enviado (cadastro existente sob outro telefone) — ver _extract_and_ask.
+            if _final_id and _final_id != state.get("user_db_id"):
+                update["user_db_id"] = _final_id
             await log_event("info_collected", state["phone"], {
                 "patient_name": merged.get("patient_name"),
                 "patient_age": merged.get("patient_age"),
@@ -1373,7 +1383,7 @@ async def collect_info_node(state: ConversationState, config: RunnableConfig) ->
                 _returned_id = await upsert_user(
                     state["phone"], _incremental, user_id=state.get("user_db_id")
                 )
-                if _returned_id and not state.get("user_db_id"):
+                if _returned_id and _returned_id != state.get("user_db_id"):
                     update["user_db_id"] = _returned_id
             except Exception:
                 import logging as _log
@@ -1495,6 +1505,50 @@ async def patient_agent_node(state: ConversationState, config: RunnableConfig) -
             config=config,
         )
         return {"messages": [AIMessage(content=result)]}
+
+    # ── Guard: resultado slot-taken de register_payment vai ao paciente verbatim ─
+    # Comprovante de consulta cancelada cujo horário original já foi ocupado:
+    # register_payment marca pending_reschedule e devolve a mensagem dizendo que o
+    # horário não está mais disponível (taxa preservada). Deixar a LLM re-sintetizar
+    # esse resultado já produziu o OPOSTO — "Vou seguir com a reativação da consulta
+    # para o dia 13/08, às 14:00... conforme combinado" (caso Ricardo José Vieira
+    # Cunha Filho, contato 5581988912861, 10/08/2026): o contexto da conversa pesa
+    # mais que a ToolMessage. Sobre disponibilidade a tool é a única fonte de
+    # verdade, então o texto dela vai direto ao paciente e o turno termina aqui.
+    from app.graph.tools import REACTIVATION_SLOT_TAKEN_MARKER as _SLOT_TAKEN_MARKER
+    _msgs_rp = list(state.get("messages") or [])
+    _trailing_tools = []
+    for _m_rp in reversed(_msgs_rp):
+        if getattr(_m_rp, "type", "") == "tool":
+            _trailing_tools.append(_m_rp)
+        else:
+            break
+    if _trailing_tools:
+        # Nome da tool: o ToolNode preenche .name; fallback via tool_calls da
+        # AIMessage imediatamente anterior ao bloco de ToolMessages.
+        _prev_ai_rp = _msgs_rp[-len(_trailing_tools) - 1] if len(_msgs_rp) > len(_trailing_tools) else None
+        _tc_names_rp = {
+            tc.get("id"): tc.get("name")
+            for tc in (getattr(_prev_ai_rp, "tool_calls", None) or [])
+        }
+        for _tm_rp in _trailing_tools:
+            _tm_name = getattr(_tm_rp, "name", None) or _tc_names_rp.get(getattr(_tm_rp, "tool_call_id", None))
+            _tm_content = str(getattr(_tm_rp, "content", "") or "")
+            if _tm_name == "register_payment" and _SLOT_TAKEN_MARKER in _tm_content:
+                _pa_logger.info(
+                    "GUARD_SLOT_TAKEN_VERBATIM: sending register_payment slot-taken result "
+                    "directly to patient phone=%s", state.get("phone"),
+                )
+                await send_text(state["phone"], _tm_content)
+                await save_message(state["phone"], "assistant", _tm_content)
+                # pending_appointment antigo não pode sobreviver: um "sim" na próxima
+                # mensagem confirmaria programaticamente um horário que acabou de se
+                # provar indisponível.
+                return {
+                    "messages": [AIMessage(content=_tm_content)],
+                    "pending_appointment": None,
+                    "silent_mode": False,
+                }
 
     # ── DB ↔ checkpoint hydration ─────────────────────────────────────────────
     # Hydrates missing fields from DB using the new patients/contacts schema.

@@ -96,16 +96,39 @@ async def get_today_appointments(client, doctor_id: str, today: date | None = No
     return _with_local_date_time(result.data or [])
 
 
-async def get_pending_classification(client, doctor_id: str) -> list[dict]:
-    """Pacientes cuja consulta concluída mais recente ainda não foi classificada.
+def _has_ended(end_time: str | None, now: datetime) -> bool:
+    """True se a consulta já terminou (end_time < now). Sem end_time -> False."""
+    if not end_time:
+        return False
+    return datetime.fromisoformat(end_time.replace("Z", "+00:00")) < now
+
+
+async def get_pending_classification(
+    client, doctor_id: str, now: datetime | None = None
+) -> list[dict]:
+    """Pacientes cuja consulta mais recente já realizada ainda não foi classificada.
 
     Ordenados da mais antiga para a mais nova (fila que vai esvaziando).
+
+    Inclui consultas ainda `scheduled` que JÁ terminaram (end_time < now), não
+    só as `completed`: complete_appointments.py só marca `completed` 24h após o
+    fim da consulta, então uma consulta de ontem ficava num vão — não era mais
+    "de hoje" (get_today_appointments) nem ainda `completed` — e sumia da lista
+    de retornos até o cron rodar (caso Bruna Araújo Parente, consulta 10/08
+    invisível no dia 11). Isso só antecipa o que já apareceria: o cron marca
+    todas as consultas passadas como `completed` de qualquer forma.
+
+    Consultas futuras ainda `scheduled` (end_time >= now) continuam de fora —
+    só entram depois de acontecerem, e assim não ofuscam uma consulta passada
+    ainda pendente. Canceladas nunca entram.
     """
+    if now is None:
+        now = datetime.now(_TZ)
     appts_result = await (
         client.from_("appointments")
-        .select("appointment_id, start_time, patient_id, status, patients(name)")
+        .select("appointment_id, start_time, end_time, status, patient_id, patients(name)")
         .eq("doctor_id", doctor_id)
-        .eq("status", "completed")
+        .in_("status", ["completed", "scheduled"])
         .order("start_time")
         .execute()
     )
@@ -115,6 +138,9 @@ async def get_pending_classification(client, doctor_id: str) -> list[dict]:
             continue  # falta nunca entra na fila de classificação
         patient_id = appt.get("patient_id")
         if not patient_id:
+            continue
+        # 'scheduled' só conta se a consulta já terminou; 'completed' sempre.
+        if appt.get("status") == "scheduled" and not _has_ended(appt.get("end_time"), now):
             continue
         current = latest_by_patient.get(patient_id)
         if current is None or appt["start_time"] > current["start_time"]:

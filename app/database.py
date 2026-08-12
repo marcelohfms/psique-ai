@@ -214,6 +214,21 @@ async def upsert_user(phone: str, data: dict, user_id: str | None = None) -> str
         if patient:
             resolved_id = patient.get("id")
 
+    # Quem afirma que JÁ está em acompanhamento pode estar cadastrado sob OUTRO
+    # telefone (caso Maria José, 5581982131153, 10/08/2026: contato novo agendou
+    # para paciente cadastrada sob o número da nora, e um segundo prontuário foi
+    # criado). Resolver só por telefone nunca acha esse cadastro — reconcilia por
+    # nome normalizado + data de nascimento antes de gravar.
+    if data.get("is_returning_patient") is True:
+        try:
+            resolved_id = await _reconcile_returning_patient(phone, patient_data, resolved_id)
+        except Exception:
+            import logging as _log
+            _log.getLogger(__name__).exception(
+                "RECONCILIACAO_RETORNANTE falhou phone=%s — seguindo com o fluxo normal",
+                phone,
+            )
+
     patient_id = (
         await upsert_patient(patient_data, patient_id=resolved_id)
         if patient_data else resolved_id
@@ -240,6 +255,51 @@ async def upsert_user(phone: str, data: dict, user_id: str | None = None) -> str
                     relationship=None,
                 )
     return patient_id
+
+
+async def _reconcile_returning_patient(
+    phone: str, patient_data: dict, resolved_id: str | None,
+) -> str | None:
+    """Devolve o patient_id certo quando o usuário afirma já ser da clínica.
+
+    Busca em `patients` por nome normalizado + data de nascimento (igualdade de
+    nascimento obrigatória — proteção contra homônimos; match múltiplo é ambíguo
+    e não vincula). Dois desfechos possíveis:
+
+    - resolved_id é None (telefone não resolve ninguém): usa o paciente
+      existente direto — o vínculo do contato é criado por quem chamou.
+    - resolved_id aponta para um paciente (no fluxo do chat, o duplicado criado
+      no passo do nome, antes de sabermos is_returning_patient): mescla o
+      duplicado no existente. merge_duplicate_patient recusa quando o "duplicado"
+      tem qualquer consulta — pode ser um paciente legítimo, não um duplicado.
+    """
+    from app.patients import (
+        find_patient_by_name_birth, get_patient_by_id, merge_duplicate_patient,
+    )
+    current = await get_patient_by_id(resolved_id) if resolved_id else None
+    name = patient_data.get("name") or (current or {}).get("name")
+    birth_date = patient_data.get("birth_date") or (current or {}).get("birth_date")
+    if not name or not birth_date:
+        return resolved_id
+
+    candidate = await find_patient_by_name_birth(name, birth_date, exclude_id=resolved_id)
+    if not candidate:
+        return resolved_id
+
+    import logging as _log
+    if resolved_id is None:
+        _log.getLogger(__name__).info(
+            "RETORNANTE_VINCULADO: phone=%s vinculado ao paciente existente %s "
+            "(nome+nascimento)", phone, candidate["id"],
+        )
+        return candidate["id"]
+    if await merge_duplicate_patient(resolved_id, candidate["id"]):
+        _log.getLogger(__name__).info(
+            "RETORNANTE_MESCLADO: phone=%s duplicado %s mesclado no paciente "
+            "existente %s", phone, resolved_id, candidate["id"],
+        )
+        return candidate["id"]
+    return resolved_id
 
 
 # ── Event tracking ────────────────────────────────────────────────────────────

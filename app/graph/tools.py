@@ -1577,6 +1577,153 @@ async def mark_reschedule_in_progress(
 
 
 @tool
+async def keep_original_appointment(
+    appointment_id: str,
+    state: Annotated[dict, InjectedState],
+    config: RunnableConfig,
+) -> str:
+    """Reverte uma remarcação em andamento quando o paciente DESISTE de remarcar e quer
+    MANTER a consulta no horário original. appointment_id é o Google Calendar event ID da
+    consulta marcada com remarcação pendente (status pending_reschedule).
+    Verifica se o horário original ainda está livre no Calendar: se estiver, recria o evento
+    e reativa a consulta (status volta para scheduled, taxa de reserva já paga preservada);
+    se o horário já tiver sido ocupado por outro paciente, retorna instrução para oferecer
+    novos horários. NUNCA diga ao paciente que a consulta "está mantida" sem antes chamar
+    esta ferramenta — sem ela o slot continua liberado e à venda para outros pacientes.
+    """
+    client = await get_supabase()
+    phone = config["configurable"]["phone"]
+
+    users = await get_users_by_phone(phone)
+    user_ids = [u["id"] for u in users]
+    appt = await client.from_("appointments").select(
+        "appointment_id, status, patient_id, start_time, end_time, modality, patients(name, email)"
+    ).eq("appointment_id", appointment_id).maybe_single().execute()
+
+    if not appt.data or appt.data.get("patient_id") not in user_ids:
+        return "ID de agendamento inválido para este paciente."
+
+    appt_status = appt.data.get("status")
+    if appt_status == "scheduled":
+        return (
+            "A consulta já está ativa no horário original — não há remarcação pendente a "
+            "reverter. Pode confirmar ao paciente que está tudo certo com o agendamento."
+        )
+    if appt_status != "pending_reschedule":
+        if appt_status == "canceled":
+            return (
+                "[INSTRUÇÃO INTERNA — NÃO ENVIE AO PACIENTE] Esta consulta já foi CANCELADA — "
+                "a vaga foi liberada e não é possível \"mantê-la\". NÃO diga ao paciente que a "
+                "consulta foi mantida. Informe que ela não está mais ativa e ofereça um NOVO "
+                "agendamento: get_available_slots e, ao confirmar o horário, confirm_appointment "
+                "(nova taxa de reserva de R$ 100,00)."
+            )
+        return (
+            f"[INSTRUÇÃO INTERNA — NÃO ENVIE AO PACIENTE] Esta consulta está com status "
+            f"\"{appt_status}\" e não há remarcação pendente a reverter. NÃO afirme que a "
+            "consulta foi mantida — informe o paciente da situação real e oriente o próximo "
+            "passo adequado."
+        )
+
+    start_time_str = appt.data.get("start_time")
+    if not start_time_str:
+        return "Não foi possível obter a data e hora da consulta original."
+    # start_time vem do banco em UTC — .astimezone(TZ) converte para o horário real de Recife.
+    start = datetime.fromisoformat(start_time_str).astimezone(TZ)
+    if start <= datetime.now(TZ):
+        return (
+            "[INSTRUÇÃO INTERNA — NÃO ENVIE AO PACIENTE] O horário original desta consulta "
+            f"({start.strftime('%d/%m/%Y às %H:%M')}) já passou — não é possível mantê-lo. "
+            "Avise o paciente com empatia e siga o fluxo de remarcação: get_available_slots "
+            "para buscar novos horários e reschedule_appointment ao confirmar (a taxa já "
+            "registrada segue preservada)."
+        )
+
+    slot_minutes = 60
+    if appt.data.get("end_time"):
+        end = datetime.fromisoformat(appt.data["end_time"]).astimezone(TZ)
+        slot_minutes = int((end - start).total_seconds() / 60)
+
+    doctor = await _resolve_doctor(state, config)
+    calendar_id = await _get_doctor_calendar_id(doctor)
+    if not calendar_id:
+        return "Não foi possível identificar o calendário do médico."
+
+    # O evento original foi apagado quando a remarcação começou — o slot pode ter sido
+    # vendido a outro paciente nesse meio-tempo. Confere no Calendar antes de recriar.
+    from app.google_calendar import _get_busy, _credentials, create_event
+    from googleapiclient.discovery import build as _build
+    try:
+        _creds = _credentials()
+        _service = _build("calendar", "v3", credentials=_creds)
+        loop = asyncio.get_running_loop()
+        busy = await loop.run_in_executor(None, _get_busy, _service, calendar_id, start, start + timedelta(minutes=slot_minutes))
+    except Exception:
+        busy = []  # If check fails, proceed — create_event will fail anyway if the API is down
+    if busy:
+        return (
+            f"[INSTRUÇÃO INTERNA — NÃO ENVIE AO PACIENTE] O horário original "
+            f"({start.strftime('%d/%m/%Y às %H:%M')}) já foi ocupado por outro agendamento — "
+            "NÃO diga ao paciente que a consulta foi mantida. Avise com empatia que o horário "
+            "foi preenchido nesse meio-tempo e chame get_available_slots para oferecer novos "
+            "horários (a remarcação segue pendente e a taxa já registrada segue preservada)."
+        )
+
+    doctor_label = {"julio": "Dr. Júlio", "bruna": "Dra. Bruna"}.get(doctor, "médico(a)")
+    _appt_patient = appt.data.get("patients") or {}
+    patient_name = _appt_patient.get("name") or state.get("patient_name") or state.get("user_name") or "Paciente"
+    patient_email = _appt_patient.get("email") or state.get("patient_email") or ""
+    patient_age = state.get("patient_age") or 99
+    is_minor_first = patient_age < 18 and not state.get("is_patient", False)
+
+    try:
+        new_event_id = await create_event(
+            calendar_id=calendar_id,
+            start=start,
+            slot_minutes=slot_minutes,
+            patient_name=patient_name,
+            doctor_name=doctor_label,
+            is_minor_first=is_minor_first,
+            modality=appt.data.get("modality") or "",
+            patient_email=patient_email,
+            patient_number=phone,
+        )
+    except Exception as e:
+        logger.error("KEEP_ORIGINAL create_event FAILED appt=%s error=%s", appointment_id, e, exc_info=True)
+        return f"Não foi possível recriar o evento no Google Calendar. Erro: {e}"
+
+    # Só status/evento/flags de remarcação mudam — booking_fee_paid_at/paid_at ficam intactos.
+    await client.from_("appointments").update({
+        "appointment_id": new_event_id,
+        "status": "scheduled",
+        "reschedule_requested_at": None,
+        "updated_at": datetime.now(TZ).isoformat(),
+    }).eq("appointment_id", appointment_id).execute()
+
+    await log_event("reschedule_reverted", phone, {
+        "appointment_id": appointment_id,
+        "new_event_id": new_event_id,
+    })
+
+    _weekday = _WEEKDAY_LABELS_PT.get(start.weekday(), "")
+    formatted = f"{_weekday}, {start.strftime('%d/%m/%Y às %H:%M')}" if _weekday else start.strftime("%d/%m/%Y às %H:%M")
+
+    await _notify_clinic(
+        f"Remarcação desfeita — consulta mantida ✅\n"
+        f"Paciente: {patient_name}\n"
+        f"Horário mantido: {formatted}\n"
+        f"Médico(a): {doctor_label}",
+        phone=phone,
+        subject=f"Remarcação desfeita — {patient_name}",
+    )
+
+    return (
+        f"Consulta mantida no horário original! ✅\n"
+        f"{doctor_label} — {formatted}\nID: {new_event_id}"
+    )
+
+
+@tool
 async def change_modality(
     appointment_id: str,
     new_modality: Literal["online", "presencial"],
@@ -2485,6 +2632,15 @@ def _parse_brl_amount(raw: str) -> float:
         return 0.0
 
 
+# Fragmento-sentinela do branch "horário já ocupado" da reativação por comprovante
+# (register_payment abaixo). patient_agent_node usa este texto para detectar o
+# resultado e enviá-lo ao paciente VERBATIM, sem re-síntese pela LLM: sobre
+# disponibilidade, a conversa não pode vencer a tool — a LLM já reescreveu esse
+# resultado como "Vou seguir com a reativação da consulta... conforme combinado"
+# (caso Ricardo José Vieira Cunha Filho, contato 5581988912861, 10/08/2026).
+REACTIVATION_SLOT_TAKEN_MARKER = "não está mais disponível"
+
+
 def _payment_disambiguation_prompt(context: str, names: str) -> str:
     """Retorno de register_payment quando o paciente do comprovante é ambíguo.
 
@@ -2921,7 +3077,7 @@ async def register_payment(
                     confirmation_msg = (
                         f"Comprovante recebido e registrado! ✅\n"
                         f"Infelizmente o horário original ({appointment_dt} com {canceled_doctor_label}) "
-                        f"não está mais disponível. Vou verificar os próximos horários disponíveis "
+                        f"{REACTIVATION_SLOT_TAKEN_MARKER}. Vou verificar os próximos horários disponíveis "
                         f"para remarcar sua consulta — sua taxa de reserva já está registrada e "
                         f"não precisará ser paga novamente. 🙏"
                     )

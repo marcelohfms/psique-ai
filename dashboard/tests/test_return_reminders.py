@@ -1,4 +1,4 @@
-from datetime import date
+from datetime import date, datetime, timezone
 
 import return_reminders as rr
 
@@ -187,6 +187,75 @@ async def test_get_pending_classification_data_local_na_virada_do_dia(fake_clien
     ]
     out = await rr.get_pending_classification(fake_client, JULIO_ID)
     assert out[0]["local_date"] == "2026-07-13"
+
+
+# ── get_pending_classification: consultas passadas ainda 'scheduled' ───────
+# complete_appointments.py só marca 'completed' 24h após o fim da consulta.
+# Até lá, uma consulta de ontem não é "de hoje" nem 'completed' — ficava
+# invisível na lista de retornos (caso Bruna Araújo Parente, consulta 10/08
+# sumida no dia 11). A lista de pendentes agora inclui consultas que JÁ
+# terminaram, mesmo ainda 'scheduled'.
+
+_NOW = datetime(2026, 8, 11, 17, 0, tzinfo=timezone.utc)
+
+
+async def test_get_pending_classification_inclui_consulta_passada_ainda_scheduled(fake_client):
+    fake_client.store["appointments"] = [
+        _appt("a1", "p1", "Bruna", status="scheduled",
+              start_time="2026-08-10T19:30:00+00:00", end_time="2026-08-10T20:30:00+00:00"),
+    ]
+    out = await rr.get_pending_classification(fake_client, JULIO_ID, now=_NOW)
+    assert {a["appointment_id"] for a in out} == {"a1"}
+
+
+async def test_get_pending_classification_ignora_consulta_futura_scheduled(fake_client):
+    # Consulta que ainda não aconteceu (end_time > now) não entra na lista —
+    # só depois de acontecer.
+    fake_client.store["appointments"] = [
+        _appt("a1", "p1", "João", status="scheduled",
+              start_time="2026-08-20T19:30:00+00:00", end_time="2026-08-20T20:30:00+00:00"),
+    ]
+    out = await rr.get_pending_classification(fake_client, JULIO_ID, now=_NOW)
+    assert out == []
+
+
+async def test_get_pending_classification_scheduled_passada_reabre_apos_completed_ja_classificada(fake_client):
+    # Caso Bruna Araújo Parente: consulta de junho já classificada (completed),
+    # nova consulta de agosto ainda 'scheduled' mas já terminada -> reabre a
+    # pendência usando a consulta de agosto.
+    fake_client.store["appointments"] = [
+        _appt("jun", "p1", "Bruna", status="completed", start_time="2026-06-03T17:00:00+00:00"),
+        _appt("ago", "p1", "Bruna", status="scheduled",
+              start_time="2026-08-10T19:30:00+00:00", end_time="2026-08-10T20:30:00+00:00"),
+    ]
+    fake_client.store["return_reminders"] = [
+        {"patient_id": "p1", "last_classified_appointment_id": "jun"},
+    ]
+    out = await rr.get_pending_classification(fake_client, JULIO_ID, now=_NOW)
+    assert [a["appointment_id"] for a in out] == ["ago"]
+
+
+async def test_get_pending_classification_scheduled_futura_nao_ofusca_completed_pendente(fake_client):
+    # p1 tem uma completed passada (ainda pendente) e uma scheduled futura
+    # (retorno já marcado). A futura não pode virar "a mais recente" e sumir
+    # com a pendência da completed.
+    fake_client.store["appointments"] = [
+        _appt("done", "p1", "João", status="completed", start_time="2026-07-01T12:00:00+00:00"),
+        _appt("futura", "p1", "João", status="scheduled",
+              start_time="2026-09-01T19:30:00+00:00", end_time="2026-09-01T20:30:00+00:00"),
+    ]
+    out = await rr.get_pending_classification(fake_client, JULIO_ID, now=_NOW)
+    assert [a["appointment_id"] for a in out] == ["done"]
+
+
+async def test_get_pending_classification_cancelada_passada_nao_entra(fake_client):
+    # Slot cancelado nunca entra, mesmo já tendo "terminado".
+    fake_client.store["appointments"] = [
+        _appt("a1", "p1", "João", status="canceled",
+              start_time="2026-08-10T19:30:00+00:00", end_time="2026-08-10T20:30:00+00:00"),
+    ]
+    out = await rr.get_pending_classification(fake_client, JULIO_ID, now=_NOW)
+    assert out == []
 
 
 # ── save_classification ───────────────────────────────────────────────────
