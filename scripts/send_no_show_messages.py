@@ -30,7 +30,7 @@ async def send_no_show_message(phone: str, first_name: str) -> None:
     conv_id = await find_or_create_conversation(phone_wpp)
     content = (
         f"Olá! 😊\n\n"
-        f"Sentimos a falta de {first_name} na última consulta — e queremos "
+        f"Sentimos a falta de {first_name} na última consulta! Queremos "
         f"muito continuar cuidando de você.\n\n"
         f"Como não houve aviso com antecedência, a taxa de reserva foi retida "
         f"desta vez.\n\n"
