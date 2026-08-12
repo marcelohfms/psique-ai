@@ -30,6 +30,18 @@ Copy `.env.example` to `.env` and fill in the values.
 - Patient < 18 years old: first consultation = 2h (or two 1h slots: 1h for parents + 1h for patient)
 - Adult: 1h slot
 
+## Worktrees (isolamento da main)
+
+**Toda nova feature/fix nasce numa git worktree própria — nunca trabalhe direto na `main`.**
+Sessões concorrentes que editam o mesmo checkout misturam trabalho não-commitado e
+mexem no HEAD uma da outra. Worktrees dão isolamento físico.
+
+- Diretório: `.worktrees/<nome-do-branch>` (já ignorado no `.gitignore`).
+- Criar: `git worktree add .worktrees/<branch> -b <branch> main`
+- Trabalhe, teste (`uv run pytest`) e commite **dentro** da worktree; abra o PR de lá.
+- Ao terminar e mergear: `git worktree remove .worktrees/<branch>`.
+- `git worktree list` mostra as ativas; `git worktree prune` limpa as órfãs.
+
 ## Tests
 
 Run: `uv run pytest --tb=short`
