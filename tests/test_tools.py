@@ -1846,6 +1846,7 @@ async def test_mark_reschedule_in_progress_first_reschedule_notice():
     ]
     with patch("app.graph.tools.get_supabase", new_callable=AsyncMock, return_value=client), \
          patch("app.graph.tools.get_users_by_phone", new_callable=AsyncMock, return_value=[{"id": "user-1"}]), \
+         patch("app.graph.tools.has_recent_no_show", new_callable=AsyncMock, return_value=False), \
          patch("app.graph.tools._resolve_doctor", new_callable=AsyncMock, return_value="julio"), \
          patch("app.graph.tools._get_doctor_calendar_id", new_callable=AsyncMock, return_value="cal-123"), \
          patch("app.google_calendar.cancel_event", new_callable=AsyncMock), \
@@ -1968,6 +1969,7 @@ async def test_mark_reschedule_in_progress_less_than_24h_fee_unpaid_proceeds_nor
     ]
     with patch("app.graph.tools.get_supabase", new_callable=AsyncMock, return_value=client), \
          patch("app.graph.tools.get_users_by_phone", new_callable=AsyncMock, return_value=[{"id": "user-1"}]), \
+         patch("app.graph.tools.has_recent_no_show", new_callable=AsyncMock, return_value=False), \
          patch("app.graph.tools._resolve_doctor", new_callable=AsyncMock, return_value="julio"), \
          patch("app.graph.tools._get_doctor_calendar_id", new_callable=AsyncMock, return_value="cal-123"), \
          patch("app.google_calendar.cancel_event", new_callable=AsyncMock), \
@@ -2101,6 +2103,7 @@ async def test_mark_reschedule_in_progress_non_silent_mode_always_persists_patie
     ]
     with patch("app.graph.tools.get_supabase", new_callable=AsyncMock, return_value=client), \
          patch("app.graph.tools.get_users_by_phone", new_callable=AsyncMock, return_value=[{"id": "user-1"}]), \
+         patch("app.graph.tools.has_recent_no_show", new_callable=AsyncMock, return_value=False), \
          patch("app.graph.tools._resolve_doctor", new_callable=AsyncMock, return_value="julio"), \
          patch("app.graph.tools._get_doctor_calendar_id", new_callable=AsyncMock, return_value="cal-123"), \
          patch("app.google_calendar.cancel_event", new_callable=AsyncMock), \
@@ -2136,6 +2139,7 @@ async def test_mark_reschedule_in_progress_count_query_excludes_clinic_initiated
     ]
     with patch("app.graph.tools.get_supabase", new_callable=AsyncMock, return_value=client), \
          patch("app.graph.tools.get_users_by_phone", new_callable=AsyncMock, return_value=[{"id": "user-1"}]), \
+         patch("app.graph.tools.has_recent_no_show", new_callable=AsyncMock, return_value=False), \
          patch("app.graph.tools._resolve_doctor", new_callable=AsyncMock, return_value="julio"), \
          patch("app.graph.tools._get_doctor_calendar_id", new_callable=AsyncMock, return_value="cal-123"), \
          patch("app.google_calendar.cancel_event", new_callable=AsyncMock), \
@@ -4247,3 +4251,62 @@ async def test_resolve_patient_com_varios_pacientes_e_nada_identificando_prefere
         )
 
     assert user["id"] == "duda-id"
+
+
+# ── has_recent_no_show ────────────────────────────────────────────────────────
+
+async def test_has_recent_no_show_true():
+    """True quando o paciente tem ao menos uma consulta com status='no_show'."""
+    from app.graph.tools import has_recent_no_show
+    client, table, execute = _make_supabase_client()
+    execute.return_value = MagicMock(
+        data=[{"appointment_id": "a1", "start_time": "2026-08-01T12:00:00+00:00"}]
+    )
+    with patch("app.graph.tools.get_supabase", new_callable=AsyncMock, return_value=client):
+        assert await has_recent_no_show("p1") is True
+    # consultou a tabela de appointments filtrando por status no_show
+    table.eq.assert_any_call("status", "no_show")
+    table.eq.assert_any_call("patient_id", "p1")
+
+
+async def test_has_recent_no_show_false():
+    """False quando não há consulta com status='no_show' para o paciente."""
+    from app.graph.tools import has_recent_no_show
+    client, table, execute = _make_supabase_client()
+    execute.return_value = MagicMock(data=[])
+    with patch("app.graph.tools.get_supabase", new_callable=AsyncMock, return_value=client):
+        assert await has_recent_no_show("p1") is False
+
+
+async def test_mark_reschedule_in_progress_no_show_retains_fee_and_charges_new():
+    """Paciente com falta (no_show) pedindo remarcação: a taxa da falta foi RETIDA;
+    trate como nova reserva com nova taxa de R$ 100,00 — nunca remarcação gratuita."""
+    from app.graph.tools import mark_reschedule_in_progress
+    client, table, execute = _make_supabase_client()
+    future_start = (datetime.now(TZ) + timedelta(days=10)).isoformat()
+    appt_data = {
+        "appointment_id": "evt-abc",
+        "status": "scheduled",
+        "patient_id": "user-1",
+        "start_time": future_start,
+        "booking_fee_paid_at": "2026-01-01T10:00:00-03:00",
+        "booking_fee_waived": False,
+    }
+    execute.return_value = MagicMock(data=appt_data)
+    with patch("app.graph.tools.get_supabase", new_callable=AsyncMock, return_value=client), \
+         patch("app.graph.tools.get_users_by_phone", new_callable=AsyncMock, return_value=[{"id": "user-1"}]), \
+         patch("app.graph.tools.has_recent_no_show", new_callable=AsyncMock, return_value=True), \
+         patch("app.graph.tools.log_event", new_callable=AsyncMock) as mock_log:
+        result = await mark_reschedule_in_progress.coroutine(
+            appointment_id="evt-abc",
+            state=_make_state(),
+            config=CONFIG,
+        )
+    assert "INSTRUÇÃO INTERNA" in result
+    assert "100,00" in result
+    assert "único reagendamento" not in result.lower()
+    assert "cancel_appointment" in result
+    assert "confirm_appointment" in result
+    # não deve seguir o fluxo gratuito de remarcação
+    table.update.assert_not_called()
+    mock_log.assert_not_awaited()
