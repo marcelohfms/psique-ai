@@ -575,3 +575,35 @@ async def test_reminder_contacts_excludes_inactive_by_default():
     with _patch("app.patients.get_supabase", new=AsyncMock(return_value=client)):
         out = await get_reminder_contacts("p1", "consulta", include_inactive=False)
     assert [c["phone"] for c in out] == ["5581999"]
+
+
+# --- Task 3: get_contact_by_id ---
+from app.patients import get_contact_by_id
+
+
+@pytest.mark.asyncio
+async def test_get_contact_by_id_found():
+    table = MagicMock()
+    table.select.return_value = table
+    table.eq.return_value = table
+    table.execute = AsyncMock(
+        return_value=MagicMock(data=[{"id": "c1", "phone": "5581000", "name": "Ana"}])
+    )
+    client = MagicMock()
+    client.from_.return_value = table
+    with _patch("app.patients.get_supabase", new=AsyncMock(return_value=client)):
+        out = await get_contact_by_id("c1")
+    assert out["phone"] == "5581000"
+
+
+@pytest.mark.asyncio
+async def test_get_contact_by_id_missing_returns_none():
+    table = MagicMock()
+    table.select.return_value = table
+    table.eq.return_value = table
+    table.execute = AsyncMock(return_value=MagicMock(data=[]))
+    client = MagicMock()
+    client.from_.return_value = table
+    with _patch("app.patients.get_supabase", new=AsyncMock(return_value=client)):
+        assert await get_contact_by_id("nope") is None
+    assert await get_contact_by_id(None) is None
