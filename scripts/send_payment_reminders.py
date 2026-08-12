@@ -477,7 +477,7 @@ async def _cancel_unpaid_appointment(client, appt: dict, graph, now: datetime) -
             f"Paciente: {patient_name}\n"
             f"Médico(a): {doctor_label}\n"
             f"Data/hora: {date_str}\n"
-            f"Contatos notificados: {', '.join(c['phone'] for c in financial_contacts)}\n\n"
+            f"Contatos notificados: {', '.join(notified_phones)}\n\n"
             f"A vaga foi liberada no Google Calendar."
         )
         for attempt in range(1, 3):
