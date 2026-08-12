@@ -3,7 +3,12 @@
 Autocontida: replica as poucas queries necessárias usando o cliente Supabase
 do dashboard. NÃO importa app/ (a imagem Docker do dashboard não contém app/).
 """
+from datetime import datetime
+from zoneinfo import ZoneInfo
+
 from db_client import get_client
+
+_TZ = ZoneInfo("America/Recife")
 
 
 def _strip_phone(phone: str) -> str:
@@ -82,6 +87,26 @@ async def get_link(patient_id: str, contact_id: str) -> dict | None:
     return rows[0] if rows else None
 
 
+async def get_return_reminder(patient_id: str) -> dict | None:
+    """Linha de return_reminders do paciente (1 por paciente) ou None.
+
+    A data de retorno mora nesta tabela separada, não em `patients`.
+
+    SELECT escopado (diferente dos `get_*` irmãos, que usam `*`): não vaza ao
+    painel campos internos como `last_classified_appointment_id` e as flags de
+    envio (`month_before_sent_at`, `month_of_sent_at`, `overdue_sent_at`).
+    """
+    client = await get_client()
+    res = (
+        await client.from_("return_reminders")
+        .select("next_return_date, return_interval, doctor_id")
+        .eq("patient_id", patient_id)
+        .execute()
+    )
+    rows = res.data or []
+    return rows[0] if rows else None
+
+
 # ── Updates com whitelist de campos ───────────────────────────────────────────
 
 _CONTACT_FIELDS = {"name", "cpf", "phone", "active", "manual_hold"}
@@ -91,6 +116,7 @@ _PATIENT_FIELDS = {
     "financial_name", "financial_cpf", "financial_email", "social_name",
 }
 _LINK_FIELDS = {"role", "is_self", "relationship"}
+_RETURN_FIELDS = {"next_return_date"}
 
 
 def _filter(data: dict, allowed: set[str]) -> dict:
@@ -119,6 +145,34 @@ async def update_link(pc_id: str, data: dict) -> None:
         return
     client = await get_client()
     await client.from_("patient_contacts").update(payload).eq("id", pc_id).execute()
+
+
+async def update_return_reminder(patient_id: str, data: dict) -> bool:
+    """Atualiza a data de retorno do paciente e zera as flags de envio.
+
+    Só faz UPDATE (não cria linha): se o paciente ainda não foi classificado
+    pela médica, nada acontece e retorna False. Zerar as flags realinha o cron
+    `scripts/send_return_reminders.py` para disparar os lembretes na nova data.
+
+    Retorna `bool` (diferente de `update_contact`/`update_patient`/`update_link`,
+    que retornam None): o chamador precisa distinguir "não existe linha ainda"
+    de "atualizado".
+    """
+    payload = _filter(data, _RETURN_FIELDS)
+    if not payload:
+        return False
+    payload["month_before_sent_at"] = None
+    payload["month_of_sent_at"] = None
+    payload["overdue_sent_at"] = None
+    payload["updated_at"] = datetime.now(_TZ).isoformat()
+    client = await get_client()
+    res = (
+        await client.from_("return_reminders")
+        .update(payload)
+        .eq("patient_id", patient_id)
+        .execute()
+    )
+    return bool(res.data)
 
 
 # ── Auditoria ─────────────────────────────────────────────────────────────────

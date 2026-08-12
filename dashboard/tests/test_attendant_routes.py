@@ -47,14 +47,35 @@ def test_get_patient_ok(client, monkeypatch):
         return {"id": "p1", "name": "João"}
     async def fake_get_link(pid, cid):
         return {"id": "pc1", "role": "agendamento"}
+    async def fake_get_rr(pid):
+        return None
     monkeypatch.setattr(attendant_db, "get_patient", fake_get_patient)
     monkeypatch.setattr(attendant_db, "get_link", fake_get_link)
+    monkeypatch.setattr(attendant_db, "get_return_reminder", fake_get_rr)
     r = client.get("/api/atendente/paciente/p1",
                    params={"contact_id": "c1", "token": "test-token"})
     assert r.status_code == 200
     body = r.json()
     assert body["patient"]["id"] == "p1"
     assert body["link"]["id"] == "pc1"
+
+
+def test_get_patient_includes_return_reminder(client, monkeypatch):
+    async def fake_get_patient(pid):
+        return {"id": "p1", "name": "João"}
+    async def fake_get_link(pid, cid):
+        return {"id": "pc1"}
+    async def fake_get_rr(pid):
+        return {"next_return_date": "2026-09-15", "return_interval": "2_meses", "doctor_id": "d1"}
+    monkeypatch.setattr(attendant_db, "get_patient", fake_get_patient)
+    monkeypatch.setattr(attendant_db, "get_link", fake_get_link)
+    monkeypatch.setattr(attendant_db, "get_return_reminder", fake_get_rr)
+    r = client.get("/api/atendente/paciente/p1",
+                   params={"contact_id": "c1", "token": "test-token"})
+    assert r.status_code == 200
+    body = r.json()
+    assert body["return_reminder"]["next_return_date"] == "2026-09-15"
+    assert body["return_reminder"]["return_interval"] == "2_meses"
 
 
 # ── Escrita ───────────────────────────────────────────────────────────────────
@@ -81,6 +102,47 @@ def test_update_patient_calls_db_and_logs(client, monkeypatch):
 
 def test_update_patient_requires_token(client):
     r = client.post("/api/atendente/paciente/p1", json={"phone": "x", "data": {}})
+    assert r.status_code == 401
+
+
+def test_update_return_date_ok(client, monkeypatch):
+    calls = {}
+    async def fake_update(pid, data):
+        calls["update"] = (pid, data)
+        return True
+    async def fake_log(event_type, phone, metadata):
+        calls["log"] = (event_type, phone, metadata)
+    monkeypatch.setattr(attendant_db, "update_return_reminder", fake_update)
+    monkeypatch.setattr(attendant_db, "log_event", fake_log)
+    r = client.post("/api/atendente/paciente/p1/retorno",
+                    params={"token": "test-token"},
+                    json={"phone": "5581999998888", "data": {"next_return_date": "2026-10-15"}})
+    assert r.status_code == 200
+    assert r.json() == {"ok": True, "updated": True}
+    assert calls["update"] == ("p1", {"next_return_date": "2026-10-15"})
+    assert calls["log"][0] == "attendant_edit_return_date"
+
+
+def test_update_return_date_invalid_date_400(client, monkeypatch):
+    async def fake_update(pid, data):
+        raise AssertionError("não deve chamar o db com data inválida")
+    monkeypatch.setattr(attendant_db, "update_return_reminder", fake_update)
+    r = client.post("/api/atendente/paciente/p1/retorno",
+                    params={"token": "test-token"},
+                    json={"phone": "x", "data": {"next_return_date": "15/10/2026"}})
+    assert r.status_code == 400
+
+
+def test_update_return_date_missing_field_400(client):
+    r = client.post("/api/atendente/paciente/p1/retorno",
+                    params={"token": "test-token"},
+                    json={"phone": "x", "data": {}})
+    assert r.status_code == 400
+
+
+def test_update_return_date_requires_token(client):
+    r = client.post("/api/atendente/paciente/p1/retorno",
+                    json={"phone": "x", "data": {"next_return_date": "2026-10-15"}})
     assert r.status_code == 401
 
 

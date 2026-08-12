@@ -268,8 +268,8 @@ async function load() {
 async function loadPatient(pid) {
   const r = await fetch(`/api/atendente/paciente/${pid}?contact_id=${CONTACT.id}&token=${encodeURIComponent(TOKEN)}`);
   if (!r.ok) { setStatus("Erro ao carregar paciente."); return; }
-  const { patient, link } = await r.json();
-  renderForms(patient, link);
+  const { patient, link, return_reminder } = await r.json();
+  renderForms(patient, link, return_reminder);
 }
 
 // ── 4. Renderizar formulários ───────────────────────────────────────────────
@@ -297,7 +297,31 @@ const DOCTORS = [["", "—"],
   ["d5baa58b-a788-4f40-b8c0-512c189150be", "Dr. Júlio"],
   ["18b01f87-eacd-4905-bd4a-a8293991e6fd", "Dra. Bruna"]];
 
-function renderForms(patient, link) {
+const RETURN_LABELS = {
+  "15_dias": "15 dias", "1_mes": "1 mês", "2_meses": "2 meses",
+  "3_meses": "3 meses", "4_meses": "4 meses", "6_meses": "6 meses",
+};
+
+function returnBlock(pid, rr) {
+  const wrap = (inner, accent) => `<div class="mt-2 rounded-md border ${accent ? "border-teal-300 bg-teal-50 dark:border-teal-700 dark:bg-teal-900/30" : "border-gray-200 dark:border-gray-700"} p-3">
+    <div class="text-xs uppercase ${accent ? "text-teal-700 dark:text-teal-300" : "text-gray-400 dark:text-gray-500"} mb-1">Data de retorno</div>${inner}</div>`;
+  if (!rr) {
+    return wrap(`<div class="text-sm text-gray-500 dark:text-gray-400">— <span class="text-xs text-gray-400 dark:text-gray-500">(nenhum retorno classificado ainda)</span></div>`, false);
+  }
+  if (rr.return_interval === "alta") {
+    return wrap(`<div class="text-sm text-gray-500 dark:text-gray-400">— <span class="text-xs">paciente recebeu alta</span></div>`, false);
+  }
+  const label = RETURN_LABELS[rr.return_interval] || rr.return_interval || "";
+  const dateVal = rr.next_return_date || "";
+  const nota = label ? `<span class="text-xs text-gray-500 dark:text-gray-400">informado pela médica: retorno em ${escapeHtml(label)}</span>` : "";
+  return wrap(`<div class="flex items-center gap-2 flex-wrap">
+    <input id="p_return_date" type="date" value="${escapeHtml(dateVal)}" class="border border-gray-300 dark:border-gray-600 dark:bg-gray-700 dark:text-gray-100 rounded px-2 py-1 text-sm">
+    <button onclick="saveRetorno('${pid}')" class="bg-teal-600 hover:bg-teal-700 text-white text-xs px-3 py-1.5 rounded">Salvar retorno</button>
+    ${nota}
+  </div>`, true);
+}
+
+function renderForms(patient, link, returnReminder) {
   const c = CONTACT;
   let contatoHtml = `<section class="bg-white dark:bg-gray-800 rounded-lg shadow p-4">
     <h2 class="font-medium text-gray-700 dark:text-gray-100 mb-2">Contato</h2>
@@ -336,6 +360,7 @@ function renderForms(patient, link) {
         ${checkbox("Paciente retornante", "p_returning", patient.is_returning_patient)}
         ${checkbox("Exceção de idade", "p_age_exc", patient.age_exception)}
       </div>
+      ${returnBlock(patient.id, returnReminder)}
       <button onclick="savePatient('${patient.id}')" class="mt-2 bg-wa-green hover:bg-wa-green-dk text-white text-xs px-3 py-1.5 rounded">Salvar paciente</button>
     </section>`;
 
@@ -397,6 +422,12 @@ async function saveLink(pcid) {
     is_self: chk("l_is_self"), relationship: val("l_rel"),
   }});
   if (ok) flash("Vínculo salvo ✓");
+}
+async function saveRetorno(pid) {
+  const ok = await post(`/api/atendente/paciente/${pid}/retorno`, { data: {
+    next_return_date: val("p_return_date"),
+  }});
+  if (ok) flash("Data de retorno salva ✓");
 }
 
 function flash(msg) { setStatus(msg); setTimeout(() => setStatus(CONTACT ? `Contato: ${CONTACT.name || CONTACT.phone}` : ""), 1500); }
