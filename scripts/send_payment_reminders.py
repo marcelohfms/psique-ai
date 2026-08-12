@@ -27,6 +27,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 from app.graph.prompts import get_pix_key as _get_pix_key
+from app.patients import get_contact_by_id
 
 TZ = ZoneInfo("America/Recife")
 
@@ -87,6 +88,20 @@ async def get_financial_contacts(client, patient_id: str) -> list[dict]:
         if c.get("phone"):
             contacts.append({"phone": c["phone"], "name": c.get("name", "")})
     return contacts
+
+
+async def _reminder_recipients(appt: dict, financial_contacts: list[dict]) -> list[dict]:
+    """Destinatários do lembrete/cancelamento de taxa: só o contato que fez a
+    reserva (appointments.contact_id). Fallback para os contatos financeiros
+    quando o agendamento não gravou contact_id (linhas antigas/remarcações).
+
+    NÃO usar para a guarda de comprovante nem para o e-mail à clínica — esses
+    continuam sobre TODOS os contatos financeiros.
+    """
+    booking = await get_contact_by_id(appt.get("contact_id"))
+    if booking and booking.get("phone"):
+        return [{"phone": booking["phone"], "name": booking.get("name")}]
+    return financial_contacts
 
 
 async def save_to_checkpoint(graph, phone: str, message: str, patient_name: str, doctor_key: str) -> None:
@@ -323,8 +338,10 @@ async def _send_payment_reminder(client, appt: dict, graph, now: datetime) -> No
         )
         return
 
+    recipients = await _reminder_recipients(appt, financial_contacts)
+
     any_sent = False
-    for contact in financial_contacts:
+    for contact in recipients:
         phone = contact["phone"]
         from app.utils import display_name as _dn
         contact_first = _dn(contact["name"] or patient_name)
@@ -393,9 +410,11 @@ async def _cancel_unpaid_appointment(client, appt: dict, graph, now: datetime) -
         return
 
     # Must notify at least one contact before canceling
+    recipients = await _reminder_recipients(appt, financial_contacts)
+
     any_notified = False
     notified_phones = []
-    for contact in financial_contacts:
+    for contact in recipients:
         phone = contact["phone"]
         from app.utils import display_name as _dn
         contact_first = _dn(contact["name"] or patient_name)
@@ -497,7 +516,7 @@ async def main():
 
     _appt_select = (
         "appointment_id, start_time, doctor_id, created_at, payment_reminder_sent_at, "
-        "patient_id, patients(name, custom_price)"
+        "contact_id, patient_id, patients(name, custom_price)"
     )
 
     # ── Step 1: 1st reminder (not yet reminded, booked >= 2h ago) ─────────────

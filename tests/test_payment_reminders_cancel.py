@@ -408,3 +408,74 @@ async def test_reminder_deferred_when_receipt_lookup_fails():
     mock_wpp.assert_not_awaited()
     table.update.assert_not_called()
     mock_email.assert_not_awaited()
+
+
+# ── Task 6: lembrete/cancelamento vão só p/ o contato que fez a reserva ────────
+
+def _pay_appt(**kw):
+    base = {
+        "appointment_id": "evt-1", "start_time": "2026-09-01T14:00:00+00:00",
+        "doctor_id": "d5baa58b-a788-4f40-b8c0-512c189150be",
+        "created_at": "2026-08-01T00:00:00+00:00",
+        "patient_id": "p-joao", "contact_id": "c-reserva",
+        "patients": {"name": "João Silva", "custom_price": 200},
+    }
+    base.update(kw)
+    return base
+
+
+@pytest.mark.asyncio
+async def test_payment_reminder_goes_to_booking_contact_only():
+    client = MagicMock()
+    table = MagicMock()
+    table.update.return_value = table
+    table.eq.return_value = table
+    table.execute = AsyncMock(return_value=MagicMock(data=[]))
+    client.from_.return_value = table
+    with patch("scripts.send_payment_reminders.get_financial_contacts",
+               new=AsyncMock(return_value=[{"phone": "5581000", "name": "João Silva"},
+                                           {"phone": "5581999", "name": "Mãe"}])), \
+         patch("scripts.send_payment_reminders.find_receipt_in_conversation",
+               new=AsyncMock(return_value=None)), \
+         patch("scripts.send_payment_reminders.get_contact_by_id",
+               new=AsyncMock(return_value={"phone": "5581000", "name": "João Silva"})), \
+         patch("scripts.send_payment_reminders.send_whatsapp", new=AsyncMock()) as sw:
+        await spr._send_payment_reminder(client, _pay_appt(), None, datetime.now(TZ))
+    assert [c.args[0] for c in sw.await_args_list] == ["5581000"]
+
+
+@pytest.mark.asyncio
+async def test_payment_reminder_fallback_when_no_contact_id():
+    client = MagicMock()
+    table = MagicMock()
+    table.update.return_value = table
+    table.eq.return_value = table
+    table.execute = AsyncMock(return_value=MagicMock(data=[]))
+    client.from_.return_value = table
+    with patch("scripts.send_payment_reminders.get_financial_contacts",
+               new=AsyncMock(return_value=[{"phone": "5581000", "name": "João"},
+                                           {"phone": "5581999", "name": "Mãe"}])), \
+         patch("scripts.send_payment_reminders.find_receipt_in_conversation",
+               new=AsyncMock(return_value=None)), \
+         patch("scripts.send_payment_reminders.get_contact_by_id",
+               new=AsyncMock(return_value=None)), \
+         patch("scripts.send_payment_reminders.send_whatsapp", new=AsyncMock()) as sw:
+        await spr._send_payment_reminder(client, _pay_appt(contact_id=None), None, datetime.now(TZ))
+    assert sorted(c.args[0] for c in sw.await_args_list) == ["5581000", "5581999"]
+
+
+@pytest.mark.asyncio
+async def test_receipt_guard_still_scans_all_financial_contacts():
+    # comprovante enviado por um contato que NÃO é o da reserva ainda bloqueia.
+    client = MagicMock()
+    with patch("scripts.send_payment_reminders.get_financial_contacts",
+               new=AsyncMock(return_value=[{"phone": "5581000", "name": "João"},
+                                           {"phone": "5581999", "name": "Mãe"}])), \
+         patch("scripts.send_payment_reminders.find_receipt_in_conversation",
+               new=AsyncMock(return_value=None)) as frc, \
+         patch("scripts.send_payment_reminders.get_contact_by_id",
+               new=AsyncMock(return_value={"phone": "5581000", "name": "João"})), \
+         patch("scripts.send_payment_reminders.send_whatsapp", new=AsyncMock()):
+        await spr._send_payment_reminder(client, _pay_appt(), None, datetime.now(TZ))
+    # a guarda recebeu AMBOS os telefones financeiros, não só o da reserva
+    assert sorted(frc.await_args.args[1]) == ["5581000", "5581999"]
