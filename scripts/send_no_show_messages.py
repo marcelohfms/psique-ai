@@ -31,7 +31,7 @@ async def send_no_show_message(phone: str, first_name: str) -> None:
     content = (
         f"Olá! 😊\n\n"
         f"Sentimos a falta de {first_name} na última consulta! Queremos "
-        f"muito continuar cuidando de você.\n\n"
+        f"muito continuar cuidando com todo o carinho.\n\n"
         f"Como não houve aviso com antecedência, a taxa de reserva foi retida "
         f"desta vez.\n\n"
         f"Para agendar uma nova consulta, é só responder por aqui que a gente "
