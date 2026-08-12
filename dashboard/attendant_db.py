@@ -3,7 +3,12 @@
 Autocontida: replica as poucas queries necessárias usando o cliente Supabase
 do dashboard. NÃO importa app/ (a imagem Docker do dashboard não contém app/).
 """
+from datetime import datetime
+from zoneinfo import ZoneInfo
+
 from db_client import get_client
+
+_TZ = ZoneInfo("America/Recife")
 
 
 def _strip_phone(phone: str) -> str:
@@ -107,6 +112,7 @@ _PATIENT_FIELDS = {
     "financial_name", "financial_cpf", "financial_email", "social_name",
 }
 _LINK_FIELDS = {"role", "is_self", "relationship"}
+_RETURN_FIELDS = {"next_return_date"}
 
 
 def _filter(data: dict, allowed: set[str]) -> dict:
@@ -135,6 +141,30 @@ async def update_link(pc_id: str, data: dict) -> None:
         return
     client = await get_client()
     await client.from_("patient_contacts").update(payload).eq("id", pc_id).execute()
+
+
+async def update_return_reminder(patient_id: str, data: dict) -> bool:
+    """Atualiza a data de retorno do paciente e zera as flags de envio.
+
+    Só faz UPDATE (não cria linha): se o paciente ainda não foi classificado
+    pela médica, nada acontece e retorna False. Zerar as flags realinha o cron
+    `scripts/send_return_reminders.py` para disparar os lembretes na nova data.
+    """
+    payload = _filter(data, _RETURN_FIELDS)
+    if not payload:
+        return False
+    payload["month_before_sent_at"] = None
+    payload["month_of_sent_at"] = None
+    payload["overdue_sent_at"] = None
+    payload["updated_at"] = datetime.now(_TZ).isoformat()
+    client = await get_client()
+    res = (
+        await client.from_("return_reminders")
+        .update(payload)
+        .eq("patient_id", patient_id)
+        .execute()
+    )
+    return bool(res.data)
 
 
 # ── Auditoria ─────────────────────────────────────────────────────────────────

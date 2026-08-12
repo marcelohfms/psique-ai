@@ -149,6 +149,42 @@ async def test_update_link_whitelist(patched_client):
     assert "patient_id" not in row or row.get("patient_id") != "X"
 
 
+# ── Escrita da data de retorno ────────────────────────────────────────────────
+
+
+async def test_update_return_reminder_sets_date_and_resets_flags(patched_client):
+    patched_client.store["return_reminders"] = [
+        {"id": "r1", "patient_id": "p1", "return_interval": "2_meses",
+         "next_return_date": "2026-09-15",
+         "month_before_sent_at": "2026-08-01T00:00:00-03:00",
+         "month_of_sent_at": None, "overdue_sent_at": None},
+    ]
+    updated = await attendant_db.update_return_reminder("p1", {"next_return_date": "2026-10-15"})
+    assert updated is True
+    row = patched_client.store["return_reminders"][0]
+    assert row["next_return_date"] == "2026-10-15"
+    assert row["month_before_sent_at"] is None
+    assert row["month_of_sent_at"] is None
+    assert row["overdue_sent_at"] is None
+    assert row["updated_at"]  # timestamp preenchido
+
+
+async def test_update_return_reminder_no_row_returns_false(patched_client):
+    patched_client.store["return_reminders"] = []
+    updated = await attendant_db.update_return_reminder("p1", {"next_return_date": "2026-10-15"})
+    assert updated is False
+    assert patched_client.store["return_reminders"] == []  # não cria linha
+
+
+async def test_update_return_reminder_empty_data_noop(patched_client):
+    patched_client.store["return_reminders"] = [
+        {"id": "r1", "patient_id": "p1", "next_return_date": "2026-09-15"},
+    ]
+    updated = await attendant_db.update_return_reminder("p1", {"foo": "bar"})
+    assert updated is False
+    assert patched_client.store["return_reminders"][0]["next_return_date"] == "2026-09-15"
+
+
 # ── Auditoria ─────────────────────────────────────────────────────────────────
 
 
