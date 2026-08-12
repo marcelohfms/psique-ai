@@ -83,10 +83,14 @@ Para cada consulta pendente na fila, o médico agora tem três saídas:
 - **Sinalização (atendente):** **silenciosa**. Marcar `no_show` não gera
   aviso/flag para a atendente. A atendente só age se o próprio paciente
   procurar.
-- **Mensagem ao paciente (parte 1 — acolher e convidar):** WhatsApp
-  acolhedor convidando a remarcar, **sem** mencionar taxa. Ex.: *"Olá!
-  Notamos que [nome] não conseguiu comparecer à consulta de [data]. Se
-  quiser remarcar, é só responder por aqui que a gente te ajuda."*
+- **Mensagem ao paciente (parte 1 — acolher, avisar da retenção e convidar):**
+  WhatsApp acolhedor que **já avisa** que a taxa foi retida (sem aviso prévio)
+  e que remarcar é um **novo agendamento com nova taxa**. Ex.: *"Olá! Notamos
+  que [nome] não conseguiu comparecer à consulta. Como não houve aviso com
+  antecedência, a taxa de reserva foi retida. Se quiser remarcar, é só
+  responder por aqui — será um novo agendamento, com uma nova taxa de reserva.
+  Estamos à disposição!"* — decisão revisada (2026-08-11): a retenção é
+  comunicada aqui, na mensagem, não em um passo conversacional posterior.
   - **Gatilho:** **cron diário** (novo script, ou passo no cron existente),
     independente de onde/quando o `no_show` foi marcado. Não olha "consulta
     de ontem" — busca `appointments` com `status='no_show'` e
@@ -98,17 +102,15 @@ Para cada consulta pendente na fila, o médico agora tem três saídas:
     classificação.
   - **Destinatários:** o(s) contato(s) com papel `consulta` do paciente
     (mesmo critério do pós-consulta).
-- **Aviso de retenção da taxa (parte 2 — só quando o paciente topar
-  remarcar):** conversacional, no bot. Quando o paciente `no_show` responde
-  que quer remarcar, o bot explica que a taxa da consulta anterior foi
-  retida por conta da falta e que há **nova taxa de reserva de R$ 100,00**
-  para a nova data — reusando o padrão de mensagem "taxa recolhida + nova
-  taxa" que já existe para remarcações fora do prazo
-  (`app/graph/tools.py:1508-1525`). Como a consulta antiga fica `no_show`
-  (não `scheduled`), remarcar já é uma reserva nova que cobra taxa nova; a
-  parte 2 é garantir que o bot **reconheça a falta recente** e explique
-  isso, em vez de tratar como remarcação gratuita. Implementação provável:
-  instrução no prompt + helper que detecta `no_show` recente do paciente.
+- **Sem lógica de no-show no bot (decisão revisada 2026-08-11):** o bot
+  **não** tem nenhum tratamento especial para paciente que faltou. Qualquer
+  novo agendamento — mesmo que o paciente chame de "remarcação" — passa pela
+  tool de marcação normal, que já cobra a nova taxa de reserva, **sem vínculo
+  com o `no_show`**. O histórico da falta não influencia agendamentos
+  futuros ("zerar o histórico"). O aviso da retenção fica todo na mensagem
+  (parte 1). Isso substitui a ideia anterior de um passo conversacional
+  `has_recent_no_show`, que disparava no lugar errado (qualquer remarcação
+  futura) e não no cenário pretendido.
 
 ### Alta
 

@@ -7,8 +7,10 @@ Processa appointments com:
   - no_show_message_sent_at IS NULL
 
 Independe de quando a falta foi marcada (médico/atendente podem marcar dias
-depois). Mensagem acolhedora convidando a remarcar — NÃO menciona taxa (o
-aviso de retenção só aparece se o paciente topar remarcar, no bot).
+depois). Mensagem acolhedora que já avisa que a taxa de reserva foi retida
+(sem aviso prévio) e que remarcar é um novo agendamento com nova taxa. O bot
+NÃO tem lógica especial de no-show: qualquer novo agendamento passa pela tool
+de marcação normal, sem vínculo com a falta.
 """
 import asyncio
 import os
@@ -28,7 +30,9 @@ async def send_no_show_message(phone: str, first_name: str) -> None:
     conv_id = await find_or_create_conversation(phone_wpp)
     content = (
         f"Olá! Notamos que {first_name} não conseguiu comparecer à consulta. "
-        f"Se quiser remarcar, é só responder por aqui que a gente te ajuda."
+        f"Como não houve aviso com antecedência, a taxa de reserva foi retida. "
+        f"Se quiser remarcar, é só responder por aqui — será um novo agendamento, "
+        f"com uma nova taxa de reserva. Estamos à disposição!"
     )
     await send_template_message(
         conv_id,
