@@ -1434,24 +1434,6 @@ async def cancel_appointment(
         return "Consulta cancelada com sucesso. ✅"
 
 
-async def has_recent_no_show(patient_id: str) -> bool:
-    """True se o paciente tem alguma consulta marcada como falta (no_show).
-
-    Usado no fluxo de remarcação: quem faltou não recebe remarcação gratuita;
-    a taxa anterior foi retida e uma nova taxa de reserva é cobrada.
-    """
-    client = await get_supabase()
-    result = await (
-        client.from_("appointments")
-        .select("appointment_id, start_time")
-        .eq("patient_id", patient_id)
-        .eq("status", "no_show")
-        .limit(1)
-        .execute()
-    )
-    return bool(result.data)
-
-
 @tool
 async def mark_reschedule_in_progress(
     appointment_id: str,
@@ -1542,20 +1524,6 @@ async def mark_reschedule_in_progress(
                 "get_available_slots e, ao confirmar o novo horário, chame cancel_appointment "
                 "(para esta consulta) e confirm_appointment (para a nova data)."
             )
-
-    # Retenção por falta: se o paciente tem alguma consulta marcada como FALTA
-    # (no_show), a taxa daquela consulta foi RECOLHIDA. Remarcar não é gratuito —
-    # trata-se como nova reserva com nova taxa (mesma postura da regra das 24h).
-    if not state.get("silent_mode") and await has_recent_no_show(appt.data.get("patient_id")):
-        return (
-            "[INSTRUÇÃO INTERNA — NÃO ENVIE AO PACIENTE] Este paciente tem uma consulta anterior "
-            "marcada como FALTA (não compareceu). A taxa de reserva daquela consulta foi RECOLHIDA "
-            "(perdida). NÃO chame mark_reschedule_in_progress/reschedule_appointment nem ofereça "
-            "remarcação gratuita para este caso. Avise o paciente que, por conta da falta, a taxa "
-            "anterior foi recolhida e uma NOVA taxa de reserva de R$ 100,00 será cobrada para a nova "
-            "data. Em seguida chame get_available_slots e, ao confirmar o novo horário, chame "
-            "cancel_appointment (para esta consulta) e confirm_appointment (para a nova data)."
-        )
 
     # Política de reagendamento: paciente pode reagendar apenas 1x.
     # A partir do 2º reagendamento iniciado pelo paciente, é necessário

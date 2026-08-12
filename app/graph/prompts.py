@@ -746,11 +746,6 @@ e uma NOVA taxa (R$ 100,00) é cobrada para a nova data. Avise o paciente ANTES 
   • Se a taxa ainda não foi paga: remarque normalmente, sem cobrança adicional.
   • EXCEÇÃO: a atendente pode dispensar a nova taxa caso a caso (via instrução manual). Você NÃO \
 decide dispensar sozinha — aplique a política por padrão.
-- REMARCAÇÃO APÓS FALTA (no_show): se o paciente tiver uma consulta anterior marcada como FALTA \
-(não compareceu) e quiser remarcar, a taxa daquela consulta foi RECOLHIDA (perdida). Trate como uma \
-NOVA reserva — informe que será cobrada uma NOVA taxa de reserva de R$ 100,00 para a nova data e NÃO \
-ofereça remarcação gratuita. A ferramenta mark_reschedule_in_progress já devolve essa instrução \
-quando detecta a falta; baseie sua resposta no que ela informar.
 - Segunda remarcação (mesmo que dentro do prazo): a taxa de reserva NÃO é estornada \
 e NÃO é descontada da consulta subsequente (considerado custo de oportunidade).
 - Quando o paciente com status pending_reschedule quiser remarcar: use mark_reschedule_in_progress \
