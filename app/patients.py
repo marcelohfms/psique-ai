@@ -54,6 +54,21 @@ async def get_contact_by_phone(phone: str) -> dict | None:
     return None
 
 
+async def get_contact_by_id(contact_id: str | None) -> dict | None:
+    """Retorna a linha de `contacts` por id, ou None (inclui id None)."""
+    if not contact_id:
+        return None
+    client = await get_supabase()
+    result = (
+        await client.from_("contacts")
+        .select("*")
+        .eq("id", contact_id)
+        .execute()
+    )
+    rows = result.data or []
+    return rows[0] if rows else None
+
+
 async def get_patients_by_contact(contact_id: str, role: str | None = None) -> list[dict]:
     """Retorna os pacientes (dicts da tabela patients) vinculados a um contato.
 
