@@ -47,14 +47,35 @@ def test_get_patient_ok(client, monkeypatch):
         return {"id": "p1", "name": "João"}
     async def fake_get_link(pid, cid):
         return {"id": "pc1", "role": "agendamento"}
+    async def fake_get_rr(pid):
+        return None
     monkeypatch.setattr(attendant_db, "get_patient", fake_get_patient)
     monkeypatch.setattr(attendant_db, "get_link", fake_get_link)
+    monkeypatch.setattr(attendant_db, "get_return_reminder", fake_get_rr)
     r = client.get("/api/atendente/paciente/p1",
                    params={"contact_id": "c1", "token": "test-token"})
     assert r.status_code == 200
     body = r.json()
     assert body["patient"]["id"] == "p1"
     assert body["link"]["id"] == "pc1"
+
+
+def test_get_patient_includes_return_reminder(client, monkeypatch):
+    async def fake_get_patient(pid):
+        return {"id": "p1", "name": "João"}
+    async def fake_get_link(pid, cid):
+        return {"id": "pc1"}
+    async def fake_get_rr(pid):
+        return {"next_return_date": "2026-09-15", "return_interval": "2_meses", "doctor_id": "d1"}
+    monkeypatch.setattr(attendant_db, "get_patient", fake_get_patient)
+    monkeypatch.setattr(attendant_db, "get_link", fake_get_link)
+    monkeypatch.setattr(attendant_db, "get_return_reminder", fake_get_rr)
+    r = client.get("/api/atendente/paciente/p1",
+                   params={"contact_id": "c1", "token": "test-token"})
+    assert r.status_code == 200
+    body = r.json()
+    assert body["return_reminder"]["next_return_date"] == "2026-09-15"
+    assert body["return_reminder"]["return_interval"] == "2_meses"
 
 
 # ── Escrita ───────────────────────────────────────────────────────────────────

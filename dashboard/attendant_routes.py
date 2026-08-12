@@ -50,7 +50,8 @@ async def paciente(patient_id: str, contact_id: str, _: None = Depends(verify_to
     if patient is None:
         raise HTTPException(status_code=404, detail="paciente não encontrado")
     link = await attendant_db.get_link(patient_id, contact_id)
-    return {"patient": patient, "link": link}
+    return_reminder = await attendant_db.get_return_reminder(patient_id)
+    return {"patient": patient, "link": link, "return_reminder": return_reminder}
 
 
 # ── Escrita ───────────────────────────────────────────────────────────────────
