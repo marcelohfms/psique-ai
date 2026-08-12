@@ -2823,13 +2823,19 @@ async def register_payment(
             )
 
         user_ids = [u["id"] for u in all_users]
-        _appt_lookback = (datetime.now(TZ) - timedelta(days=15)).isoformat()
 
+        # No date window: the patient may settle the saldo of a consultation that
+        # happened weeks/months ago. A now-15d lower bound hid that completed appt,
+        # leaving seen_users empty so Eva asked "Para qual paciente é este
+        # comprovante?" for a phone with a single, unambiguous patient (caso Danniela,
+        # 5581991950147 — same root as the override-path double booking fee). The
+        # window was never needed for disambiguation: multiple patients on one phone
+        # are already caught above from get_users_by_phone, before this query runs.
         appts_result = await client.from_("appointments").select(
             "appointment_id, start_time, doctor_id, status, patients(id, name)"
         ).in_("patient_id", user_ids).in_(
             "status", ["scheduled", "completed"]
-        ).gte("start_time", _appt_lookback).order("start_time", desc=True).execute()
+        ).order("start_time", desc=True).execute()
 
         active_appts = appts_result.data or []
 
@@ -2949,9 +2955,15 @@ async def register_payment(
             appt_result_data = []
         else:
             # PRIORITY 3: completed past appointment (late full payment).
+            # No date window: a patient may settle the saldo weeks or months after
+            # the consultation. Bounding this to a recent lookback hid the completed
+            # appointment carrying booking_fee_paid_at, so Eva stopped recognizing the
+            # already-paid R$100 booking fee and charged it a second time (caso Danniela
+            # Azevedo, 5581991950147, 2026-08-12: consult 08/07, saldo pago 12/08).
+            # The paid_at guard below still blocks a duplicate on an already-settled one.
             completed_raw = await client.from_("appointments").select(_appt_fields).eq(
                 "patient_id", user_id
-            ).eq("status", "completed").gte("start_time", lookback_iso).order(
+            ).eq("status", "completed").order(
                 "start_time", desc=True
             ).limit(1).execute()
             appt_result_data = completed_raw.data

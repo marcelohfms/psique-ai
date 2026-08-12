@@ -3207,6 +3207,131 @@ async def test_register_payment_multiple_patients_on_phone_demands_new_tool_call
     assert "patient_name_override" in result
 
 
+def _make_supabase_client_self_path_old_completed():
+    """Supabase client for the SELF-PATH late-balance case: the patient pays the
+    saldo from their OWN number (no patient_name_override), and their only
+    appointment is a COMPLETED consultation more than 15 days ago whose booking
+    fee was already paid.
+
+    The mock is date-aware for every appointment lookup that applies a
+    `.gte("start_time", ...)` lower bound: if the window starts after the consult
+    date (e.g. now-15d for a 35-day-old consult) it hides the appointment, exactly
+    like the real database. Two windows matter here:
+      - the SELF-PATH resolution query (`appts_result`) — hiding the appt made
+        `seen_users` empty, so Eva asked "Para qual paciente é este comprovante?"
+        even though the phone has a single, unambiguous patient (caso Danniela,
+        5581991950147, same root as the override-path double-fee bug);
+      - PRIORITY 3 (`completed_raw`) — hiding it made expected_remaining the full
+        price instead of price-100.
+
+    Call order (client.from_):
+      1. appts_result   — resolution (appointments + patients join)
+      2. scheduled_raw  — empty (no active appointment)         [PRIORITY 1]
+      3. future_canceled — empty (nothing to reactivate)        [PRIORITY 2]
+      4. completed_raw  — the old completed appt, iff window includes it [PRIORITY 3]
+      5. patients custom_price → None
+      6+. updates / misc → empty
+    """
+    now = datetime.now(TZ)
+    consult_start = now - timedelta(days=35)      # consultation already happened, >15d ago
+    resolution_appt = {
+        "appointment_id": "apt-old-completed",
+        "start_time": consult_start.isoformat(),
+        "doctor_id": "18b01f87-eacd-4905-bd4a-a8293991e6fd",  # Dra. Bruna
+        "status": "completed",
+        "patients": {"id": "dan-id", "name": "Danniela Azevedo Ramos De Almeida"},
+    }
+    completed_appt = {
+        "appointment_id": "apt-old-completed",
+        "start_time": consult_start.isoformat(),
+        "end_time": (consult_start + timedelta(hours=1)).isoformat(),
+        "doctor_id": "18b01f87-eacd-4905-bd4a-a8293991e6fd",
+        "paid_at": None,
+        "booking_fee_paid_at": (now - timedelta(days=58)).isoformat(),  # paid a previous month
+        "status": "completed",
+        "consultation_type": None,
+        "booking_fee_waived": False,
+    }
+    empty = MagicMock(data=[])
+
+    captured = {"start_gte": None}
+
+    def _gte(col, val):
+        if col == "start_time":
+            captured["start_gte"] = val
+        return table
+
+    def _hidden():
+        lb = captured["start_gte"]
+        return lb is not None and datetime.fromisoformat(lb) > consult_start
+
+    def _side_effect(*_a, **_kw):
+        _side_effect.call_count += 1
+        n = _side_effect.call_count
+        if n == 1:
+            hidden = _hidden()
+            captured["start_gte"] = None
+            return empty if hidden else MagicMock(data=[resolution_appt])   # appts_result
+        if n in (2, 3):
+            captured["start_gte"] = None
+            return empty                                                    # PRIORITY 1 / 2
+        if n == 4:
+            hidden = _hidden()
+            captured["start_gte"] = None
+            return empty if hidden else MagicMock(data=[completed_appt])    # PRIORITY 3
+        captured["start_gte"] = None
+        return empty
+
+    _side_effect.call_count = 0
+
+    execute = AsyncMock(side_effect=_side_effect)
+    table = MagicMock()
+    for m in ("select", "eq", "in_", "limit", "single", "maybe_single",
+              "order", "insert", "update", "upsert", "is_", "gt", "lt", "neq", "ilike"):
+        getattr(table, m).return_value = table
+    table.gte = MagicMock(side_effect=_gte)
+    table.execute = execute
+    client = MagicMock()
+    client.from_.return_value = table
+    return client
+
+
+async def test_register_payment_self_path_resolves_old_completed_appointment():
+    """Self-path (patient pays from their own number, no name override): a saldo
+    for a consultation that happened more than 15 days ago must resolve to that
+    patient and settle the consultation — NOT trigger "Para qual paciente é este
+    comprovante?" nor charge the booking fee again.
+
+    Same root as caso Danniela (5581991950147, 12/08/2026), but in the SELF-PATH
+    resolution query, which bounded appointments to now-15d. The phone has a
+    single unambiguous patient, so the 15-day window only ever hid the right
+    answer — it was never needed for disambiguation (that is handled earlier from
+    get_users_by_phone). With the window gone, R$550 QUITA a R$650 consult whose
+    R$100 fee was already paid."""
+    from app.graph.tools import register_payment
+    client = _make_supabase_client_self_path_old_completed()
+    with patch("app.graph.tools.get_supabase", new_callable=AsyncMock, return_value=client), \
+         patch("app.graph.tools.get_users_by_phone", new_callable=AsyncMock,
+               return_value=[{"id": "dan-id", "patient_name": "Danniela Azevedo Ramos De Almeida"}]), \
+         patch("app.graph.tools.log_event", new_callable=AsyncMock), \
+         patch("app.graph.tools.send_text", new_callable=AsyncMock), \
+         patch("app.google_drive.rename_file", new_callable=AsyncMock), \
+         patch("app.google_sheets.append_payment_receipt", new_callable=AsyncMock) as mock_sheets, \
+         patch("app.graph.tools._notify_clinic", new_callable=AsyncMock):
+        result = await register_payment.coroutine(
+            amount="550,00",
+            drive_link="https://drive.google.com/file/d/abc/view",
+            state=_make_state(preferred_doctor="bruna"),
+            config=CONFIG,
+        )
+
+    assert "Para qual paciente" not in result
+    mock_sheets.assert_awaited_once()
+    assert mock_sheets.call_args.kwargs["payment_type"] == "Consulta"
+    assert "QUITADA" in result
+    assert "Pagamento Parcial" not in result
+
+
 async def test_register_payment_override_ambiguous_name_demands_new_tool_call():
     """Mesmo buraco do teste acima, no ramo de nome ambíguo (ilike com vários
     candidatos): a pergunta sozinha deixa Eva livre pra 'confirmar' o pagamento
