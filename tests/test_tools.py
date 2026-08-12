@@ -3323,6 +3323,125 @@ async def test_register_payment_override_unlinked_sender_confirmed_registers():
     assert "Maria Eduarda Souza" in mock_sheets.call_args[0][0]
 
 
+def _make_supabase_client_with_old_completed_appointment():
+    """Supabase client for the LATE-BALANCE path: the patient has NO scheduled and
+    NO future-canceled appointment — only a COMPLETED consultation that happened
+    more than 15 days ago, whose booking fee was already paid (in a previous month).
+
+    The mock is date-aware for the completed-appointment lookup: it honours the
+    `.gte("start_time", ...)` lower bound the query applies. A lookback window that
+    starts after the consultation date (e.g. now-15d for a 35-day-old consult) hides
+    the appointment, exactly as the real database does. This is what let Eva ignore
+    the already-paid R$100 booking fee and charge it a second time (caso Danniela
+    Azevedo, 5581991950147, 2026-08-12).
+
+    Call order (client.from_):
+      1. patients ilike  → the single candidate (name-override resolution)
+      2. scheduled_raw   → empty (no active appointment)
+      3. future_canceled → empty (nothing to reactivate)
+      4. completed_raw   → the old completed appt, IFF the query's date window includes it
+      5. patients custom_price → empty → None
+      6+. updates / misc → empty
+    """
+    now = datetime.now(TZ)
+    consult_start = now - timedelta(days=35)      # consultation already happened, >15d ago
+    candidate = {
+        "id": "dan-id",
+        "name": "Danniela Azevedo Ramos De Almeida",
+        "doctor_id": "18b01f87-eacd-4905-bd4a-a8293991e6fd",  # Dra. Bruna
+    }
+    completed_appt = {
+        "appointment_id": "apt-old-completed",
+        "start_time": consult_start.isoformat(),
+        "end_time": (consult_start + timedelta(hours=1)).isoformat(),
+        "doctor_id": "18b01f87-eacd-4905-bd4a-a8293991e6fd",
+        "paid_at": None,
+        "booking_fee_paid_at": (now - timedelta(days=58)).isoformat(),  # paid a previous month
+        "status": "completed",
+        "consultation_type": None,
+        "booking_fee_waived": False,
+    }
+    empty = MagicMock(data=[])
+
+    captured = {"start_gte": None}
+
+    def _gte(col, val):
+        if col == "start_time":
+            captured["start_gte"] = val
+        return table
+
+    def _side_effect(*_a, **_kw):
+        _side_effect.call_count += 1
+        n = _side_effect.call_count
+        if n == 1:
+            captured["start_gte"] = None
+            return MagicMock(data=[candidate])          # ilike patients
+        if n == 2:
+            captured["start_gte"] = None
+            return empty                                # scheduled_raw (PRIORITY 1)
+        if n == 3:
+            captured["start_gte"] = None
+            return empty                                # future_canceled (PRIORITY 2)
+        if n == 4:
+            # completed_raw (PRIORITY 3): a start_time lower bound after the consult
+            # date hides it — reproducing the 15-day-window bug.
+            lb = captured["start_gte"]
+            captured["start_gte"] = None
+            hidden = lb is not None and datetime.fromisoformat(lb) > consult_start
+            return empty if hidden else MagicMock(data=[completed_appt])
+        return empty
+
+    _side_effect.call_count = 0
+
+    execute = AsyncMock(side_effect=_side_effect)
+    table = MagicMock()
+    for m in ("select", "eq", "in_", "limit", "single", "maybe_single",
+              "order", "insert", "update", "upsert", "is_", "gt", "lt", "neq", "ilike"):
+        getattr(table, m).return_value = table
+    table.gte = MagicMock(side_effect=_gte)
+    table.execute = execute
+    client = MagicMock()
+    client.from_.return_value = table
+    return client
+
+
+async def test_register_payment_settles_saldo_of_completed_appt_older_than_15_days():
+    """The saldo of a consultation that happened more than 15 days ago must settle
+    the consultation — NOT be charged the booking fee again.
+
+    Danniela's consult (Dra. Bruna, R$650) had its R$100 booking fee paid in June.
+    On 12/08 she paid the R$550 saldo. Because the completed-appointment lookup was
+    bounded to the last 15 days, the 35-day-old consult was invisible, so Eva did
+    not know the fee was paid: she treated R$550 as a partial payment still owing
+    R$100 and asked for it again (double booking fee). With the appointment found,
+    expected_remaining is 650-100=550, so R$550 QUITA the consultation.
+    """
+    from app.graph.tools import register_payment
+    client = _make_supabase_client_with_old_completed_appointment()
+    with patch("app.graph.tools.get_supabase", new_callable=AsyncMock, return_value=client), \
+         patch("app.patients.get_contact_by_phone", new_callable=AsyncMock, return_value={"id": "contact-1"}), \
+         patch("app.patients.get_patients_by_contact", new_callable=AsyncMock, return_value=[{"id": "dan-id"}]), \
+         patch("app.patients.get_contacts_for_patient", new_callable=AsyncMock, return_value=[{"phone": "5581991950147"}]), \
+         patch("app.graph.tools.log_event", new_callable=AsyncMock), \
+         patch("app.graph.tools.send_text", new_callable=AsyncMock), \
+         patch("app.google_drive.rename_file", new_callable=AsyncMock), \
+         patch("app.google_sheets.append_payment_receipt", new_callable=AsyncMock) as mock_sheets, \
+         patch("app.graph.tools._notify_clinic", new_callable=AsyncMock):
+        result = await register_payment.coroutine(
+            amount="550,00",
+            drive_link="https://drive.google.com/file/d/abc/view",
+            patient_name_override="Danniela Azevedo Ramos De Almeida",
+            state=_make_state(preferred_doctor="bruna"),
+            config=CONFIG,
+        )
+
+    # R$550 must settle the consultation, not read as a partial payment.
+    mock_sheets.assert_awaited_once()
+    assert mock_sheets.call_args.kwargs["payment_type"] == "Consulta"
+    assert "QUITADA" in result
+    assert "Pagamento Parcial" not in result
+
+
 # ── _parse_brl_amount ──────────────────────────────────────────────────────────
 
 def test_parse_brl_amount_comma_decimal():

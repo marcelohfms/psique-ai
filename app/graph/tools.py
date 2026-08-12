@@ -2949,9 +2949,15 @@ async def register_payment(
             appt_result_data = []
         else:
             # PRIORITY 3: completed past appointment (late full payment).
+            # No date window: a patient may settle the saldo weeks or months after
+            # the consultation. Bounding this to a recent lookback hid the completed
+            # appointment carrying booking_fee_paid_at, so Eva stopped recognizing the
+            # already-paid R$100 booking fee and charged it a second time (caso Danniela
+            # Azevedo, 5581991950147, 2026-08-12: consult 08/07, saldo pago 12/08).
+            # The paid_at guard below still blocks a duplicate on an already-settled one.
             completed_raw = await client.from_("appointments").select(_appt_fields).eq(
                 "patient_id", user_id
-            ).eq("status", "completed").gte("start_time", lookback_iso).order(
+            ).eq("status", "completed").order(
                 "start_time", desc=True
             ).limit(1).execute()
             appt_result_data = completed_raw.data
