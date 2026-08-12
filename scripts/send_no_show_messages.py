@@ -29,16 +29,20 @@ async def send_no_show_message(phone: str, first_name: str) -> None:
     phone_wpp = phone if "@s.whatsapp.net" in phone else f"{phone}@s.whatsapp.net"
     conv_id = await find_or_create_conversation(phone_wpp)
     content = (
-        f"Olá! Notamos que {first_name} não conseguiu comparecer à consulta. "
-        f"Como não houve aviso com antecedência, a taxa de reserva foi retida. "
-        f"Se quiser remarcar, é só responder por aqui — será um novo agendamento, "
-        f"com uma nova taxa de reserva. Estamos à disposição!"
+        f"Olá! 😊\n\n"
+        f"Sentimos a falta de {first_name} na última consulta — e queremos "
+        f"muito continuar cuidando de você.\n\n"
+        f"Como não houve aviso com antecedência, a taxa de reserva foi retida "
+        f"desta vez.\n\n"
+        f"Se quiser remarcar, é só responder por aqui que a gente te ajuda! "
+        f"Será um novo agendamento, com uma nova taxa de reserva.\n\n"
+        f"Estamos à disposição. 💜"
     )
     await send_template_message(
         conv_id,
         template_name="no_show",
         language="pt_BR",
-        category="MARKETING",
+        category="UTILITY",
         body_params={"1": first_name},
         content=content,
     )
