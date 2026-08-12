@@ -441,3 +441,31 @@ def test_pagar_repassa_drive_link_para_mark_paid(client, monkeypatch):
     )
     assert r.status_code == 200
     assert calls["drive_link"] == "https://drive.google.com/file/d/abc123/view"
+
+
+# ── No-show (falta) ─────────────────────────────────────────────────────────
+
+
+import return_reminders
+
+
+def test_pagamentos_no_show_requires_token(client):
+    r = client.post("/api/atendente/pagamentos/a1/no-show")
+    assert r.status_code == 401
+
+
+def test_pagamentos_no_show_marca_falta(client, monkeypatch):
+    calls = {}
+    async def fake_get_client():
+        return object()
+    async def fake_mark_no_show(_client, appointment_id):
+        calls["appointment_id"] = appointment_id
+
+    monkeypatch.setattr(attendant_routes, "get_client", fake_get_client)
+    monkeypatch.setattr(return_reminders, "mark_no_show", fake_mark_no_show)
+
+    r = client.post("/api/atendente/pagamentos/a1/no-show",
+                    params={"token": "test-token"})
+    assert r.status_code == 200
+    assert r.json() == {"ok": True}
+    assert calls["appointment_id"] == "a1"

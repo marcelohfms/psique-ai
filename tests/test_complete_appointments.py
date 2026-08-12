@@ -99,6 +99,66 @@ async def test_skips_when_no_consulta_contact():
     table.update.assert_called_once_with({"pos_consulta_sent_at": NOW_ISO})
 
 
+@pytest.mark.asyncio
+async def test_skips_when_appointment_classified_as_alta():
+    # Alta (discharge): the doctor classified this consultation as alta, so
+    # inviting the patient to "agende a próxima" would be contradictory.
+    execute = AsyncMock(return_value=MagicMock(data=[]))
+    appt_table = MagicMock()
+    for m in ("select", "update", "eq", "gt", "limit"):
+        getattr(appt_table, m).return_value = appt_table
+    appt_table.execute = execute
+
+    rr_table = MagicMock()
+    for m in ("select", "eq"):
+        getattr(rr_table, m).return_value = rr_table
+    rr_table.execute = AsyncMock(return_value=MagicMock(data=[{
+        "return_interval": "alta",
+        "last_classified_appointment_id": "evt-abc",
+    }]))
+
+    client = MagicMock()
+    client.from_.side_effect = lambda t: rr_table if t == "return_reminders" else appt_table
+
+    with patch("scripts.complete_appointments.get_contacts_for_patient",
+               new_callable=AsyncMock) as mock_gcfp, \
+         patch("scripts.complete_appointments.send_pos_consulta",
+               new_callable=AsyncMock) as mock_send:
+        await ca._process_pos_consulta(client, _appt(), NOW_ISO)
+    mock_gcfp.assert_not_awaited()
+    mock_send.assert_not_awaited()
+    appt_table.update.assert_called_once_with({"pos_consulta_sent_at": NOW_ISO})
+
+
+@pytest.mark.asyncio
+async def test_sends_when_alta_row_is_for_a_different_appointment():
+    # A return_reminders alta row for a *different* consultation must not
+    # suppress the pos-consulta of this one.
+    execute = AsyncMock(return_value=MagicMock(data=[]))
+    appt_table = MagicMock()
+    for m in ("select", "update", "eq", "gt", "limit"):
+        getattr(appt_table, m).return_value = appt_table
+    appt_table.execute = execute
+
+    rr_table = MagicMock()
+    for m in ("select", "eq"):
+        getattr(rr_table, m).return_value = rr_table
+    rr_table.execute = AsyncMock(return_value=MagicMock(data=[{
+        "return_interval": "alta",
+        "last_classified_appointment_id": "evt-other",
+    }]))
+
+    client = MagicMock()
+    client.from_.side_effect = lambda t: rr_table if t == "return_reminders" else appt_table
+
+    with patch("scripts.complete_appointments.get_contacts_for_patient",
+               new_callable=AsyncMock, return_value=[{"phone": "5581111"}]), \
+         patch("scripts.complete_appointments.send_pos_consulta",
+               new_callable=AsyncMock) as mock_send:
+        await ca._process_pos_consulta(client, _appt(), NOW_ISO)
+    mock_send.assert_awaited_once()
+
+
 def test_should_skip_unconfirmed():
     assert ca._should_skip_unconfirmed(
         {"reminder_day_before_sent_at": "2026-07-21T10:00:00+00:00", "confirmed_at": None}

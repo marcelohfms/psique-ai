@@ -62,6 +62,22 @@ async def _process_pos_consulta(client, appt: dict, now_iso: str) -> None:
             "pos_consulta_sent_at": now_iso,
         }).eq("id", appt["id"]).execute()
 
+    # Alta: se esta consulta já foi classificada como alta pelo médico, não
+    # mande "agende a próxima" — seria contraditório.
+    appt_id = appt.get("appointment_id")
+    if patient_id and appt_id:
+        rr = await (
+            client.from_("return_reminders")
+            .select("return_interval, last_classified_appointment_id")
+            .eq("patient_id", patient_id)
+            .execute()
+        )
+        for row in (rr.data or []):
+            if row.get("return_interval") == "alta" and row.get("last_classified_appointment_id") == appt_id:
+                print(f"Skipping pos_consulta for patient {patient_id} — alta registrada.")
+                await _mark_sent()
+                return
+
     if _should_skip_unconfirmed(appt):
         print(f"Skipping pos_consulta for patient {patient_id} — reminder de dia anterior enviado, sem confirmação (no-show/cancel).")
         await _mark_sent()

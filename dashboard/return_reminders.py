@@ -12,6 +12,8 @@ _TZ = ZoneInfo("America/Recife")
 
 RETURN_INTERVALS = ("15_dias", "1_mes", "2_meses", "3_meses", "4_meses", "6_meses")
 
+ALTA = "alta"  # sentinela em return_interval: paciente recebeu alta, sem próximo retorno
+
 RETURN_INTERVAL_LABELS = {
     "15_dias": "15 dias",
     "1_mes": "1 mês",
@@ -132,6 +134,8 @@ async def get_pending_classification(
     )
     latest_by_patient: dict[str, dict] = {}
     for appt in appts_result.data or []:
+        if appt.get("status") == "no_show":
+            continue  # falta nunca entra na fila de classificação
         patient_id = appt.get("patient_id")
         if not patient_id:
             continue
@@ -204,6 +208,61 @@ async def save_classification(
     elif return_interval == "1_mes":
         payload["month_before_sent_at"] = now
 
+    existing = await (
+        client.from_("return_reminders").select("id").eq("patient_id", patient_id).execute()
+    )
+    if existing.data:
+        result = await (
+            client.from_("return_reminders").update(payload).eq("patient_id", patient_id).execute()
+        )
+    else:
+        result = await client.from_("return_reminders").insert(payload).execute()
+    return (result.data or [payload])[0]
+
+
+async def mark_no_show(client, appointment_id: str) -> None:
+    """Marca a consulta como falta (`status='no_show'`).
+
+    Registro durável e de primeira classe: distingue quem faltou de quem
+    compareceu. Como `get_pending_classification` e `compute_pendencias` só
+    olham `completed`/`scheduled`, isso tira a consulta da fila do médico e
+    das pendências da atendente. A taxa já paga fica retida (default passivo);
+    override é manual, pela atendente, no fluxo de reembolso existente.
+    """
+    await (
+        client.from_("appointments")
+        .update({"status": "no_show", "updated_at": datetime.now(_TZ).isoformat()})
+        .eq("appointment_id", appointment_id)
+        .execute()
+    )
+
+
+async def save_discharge(
+    client,
+    patient_id: str,
+    doctor_id: str,
+    appointment_id: str,
+) -> dict:
+    """Registra ALTA do paciente: para os lembretes de retorno sem agendar um novo.
+
+    Grava a mesma linha 1-por-paciente de `save_classification`, mas com o
+    sentinela `return_interval="alta"` e `next_return_date=None`. O
+    `last_classified_appointment_id` é o que tira a consulta da fila do
+    /retornos. Não valida contra RETURN_INTERVALS de propósito — "alta" é um
+    desfecho terminal, não um intervalo.
+    """
+    now = datetime.now(_TZ).isoformat()
+    payload = {
+        "patient_id": patient_id,
+        "doctor_id": doctor_id,
+        "return_interval": ALTA,
+        "next_return_date": None,
+        "last_classified_appointment_id": appointment_id,
+        "month_before_sent_at": now,
+        "month_of_sent_at": now,
+        "overdue_sent_at": now,
+        "updated_at": now,
+    }
     existing = await (
         client.from_("return_reminders").select("id").eq("patient_id", patient_id).execute()
     )

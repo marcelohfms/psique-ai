@@ -297,6 +297,27 @@
   .btn-pago svg { width: 14px; height: 14px; flex-shrink: 0; }
   .btn-pago-text { display: flex; flex-direction: column; line-height: 1.2; text-align: left; }
 
+  /* ── Não compareceu button ── */
+  .btn-noshow {
+    display: inline-flex;
+    align-items: center;
+    margin-left: 0.4rem;
+    padding: 0.4rem 0.65rem;
+    background: transparent;
+    color: var(--color-muted-text);
+    font-size: 0.72rem;
+    font-weight: 600;
+    font-family: 'Fira Sans', sans-serif;
+    border: 1.5px solid var(--color-border);
+    border-radius: 7px;
+    cursor: pointer;
+    white-space: nowrap;
+    transition: background 150ms, color 150ms, border-color 150ms;
+  }
+  .btn-noshow:hover { background: #fdecec; color: #b91c1c; border-color: #f0c4c4; }
+  .btn-noshow:active { transform: scale(0.97); }
+  .btn-noshow:disabled { opacity: 0.55; cursor: not-allowed; transform: none; }
+
   /* ── Footer ── */
   .pag-footer {
     padding: 1rem 1.25rem;
@@ -492,6 +513,14 @@
                 </svg>
                 <span class="btn-pago-text"><span>Marcar</span><span>pago</span></span>
               </button>
+              <button
+                type="button"
+                onclick="marcarNoShowPag('{{ p.appointment_id }}', this)"
+                class="btn-noshow"
+                aria-label="Marcar não compareceu para {{ p.paciente }}"
+              >
+                Não compareceu
+              </button>
             </td>
           </tr>
           {% endfor %}
@@ -570,6 +599,14 @@
                   <polyline points="20 6 9 17 4 12"/>
                 </svg>
                 <span class="btn-pago-text"><span>Marcar</span><span>pago</span></span>
+              </button>
+              <button
+                type="button"
+                onclick="marcarNoShowPag('{{ p.appointment_id }}', this)"
+                class="btn-noshow"
+                aria-label="Marcar não compareceu para {{ p.paciente }}"
+              >
+                Não compareceu
               </button>
             </td>
           </tr>
@@ -653,6 +690,14 @@
                 </svg>
                 <span class="btn-pago-text"><span>Marcar</span><span>pago</span></span>
               </button>
+              <button
+                type="button"
+                onclick="marcarNoShowPag('{{ p.appointment_id }}', this)"
+                class="btn-noshow"
+                aria-label="Marcar não compareceu para {{ p.paciente }}"
+              >
+                Não compareceu
+              </button>
             </td>
           </tr>
           {% endfor %}
@@ -691,6 +736,20 @@ document.addEventListener('change', (e) => {
   const file = e.target.files[0];
   row.querySelector('.comprovante-nome').textContent = file ? file.name : '';
 });
+
+async function marcarNoShowPag(appointmentId, btn) {
+  if (!confirm('Marcar como NÃO COMPARECEU? A pendência sai da lista e a taxa paga fica retida.')) return;
+  btn.disabled = true;
+  try {
+    const r = await fetch(`/api/pagamentos/${appointmentId}/no-show`, { method: 'POST' });
+    if (!r.ok) throw new Error(await r.text());
+    location.reload();
+  } catch (err) {
+    console.error(err);
+    showToast('Erro ao marcar não compareceu. Tente novamente.', true);
+    btn.disabled = false;
+  }
+}
 
 async function marcarPago(appointmentId, tipo, btn) {
   const row = document.getElementById(`row-${appointmentId}-${tipo}`);

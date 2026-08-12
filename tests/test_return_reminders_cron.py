@@ -54,6 +54,20 @@ def test_pending_template_15_dias_nunca_dispara():
     assert result is None
 
 
+def test_pending_template_alta_nunca_dispara_mesmo_sem_next_return_date():
+    row = _row(return_interval="alta", next_return_date=None)
+    # alta não tem data — não pode dar crash em date.fromisoformat(None)
+    assert srr.pending_template(date(2026, 8, 11), row) is None
+
+
+def test_pending_template_intervalo_normal_ainda_dispara():
+    row = _row(return_interval="1_mes", next_return_date="2026-09-11")
+    # agosto é o mês anterior a setembro -> retorno_mes_anterior
+    assert srr.pending_template(date(2026, 8, 11), row) == (
+        "retorno_mes_anterior", "month_before_sent_at",
+    )
+
+
 def test_pending_template_1_mes_pula_um_mes_antes_via_flag():
     # save_classification já marca month_before_sent_at pra 1_mes no momento
     # da classificação — o cron não precisa de lógica especial, só respeita a flag.

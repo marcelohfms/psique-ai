@@ -255,6 +255,30 @@
   .btn-salvar:disabled { opacity: 0.55; cursor: not-allowed; transform: none; }
   .btn-salvar svg { width: 13px; height: 13px; flex-shrink: 0; }
 
+  /* ── Ações da linha (Salvar / Não compareceu / Alta) ── */
+  .row-actions { display: flex; align-items: center; gap: 0.5rem; flex-wrap: wrap; }
+
+  .btn-desfecho {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.35rem;
+    padding: 0.45rem 0.85rem;
+    font-size: 0.78rem;
+    font-weight: 600;
+    font-family: 'Fira Sans', sans-serif;
+    border-radius: 7px;
+    cursor: pointer;
+    transition: background 150ms, color 150ms, transform 100ms, box-shadow 150ms;
+    white-space: nowrap;
+    background: var(--color-surface);
+    color: var(--color-muted-text);
+    border: 1.5px solid var(--color-border);
+  }
+  .btn-desfecho:hover { color: var(--color-primary); border-color: var(--color-primary); }
+  .btn-desfecho:active { transform: scale(0.97); }
+  .btn-desfecho:disabled { opacity: 0.55; cursor: not-allowed; transform: none; }
+  .btn-no-show:hover { color: #dc2626; border-color: #dc2626; }
+
   /* ── Footer ── */
   .pag-footer {
     padding: 0.75rem 1rem;
@@ -446,14 +470,26 @@
               </select>
             </td>
             <td>
-              <button type="button" class="btn-salvar"
-                      aria-label="Salvar retorno para {{ a.patients.name if a.patients else 'paciente' }}"
-                      onclick="salvarRetorno('{{ medico_doctor_id }}', this)">
-                <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-                  <polyline points="20 6 9 17 4 12"/>
-                </svg>
-                Salvar
-              </button>
+              <div class="row-actions">
+                <button type="button" class="btn-salvar"
+                        aria-label="Salvar retorno para {{ a.patients.name if a.patients else 'paciente' }}"
+                        onclick="salvarRetorno('{{ medico_doctor_id }}', this)">
+                  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                    <polyline points="20 6 9 17 4 12"/>
+                  </svg>
+                  Salvar
+                </button>
+                <button type="button" class="btn-desfecho btn-no-show"
+                        aria-label="Marcar não compareceu para {{ a.patients.name if a.patients else 'paciente' }}"
+                        onclick="marcarNoShow(this)">
+                  Não compareceu
+                </button>
+                <button type="button" class="btn-desfecho btn-alta"
+                        aria-label="Dar alta para {{ a.patients.name if a.patients else 'paciente' }}"
+                        onclick="marcarAlta('{{ medico_doctor_id }}', this)">
+                  Alta
+                </button>
+              </div>
             </td>
           </tr>
           {% endfor %}
@@ -546,6 +582,30 @@ async function salvarRetorno(doctorId, btn) {
     btn.disabled = false;
     btn.innerHTML = original;
   }
+}
+
+async function marcarNoShow(btn) {
+  if (!confirm('Marcar como NÃO COMPARECEU? A taxa paga fica retida.')) return;
+  const row = btn.closest('tr');
+  btn.disabled = true;
+  const r = await fetch(`/api/retornos/${row.dataset.patientId}/no-show`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ appointment_id: row.dataset.appointmentId }),
+  });
+  if (r.ok) { location.reload(); } else { btn.disabled = false; alert('Falha ao marcar.'); }
+}
+
+async function marcarAlta(doctorId, btn) {
+  if (!confirm('Dar ALTA? O paciente para de receber lembretes de retorno.')) return;
+  const row = btn.closest('tr');
+  btn.disabled = true;
+  const r = await fetch(`/api/retornos/${row.dataset.patientId}/alta`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ doctor_id: doctorId, appointment_id: row.dataset.appointmentId }),
+  });
+  if (r.ok) { location.reload(); } else { btn.disabled = false; alert('Falha ao dar alta.'); }
 }
 </script>
 {% endblock %}

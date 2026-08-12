@@ -303,6 +303,31 @@ async def api_salvar_retorno(patient_id: str, body: RetornoBody, username: str =
     return {"ok": True, "return_reminder": saved}
 
 
+class AltaBody(BaseModel):
+    doctor_id: str
+    appointment_id: str
+
+
+class NoShowBody(BaseModel):
+    appointment_id: str
+
+
+@app.post("/api/retornos/{patient_id}/alta")
+async def api_alta(patient_id: str, body: AltaBody, username: str = Depends(verify_credentials)):
+    client = get_supabase()
+    saved = await return_reminders.save_discharge(
+        client, patient_id, body.doctor_id, body.appointment_id,
+    )
+    return {"ok": True, "return_reminder": saved}
+
+
+@app.post("/api/retornos/{patient_id}/no-show")
+async def api_no_show(patient_id: str, body: NoShowBody, username: str = Depends(verify_credentials)):
+    client = get_supabase()
+    await return_reminders.mark_no_show(client, body.appointment_id)
+    return {"ok": True}
+
+
 @app.post("/api/pagamentos/{appointment_id}/pagar")
 async def api_pagar(
     appointment_id: str,
@@ -318,6 +343,13 @@ async def api_pagar(
         body.paciente, body.medico, body.data_hora, body.phone,
         drive_link=body.drive_link,
     )
+    return {"ok": True}
+
+
+@app.post("/api/pagamentos/{appointment_id}/no-show")
+async def api_pagamentos_no_show(appointment_id: str, username: str = Depends(verify_credentials)):
+    client = get_supabase()
+    await return_reminders.mark_no_show(client, appointment_id)
     return {"ok": True}
 
 
