@@ -105,6 +105,43 @@ async def get_contacts_for_patient(patient_id: str, role: str, include_inactive:
     return out
 
 
+async def get_reminder_contacts(
+    patient_id: str, role: str, include_inactive: bool = False
+) -> list[dict]:
+    """Contatos que devem receber um lembrete de consulta/retorno.
+
+    Regra: paciente ADULTO (idade >= 18) que tem ao menos um contato próprio
+    (is_self=True) recebe o lembrete SÓ nesse(s) contato(s) — os responsáveis
+    são omitidos. Menor de idade, paciente sem contato próprio, ou birth_date
+    ausente/imparseável caem no comportamento padrão: todos os contatos do
+    papel (mesma semântica active/include_inactive de get_contacts_for_patient).
+    """
+    client = await get_supabase()
+    result = (
+        await client.from_("patient_contacts")
+        .select("contact_id, is_self, contacts(*)")
+        .eq("patient_id", patient_id)
+        .eq("role", role)
+        .execute()
+    )
+
+    seen: set[str] = set()
+    rows: list[dict] = []
+    for row in (result.data or []):
+        contact = row.get("contacts")
+        if contact and (include_inactive or contact.get("active")) and contact["id"] not in seen:
+            seen.add(contact["id"])
+            rows.append({"is_self": bool(row.get("is_self")), "contact": contact})
+
+    patient = await get_patient_by_id(patient_id)
+    age = _compute_age((patient or {}).get("birth_date"))
+
+    self_contacts = [r["contact"] for r in rows if r["is_self"]]
+    if age is not None and age >= 18 and self_contacts:
+        return self_contacts
+    return [r["contact"] for r in rows]
+
+
 def normalize_person_name(name: str | None) -> str:
     """Forma canônica de um nome para COMPARAÇÃO (nunca para gravação):
     sem acentos, minúsculas, espaços internos colapsados."""
