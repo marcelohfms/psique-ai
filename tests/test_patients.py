@@ -459,3 +459,151 @@ async def test_resolve_active_patient_ambiguous_when_multiple_upcoming():
         result = await patients.resolve_active_patient("5583988887777")
     assert result["patient"] is None
     assert result["ambiguous"] is True
+
+
+# --- Task 1: _compute_age ---
+from datetime import date
+from unittest.mock import patch
+from app.patients import _compute_age
+
+
+class _FixedDate(date):
+    @classmethod
+    def today(cls):
+        return cls(2026, 8, 12)
+
+
+def test_compute_age_ddmmyyyy():
+    with patch("app.patients.date", _FixedDate):
+        assert _compute_age("15/01/1990") == 36
+
+
+def test_compute_age_iso():
+    with patch("app.patients.date", _FixedDate):
+        assert _compute_age("1990-01-15") == 36
+
+
+def test_compute_age_exactly_18_on_birthday():
+    with patch("app.patients.date", _FixedDate):
+        assert _compute_age("12/08/2008") == 18
+
+
+def test_compute_age_day_before_18th_birthday():
+    with patch("app.patients.date", _FixedDate):
+        assert _compute_age("13/08/2008") == 17
+
+
+def test_compute_age_none_and_garbage():
+    assert _compute_age(None) is None
+    assert _compute_age("") is None
+    assert _compute_age("não sei") is None
+
+
+# --- Task 2: get_reminder_contacts ---
+from unittest.mock import patch as _patch
+from app.patients import get_reminder_contacts
+
+
+def _reminder_client(pc_rows, patient_birth_date):
+    """Cliente mock: patient_contacts.execute() -> pc_rows;
+    patients.execute() -> [{'birth_date': ...}]."""
+    pc_table = MagicMock()
+    pc_table.select.return_value = pc_table
+    pc_table.eq.return_value = pc_table
+    pc_table.execute = AsyncMock(return_value=MagicMock(data=pc_rows))
+
+    pat_table = MagicMock()
+    pat_table.select.return_value = pat_table
+    pat_table.eq.return_value = pat_table
+    pat_table.execute = AsyncMock(
+        return_value=MagicMock(data=[{"birth_date": patient_birth_date}])
+    )
+
+    client = MagicMock()
+    def _from(name):
+        return pc_table if name == "patient_contacts" else pat_table
+    client.from_.side_effect = _from
+    return client
+
+
+def _pc(cid, phone, is_self, active=True):
+    return {"contact_id": cid, "is_self": is_self,
+            "contacts": {"id": cid, "phone": phone, "active": active}}
+
+
+@pytest.mark.asyncio
+async def test_reminder_contacts_adult_with_self_returns_only_self():
+    rows = [_pc("c-self", "5581000", True), _pc("c-mae", "5581999", False)]
+    client = _reminder_client(rows, "15/01/1990")
+    with _patch("app.patients.get_supabase", new=AsyncMock(return_value=client)):
+        out = await get_reminder_contacts("p1", "consulta", include_inactive=True)
+    assert [c["phone"] for c in out] == ["5581000"]
+
+
+@pytest.mark.asyncio
+async def test_reminder_contacts_adult_without_self_returns_all():
+    rows = [_pc("c-mae", "5581999", False), _pc("c-pai", "5581888", False)]
+    client = _reminder_client(rows, "15/01/1990")
+    with _patch("app.patients.get_supabase", new=AsyncMock(return_value=client)):
+        out = await get_reminder_contacts("p1", "consulta", include_inactive=True)
+    assert sorted(c["phone"] for c in out) == ["5581888", "5581999"]
+
+
+@pytest.mark.asyncio
+async def test_reminder_contacts_minor_with_self_returns_all():
+    rows = [_pc("c-self", "5581000", True), _pc("c-mae", "5581999", False)]
+    client = _reminder_client(rows, "12/08/2015")  # 10 anos em 2026
+    with _patch("app.patients.get_supabase", new=AsyncMock(return_value=client)):
+        out = await get_reminder_contacts("p1", "consulta", include_inactive=True)
+    assert sorted(c["phone"] for c in out) == ["5581000", "5581999"]
+
+
+@pytest.mark.asyncio
+async def test_reminder_contacts_unknown_dob_returns_all():
+    rows = [_pc("c-self", "5581000", True), _pc("c-mae", "5581999", False)]
+    client = _reminder_client(rows, None)
+    with _patch("app.patients.get_supabase", new=AsyncMock(return_value=client)):
+        out = await get_reminder_contacts("p1", "consulta", include_inactive=True)
+    assert sorted(c["phone"] for c in out) == ["5581000", "5581999"]
+
+
+@pytest.mark.asyncio
+async def test_reminder_contacts_excludes_inactive_by_default():
+    rows = [_pc("c-self", "5581000", True, active=False),
+            _pc("c-mae", "5581999", False, active=True)]
+    client = _reminder_client(rows, "15/01/1990")
+    with _patch("app.patients.get_supabase", new=AsyncMock(return_value=client)):
+        out = await get_reminder_contacts("p1", "consulta", include_inactive=False)
+    assert [c["phone"] for c in out] == ["5581999"]
+
+
+# --- Task 3: get_contact_by_id ---
+from app.patients import get_contact_by_id
+
+
+@pytest.mark.asyncio
+async def test_get_contact_by_id_found():
+    table = MagicMock()
+    table.select.return_value = table
+    table.eq.return_value = table
+    table.execute = AsyncMock(
+        return_value=MagicMock(data=[{"id": "c1", "phone": "5581000", "name": "Ana"}])
+    )
+    client = MagicMock()
+    client.from_.return_value = table
+    with _patch("app.patients.get_supabase", new=AsyncMock(return_value=client)):
+        out = await get_contact_by_id("c1")
+    assert out["phone"] == "5581000"
+
+
+@pytest.mark.asyncio
+async def test_get_contact_by_id_missing_returns_none():
+    table = MagicMock()
+    table.select.return_value = table
+    table.eq.return_value = table
+    table.execute = AsyncMock(return_value=MagicMock(data=[]))
+    client = MagicMock()
+    client.from_.return_value = table
+    with _patch("app.patients.get_supabase", new=AsyncMock(return_value=client)):
+        assert await get_contact_by_id("nope") is None
+    assert await get_contact_by_id(None) is None
