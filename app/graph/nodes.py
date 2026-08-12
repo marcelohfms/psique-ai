@@ -22,7 +22,7 @@ from app.graph.tools import (
     request_external_contact, nudge_external_contact,
     _expected_consultation_amount,
 )
-from app.graph.prompts import COLLECT_SYSTEM, MINOR_RULE, MINOR_RETURNING_RULE, ADULT_RULE, GUARDIAN_RULE, EXISTING_PATIENT_SYSTEM, NEW_PATIENT_SYSTEM, CANCELLATION_RULES, MODALITY_CHANGE_RULE, CLINIC_ADDRESS, CLINIC_ADDRESS_TEXT, get_doctors_info, sanitize_clinic_address, get_booking_fee_rule, MEDICAL_LIMITS_RULE, AGE_EXCEPTION_RULE, DOCTOR_CORRECTION_RULE, EMAIL_RULE, get_pricing_rules, ATTENDANT_INSTRUCTION_RULE, get_pricing_exception_rule, CORRECT_PIX_KEY, SOCIAL_NAME_RULE, MINOR_FIRST_CONSULT_INFO, MINOR_RULE_SCHEDULING_ONLY
+from app.graph.prompts import COLLECT_SYSTEM, MINOR_RULE, MINOR_RETURNING_RULE, ADULT_RULE, GUARDIAN_RULE, EXISTING_PATIENT_SYSTEM, NEW_PATIENT_SYSTEM, CANCELLATION_RULES, MODALITY_CHANGE_RULE, CLINIC_ADDRESS, CLINIC_ADDRESS_TEXT, get_doctors_info, sanitize_clinic_address, get_booking_fee_rule, MEDICAL_LIMITS_RULE, AGE_EXCEPTION_RULE, DOCTOR_CORRECTION_RULE, EMAIL_RULE, get_pricing_rules, ATTENDANT_INSTRUCTION_RULE, get_pricing_exception_rule, CORRECT_PIX_KEY, SOCIAL_NAME_RULE, MINOR_FIRST_CONSULT_INFO, MINOR_RULE_SCHEDULING_ONLY, NO_REPEAT_ANSWER_RULE
 from app.whatsapp import send_text
 from app.database import upsert_user, log_event, get_upcoming_appointments, get_user_by_phone, get_users_by_phone, DOCTOR_IDS, DOCTOR_NAMES, save_message, get_last_assistant_message_time, is_registration_complete, missing_registration_field
 from app.chatwoot import get_conversation_id, add_private_note
@@ -2276,6 +2276,8 @@ async def patient_agent_node(state: ConversationState, config: RunnableConfig) -
             "Chame request_document agora para processar essa solicitação. "
             "NÃO mencione consultas agendadas nem inicie outro assunto."
         )
+
+    system_prompt += "\n\n" + NO_REPEAT_ANSWER_RULE
 
     messages = [SystemMessage(content=system_prompt), *clean_messages]
     response = await _get_agent_llm().ainvoke(messages)
