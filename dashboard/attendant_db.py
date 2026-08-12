@@ -82,6 +82,22 @@ async def get_link(patient_id: str, contact_id: str) -> dict | None:
     return rows[0] if rows else None
 
 
+async def get_return_reminder(patient_id: str) -> dict | None:
+    """Linha de return_reminders do paciente (1 por paciente) ou None.
+
+    A data de retorno mora nesta tabela separada, não em `patients`.
+    """
+    client = await get_client()
+    res = (
+        await client.from_("return_reminders")
+        .select("next_return_date, return_interval, doctor_id")
+        .eq("patient_id", patient_id)
+        .execute()
+    )
+    rows = res.data or []
+    return rows[0] if rows else None
+
+
 # ── Updates com whitelist de campos ───────────────────────────────────────────
 
 _CONTACT_FIELDS = {"name", "cpf", "phone", "active", "manual_hold"}

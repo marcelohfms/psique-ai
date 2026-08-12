@@ -88,6 +88,23 @@ async def test_get_link(patched_client):
     assert out["relationship"] == "mãe"
 
 
+# ── Leitura da data de retorno ────────────────────────────────────────────────
+
+
+async def test_get_return_reminder_found(patched_client):
+    patched_client.store["return_reminders"] = [
+        {"id": "r1", "patient_id": "p1", "doctor_id": "d1",
+         "return_interval": "2_meses", "next_return_date": "2026-09-15"},
+    ]
+    out = await attendant_db.get_return_reminder("p1")
+    assert out["return_interval"] == "2_meses"
+    assert out["next_return_date"] == "2026-09-15"
+
+
+async def test_get_return_reminder_missing(patched_client):
+    assert await attendant_db.get_return_reminder("nope") is None
+
+
 # ── Updates com whitelist ─────────────────────────────────────────────────────
 
 
