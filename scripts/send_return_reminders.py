@@ -34,7 +34,6 @@ from zoneinfo import ZoneInfo
 from dotenv import load_dotenv
 load_dotenv()
 
-import app.database  # noqa: F401 — carrega database antes de patients (evita import circular)
 from app.patients import get_reminder_contacts
 
 TZ = ZoneInfo("America/Recife")

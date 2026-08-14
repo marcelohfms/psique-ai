@@ -13,7 +13,6 @@ from datetime import datetime, timezone, timedelta
 from dotenv import load_dotenv
 load_dotenv()
 
-import app.database  # noqa: F401 — carrega database antes de patients (evita import circular)
 from app.patients import get_contacts_for_patient
 
 

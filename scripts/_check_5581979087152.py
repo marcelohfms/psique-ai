@@ -6,7 +6,8 @@ PHONE = "5581979087152"
 
 
 async def main():
-    from app.database import get_supabase, _phone_variants
+    from app.database import get_supabase
+    from app.phone import _phone_variants
     from app.patients import get_contact_by_phone
     client = await get_supabase()
 

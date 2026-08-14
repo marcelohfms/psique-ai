@@ -6,13 +6,10 @@ import logging
 import unicodedata
 from datetime import date, datetime, timezone
 
-from app.database import get_supabase
+from app.phone import _phone_variants, _strip_phone
+from app.supabase_client import get_supabase
 
 logger = logging.getLogger(__name__)
-
-
-def _strip_phone(phone: str) -> str:
-    return phone.replace("@s.whatsapp.net", "")
 
 
 def normalize_phone(phone: str) -> str:
@@ -39,7 +36,6 @@ async def get_contact_by_phone(phone: str) -> dict | None:
     Tenta a forma canônica (com 9) primeiro. Se não encontrar, tenta a variante
     sem o 9 — necessário para contatos legados gravados antes da normalização.
     """
-    from app.database import _phone_variants
     client = await get_supabase()
     for variant in _phone_variants(phone):
         result = (

@@ -160,7 +160,7 @@ async def find_receipt_in_conversation(client, phones: list[str], since_iso: str
     Bernardo Lima Beltrão Teixeira, 5581987415206, 2026-07-31).
     """
     from app.media import RECEIPT_PREFIX, is_payment_receipt_message
-    from app.database import _phone_variants
+    from app.phone import _phone_variants
 
     for phone in phones:
         # `contacts.phone` and `messages.phone` disagree on the 9th digit for a

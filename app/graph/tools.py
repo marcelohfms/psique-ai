@@ -12,7 +12,8 @@ from langgraph.prebuilt import InjectedState
 import logging
 
 from app.whatsapp import send_text
-from app.database import get_supabase, log_event, upsert_user, get_user_by_phone, get_users_by_phone, _phone_variants, DOCTOR_IDS, DOCTOR_NAMES
+from app.database import get_supabase, log_event, upsert_user, get_user_by_phone, get_users_by_phone, DOCTOR_IDS, DOCTOR_NAMES
+from app.phone import _phone_variants
 from app.chatwoot import get_conversation_id, unassign_agent_bot, add_label
 
 logger = logging.getLogger(__name__)

@@ -3,7 +3,8 @@ from dotenv import load_dotenv
 load_dotenv()
 
 async def main():
-    from app.database import get_supabase, get_users_by_phone, _strip_phone
+    from app.database import get_supabase, get_users_by_phone
+    from app.phone import _strip_phone
 
     phone = "5581999480798"
     client = await get_supabase()
