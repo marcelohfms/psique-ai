@@ -998,6 +998,11 @@ async def confirm_appointment(
     except Exception:
         # Supabase indisponível: não dá para avaliar multi-paciente aqui. Segue o fluxo
         # normal, que trata a falha de resolução adiante com rollback do evento do Calendar.
+        # Loga (como o guard abaixo) para deixar rastro se a degradação mascarar algo.
+        _logger.warning(
+            "confirm_appointment: rede multi-paciente não avaliada (get_users_by_phone falhou) phone=%s",
+            _phone_sn, exc_info=True,
+        )
         _all_users_sn = []
     if len(_all_users_sn) > 1 and _match_patient_by_name(_all_users_sn, patient_name_override) is None:
         _names_sn = ", ".join(
