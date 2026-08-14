@@ -1,11 +1,9 @@
-import os
-from supabase import AsyncClient, acreate_client
-
 # _strip_phone: uso interno (3 chamadas, linhas 313/553/568).
 # _phone_variants: re-export TEMPORÁRIO — database.py não usa. Existe só para
 # os 28 call sites ainda apontados para cá; a Task 5 os reaponta e remove esta
 # metade do import. Não deixe passar disso.
 from app.phone import _phone_variants, _strip_phone  # noqa: F401
+from app.supabase_client import get_supabase
 
 # ── Doctor ID map (from doctors table) ───────────────────────────────────────
 
@@ -15,21 +13,6 @@ DOCTOR_IDS: dict[str, str] = {
 }
 
 DOCTOR_NAMES: dict[str, str] = {v: k for k, v in DOCTOR_IDS.items()}
-
-# ── Supabase client ───────────────────────────────────────────────────────────
-
-_supabase: AsyncClient | None = None
-
-
-async def get_supabase() -> AsyncClient:
-    global _supabase
-    if _supabase is None:
-        _supabase = await acreate_client(
-            os.environ["SUPABASE_URL"],
-            os.environ["SUPABASE_KEY"],
-        )
-    return _supabase
-
 
 # ── User helpers ──────────────────────────────────────────────────────────────
 
