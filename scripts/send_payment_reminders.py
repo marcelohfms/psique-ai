@@ -20,7 +20,7 @@ Requires in Supabase:
 """
 import asyncio
 import os
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
 from dotenv import load_dotenv
@@ -38,6 +38,14 @@ DOCTOR_KEYS = {
     "d5baa58b-a788-4f40-b8c0-512c189150be": "julio",
     "18b01f87-eacd-4905-bd4a-a8293991e6fd": "bruna",
 }
+
+# Templates aprovados no Meta (UTILITY, pt_BR) usados fora da janela de 24h.
+# Params posicionais: {{1}} contato · {{2}} referência da consulta · {{3}} médico · {{4}} data/hora
+TEMPLATE_REMINDER = "taxa_reserva_lembrete"
+TEMPLATE_CANCEL = "taxa_reserva_cancelamento"
+
+# Janela de atendimento do WhatsApp: fora dela, só template é entregável.
+WHATSAPP_WINDOW_HOURS = 24
 
 
 def payment_reminder_message(contact_first_name: str, doctor_label: str, date_str: str, patient_first_name: str | None = None) -> str:
