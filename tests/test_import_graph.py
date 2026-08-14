@@ -14,6 +14,8 @@ update_patient_ages) sem que nada acusasse a lacuna. Em vez disso, os
 entrypoints são derivados varrendo .github/workflows/*.yml por referências a
 scripts/<nome>.py — a mesma fonte que decide o que roda em produção.
 """
+import ast
+import importlib
 import os
 import re
 import subprocess
@@ -178,4 +180,46 @@ def test_ninguem_importa_phone_variants_de_database():
 
     assert not offenders, (
         "importe _phone_variants de app.phone:\n  " + "\n  ".join(offenders)
+    )
+
+
+@pytest.mark.parametrize("module", WORKFLOW_ENTRYPOINTS)
+def test_entrypoint_resolve_imports_dentro_de_funcao(module):
+    """Todo `from app.X import Y` de um entrypoint resolve — inclusive os lazy.
+
+    `test_cron_entrypoint_importa_em_processo_limpo` só exercita os imports de
+    **nível de módulo**: a guarda `if __name__ == "__main__"` impede main() de
+    rodar, então um `from app.X import Y` dentro de um corpo de função nunca é
+    avaliado e um símbolo inexistente passa despercebido até alguém disparar o
+    script — tipicamente durante um incidente, que é quando essas ferramentas
+    de diagnóstico são procuradas.
+
+    Foi exatamente esse o caso de scripts/_probe_chatwoot_number.py, que
+    importava `_find_conversation_for_contact` dentro de main() por meses
+    depois de a função ter sido dividida em `_get_contact_conversations` +
+    `_pick_conversation` (commit ca103a5).
+
+    A verificação é estática: parseia o fonte e confere cada nome contra o
+    módulo de origem, sem executar o entrypoint. Só resolve alvos `app.*` —
+    importar um módulo `scripts.*` executaria aquele script.
+    """
+    rel_path = Path(*module.split(".")).with_suffix(".py")
+    tree = ast.parse((REPO_ROOT / rel_path).read_text())
+
+    missing = []
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.ImportFrom):
+            continue
+        # level > 0 é import relativo; module None acontece em `from . import x`
+        if node.level or not node.module or not node.module.startswith("app."):
+            continue
+        origin = importlib.import_module(node.module)
+        for alias in node.names:
+            if not hasattr(origin, alias.name):
+                missing.append(
+                    f"linha {node.lineno}: {node.module} não tem {alias.name!r}"
+                )
+
+    assert not missing, (
+        f"{module} importa símbolos que não existem:\n  " + "\n  ".join(missing)
     )
