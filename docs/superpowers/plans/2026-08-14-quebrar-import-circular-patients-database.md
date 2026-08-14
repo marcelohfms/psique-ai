@@ -746,10 +746,34 @@ from app.phone import _strip_phone
 Run: `uv run pytest tests/test_import_graph.py -v`
 Expected: PASS em todos os casos, incluindo o novo.
 
-- [ ] **Step 6: Confirmar que os 20 one-off ainda importam**
+- [ ] **Step 6: Confirmar que os imports editados resolvem (verificação estática)**
 
-Run: `uv run python -c "import pathlib,importlib; [importlib.import_module('scripts.'+p.stem) for p in pathlib.Path('scripts').glob('_check_*.py')]"`
-Expected: exit 0. Estes scripts não têm cobertura de teste; este import é a única verificação de que as edições não os quebraram.
+⚠️ **Não importe estes scripts para verificá-los.** Nenhum dos 20 tem guarda
+`if __name__ == "__main__"`: todos chamam `asyncio.run(main())` no nível do
+módulo. Importar **executa** o script, disparando consultas reais contra o
+Supabase de produção se houver credencial no ambiente. A verificação certa é
+estática — parseia os imports e confere que cada símbolo existe no módulo de
+origem, sem executar nada:
+
+```bash
+uv run python -c "
+import ast, pathlib, importlib
+bad, checked = [], 0
+for p in sorted(pathlib.Path('scripts').glob('_*.py')):
+    for node in ast.walk(ast.parse(p.read_text())):
+        if isinstance(node, ast.ImportFrom) and node.module in ('app.phone', 'app.database', 'app.patients'):
+            mod = importlib.import_module(node.module)
+            for a in node.names:
+                checked += 1
+                if not hasattr(mod, a.name):
+                    bad.append(f'{p}:{node.lineno} {node.module} nao tem {a.name}')
+print(f'simbolos verificados: {checked}, problemas: {len(bad)}')
+for b in bad: print(' ', b)
+"
+```
+
+Expected: `problemas: 0`. Estes scripts não têm cobertura de teste; esta
+verificação é a única rede de que as edições não os quebraram.
 
 - [ ] **Step 7: Rodar a suíte**
 
