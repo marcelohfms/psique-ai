@@ -1,8 +1,5 @@
 # _strip_phone: uso interno (3 chamadas, linhas 313/553/568).
-# _phone_variants: re-export TEMPORÁRIO — database.py não usa. Existe só para
-# os 28 call sites ainda apontados para cá; a Task 5 os reaponta e remove esta
-# metade do import. Não deixe passar disso.
-from app.phone import _phone_variants, _strip_phone  # noqa: F401
+from app.phone import _strip_phone
 from app.supabase_client import get_supabase
 
 # A API legada de `users` daqui é um adaptador sobre o modelo de

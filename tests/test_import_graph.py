@@ -98,3 +98,22 @@ def test_patients_nao_importa_database():
 
     assert "from app.database import" not in source
     assert "import app.database" not in source
+
+
+def test_ninguem_importa_phone_variants_de_database():
+    """_phone_variants pertence a app.phone; app.database não o usa.
+
+    Manter o re-export significaria dois caminhos de import para o mesmo
+    símbolo — a confusão que produziu o ciclo patients/database.
+    """
+    offenders = []
+    for path in REPO_ROOT.rglob("*.py"):
+        if ".venv" in path.parts or path.name == "test_import_graph.py":
+            continue
+        for lineno, line in enumerate(path.read_text().splitlines(), 1):
+            if "from app.database import" in line and "_phone_variants" in line:
+                offenders.append(f"{path.relative_to(REPO_ROOT)}:{lineno}")
+
+    assert not offenders, (
+        "importe _phone_variants de app.phone:\n  " + "\n  ".join(offenders)
+    )

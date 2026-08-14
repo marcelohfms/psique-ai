@@ -237,7 +237,7 @@ def _incoming_media_phone(payload: dict) -> str | None:
     from_number = msg.get("from", "")
     if not from_number:
         return None
-    from app.database import _phone_variants as _pv
+    from app.phone import _phone_variants as _pv
     variants = _pv(from_number)
     return (variants[0] if variants else from_number) + "@s.whatsapp.net"
 
@@ -275,7 +275,7 @@ async def extract_message(payload: dict) -> tuple[str, str] | None:
     # O webhook do WhatsApp às vezes entrega números brasileiros em formato legado
     # de 8 dígitos (12 dígitos totais). _phone_variants[0] sempre retorna a forma
     # com 9, garantindo consistência com o banco de dados.
-    from app.database import _phone_variants as _pv
+    from app.phone import _phone_variants as _pv
     _canonical = _pv(from_number)
     from_number = _canonical[0] if _canonical else from_number
 
@@ -718,7 +718,8 @@ async def process_message(phone: str, text: str) -> None:
 
 async def _reset_conversation(phone: str) -> None:
     """Apaga todo o histórico e estado da conversa para um número."""
-    from app.database import get_supabase, _strip_phone
+    from app.database import get_supabase
+    from app.phone import _strip_phone
     client = await get_supabase()
     stripped = _strip_phone(phone)
 
@@ -824,7 +825,7 @@ def _extract_chatwoot_message(payload: dict) -> tuple[str, str | None, int] | No
         return None
     # Normalize to canonical 13-digit form (same as /webhook handler) so that
     # both webhooks use the same buffer key and phone lock, preventing duplicates.
-    from app.database import _phone_variants as _pv
+    from app.phone import _phone_variants as _pv
     _raw = phone_raw.lstrip("+")
     _variants = _pv(_raw)
     phone = (_variants[0] if _variants else _raw) + "@s.whatsapp.net"
@@ -911,7 +912,7 @@ def _extract_phone_from_payload(payload: dict) -> str | None:
                 conversation.get("meta", {}).get("sender", {}))
     if not phone_raw:
         return None
-    from app.database import _phone_variants as _pv
+    from app.phone import _phone_variants as _pv
     _raw = phone_raw.lstrip("+")
     _variants = _pv(_raw)
     return (_variants[0] if _variants else _raw) + "@s.whatsapp.net"
