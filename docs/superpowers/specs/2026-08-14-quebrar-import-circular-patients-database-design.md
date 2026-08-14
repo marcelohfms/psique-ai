@@ -74,9 +74,13 @@ nunca é usado dentro de `database.py`. É o único re-export puro do bloco.
 
 ### Consumidores de `_strip_phone` / `_phone_variants` via `app.database`
 
-~25 call sites: `app/graph/tools.py:15` (topo), `app/main.py` (240, 278, 721,
+28 call sites: `app/graph/tools.py:15` (topo), `app/main.py` (240, 278, 721,
 827, 914 — lazy), `scripts/send_payment_reminders.py:163`,
-`scripts/release_pending_reschedules.py:109` e ~20 scripts one-off `_*.py`.
+`scripts/release_pending_reschedules.py:109` e 20 scripts one-off `_*.py`.
+
+Distinção que importa para o design: dos três símbolos, **só `_phone_variants` é
+re-export puro**. `database.py` chama `get_supabase` 6 vezes e `_strip_phone` 3
+vezes internamente — para esses dois, o import é legítimo, não repasse.
 
 `_strip_phone` está **duplicado idêntico** em `app/database.py:30` e
 `app/patients.py:14`.
@@ -128,10 +132,12 @@ queira unificar depois (fora deste escopo).
 
 ### 4. `app/database.py`
 
-- Importa `get_supabase` de `app/supabase_client.py`.
-- Importa `_strip_phone`/`_phone_variants` de `app/phone.py` e **re-exporta**
-  (`# noqa: F401`). Aresta para folha, não fecha ciclo. Preserva os ~25 call
-  sites existentes — churn zero.
+- Importa `get_supabase` de `app/supabase_client.py` — **uso interno real**, 6
+  chamadas (117, 310, 432, …). Não é re-export.
+- Importa `_strip_phone` de `app/phone.py` — **uso interno real**, 3 chamadas
+  (313, 553, 568). Não é re-export.
+- **Não** importa `_phone_variants`: zero usos dentro de `database.py`. Era o
+  único re-export puro dos três, e ele é eliminado (ver seção 5).
 - Remove as definições locais de `_strip_phone` e `_phone_variants`.
 - Remove `import os` e `from supabase import AsyncClient, acreate_client`: os
   três símbolos são usados **exclusivamente** dentro de `get_supabase()` e ficam
@@ -142,7 +148,27 @@ queira unificar depois (fora deste escopo).
 - Remove `get_patients_by_contact` da lista de import (re-export puro, não
   usado internamente).
 
-### 5. Call sites que buscam funções de patients via `app.database`
+### 5. Eliminar o re-export de `_phone_variants`
+
+`app.database` não pode continuar exportando um helper de telefone que ele nem
+usa: é a mesma confusão de "dois lugares para importar a mesma coisa" que criou
+este bug. Todos os call sites passam a importar de `app.phone`, a fonte
+canônica.
+
+| Símbolo | Produção | Scripts one-off `_*.py` |
+|---|---|---|
+| `_phone_variants` | 6 — `app/main.py` (240, 278, 827, 914), `app/graph/tools.py:15`, `scripts/send_payment_reminders.py:163` | 18 |
+| `_strip_phone` | 2 — `app/main.py:721`, `scripts/release_pending_reschedules.py:109` | 2 |
+
+28 arquivos ao todo, todos no mesmo padrão mecânico: separar o import misturado
+em duas linhas. Os one-off entram junto para não deixar nenhum arquivo do
+repositório apontando para o lugar errado.
+
+Ao fim, `grep -rn "from app.database import.*_phone_variants" .` não retorna
+nada, e `app/database.py` importa de `app/phone.py` apenas o `_strip_phone` que
+de fato usa.
+
+### 6. Call sites que buscam funções de patients via `app.database`
 
 Passam a importar de `app.patients`, a fonte canônica:
 
@@ -154,7 +180,7 @@ Passam a importar de `app.patients`, a fonte canônica:
 | `scripts/_link_dione_pedro_lins.py:16` | `link_patient_contact` |
 | `scripts/_check_5581996571022.py:9` | `get_contact_by_phone` |
 
-### 6. Remoção dos guards
+### 7. Remoção dos guards
 
 Os 4 `import app.database  # noqa: F401` viram dead code e saem de
 `send_appointment_reminders.py`, `complete_appointments.py`,
@@ -199,6 +225,9 @@ pego essa regressão.
 - Asserção estrutural: o código-fonte de `app/patients.py` não contém
   `from app.database` nem `import app.database` — trava a aresta de volta contra
   reintrodução acidental.
+- Asserção estrutural: nenhum arquivo `.py` do repositório importa
+  `_phone_variants` de `app.database` — trava o re-export eliminado na seção 5
+  contra reintrodução.
 - Unit dos helpers movidos em `app/phone.py`: reaproveitar os casos de
   `dashboard/tests/test_attendant_db.py` (13 dígitos, 12 dígitos, sufixo
   `@s.whatsapp.net` removido antes de variar).
