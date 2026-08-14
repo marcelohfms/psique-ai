@@ -80,6 +80,30 @@ async def send_whatsapp(phone: str, text: str) -> None:
     await send_text(phone_fmt, text)
 
 
+def _consulta_ref(kind: str, patient_first: str | None) -> str:
+    """Frase que vira o param {{2}} do template, espelhando os builders de texto
+    livre. patient_first é None quando o contato é o próprio paciente."""
+    if kind == "reminder":
+        return f"a consulta de {patient_first}" if patient_first else "sua consulta"
+    return f"da consulta de {patient_first}" if patient_first else "da sua consulta"
+
+
+async def _send_template(phone: str, template_name: str, body_params: dict, content: str) -> None:
+    """Envia um template aprovado via Chatwoot (entregável fora da janela de 24h).
+    Espelha scripts/send_appointment_reminders.py::send_reminder_template."""
+    from app.chatwoot import find_or_create_conversation, send_template_message
+    phone_wpp = phone if "@s.whatsapp.net" in phone else f"{phone}@s.whatsapp.net"
+    conv_id = await find_or_create_conversation(phone_wpp)
+    await send_template_message(
+        conv_id,
+        template_name=template_name,
+        language="pt_BR",
+        category="UTILITY",
+        body_params=body_params,
+        content=content,
+    )
+
+
 async def get_financial_contacts(client, patient_id: str) -> list[dict]:
     """Return all contacts with role 'financeiro' for a patient (phone + name)."""
     result = await (

@@ -467,3 +467,39 @@ async def test_window_closed_on_lookup_error():
     now = datetime(2026, 8, 14, 9, 30, tzinfo=TZ)
 
     assert await spr._window_open(client, "5581987415206@s.whatsapp.net", now) is False
+
+
+# ── Referência da consulta (próprio-paciente vs responsável) ─────────────────
+
+def test_consulta_ref_reminder():
+    assert spr._consulta_ref("reminder", None) == "sua consulta"
+    assert spr._consulta_ref("reminder", "Bento") == "a consulta de Bento"
+
+
+def test_consulta_ref_cancel():
+    assert spr._consulta_ref("cancel", None) == "da sua consulta"
+    assert spr._consulta_ref("cancel", "Bento") == "da consulta de Bento"
+
+
+# ── Envio de template via Chatwoot ───────────────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_send_template_builds_expected_payload():
+    """_send_template resolve a conversa e chama send_template_message com o
+    template, categoria UTILITY, idioma pt_BR e os 4 params posicionais."""
+    body_params = {"1": "Mariana", "2": "a consulta de Bento", "3": "Dr. Júlio", "4": "27/08/2026 às 14:00"}
+
+    with patch("app.chatwoot.find_or_create_conversation",
+               new_callable=AsyncMock, return_value=4321) as mock_conv, \
+         patch("app.chatwoot.send_template_message", new_callable=AsyncMock) as mock_tpl:
+        await spr._send_template("5581999767413", spr.TEMPLATE_REMINDER, body_params, "texto livre de fallback")
+
+    mock_conv.assert_awaited_once_with("5581999767413@s.whatsapp.net")
+    mock_tpl.assert_awaited_once_with(
+        4321,
+        template_name=spr.TEMPLATE_REMINDER,
+        language="pt_BR",
+        category="UTILITY",
+        body_params=body_params,
+        content="texto livre de fallback",
+    )
