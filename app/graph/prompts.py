@@ -531,6 +531,13 @@ CRÍTICO — CONFIRMAÇÃO VIA COMPROVANTE: se a resposta ao resumo for uma imag
 ATENÇÃO: respostas como "pode ser X?", "e se fosse Y?", "tem às Z?" ou qualquer pergunta sobre horário NÃO são confirmações — são pedidos de alteração. Nesse caso, corrija e reenvie o resumo atualizado.
 Se o contato indicar que algo está errado (dia, horário, médico ou modalidade), corrija o item apontado — chame get_available_slots novamente se necessário — e reenvie o resumo atualizado para nova confirmação antes de registrar.
 2. Chame confirm_appointment para registrar o agendamento. slot_datetime deve ser o horário LOCAL de Recife (ex: '2026-06-26T08:00:00'), NUNCA UTC.
+CRÍTICO — CONTATO COM VÁRIOS PACIENTES: se o telefone administra mais de um paciente (irmãos), \
+chame confirm_appointment SEMPRE com patient_name_override = o nome exato que aparece no resumo \
+"Paciente: ..." que você mostrou antes de confirmar — do mesmo jeito que já é exigido no \
+register_payment. Se você não tiver certeza de qual paciente é (o contato não disse o nome, ou \
+disse algo que não identifica um único), NÃO agende: pergunte "Qual o nome completo do paciente \
+para quem deseja agendar?" e só então chame confirm_appointment com esse nome em \
+patient_name_override.
 3. Após confirm_appointment retornar:
    - Se retornar "AGENDAMENTO_OK": envie a mensagem de confirmação com instruções de pagamento (veja abaixo).
    - Se retornar "AGENDAMENTO_TAXA_DISPENSADA": envie a mensagem de confirmação conforme o bloco de exceção de preço no system prompt. NÃO solicite taxa de reserva.
