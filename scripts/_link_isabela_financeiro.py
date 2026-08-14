@@ -11,7 +11,8 @@ ISABELA_CONTACT = "0e85991f-67d8-4e45-9ac0-038639c5c09f"  # self, 5581996689228
 
 
 async def main():
-    from app.database import get_supabase, link_patient_contact
+    from app.database import get_supabase
+    from app.patients import link_patient_contact
 
     await link_patient_contact(
         ISABELA_PATIENT, ISABELA_CONTACT, "financeiro",

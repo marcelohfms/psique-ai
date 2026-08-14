@@ -19,7 +19,8 @@ from fastapi import FastAPI, Request, Response, Header, HTTPException
 from langchain_core.messages import HumanMessage
 
 from app.graph import graph as graph_module
-from app.database import get_user_by_phone, get_users_by_phone, get_contact_by_phone, log_event, DOCTOR_NAMES, save_message
+from app.database import get_user_by_phone, get_users_by_phone, log_event, DOCTOR_NAMES, save_message
+from app.patients import get_contact_by_phone
 from app.buffer import (
     push as buffer_push,
     drain as buffer_drain,
