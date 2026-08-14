@@ -892,12 +892,36 @@ Os `import app.database  # noqa: F401` existiam só para contornar o ciclo. Remo
 
 - [ ] **Step 1: Localizar os guards**
 
-Run: `grep -rn "import app.database  # noqa: F401" scripts/`
-Expected: 4 linhas, uma em cada script acima.
+Run: `grep -rln "import app.database  # noqa: F401" scripts/`
+Expected: **9 arquivos**. Os 4 crons listados acima mais estes 5, que carregam
+o mesmo guard morto:
 
-- [ ] **Step 2: Remover as 4 linhas**
+| Arquivo | Disparado por workflow? |
+|---|---|
+| `scripts/_probe_chatwoot_number.py` | **sim** — `.github/workflows/probe_chatwoot.yml` |
+| `scripts/merge_duplicate_patients.py` | não |
+| `scripts/reconcile_representantes.py` | não |
+| `scripts/_list_pending_reschedules.py` | não |
+| `scripts/_resend_natalia_pos_consulta.py` | não |
 
-Delete de cada um dos 4 scripts a linha:
+Todos os 9 saem: o guard é comprovadamente morto agora que o ciclo não existe,
+e deixar um remendo no repositório faria o próximo leitor acreditar que ele
+ainda é necessário.
+
+- [ ] **Step 1b: Cobrir o entrypoint de workflow que faltava**
+
+`scripts/_probe_chatwoot_number.py` é disparado por `.github/workflows/probe_chatwoot.yml`,
+mas ficou de fora de `CRON_ENTRYPOINTS` em `tests/test_import_graph.py` — omissão
+do plano original. Acrescente-o à lista, para que ele passe a ser verificado em
+subprocesso limpo como os outros:
+
+```python
+    "scripts._probe_chatwoot_number",
+```
+
+- [ ] **Step 2: Remover as 9 linhas**
+
+Delete de cada um dos 9 scripts a linha:
 
 ```python
 import app.database  # noqa: F401 — carrega database antes de patients (evita import circular)
@@ -909,7 +933,7 @@ guard, e o ponto é justamente que agora não precisa.
 - [ ] **Step 3: Rodar o teste de regressão**
 
 Run: `uv run pytest tests/test_import_graph.py -v`
-Expected: PASS nos 10 casos, **agora sem nenhum guard no repositório**. É esta
+Expected: PASS nos 11 casos, **agora sem nenhum guard no repositório**. É esta
 execução que prova a correção: os 6 entrypoints importam em processo limpo por
 mérito do grafo, não de remendo.
 
