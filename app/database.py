@@ -5,6 +5,26 @@
 from app.phone import _phone_variants, _strip_phone  # noqa: F401
 from app.supabase_client import get_supabase
 
+# A API legada de `users` daqui é um adaptador sobre o modelo de
+# patients/contacts. get_patients_by_contact saiu da lista: era re-export puro,
+# sem uso interno — quem precisa importa de app.patients.
+#
+# From-import (binding estático) porque os testes destes 4 fazem
+# patch("app.database.X"): eles stubam a fronteira database->patients. Os nomes
+# do Step 4 usam o estilo oposto, por stubarem a camada patients inteira.
+from app.patients import (
+    get_contact_by_phone,
+    link_patient_contact,
+    upsert_contact,
+    upsert_patient,
+)
+
+# Acesso via objeto de módulo, não `from app.patients import X`: a resolução
+# precisa acontecer em tempo de chamada para que patch("app.patients.X") pegue
+# também as chamadas que patients faz a si mesmo (patients.py:149 e :324).
+# Trocar por from-import quebra 14 testes em tests/test_database_shim.py.
+from app import patients
+
 # ── Doctor ID map (from doctors table) ───────────────────────────────────────
 
 DOCTOR_IDS: dict[str, str] = {
@@ -175,8 +195,7 @@ async def upsert_user(phone: str, data: dict, user_id: str | None = None) -> str
     # Resolve patient_id via phone lookup when not supplied, to avoid blind INSERT
     resolved_id = user_id
     if patient_data and not resolved_id:
-        from app.patients import resolve_active_patient
-        resolved = await resolve_active_patient(phone)
+        resolved = await patients.resolve_active_patient(phone)
         patient = resolved.get("patient")
         if patient:
             resolved_id = patient.get("id")
@@ -240,16 +259,13 @@ async def _reconcile_returning_patient(
       duplicado no existente. merge_duplicate_patient recusa quando o "duplicado"
       tem qualquer consulta — pode ser um paciente legítimo, não um duplicado.
     """
-    from app.patients import (
-        find_patient_by_name_birth, get_patient_by_id, merge_duplicate_patient,
-    )
-    current = await get_patient_by_id(resolved_id) if resolved_id else None
+    current = await patients.get_patient_by_id(resolved_id) if resolved_id else None
     name = patient_data.get("name") or (current or {}).get("name")
     birth_date = patient_data.get("birth_date") or (current or {}).get("birth_date")
     if not name or not birth_date:
         return resolved_id
 
-    candidate = await find_patient_by_name_birth(name, birth_date, exclude_id=resolved_id)
+    candidate = await patients.find_patient_by_name_birth(name, birth_date, exclude_id=resolved_id)
     if not candidate:
         return resolved_id
 
@@ -260,7 +276,7 @@ async def _reconcile_returning_patient(
             "(nome+nascimento)", phone, candidate["id"],
         )
         return candidate["id"]
-    if await merge_duplicate_patient(resolved_id, candidate["id"]):
+    if await patients.merge_duplicate_patient(resolved_id, candidate["id"]):
         _log.getLogger(__name__).info(
             "RETORNANTE_MESCLADO: phone=%s duplicado %s mesclado no paciente "
             "existente %s", phone, resolved_id, candidate["id"],
@@ -553,15 +569,3 @@ async def get_last_assistant_message_time(phone: str):
 # AsyncPostgresSaver.from_conn_string is an async context manager in v3.x
 # Use it directly in the FastAPI lifespan (see main.py)
 
-
-# ── Shim bindings (Tasks 9-10) ────────────────────────────────────────────────
-# Importado no FINAL do módulo para evitar import circular: app/patients.py faz
-# `from app.database import get_supabase`, então database.py precisa estar
-# totalmente inicializado antes de importar de app.patients.
-from app.patients import (  # noqa: E402
-    get_contact_by_phone,
-    get_patients_by_contact,
-    upsert_contact,
-    upsert_patient,
-    link_patient_contact,
-)
