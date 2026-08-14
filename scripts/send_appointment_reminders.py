@@ -25,7 +25,6 @@ load_dotenv()
 # para diagnosticar timeouts na resolução de conversa por número.
 logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s %(message)s")
 
-import app.database  # noqa: F401 — carrega database antes de patients (evita import circular)
 from app.patients import get_reminder_contacts
 
 TZ = ZoneInfo("America/Recife")
