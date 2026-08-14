@@ -6,8 +6,16 @@ suíte normal não pegou: o conftest e os outros testes já carregaram
 app.database primeiro, então a ordem que quebra nunca acontece dentro de um
 processo de teste. Por isso cada caso aqui roda num subprocesso com sys.modules
 limpo.
+
+Os entrypoints testados não são uma lista mantida à mão — ela já driftou duas
+vezes (scripts/_probe_chatwoot_number.py ficou fora, depois mais 4 scripts:
+block_calendar_slots, send_doctor_daily_agenda, send_pending_payments_reminder,
+update_patient_ages) sem que nada acusasse a lacuna. Em vez disso, os
+entrypoints são derivados varrendo .github/workflows/*.yml por referências a
+scripts/<nome>.py — a mesma fonte que decide o que roda em produção.
 """
 import os
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -15,6 +23,7 @@ from pathlib import Path
 import pytest
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
+WORKFLOWS_DIR = REPO_ROOT / ".github" / "workflows"
 
 # Importar um módulo não pode depender de credencial real. Se depender, é bug
 # de import-time — o valor aqui é stub de propósito.
@@ -36,16 +45,34 @@ FAKE_ENV = {
     "CLINIC_NOTIFY_EMAIL": "",
 }
 
-# Todo script disparado por workflow agendado em .github/workflows/.
-CRON_ENTRYPOINTS = [
-    "scripts.send_payment_reminders",
-    "scripts.send_appointment_reminders",
-    "scripts.complete_appointments",
-    "scripts.send_no_show_messages",
-    "scripts.send_return_reminders",
-    "scripts.release_pending_reschedules",
-    "scripts._probe_chatwoot_number",
-]
+
+def _discover_workflow_entrypoints() -> list[str]:
+    """Deriva os módulos de entrypoint a partir de .github/workflows/*.yml.
+
+    Regex simples sobre o texto do arquivo (sem parser YAML): qualquer
+    referência a `scripts/<nome>.py` vira `scripts.<nome>`. Pega tanto os
+    workflows agendados (cron) quanto os de workflow_dispatch (ex.:
+    probe_chatwoot.yml) — qualquer script que um workflow do repo possa
+    disparar em produção precisa importar limpo.
+    """
+    names = set()
+    pattern = re.compile(r"scripts/([A-Za-z0-9_]+)\.py")
+    for path in sorted(WORKFLOWS_DIR.glob("*.yml")):
+        names.update(pattern.findall(path.read_text()))
+    return sorted(f"scripts.{name}" for name in names)
+
+
+WORKFLOW_ENTRYPOINTS = _discover_workflow_entrypoints()
+
+# Uma varredura vazia (regex quebrado, diretório errado, workflows movidos)
+# faria os parametrize abaixo passar silenciosamente com zero casos — o pior
+# modo de falha possível para um teste de regressão. Falha alto e cedo em vez
+# disso. 11 é a contagem real hoje (2026-08-14); o "no mínimo" deixa a
+# asserção correta conforme mais workflows forem adicionados.
+assert len(WORKFLOW_ENTRYPOINTS) >= 11, (
+    f"esperava achar >= 11 entrypoints varrendo {WORKFLOWS_DIR}, achei "
+    f"{len(WORKFLOW_ENTRYPOINTS)}: {WORKFLOW_ENTRYPOINTS}"
+)
 
 
 def _import_in_clean_subprocess(module: str) -> subprocess.CompletedProcess:
@@ -63,7 +90,27 @@ def _import_in_clean_subprocess(module: str) -> subprocess.CompletedProcess:
     )
 
 
-@pytest.mark.parametrize("module", CRON_ENTRYPOINTS)
+@pytest.mark.parametrize("module", WORKFLOW_ENTRYPOINTS)
+def test_cron_entrypoint_tem_guarda_main(module):
+    """Pré-requisito de segurança do teste seguinte.
+
+    O teste seguinte importa cada entrypoint num subprocesso para verificar
+    a cadeia de imports. Isso só é seguro porque cada script guarda a
+    execução atrás de `if __name__ == "__main__":` — importar não dispara
+    main(). Se algum script novo entrar em .github/workflows/ sem essa
+    guarda, `import` executaria o script de verdade (contra o banco/API de
+    produção) dentro do CI. Este teste roda antes do de import e falha alto
+    em vez de deixar isso acontecer silenciosamente.
+    """
+    rel_path = Path(*module.split(".")).with_suffix(".py")
+    source = (REPO_ROOT / rel_path).read_text()
+    assert re.search(r"""if __name__ == ['"]__main__['"]\s*:""", source), (
+        f"{module} não tem guarda if __name__ == '__main__': importar o "
+        f"módulo executaria o script"
+    )
+
+
+@pytest.mark.parametrize("module", WORKFLOW_ENTRYPOINTS)
 def test_cron_entrypoint_importa_em_processo_limpo(module):
     result = _import_in_clean_subprocess(module)
     assert result.returncode == 0, (
