@@ -408,3 +408,62 @@ async def test_reminder_deferred_when_receipt_lookup_fails():
     mock_wpp.assert_not_awaited()
     table.update.assert_not_called()
     mock_email.assert_not_awaited()
+
+
+# ── Janela de 24h do WhatsApp ────────────────────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_window_open_true_when_recent_inbound():
+    """Se o contato mandou mensagem dentro da janela, a conversa está aberta."""
+    client, table = _client()
+    table.execute = AsyncMock(return_value=MagicMock(data=[{"created_at": "2026-08-14T11:00:00+00:00"}]))
+    now = datetime(2026, 8, 14, 9, 30, tzinfo=TZ)
+
+    assert await spr._window_open(client, "5581987415206@s.whatsapp.net", now) is True
+
+
+@pytest.mark.asyncio
+async def test_window_closed_when_no_recent_inbound():
+    """Sem mensagem recente do contato, a janela está fechada."""
+    client, table = _client()
+    table.execute = AsyncMock(return_value=MagicMock(data=[]))
+    now = datetime(2026, 8, 14, 9, 30, tzinfo=TZ)
+
+    assert await spr._window_open(client, "5581987415206@s.whatsapp.net", now) is False
+
+
+@pytest.mark.asyncio
+async def test_window_uses_24h_cutoff_and_role_user():
+    """O corte é now-24h (UTC) e só conta mensagem inbound (role='user')."""
+    client, table = _client()
+    table.execute = AsyncMock(return_value=MagicMock(data=[]))
+    now = datetime(2026, 8, 14, 9, 30, tzinfo=TZ)  # 12:30 UTC
+
+    await spr._window_open(client, "5581987415206@s.whatsapp.net", now)
+
+    table.gte.assert_called_once_with("created_at", "2026-08-13T12:30:00+00:00")
+    table.eq.assert_any_call("role", "user")
+
+
+@pytest.mark.asyncio
+async def test_window_checks_both_phone_variants():
+    """Reaproveita _phone_variants: casa mensagem gravada com/sem o 9º dígito."""
+    client, table = _client()
+    table.execute = AsyncMock(return_value=MagicMock(data=[]))
+    now = datetime(2026, 8, 14, 9, 30, tzinfo=TZ)
+
+    await spr._window_open(client, "5581987415206@s.whatsapp.net", now)
+
+    variants = table.in_.call_args[0][1]
+    assert "5581987415206" in variants
+    assert "558187415206" in variants
+
+
+@pytest.mark.asyncio
+async def test_window_closed_on_lookup_error():
+    """Fail-safe: erro na consulta => tratar como fechada (força template)."""
+    client, table = _client()
+    table.execute = AsyncMock(side_effect=Exception("supabase down"))
+    now = datetime(2026, 8, 14, 9, 30, tzinfo=TZ)
+
+    assert await spr._window_open(client, "5581987415206@s.whatsapp.net", now) is False

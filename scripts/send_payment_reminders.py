@@ -142,6 +142,35 @@ async def cancel_calendar_event(appointment_id: str, doctor_id: str, supabase_cl
         print(f"  Calendar cancel failed (non-fatal): {e}")
 
 
+async def _window_open(client, phone: str, now: datetime) -> bool:
+    """True se o contato mandou alguma mensagem (role='user') nas últimas
+    WHATSAPP_WINDOW_HOURS. Fora dessa janela, o Meta só entrega template aprovado
+    — mensagem livre é aceita pelo Chatwoot mas descartada silenciosamente.
+
+    Reaproveita a normalização de telefone de find_receipt_in_conversation
+    (contacts.phone e messages.phone divergem no 9º dígito). Erro na consulta =>
+    'fechada' (fail-safe: força o caminho de template, que é entregável)."""
+    from app.database import _phone_variants
+
+    cutoff = (now - timedelta(hours=WHATSAPP_WINDOW_HOURS)).astimezone(timezone.utc).isoformat()
+    variants = _phone_variants(phone)
+    try:
+        res = await (
+            client.from_("messages")
+            .select("created_at")
+            .in_("phone", variants)
+            .eq("role", "user")
+            .gte("created_at", cutoff)
+            .order("created_at", desc=True)
+            .limit(1)
+            .execute()
+        )
+    except Exception as e:
+        print(f"  [window] lookup falhou para {variants}: {e} — assumindo janela fechada")
+        return False
+    return bool(res.data)
+
+
 async def find_receipt_in_conversation(client, phones: list[str], since_iso: str) -> dict | None:
     """Return the most recent payment-receipt message sent by any of `phones`
     after `since_iso`, or None.
