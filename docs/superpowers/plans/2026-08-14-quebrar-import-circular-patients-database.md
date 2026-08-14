@@ -546,6 +546,10 @@ No topo de `app/database.py`, logo abaixo do import de `app.supabase_client`:
 # A API legada de `users` daqui é um adaptador sobre o modelo de
 # patients/contacts. get_patients_by_contact saiu da lista: era re-export puro,
 # sem uso interno — quem precisa importa de app.patients.
+#
+# From-import (binding estático) porque os testes destes 4 fazem
+# patch("app.database.X"): eles stubam a fronteira database->patients. Os nomes
+# do Step 4 usam o estilo oposto, por stubarem a camada patients inteira.
 from app.patients import (
     get_contact_by_phone,
     link_patient_contact,
@@ -556,42 +560,43 @@ from app.patients import (
 
 Note que `get_patients_by_contact` **não** entra.
 
-- [ ] **Step 4: Subir os dois imports lazy**
+- [ ] **Step 4: Trocar os imports lazy por acesso via objeto de módulo**
 
-Em `upsert_user` (linha 211 no HEAD), **delete** a linha:
+Os 4 nomes importados lazy **não podem** virar `from app.patients import X` no topo. 14 patches em `tests/test_database_shim.py` fazem `patch("app.patients.X")`, e isso só surte efeito se a resolução do símbolo acontecer em **tempo de chamada**. Um `from ... import` no topo congela o binding na hora do import e o patch deixa de pegar. Não é detalhe de teste: `app/patients.py` chama `find_patient_by_name_birth` (linha 324) e `get_patient_by_id` (linha 149) internamente, e esses testes stubam a camada patients inteira, chamadas internas incluídas.
 
-```python
-        from app.patients import resolve_active_patient
-```
-
-E na função da linha 276, **delete**:
+A solução que remove o import-dentro-de-função **e** preserva a semântica é referenciar pelo módulo. Acrescente ao topo, abaixo do import estático:
 
 ```python
-    from app.patients import (
-        find_patient_by_name_birth, get_patient_by_id, merge_duplicate_patient,
-    )
+# Acesso via objeto de módulo, não `from app.patients import X`: a resolução
+# precisa acontecer em tempo de chamada para que patch("app.patients.X") pegue
+# também as chamadas que patients faz a si mesmo (patients.py:149 e :324).
+# Trocar por from-import quebra 14 testes em tests/test_database_shim.py.
+from app import patients
 ```
 
-Acrescente os quatro nomes ao import do topo, que fica:
+Em `upsert_user` (linha 211 no HEAD), **delete** a linha `from app.patients import resolve_active_patient` e troque a chamada:
 
 ```python
-from app.patients import (
-    find_patient_by_name_birth,
-    get_contact_by_phone,
-    get_patient_by_id,
-    link_patient_contact,
-    merge_duplicate_patient,
-    resolve_active_patient,
-    upsert_contact,
-    upsert_patient,
-)
+        resolved = await patients.resolve_active_patient(phone)
 ```
+
+Na função da linha 276, **delete** o bloco `from app.patients import (...)` e prefixe as três chamadas:
+
+```python
+    current = await patients.get_patient_by_id(resolved_id) if resolved_id else None
+```
+
+Faça o mesmo para as chamadas de `find_patient_by_name_birth` e `merge_duplicate_patient` nessa função: `patients.find_patient_by_name_birth(...)` e `patients.merge_duplicate_patient(...)`. São 4 call sites ao todo, um por nome.
+
+**Não** acrescente esses 4 nomes ao `from app.patients import (...)` estático do Step 3 — os dois grupos usam estilos diferentes de propósito, e o Step 3 já traz o comentário que explica qual serve para quê.
 
 - [ ] **Step 5: Confirmar que não sobrou import lazy de patients**
 
-Run: `grep -n "from app.patients" app/database.py`
-Expected: exatamente **uma** ocorrência, no topo do arquivo, sem indentação e
-sem `# noqa: E402`.
+Run: `grep -n "from app.patients\|from app import patients" app/database.py`
+Expected: exatamente **duas** ocorrências, ambas no topo do arquivo, sem
+indentação e sem `# noqa: E402` — o `from app.patients import (...)` do Step 3 e
+o `from app import patients` do Step 4. Nenhum import de patients pode sobrar
+dentro de corpo de função.
 
 - [ ] **Step 6: Rodar a suíte**
 
