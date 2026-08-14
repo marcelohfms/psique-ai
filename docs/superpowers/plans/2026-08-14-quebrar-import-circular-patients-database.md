@@ -16,7 +16,7 @@
 
 - **Nenhuma mudança de comportamento em runtime.** Este plano move símbolos entre módulos. Corpos de função são copiados **verbatim**, incluindo comentários e docstrings. Se você sentir vontade de melhorar o código enquanto move, não faça — é outro PR.
 - **A suíte inteira fica verde ao fim de cada task:** `uv run pytest --tb=short`. Nenhuma task pode deixar o repositório vermelho.
-- **Nenhum teste existente deve precisar de edição.** Os testes fazem patch no binding do módulo *consumidor* (`app.patients.get_supabase`, `app.database.get_supabase`, `app.graph.tools.get_supabase` — 159 patches no total). Como todo módulo continua usando `from X import get_supabase`, os patches seguem funcionando. **Se você se pegar editando um teste existente, pare: é sinal de que o refactor mudou comportamento.** A única exceção permitida é a Task 4 (remoção de `get_patients_by_contact`, que nenhum teste toca).
+- **Nenhum teste pré-existente do repositório deve precisar de edição.** "Pré-existente" = os 22 arquivos já em `tests/` antes deste plano; os arquivos que este plano cria (`test_phone.py`, `test_supabase_client.py`, `test_import_graph.py`) podem crescer nas tasks seguintes, como a Task 5 faz de propósito. Os testes fazem patch no binding do módulo *consumidor* (`app.patients.get_supabase`, `app.database.get_supabase`, `app.graph.tools.get_supabase` — 159 patches no total). Como todo módulo continua usando `from X import get_supabase`, os patches seguem funcionando. **Se você se pegar editando um teste pré-existente, pare: é sinal de que o refactor mudou comportamento.**
 - **Commit ao fim de cada task**, com a suíte verde.
 
 ## Estrutura de arquivos
