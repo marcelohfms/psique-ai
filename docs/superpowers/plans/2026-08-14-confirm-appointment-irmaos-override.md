@@ -103,7 +103,13 @@ Em `app/graph/tools.py`, inserir o bloco abaixo **imediatamente antes** da linha
     # vez de agendar no escuro. Fica ANTES do create_event/insert (nunca cria evento sob o
     # irmão errado) e usa as MESMAS funções de _resolve_patient_for_booking (paridade).
     _phone_sn = config["configurable"]["phone"].replace("@s.whatsapp.net", "")
-    _all_users_sn = await get_users_by_phone(_phone_sn)
+    try:
+        _all_users_sn = await get_users_by_phone(_phone_sn)
+    except Exception:
+        # Supabase indisponível: não dá para avaliar multi-paciente aqui. Segue o fluxo
+        # normal, que trata a falha de resolução adiante com rollback do evento do Calendar
+        # (test_confirm_appointment_rolls_back_calendar_on_patient_resolution_failure).
+        _all_users_sn = []
     if len(_all_users_sn) > 1 and _match_patient_by_name(_all_users_sn, patient_name_override) is None:
         _names_sn = ", ".join(
             u.get("patient_name") or u.get("name") or "Paciente" for u in _all_users_sn
@@ -125,6 +131,19 @@ Em `app/graph/tools.py`, inserir o bloco abaixo **imediatamente antes** da linha
 
 Run: `uv run pytest "tests/test_tools.py::test_confirm_appointment_multi_patient_empty_override_asks_for_name" "tests/test_tools.py::test_confirm_appointment_multi_patient_nonunique_override_asks_for_name" -v`
 Expected: PASS (2 passed).
+
+- [ ] **Step 5b: Atualizar teste existente que codificava o comportamento antigo**
+
+A nova política (multi-paciente exige override) muda `test_guard_does_not_block_sibling_on_shared_phone`
+(~linha 907), que hoje agenda um contato de 3 pacientes SEM override confiando no `state`. Ele deve
+passar o override do irmão-alvo — a asserção do guard (mira o paciente certo, não bloqueia por causa
+de outro irmão) continua válida. Adicionar `patient_name_override="Flavia Souza Passos"` na chamada
+`confirm_appointment.coroutine(...)` dele (mantendo o resto igual) e acrescentar ao docstring a nota:
+"Com a política de override obrigatório para contato multi-paciente, o nome do irmão-alvo vai em
+patient_name_override; a asserção segue sendo que o guard mira exatamente esse paciente."
+
+Run: `uv run pytest "tests/test_tools.py::test_guard_does_not_block_sibling_on_shared_phone" -v`
+Expected: PASS.
 
 - [ ] **Step 6: Rodar os testes de não-regressão (override único + paciente único)**
 
