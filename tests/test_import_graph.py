@@ -44,6 +44,7 @@ CRON_ENTRYPOINTS = [
     "scripts.send_no_show_messages",
     "scripts.send_return_reminders",
     "scripts.release_pending_reschedules",
+    "scripts._probe_chatwoot_number",
 ]
 
 

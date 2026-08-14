@@ -15,8 +15,6 @@ import asyncio
 from dotenv import load_dotenv
 load_dotenv()
 
-import app.database  # noqa: F401 — carrega database antes de patients (evita import circular)
-
 PHONE = "5581996332827"
 
 

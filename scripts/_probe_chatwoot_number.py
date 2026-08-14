@@ -20,8 +20,6 @@ import traceback
 from dotenv import load_dotenv
 load_dotenv()
 
-import app.database  # noqa: F401 — evita import circular
-
 
 async def _timed(label: str, coro):
     t = time.monotonic()
