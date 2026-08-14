@@ -839,6 +839,35 @@ async def test_confirm_appointment_multi_patient_nonunique_override_asks_for_nam
     assert not create_event.called
 
 
+async def test_confirm_appointment_multi_patient_valid_override_with_session_note_inserts():
+    """A 2ª sessão da 1ª consulta de menor dividida chama confirm_appointment de novo para o
+    MESMO paciente, com session_note. Num contato multi-paciente, desde que o override do menor
+    seja passado, a rede de segurança NÃO deve travar — o agendamento é inserido normalmente."""
+    from app.graph.tools import confirm_appointment
+    client, table, execute = _make_supabase_client()
+    _laila = {"id": "laila-id", "patient_name": "Laila Monteiro Viana", "name": "Renata Monteiro"}
+    _suzi = {"id": "suzi-id", "patient_name": "Suzi Monteiro Viana", "name": "Renata Monteiro"}
+    with patch("app.graph.tools._get_doctor_calendar_id", new_callable=AsyncMock, return_value="cal123"), \
+         patch("app.google_calendar.create_event", new_callable=AsyncMock, return_value="evt-split-2"), \
+         patch("app.graph.tools.get_supabase", new_callable=AsyncMock, return_value=client), \
+         patch("app.graph.tools.get_users_by_phone", new_callable=AsyncMock, return_value=[_laila, _suzi]), \
+         patch("app.graph.tools.log_event", new_callable=AsyncMock), \
+         patch("app.graph.tools._notify_clinic", new_callable=AsyncMock):
+        result = await confirm_appointment.coroutine(
+            slot_datetime="2026-03-23T09:00:00",
+            slot_duration_minutes=60,
+            state=_make_state(user_db_id="suzi-id", patient_name="Suzi Monteiro Viana", patient_email="renata@example.com"),
+            config=CONFIG,
+            session_note="2ª hora — paciente",
+            patient_name_override="Laila Monteiro Viana",
+        )
+    assert "AGENDAMENTO_OK" in result
+    assert "nome completo" not in result.lower()
+    assert table.insert.called
+    _insert_payload = table.insert.call_args[0][0]
+    assert _insert_payload.get("patient_id") == "laila-id"
+
+
 async def test_confirm_appointment_multi_patient_override_beats_user_db_id():
     """patient_name_override (uso da atendente) deve poder mirar num paciente diferente
     do que está em user_db_id — é o mecanismo explícito para isso, documentado na tool."""
