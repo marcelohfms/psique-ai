@@ -67,6 +67,43 @@ no Meta (via Chatwoot) antes de o caminho fora-da-janela funcionar:
 - O texto livre (`content=`) enviado junto ao template serve de registro legível
   no Chatwoot e espelha o mesmo conteúdo.
 
+### Corpo dos templates (o que a clínica cadastra no Meta)
+
+Categoria **UTILITY**, idioma **Português (BR) / pt_BR**. Sem cabeçalho, sem
+botões, sem rodapé (só o corpo). Os `{{n}}` são as variáveis na ordem
+contato · paciente · médico · data-hora.
+
+**`taxa_reserva_lembrete`** — corpo:
+
+```
+Olá, {{1}}! 😊 Só passando para lembrar que a consulta de {{2}} com {{3}} no dia {{4}} ainda aguarda o pagamento da taxa de reserva de R$ 100,00.
+
+💳 PIX: 42006848000178
+
+Assim que o pagamento for realizado, a vaga estará garantida! Se tiver qualquer dúvida sobre o pagamento, é só chamar aqui. 🙏
+```
+
+Exemplos p/ aprovação — {{1}} Mariana · {{2}} Bento · {{3}} Dr. Júlio · {{4}} 27/08/2026 às 14:00
+
+**`taxa_reserva_cancelamento`** — corpo:
+
+```
+Olá, {{1}}. Infelizmente, como não recebemos o pagamento da taxa de reserva da consulta de {{2}} com {{3}} no dia {{4}} dentro do prazo, precisamos liberar a vaga. 😔
+
+Caso queira reagendar, é só chamar aqui! Ficaremos felizes em atender você. 💙
+```
+
+Exemplos p/ aprovação — {{1}} Mariana · {{2}} Bento · {{3}} Dr. Júlio · {{4}} 27/08/2026 às 14:00
+
+Notas de compatibilidade com WhatsApp/Meta:
+- Nenhuma variável no início/fim do corpo e nunca duas seguidas (ok nos dois).
+- O texto livre atual usa `*negrito*` em nome/médico/data; no template os `{{n}}`
+  entram sem asteriscos (formatação em template com variável costuma ser
+  rejeitada). O texto livre dentro da janela permanece com o negrito de hoje.
+- O template de cancelamento usa "dentro do prazo" (sem "de 4 horas") para não
+  cravar um número que hoje diverge do intervalo real; o texto livre dentro da
+  janela permanece como está.
+
 Enquanto os templates não existem: dentro da janela tudo funciona (texto livre);
 fora da janela o envio de template falha → `_notify` retorna `False` → o guard
 **adia** o lembrete/cancelamento (comportamento seguro, sem cancelamento
