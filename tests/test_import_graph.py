@@ -74,6 +74,17 @@ assert len(WORKFLOW_ENTRYPOINTS) >= 11, (
     f"{len(WORKFLOW_ENTRYPOINTS)}: {WORKFLOW_ENTRYPOINTS}"
 )
 
+# app.main não aparece na varredura acima: é o serviço FastAPI, subido por
+# deploy.yml via API do Easypanel (curl para services.app.deployService), que
+# não cita scripts/<nome>.py — a varredura não tem como enxergá-lo. Ainda
+# assim é o entrypoint de produção principal, e esta branch acrescentou uma
+# aresta nova nele (app/main.py importa app.patients no topo), então precisa
+# da mesma verificação de import limpo que os crons. Fica de fora da lista de
+# guarda `__main__` usada pelo teste seguinte: é um módulo de aplicação
+# (subido via uvicorn), não um script de cron — exigir a guarda dele seria um
+# requisito errado.
+CLEAN_IMPORT_ENTRYPOINTS = WORKFLOW_ENTRYPOINTS + ["app.main"]
+
 
 def _import_in_clean_subprocess(module: str) -> subprocess.CompletedProcess:
     """Importa `module` num interpretador novo, com sys.modules vazio.
@@ -92,15 +103,18 @@ def _import_in_clean_subprocess(module: str) -> subprocess.CompletedProcess:
 
 @pytest.mark.parametrize("module", WORKFLOW_ENTRYPOINTS)
 def test_cron_entrypoint_tem_guarda_main(module):
-    """Pré-requisito de segurança do teste seguinte.
+    """Sinaliza scripts de workflow sem guarda `if __name__ == "__main__":`.
 
-    O teste seguinte importa cada entrypoint num subprocesso para verificar
-    a cadeia de imports. Isso só é seguro porque cada script guarda a
-    execução atrás de `if __name__ == "__main__":` — importar não dispara
-    main(). Se algum script novo entrar em .github/workflows/ sem essa
-    guarda, `import` executaria o script de verdade (contra o banco/API de
-    produção) dentro do CI. Este teste roda antes do de import e falha alto
-    em vez de deixar isso acontecer silenciosamente.
+    O teste `test_cron_entrypoint_importa_em_processo_limpo` importa cada
+    entrypoint num subprocesso para verificar a cadeia de imports; isso só é
+    seguro contra banco/API de produção se o script guardar a execução atrás
+    dessa guarda — sem ela, `import` executaria o script de verdade. Este
+    teste aqui NÃO é um gate para o outro: pytest não garante ordem de
+    execução entre testes, e o CI roda `uv run pytest --tb=short` sem `-x`
+    (.github/workflows/test.yml), então os dois rodam de forma independente.
+    O papel deste teste é, por conta própria, apontar quando algum script
+    novo entra em .github/workflows/ sem a guarda — não impedir que o outro
+    teste rode.
     """
     rel_path = Path(*module.split(".")).with_suffix(".py")
     source = (REPO_ROOT / rel_path).read_text()
@@ -110,7 +124,7 @@ def test_cron_entrypoint_tem_guarda_main(module):
     )
 
 
-@pytest.mark.parametrize("module", WORKFLOW_ENTRYPOINTS)
+@pytest.mark.parametrize("module", CLEAN_IMPORT_ENTRYPOINTS)
 def test_cron_entrypoint_importa_em_processo_limpo(module):
     result = _import_in_clean_subprocess(module)
     assert result.returncode == 0, (

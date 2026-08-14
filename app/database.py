@@ -1,4 +1,4 @@
-# _strip_phone: uso interno (3 chamadas, linhas 313/553/568).
+# _strip_phone: uso interno (3 chamadas).
 from app.phone import _strip_phone
 from app.supabase_client import get_supabase
 
@@ -8,7 +8,7 @@ from app.supabase_client import get_supabase
 #
 # From-import (binding estático) porque os testes destes 4 fazem
 # patch("app.database.X"): eles stubam a fronteira database->patients. Os nomes
-# do Step 4 usam o estilo oposto, por stubarem a camada patients inteira.
+# do bloco abaixo usam o estilo oposto, por stubarem a camada patients inteira.
 from app.patients import (
     get_contact_by_phone,
     link_patient_contact,
@@ -16,10 +16,13 @@ from app.patients import (
     upsert_patient,
 )
 
-# Acesso via objeto de módulo, não `from app.patients import X`: a resolução
-# precisa acontecer em tempo de chamada para que patch("app.patients.X") pegue
-# também as chamadas que patients faz a si mesmo (patients.py:149 e :324).
-# Trocar por from-import quebra 14 testes em tests/test_database_shim.py.
+# Acesso via objeto de módulo, não `from app.patients import X`: garante que as
+# chamadas que database.py faz a patients resolvam em tempo de chamada, para
+# que patch("app.patients.X") consiga interceptá-las. As auto-chamadas que
+# patients.py faz a si mesmo (patients.py:149 e :324) já resolvem pelos globals
+# do próprio módulo patients, independente do estilo de import usado aqui —
+# não são elas que dependem disto.
+# Trocar por from-import quebra 14 patches (7 testes) em tests/test_database_shim.py.
 from app import patients
 
 # ── Doctor ID map (from doctors table) ───────────────────────────────────────
