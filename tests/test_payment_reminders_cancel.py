@@ -333,6 +333,7 @@ async def test_reminder_sent_when_no_receipt_in_conversation():
     with patch("scripts.send_payment_reminders.get_financial_contacts",
                new_callable=AsyncMock,
                return_value=[{"phone": "5581987415206", "name": "Janaina"}]), \
+         patch("scripts.send_payment_reminders._window_open", new_callable=AsyncMock, return_value=True), \
          patch("scripts.send_payment_reminders.send_whatsapp", new_callable=AsyncMock) as mock_wpp, \
          patch("app.email_sender.send_clinic_notification_email", new_callable=AsyncMock):
         await spr._send_payment_reminder(client, appt, None, now)
@@ -595,3 +596,26 @@ async def test_notify_raises_on_invalid_kind():
             await spr._notify(client, "5581999767413", kind="lembrete_errado", free_text="x",
                               contact_first="Mariana", patient_first="Bento",
                               doctor_label="Dr. Júlio", date_str="27/08/2026 às 14:00", now=now)
+
+
+@pytest.mark.asyncio
+async def test_reminder_uses_template_out_of_window():
+    """Fora da janela de 24h, o lembrete de cobrança vai por template (entregável)
+    e payment_reminder_sent_at é marcado."""
+    client, table = _client()
+    now = datetime(2026, 8, 12, 12, 27, tzinfo=TZ)
+    appt = _appt(created_at="2026-08-12T09:20:00+00:00")
+
+    with patch("scripts.send_payment_reminders.get_financial_contacts",
+               new_callable=AsyncMock,
+               return_value=[{"phone": "5581996503841", "name": "Arthur"}]), \
+         patch("scripts.send_payment_reminders._window_open", new_callable=AsyncMock, return_value=False), \
+         patch("scripts.send_payment_reminders._send_template", new_callable=AsyncMock) as mock_tpl, \
+         patch("scripts.send_payment_reminders.send_whatsapp", new_callable=AsyncMock) as mock_wpp, \
+         patch("app.email_sender.send_clinic_notification_email", new_callable=AsyncMock):
+        await spr._send_payment_reminder(client, appt, None, now)
+
+    mock_tpl.assert_awaited_once()
+    assert mock_tpl.await_args.args[1] == spr.TEMPLATE_REMINDER
+    mock_wpp.assert_not_awaited()
+    table.update.assert_called_once()

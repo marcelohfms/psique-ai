@@ -421,12 +421,10 @@ async def _send_payment_reminder(client, appt: dict, graph, now: datetime) -> No
         # Show patient name separately only when contact and patient differ
         patient_first = _dn(patient_name) if contact["name"] and contact["name"] != patient_name else None
         message = payment_reminder_message(contact_first, doctor_label, date_str, patient_first)
-        try:
-            await send_whatsapp(phone, message)
-            any_sent = True
-            print(f"  [payment_reminder] Sent to {phone} — {patient_name}")
-        except Exception as e:
-            print(f"  [payment_reminder] Failed to send to {phone}: {e}")
+        sent = await _notify(client, phone, kind="reminder", free_text=message,
+                             contact_first=contact_first, patient_first=patient_first,
+                             doctor_label=doctor_label, date_str=date_str, now=now)
+        any_sent = any_sent or sent
         if graph:
             try:
                 await save_to_checkpoint(graph, phone, message, patient_name, doctor_key)
