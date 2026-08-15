@@ -112,6 +112,8 @@ async def _notify(client, phone: str, *, kind: str, free_text: str,
 
     kind='reminder' | 'cancel'. free_text é a mensagem livre já montada pelo
     builder correspondente (usada dentro da janela e como `content` do template)."""
+    if kind not in ("reminder", "cancel"):
+        raise ValueError(f"kind inválido: {kind!r}")
     template_name = TEMPLATE_REMINDER if kind == "reminder" else TEMPLATE_CANCEL
     body_params = {
         "1": contact_first,

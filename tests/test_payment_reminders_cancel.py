@@ -579,3 +579,19 @@ async def test_notify_returns_false_on_send_failure():
                                doctor_label="Dr. Júlio", date_str="27/08/2026 às 14:00", now=now)
 
     assert ok is False
+
+
+@pytest.mark.asyncio
+async def test_notify_raises_on_invalid_kind():
+    """kind inesperado deve falhar alto (ValueError), não cair silenciosamente no
+    caminho de cancelamento."""
+    client, _ = _client()
+    now = datetime(2026, 8, 14, 9, 30, tzinfo=TZ)
+
+    with patch("scripts.send_payment_reminders._window_open", new_callable=AsyncMock, return_value=True), \
+         patch("scripts.send_payment_reminders.send_whatsapp", new_callable=AsyncMock), \
+         patch("scripts.send_payment_reminders._send_template", new_callable=AsyncMock):
+        with pytest.raises(ValueError):
+            await spr._notify(client, "5581999767413", kind="lembrete_errado", free_text="x",
+                              contact_first="Mariana", patient_first="Bento",
+                              doctor_label="Dr. Júlio", date_str="27/08/2026 às 14:00", now=now)
