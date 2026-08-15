@@ -13,7 +13,8 @@ DIONE_CONTACT = "22c316cf-c8f2-4d98-a70b-42ad32b1d6a2"  # contact_id
 
 
 async def main():
-    from app.database import get_supabase, link_patient_contact
+    from app.database import get_supabase
+    from app.patients import link_patient_contact
 
     client = await get_supabase()
 

@@ -6,7 +6,8 @@ PHONES = ["5581996571022@s.whatsapp.net", "558196571022@s.whatsapp.net"]
 
 
 async def main():
-    from app.database import get_users_by_phone, get_contact_by_phone, get_supabase
+    from app.database import get_users_by_phone, get_supabase
+    from app.patients import get_contact_by_phone
 
     client = await get_supabase()
 

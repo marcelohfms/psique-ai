@@ -106,7 +106,8 @@ async def main():
         last_msg_time = await get_last_assistant_message_time(phone)
         # Reutilizamos get_last_assistant_message_time; para checar mensagem do paciente,
         # buscamos diretamente
-        from app.database import get_supabase as _get_sb, _strip_phone
+        from app.database import get_supabase as _get_sb
+        from app.phone import _strip_phone
         _sb = await _get_sb()
         last_user_msg = await _sb.from_("messages").select("created_at") \
             .eq("phone", _strip_phone(phone)).eq("role", "user") \

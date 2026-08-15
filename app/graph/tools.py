@@ -12,7 +12,8 @@ from langgraph.prebuilt import InjectedState
 import logging
 
 from app.whatsapp import send_text
-from app.database import get_supabase, log_event, upsert_user, get_user_by_phone, get_users_by_phone, _phone_variants, DOCTOR_IDS, DOCTOR_NAMES
+from app.database import get_supabase, log_event, upsert_user, get_user_by_phone, get_users_by_phone, DOCTOR_IDS, DOCTOR_NAMES
+from app.phone import _phone_variants
 from app.chatwoot import get_conversation_id, unassign_agent_bot, add_label
 
 logger = logging.getLogger(__name__)
@@ -2823,13 +2824,19 @@ async def register_payment(
             )
 
         user_ids = [u["id"] for u in all_users]
-        _appt_lookback = (datetime.now(TZ) - timedelta(days=15)).isoformat()
 
+        # No date window: the patient may settle the saldo of a consultation that
+        # happened weeks/months ago. A now-15d lower bound hid that completed appt,
+        # leaving seen_users empty so Eva asked "Para qual paciente é este
+        # comprovante?" for a phone with a single, unambiguous patient (caso Danniela,
+        # 5581991950147 — same root as the override-path double booking fee). The
+        # window was never needed for disambiguation: multiple patients on one phone
+        # are already caught above from get_users_by_phone, before this query runs.
         appts_result = await client.from_("appointments").select(
             "appointment_id, start_time, doctor_id, status, patients(id, name)"
         ).in_("patient_id", user_ids).in_(
             "status", ["scheduled", "completed"]
-        ).gte("start_time", _appt_lookback).order("start_time", desc=True).execute()
+        ).order("start_time", desc=True).execute()
 
         active_appts = appts_result.data or []
 

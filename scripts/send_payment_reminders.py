@@ -27,6 +27,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 from app.graph.prompts import get_pix_key as _get_pix_key
+from app.patients import get_contact_by_id
 
 TZ = ZoneInfo("America/Recife")
 
@@ -151,6 +152,20 @@ async def get_financial_contacts(client, patient_id: str) -> list[dict]:
     return contacts
 
 
+async def _reminder_recipients(appt: dict, financial_contacts: list[dict]) -> list[dict]:
+    """Destinatários do lembrete/cancelamento de taxa: só o contato que fez a
+    reserva (appointments.contact_id). Fallback para os contatos financeiros
+    quando o agendamento não gravou contact_id (linhas antigas/remarcações).
+
+    NÃO usar para a guarda de comprovante nem para o e-mail à clínica — esses
+    continuam sobre TODOS os contatos financeiros.
+    """
+    booking = await get_contact_by_id(appt.get("contact_id"))
+    if booking and booking.get("phone"):
+        return [{"phone": booking["phone"], "name": booking.get("name")}]
+    return financial_contacts
+
+
 async def save_to_checkpoint(graph, phone: str, message: str, patient_name: str, doctor_key: str) -> None:
     """Inject the message into the LangGraph checkpoint for this contact."""
     from langchain_core.messages import AIMessage
@@ -204,7 +219,7 @@ async def _window_open(client, phone: str, now: datetime) -> bool:
     Reaproveita a normalização de telefone de find_receipt_in_conversation
     (contacts.phone e messages.phone divergem no 9º dígito). Erro na consulta =>
     'fechada' (fail-safe: força o caminho de template, que é entregável)."""
-    from app.database import _phone_variants
+    from app.phone import _phone_variants
 
     cutoff = (now - timedelta(hours=WHATSAPP_WINDOW_HOURS)).astimezone(timezone.utc).isoformat()
     variants = _phone_variants(phone)
@@ -236,7 +251,7 @@ async def find_receipt_in_conversation(client, phones: list[str], since_iso: str
     Bernardo Lima Beltrão Teixeira, 5581987415206, 2026-07-31).
     """
     from app.media import RECEIPT_PREFIX, is_payment_receipt_message
-    from app.database import _phone_variants
+    from app.phone import _phone_variants
 
     for phone in phones:
         # `contacts.phone` and `messages.phone` disagree on the 9th digit for a
@@ -414,8 +429,10 @@ async def _send_payment_reminder(client, appt: dict, graph, now: datetime) -> No
         )
         return
 
+    recipients = await _reminder_recipients(appt, financial_contacts)
+
     any_sent = False
-    for contact in financial_contacts:
+    for contact in recipients:
         phone = contact["phone"]
         from app.utils import display_name as _dn
         contact_first = _dn(contact["name"] or patient_name)
@@ -483,9 +500,11 @@ async def _cancel_unpaid_appointment(client, appt: dict, graph, now: datetime) -
         return
 
     # Must notify at least one contact before canceling
+    recipients = await _reminder_recipients(appt, financial_contacts)
+
     any_notified = False
     notified_phones = []
-    for contact in financial_contacts:
+    for contact in recipients:
         phone = contact["phone"]
         from app.utils import display_name as _dn
         contact_first = _dn(contact["name"] or patient_name)
@@ -547,7 +566,7 @@ async def _cancel_unpaid_appointment(client, appt: dict, graph, now: datetime) -
             f"Paciente: {patient_name}\n"
             f"Médico(a): {doctor_label}\n"
             f"Data/hora: {date_str}\n"
-            f"Contatos notificados: {', '.join(c['phone'] for c in financial_contacts)}\n\n"
+            f"Contatos notificados: {', '.join(notified_phones)}\n\n"
             f"A vaga foi liberada no Google Calendar."
         )
         for attempt in range(1, 3):
@@ -586,7 +605,7 @@ async def main():
 
     _appt_select = (
         "appointment_id, start_time, doctor_id, created_at, payment_reminder_sent_at, "
-        "patient_id, patients(name, custom_price)"
+        "contact_id, patient_id, patients(name, custom_price)"
     )
 
     # ── Step 1: 1st reminder (not yet reminded, booked >= 2h ago) ─────────────
