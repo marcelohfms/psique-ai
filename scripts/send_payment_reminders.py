@@ -425,7 +425,7 @@ async def _send_payment_reminder(client, appt: dict, graph, now: datetime) -> No
                              contact_first=contact_first, patient_first=patient_first,
                              doctor_label=doctor_label, date_str=date_str, now=now)
         any_sent = any_sent or sent
-        if graph:
+        if graph and sent:
             try:
                 await save_to_checkpoint(graph, phone, message, patient_name, doctor_key)
             except Exception as e:
@@ -443,7 +443,8 @@ async def _send_payment_reminder(client, appt: dict, graph, now: datetime) -> No
 async def _cancel_unpaid_appointment(client, appt: dict, graph, now: datetime) -> None:
     """Notify financial contacts, then cancel a single appointment whose booking fee
     was never paid within 2h of the payment reminder. Cancellation only proceeds if
-    at least one contact was successfully notified via WhatsApp."""
+    at least one contact was successfully notified (texto livre dentro da janela de
+    24h, ou template aprovado fora dela)."""
     appointment_id = appt["appointment_id"]
     patient_id = appt.get("patient_id")
     if not patient_id:
@@ -495,7 +496,7 @@ async def _cancel_unpaid_appointment(client, appt: dict, graph, now: datetime) -
         if sent:
             any_notified = True
             notified_phones.append(phone)
-        if graph:
+        if graph and sent:
             try:
                 await save_to_checkpoint(graph, phone, message, patient_name, doctor_key)
             except Exception as e:

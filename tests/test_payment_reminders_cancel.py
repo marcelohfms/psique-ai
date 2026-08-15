@@ -670,3 +670,28 @@ async def test_cancel_deferred_when_template_send_fails():
     mock_cal.assert_not_awaited()
     table.update.assert_not_called()
     mock_log_event.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_cancel_deferred_does_not_touch_checkpoint():
+    """Envio não entregue (template falhou) => cancelamento adiado e o checkpoint
+    NÃO é tocado — senão 'sua vaga foi liberada' entraria no histórico com a
+    consulta ainda ativa, repetindo a cada run."""
+    client, table = _client()
+    now = datetime(2026, 8, 14, 12, 0, tzinfo=TZ)
+    appt = _appt(created_at="2026-08-12T09:20:00+00:00")
+    graph = MagicMock()
+
+    with patch("scripts.send_payment_reminders.get_financial_contacts",
+               new_callable=AsyncMock,
+               return_value=[{"phone": "5581996503841", "name": "Arthur"}]), \
+         patch("scripts.send_payment_reminders._window_open", new_callable=AsyncMock, return_value=False), \
+         patch("scripts.send_payment_reminders._send_template",
+               new_callable=AsyncMock, side_effect=Exception("template not approved")), \
+         patch("scripts.send_payment_reminders.save_to_checkpoint", new_callable=AsyncMock) as mock_ckpt, \
+         patch("scripts.send_payment_reminders.cancel_calendar_event", new_callable=AsyncMock), \
+         patch("app.database.log_event", new_callable=AsyncMock):
+        await spr._cancel_unpaid_appointment(client, appt, graph, now)
+
+    mock_ckpt.assert_not_awaited()
+    table.update.assert_not_called()
