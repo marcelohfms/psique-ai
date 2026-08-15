@@ -489,13 +489,12 @@ async def _cancel_unpaid_appointment(client, appt: dict, graph, now: datetime) -
         contact_first = _dn(contact["name"] or patient_name)
         patient_first = _dn(patient_name) if contact["name"] and contact["name"] != patient_name else None
         message = payment_cancel_message(contact_first, doctor_label, date_str, patient_first)
-        try:
-            await send_whatsapp(phone, message)
+        sent = await _notify(client, phone, kind="cancel", free_text=message,
+                             contact_first=contact_first, patient_first=patient_first,
+                             doctor_label=doctor_label, date_str=date_str, now=now)
+        if sent:
             any_notified = True
             notified_phones.append(phone)
-            print(f"  [payment_cancel] WhatsApp enviado para {phone}.")
-        except Exception as e:
-            print(f"  [payment_cancel] WhatsApp FALHOU para {phone}: {e}")
         if graph:
             try:
                 await save_to_checkpoint(graph, phone, message, patient_name, doctor_key)

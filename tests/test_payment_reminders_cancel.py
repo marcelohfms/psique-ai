@@ -65,6 +65,7 @@ async def test_cancel_logs_appointment_canceled_event_per_notified_contact():
     with patch("scripts.send_payment_reminders.get_financial_contacts",
                new_callable=AsyncMock,
                return_value=[{"phone": "5581992349207", "name": "Ednara"}]), \
+         patch("scripts.send_payment_reminders._window_open", new_callable=AsyncMock, return_value=True), \
          patch("scripts.send_payment_reminders.send_whatsapp", new_callable=AsyncMock), \
          patch("scripts.send_payment_reminders.cancel_calendar_event", new_callable=AsyncMock), \
          patch("app.database.log_event", new_callable=AsyncMock) as mock_log_event, \
@@ -91,6 +92,7 @@ async def test_cancel_does_not_log_event_when_no_contact_notified():
     with patch("scripts.send_payment_reminders.get_financial_contacts",
                new_callable=AsyncMock,
                return_value=[{"phone": "5581992349207", "name": "Ednara"}]), \
+         patch("scripts.send_payment_reminders._window_open", new_callable=AsyncMock, return_value=True), \
          patch("scripts.send_payment_reminders.send_whatsapp",
                new_callable=AsyncMock, side_effect=Exception("WhatsApp down")), \
          patch("scripts.send_payment_reminders.cancel_calendar_event", new_callable=AsyncMock), \
@@ -619,3 +621,52 @@ async def test_reminder_uses_template_out_of_window():
     assert mock_tpl.await_args.args[1] == spr.TEMPLATE_REMINDER
     mock_wpp.assert_not_awaited()
     table.update.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_cancel_uses_template_out_of_window_and_still_cancels():
+    """Fora da janela de 24h, o aviso de cancelamento vai por template (entregável)
+    e a consulta é cancelada normalmente — sem cair no cancelamento silencioso."""
+    client, table = _client()
+    now = datetime(2026, 8, 14, 12, 0, tzinfo=TZ)
+    appt = _appt(created_at="2026-08-12T09:20:00+00:00")
+
+    with patch("scripts.send_payment_reminders.get_financial_contacts",
+               new_callable=AsyncMock,
+               return_value=[{"phone": "5581996503841", "name": "Arthur"}]), \
+         patch("scripts.send_payment_reminders._window_open", new_callable=AsyncMock, return_value=False), \
+         patch("scripts.send_payment_reminders._send_template", new_callable=AsyncMock) as mock_tpl, \
+         patch("scripts.send_payment_reminders.send_whatsapp", new_callable=AsyncMock) as mock_wpp, \
+         patch("scripts.send_payment_reminders.cancel_calendar_event", new_callable=AsyncMock) as mock_cal, \
+         patch("app.database.log_event", new_callable=AsyncMock), \
+         patch("app.email_sender.send_clinic_notification_email", new_callable=AsyncMock):
+        await spr._cancel_unpaid_appointment(client, appt, None, now)
+
+    mock_tpl.assert_awaited_once()
+    assert mock_tpl.await_args.args[1] == spr.TEMPLATE_CANCEL
+    mock_wpp.assert_not_awaited()
+    mock_cal.assert_awaited_once()
+    table.update.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_cancel_deferred_when_template_send_fails():
+    """Se o template ainda não existe/aprova, o envio falha, ninguém é notificado e
+    a consulta NÃO é cancelada (adiada) — em vez de cancelar em silêncio."""
+    client, table = _client()
+    now = datetime(2026, 8, 14, 12, 0, tzinfo=TZ)
+    appt = _appt(created_at="2026-08-12T09:20:00+00:00")
+
+    with patch("scripts.send_payment_reminders.get_financial_contacts",
+               new_callable=AsyncMock,
+               return_value=[{"phone": "5581996503841", "name": "Arthur"}]), \
+         patch("scripts.send_payment_reminders._window_open", new_callable=AsyncMock, return_value=False), \
+         patch("scripts.send_payment_reminders._send_template",
+               new_callable=AsyncMock, side_effect=Exception("template not approved")), \
+         patch("scripts.send_payment_reminders.cancel_calendar_event", new_callable=AsyncMock) as mock_cal, \
+         patch("app.database.log_event", new_callable=AsyncMock) as mock_log_event:
+        await spr._cancel_unpaid_appointment(client, appt, None, now)
+
+    mock_cal.assert_not_awaited()
+    table.update.assert_not_called()
+    mock_log_event.assert_not_awaited()
