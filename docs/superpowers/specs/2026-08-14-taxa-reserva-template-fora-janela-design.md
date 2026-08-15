@@ -58,8 +58,19 @@ no Meta (via Chatwoot) antes de o caminho fora-da-janela funcionar:
 
 | Template (nome fixo no código) | Params (posicionais) |
 |---|---|
-| `taxa_reserva_lembrete` | {{1}} contato · {{2}} paciente · {{3}} médico · {{4}} data/hora |
-| `taxa_reserva_cancelamento` | {{1}} contato · {{2}} paciente · {{3}} médico · {{4}} data/hora |
+| `taxa_reserva_lembrete` | {{1}} contato · {{2}} referência da consulta · {{3}} médico · {{4}} data/hora |
+| `taxa_reserva_cancelamento` | {{1}} contato · {{2}} referência da consulta · {{3}} médico · {{4}} data/hora |
+
+`{{2}}` (referência da consulta) codifica o caso próprio-paciente vs. responsável,
+espelhando o texto livre atual — **não** é o nome cru do paciente:
+
+| Situação | `{{2}}` no lembrete | `{{2}}` no cancelamento |
+|---|---|---|
+| contato **é** o paciente (adulto p/ si) | `sua consulta` | `da sua consulta` |
+| contato é responsável | `a consulta de Bento` | `da consulta de Bento` |
+
+O `_notify` monta `{{2}}` a partir de `contact["name"] == patient_name` (mesma
+condição que hoje decide `patient_first` nos builders de texto livre).
 
 - PIX e valor (R$ 100,00) ficam **fixos no corpo** do template (não são params).
 - O corpo aprovado deve espelhar o texto de `payment_reminder_message` /
@@ -76,24 +87,26 @@ contato · paciente · médico · data-hora.
 **`taxa_reserva_lembrete`** — corpo:
 
 ```
-Olá, {{1}}! 😊 Só passando para lembrar que a consulta de {{2}} com {{3}} no dia {{4}} ainda aguarda o pagamento da taxa de reserva de R$ 100,00.
+Olá, {{1}}! 😊 Só passando para lembrar que {{2}} com {{3}} no dia {{4}} ainda aguarda o pagamento da taxa de reserva de R$ 100,00.
 
 💳 PIX: 42006848000178
 
 Assim que o pagamento for realizado, a vaga estará garantida! Se tiver qualquer dúvida sobre o pagamento, é só chamar aqui. 🙏
 ```
 
-Exemplos p/ aprovação — {{1}} Mariana · {{2}} Bento · {{3}} Dr. Júlio · {{4}} 27/08/2026 às 14:00
+Exemplos p/ aprovação — {{1}} Mariana · {{2}} a consulta de Bento · {{3}} Dr. Júlio · {{4}} 27/08/2026 às 14:00
+(caso próprio-paciente: {{1}} João · {{2}} sua consulta · {{3}} Dr. Júlio · {{4}} 27/08/2026 às 14:00)
 
 **`taxa_reserva_cancelamento`** — corpo:
 
 ```
-Olá, {{1}}. Infelizmente, como não recebemos o pagamento da taxa de reserva da consulta de {{2}} com {{3}} no dia {{4}} dentro do prazo, precisamos liberar a vaga. 😔
+Olá, {{1}}. Infelizmente, como não recebemos o pagamento da taxa de reserva {{2}} com {{3}} no dia {{4}} dentro do prazo, precisamos liberar a vaga. 😔
 
 Caso queira reagendar, é só chamar aqui! Ficaremos felizes em atender você. 💙
 ```
 
-Exemplos p/ aprovação — {{1}} Mariana · {{2}} Bento · {{3}} Dr. Júlio · {{4}} 27/08/2026 às 14:00
+Exemplos p/ aprovação — {{1}} Mariana · {{2}} da consulta de Bento · {{3}} Dr. Júlio · {{4}} 27/08/2026 às 14:00
+(caso próprio-paciente: {{1}} João · {{2}} da sua consulta · {{3}} Dr. Júlio · {{4}} 27/08/2026 às 14:00)
 
 Notas de compatibilidade com WhatsApp/Meta:
 - Nenhuma variável no início/fim do corpo e nunca duas seguidas (ok nos dois).
@@ -147,9 +160,11 @@ async def _notify(client, phone, contact_first, patient_first,
 - Janela fechada → `send_template_message(conv_id, template_name,
   language="pt_BR", category="UTILITY", body_params={"1":contato, "2":paciente,
   "3":médico, "4":data}, content=texto_livre)`.
-- `body_params` sempre inclui o nome do paciente (o template não faz o
-  condicional "a consulta de X" vs "sua consulta"); os builders de texto livre
-  passam a receber o nome do paciente sempre.
+- `{{2}}` (referência da consulta) é montado por `_notify` a partir de
+  `contact["name"] == patient_name` — "sua consulta"/"da sua consulta" quando o
+  contato é o próprio paciente, "a consulta de X"/"da consulta de X" quando é
+  responsável (ver tabela na seção de templates). Mesma condição que os builders
+  de texto livre já usam para `patient_first`.
 - Retorna `True` se o envio (livre ou template) não lançou exceção; `False` caso
   contrário. Erros são logados como hoje.
 - O `save_to_checkpoint` existente continua sendo chamado nos dois caminhos.
@@ -175,6 +190,10 @@ regra do CLAUDE.md de um arquivo por camada/módulo).
 - `_notify` roteamento: janela aberta → chama `send_text`, não chama template;
   janela fechada → chama `send_template_message` com `template_name` e
   `body_params` corretos por `kind`.
+- `_notify` referência da consulta `{{2}}`: contato == paciente → "sua consulta"
+  (lembrete) / "da sua consulta" (cancel); contato responsável → "a consulta de
+  X" / "da consulta de X". Verificado tanto no `body_params` do template quanto
+  no texto livre.
 - `_notify` retorno: envio ok → True; exceção no envio → False.
 - Guard de cancelamento: `_notify` retorna False (template indisponível) →
   appointment **não** é cancelado (status intacto, sem `cancel_calendar_event`);
