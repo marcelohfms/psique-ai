@@ -503,3 +503,79 @@ async def test_send_template_builds_expected_payload():
         body_params=body_params,
         content="texto livre de fallback",
     )
+
+
+# ── Roteamento híbrido texto-livre / template ────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_notify_uses_free_text_when_window_open():
+    """Janela aberta: manda texto livre (send_whatsapp), não usa template."""
+    client, _ = _client()
+    now = datetime(2026, 8, 14, 9, 30, tzinfo=TZ)
+
+    with patch("scripts.send_payment_reminders._window_open", new_callable=AsyncMock, return_value=True), \
+         patch("scripts.send_payment_reminders.send_whatsapp", new_callable=AsyncMock) as mock_wpp, \
+         patch("scripts.send_payment_reminders._send_template", new_callable=AsyncMock) as mock_tpl:
+        ok = await spr._notify(client, "5581999767413", kind="reminder", free_text="oi livre",
+                               contact_first="Mariana", patient_first="Bento",
+                               doctor_label="Dr. Júlio", date_str="27/08/2026 às 14:00", now=now)
+
+    assert ok is True
+    mock_wpp.assert_awaited_once_with("5581999767413", "oi livre")
+    mock_tpl.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_notify_uses_template_when_window_closed():
+    """Janela fechada: manda template com params corretos, não texto livre."""
+    client, _ = _client()
+    now = datetime(2026, 8, 14, 9, 30, tzinfo=TZ)
+
+    with patch("scripts.send_payment_reminders._window_open", new_callable=AsyncMock, return_value=False), \
+         patch("scripts.send_payment_reminders.send_whatsapp", new_callable=AsyncMock) as mock_wpp, \
+         patch("scripts.send_payment_reminders._send_template", new_callable=AsyncMock) as mock_tpl:
+        ok = await spr._notify(client, "5581999767413", kind="cancel", free_text="cancel livre",
+                               contact_first="Mariana", patient_first="Bento",
+                               doctor_label="Dr. Júlio", date_str="27/08/2026 às 14:00", now=now)
+
+    assert ok is True
+    mock_wpp.assert_not_awaited()
+    mock_tpl.assert_awaited_once_with(
+        "5581999767413",
+        spr.TEMPLATE_CANCEL,
+        {"1": "Mariana", "2": "da consulta de Bento", "3": "Dr. Júlio", "4": "27/08/2026 às 14:00"},
+        "cancel livre",
+    )
+
+
+@pytest.mark.asyncio
+async def test_notify_self_patient_uses_sua_consulta():
+    """Contato é o próprio paciente (patient_first=None) => {{2}} = 'sua consulta'."""
+    client, _ = _client()
+    now = datetime(2026, 8, 14, 9, 30, tzinfo=TZ)
+
+    with patch("scripts.send_payment_reminders._window_open", new_callable=AsyncMock, return_value=False), \
+         patch("scripts.send_payment_reminders.send_whatsapp", new_callable=AsyncMock), \
+         patch("scripts.send_payment_reminders._send_template", new_callable=AsyncMock) as mock_tpl:
+        await spr._notify(client, "5581996503841", kind="reminder", free_text="x",
+                          contact_first="João", patient_first=None,
+                          doctor_label="Dra. Bruna", date_str="28/08/2026 às 10:00", now=now)
+
+    assert mock_tpl.await_args.args[2]["2"] == "sua consulta"
+
+
+@pytest.mark.asyncio
+async def test_notify_returns_false_on_send_failure():
+    """Falha no envio (ex.: template ainda não aprovado) => retorna False, para o
+    guard do cancelamento adiar em vez de cancelar silenciosamente."""
+    client, _ = _client()
+    now = datetime(2026, 8, 14, 9, 30, tzinfo=TZ)
+
+    with patch("scripts.send_payment_reminders._window_open", new_callable=AsyncMock, return_value=False), \
+         patch("scripts.send_payment_reminders._send_template",
+               new_callable=AsyncMock, side_effect=Exception("template not approved")):
+        ok = await spr._notify(client, "5581999767413", kind="cancel", free_text="x",
+                               contact_first="Mariana", patient_first="Bento",
+                               doctor_label="Dr. Júlio", date_str="27/08/2026 às 14:00", now=now)
+
+    assert ok is False

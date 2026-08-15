@@ -104,6 +104,33 @@ async def _send_template(phone: str, template_name: str, body_params: dict, cont
     )
 
 
+async def _notify(client, phone: str, *, kind: str, free_text: str,
+                  contact_first: str, patient_first: str | None,
+                  doctor_label: str, date_str: str, now: datetime) -> bool:
+    """Notifica um contato: texto livre dentro da janela de 24h, template
+    aprovado fora dela. Retorna True se o envio teve sucesso.
+
+    kind='reminder' | 'cancel'. free_text é a mensagem livre já montada pelo
+    builder correspondente (usada dentro da janela e como `content` do template)."""
+    template_name = TEMPLATE_REMINDER if kind == "reminder" else TEMPLATE_CANCEL
+    body_params = {
+        "1": contact_first,
+        "2": _consulta_ref(kind, patient_first),
+        "3": doctor_label,
+        "4": date_str,
+    }
+    try:
+        if await _window_open(client, phone, now):
+            await send_whatsapp(phone, free_text)
+        else:
+            await _send_template(phone, template_name, body_params, free_text)
+        print(f"  [{kind}] enviado para {phone}")
+        return True
+    except Exception as e:
+        print(f"  [{kind}] FALHOU para {phone}: {e}")
+        return False
+
+
 async def get_financial_contacts(client, patient_id: str) -> list[dict]:
     """Return all contacts with role 'financeiro' for a patient (phone + name)."""
     result = await (
