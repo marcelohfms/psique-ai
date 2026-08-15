@@ -121,15 +121,16 @@ async def _notify(client, phone: str, *, kind: str, free_text: str,
         "3": doctor_label,
         "4": date_str,
     }
+    tag = "payment_reminder" if kind == "reminder" else "payment_cancel"
     try:
         if await _window_open(client, phone, now):
             await send_whatsapp(phone, free_text)
         else:
             await _send_template(phone, template_name, body_params, free_text)
-        print(f"  [{kind}] enviado para {phone}")
+        print(f"  [{tag}] enviado para {phone}")
         return True
     except Exception as e:
-        print(f"  [{kind}] FALHOU para {phone}: {e}")
+        print(f"  [{tag}] FALHOU para {phone}: {e}")
         return False
 
 
