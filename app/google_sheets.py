@@ -138,10 +138,18 @@ async def append_payment_receipt(
     drive_link: str,
     payment_type: str = "",
     payment_method_override: str = "",
+    receipt_filename: str = "",
 ) -> None:
     """Append a payment receipt row to the Pagamentos sheet.
     Does nothing if GOOGLE_SHEETS_PAYMENTS_ID is not configured.
     Columns: Data do Pagamento | Paciente | Médico | Data da Consulta | Valor | Telefone | Tipo | Forma de Pagamento | Comprovante | Conferência Humana
+
+    receipt_filename: the final name the receipt file has in Drive, as returned by
+    app.google_drive.rename_file — it includes the real extension (jpg/pdf), which
+    is only known after the rename. Passing it through keeps the comprovante
+    hyperlink text identical to the actual filename. When omitted (one-off scripts,
+    or a rename that failed) the canonical stem from build_receipt_filename is used
+    instead — same name minus the extension, never an invented one.
     """
     spreadsheet_id = os.environ.get("GOOGLE_SHEETS_PAYMENTS_ID")
     if not spreadsheet_id:
@@ -157,14 +165,18 @@ async def append_payment_receipt(
     else:
         payment_method = "Link" if "link" in payment_type.lower() else "PIX"
 
-    # Build filename for the comprovante hyperlink
+    # Build filename for the comprovante hyperlink. Whoever opens the sheet looks the
+    # file up in Drive by this text, so it must be the file's real name — prefer the
+    # name resolved by the Drive rename, and otherwise the same shared helper the
+    # rename itself uses.
     comprovante_formula_args: tuple[str, str] | None = None
     if drive_link:
+        from app.google_drive import build_receipt_filename
+
         drive_link = drive_link.strip()
-        safe_name = patient_name.replace(" ", "_")
-        amount_clean = amount.replace("R$", "").replace(" ", "").strip()
-        date_clean = appointment_dt.split(" ")[0].replace("/", "-") if appointment_dt != "—" else datetime.now(TZ).strftime("%d-%m-%Y")
-        filename = f"{safe_name}_{date_clean}_R${amount_clean}.jpg"
+        filename = receipt_filename.strip() or build_receipt_filename(
+            patient_name, appointment_dt, amount
+        )
         comprovante_formula_args = (drive_link, filename)
 
     # Write the row with an empty comprovante column (column I).

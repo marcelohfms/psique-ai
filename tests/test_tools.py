@@ -3099,6 +3099,53 @@ async def test_register_payment_rename_uses_no_extension_and_sanitizes_amount():
     assert "100-00" in new_filename
 
 
+async def test_register_payment_forwards_resolved_drive_filename_to_sheet():
+    """The extension is only known after the rename (rename_file reads the current
+    name from Drive), so register_payment must hand the resolved name to
+    append_payment_receipt instead of letting the sheet rebuild its own — otherwise
+    the comprovante text in column I never matches the file (caso PDF: sheet dizia
+    .jpg; e a vírgula do valor divergia do hífen do nome real)."""
+    from app.graph.tools import register_payment
+    client, _, _ = _make_supabase_client_with_appointment()
+    resolved = "Maria_23-03-2026_R$100-00.pdf"
+    with patch("app.graph.tools.get_supabase", new_callable=AsyncMock, return_value=client), \
+         patch("app.graph.tools.get_users_by_phone", new_callable=AsyncMock, return_value=[{"id": "user-123", "patient_name": "Maria"}]), \
+         patch("app.graph.tools.log_event", new_callable=AsyncMock), \
+         patch("app.graph.tools._notify_clinic", new_callable=AsyncMock), \
+         patch("app.google_drive.rename_file", new_callable=AsyncMock, return_value=resolved), \
+         patch("app.google_sheets.append_payment_receipt", new_callable=AsyncMock) as mock_sheets, \
+         patch("app.graph.tools.send_text", new_callable=AsyncMock):
+        await register_payment.coroutine(
+            amount="R$ 100,00",
+            drive_link="https://drive.google.com/file/d/abc/view",
+            state=_make_state(),
+            config=CONFIG,
+        )
+    assert mock_sheets.call_args.kwargs["receipt_filename"] == resolved
+
+
+async def test_register_payment_rename_failure_leaves_sheet_filename_unresolved():
+    """If the rename failed, there is no resolved name to show — pass none through so
+    append_payment_receipt falls back to the canonical stem instead of displaying a
+    name the Drive file does not have."""
+    from app.graph.tools import register_payment
+    client, _, _ = _make_supabase_client_with_appointment()
+    with patch("app.graph.tools.get_supabase", new_callable=AsyncMock, return_value=client), \
+         patch("app.graph.tools.get_users_by_phone", new_callable=AsyncMock, return_value=[{"id": "user-123", "patient_name": "Maria"}]), \
+         patch("app.graph.tools.log_event", new_callable=AsyncMock), \
+         patch("app.graph.tools._notify_clinic", new_callable=AsyncMock), \
+         patch("app.google_drive.rename_file", new_callable=AsyncMock, side_effect=Exception("Drive unavailable")), \
+         patch("app.google_sheets.append_payment_receipt", new_callable=AsyncMock) as mock_sheets, \
+         patch("app.graph.tools.send_text", new_callable=AsyncMock):
+        await register_payment.coroutine(
+            amount="R$ 100,00",
+            drive_link="https://drive.google.com/file/d/abc/view",
+            state=_make_state(),
+            config=CONFIG,
+        )
+    assert mock_sheets.call_args.kwargs["receipt_filename"] == ""
+
+
 def _make_supabase_client_with_canceled_appointment(slot_taken=False):
     """Supabase client for the late-payment recovery path: the patient has NO
     scheduled appointment, only a canceled one with a pending booking fee whose
