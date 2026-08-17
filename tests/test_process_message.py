@@ -4315,3 +4315,155 @@ def test_duration_rule_menor_em_acompanhamento_usa_60_minutos():
 
     assert "slot_duration_minutes=60" in rule
     assert "acompanhamento" in rule
+
+
+# ── Guard: comprovante no turno exige register_payment ───────────────────────
+# Caso Isadora de Sousa Costa (5581988417858, 07/08/2026): a paciente enviou o
+# comprovante da taxa, Eva respondeu com texto puro ("a taxa de reserva já foi
+# recebida") sem chamar register_payment. booking_fee_paid_at ficou NULL, o cron
+# cobrou a paciente de novo 2h depois e a consulta entrou na fila do cancelamento
+# automático. Mesmo padrão: Denise Alencar (23/07) e Juliana Feitosa (04/08).
+
+_RECEIPT_MSG = (
+    "[imagem]: COMPROVANTE DE PAGAMENTO: valor transferido R$ 100,00, chave PIX "
+    "42006848000178, nome do destinatário Psique, data/hora da transação 07/08/2026 "
+    "às 15:00:36, texto adicional: Reserva consulta Isadora. "
+    "[drive_link:https://drive.google.com/file/d/1PR9/view?usp=drivesdk]"
+)
+
+_GUARD_RECEIPT_PATCHES = dict(
+    get_upcoming_appointments=patch(
+        "app.graph.nodes.get_upcoming_appointments", new_callable=AsyncMock, return_value=[]),
+    get_user_by_phone=patch(
+        "app.graph.nodes.get_user_by_phone", new_callable=AsyncMock,
+        return_value={"price_adjustment_notified_at": "2026-01-01"}),
+    get_last_assistant_message_time=patch(
+        "app.graph.nodes.get_last_assistant_message_time", new_callable=AsyncMock, return_value=None),
+    format_doctor_schedules=patch(
+        "app.google_calendar.format_doctor_schedules", return_value="seg-sex"),
+)
+
+
+async def _run_agent_with_response(state: dict, ai_response) -> tuple[dict, AsyncMock]:
+    """Roda patient_agent_node com a resposta da LLM mockada; retorna (result, send_text)."""
+    from app.graph.nodes import patient_agent_node
+
+    async def fake_ainvoke(messages):
+        return ai_response
+
+    with patch("app.graph.nodes._get_agent_llm") as mock_llm_fn, \
+         patch("app.graph.nodes.send_text", new_callable=AsyncMock) as mock_send, \
+         patch("app.graph.nodes.save_message", new_callable=AsyncMock), \
+         _GUARD_RECEIPT_PATCHES["get_upcoming_appointments"], \
+         _GUARD_RECEIPT_PATCHES["get_user_by_phone"], \
+         _GUARD_RECEIPT_PATCHES["get_last_assistant_message_time"], \
+         _GUARD_RECEIPT_PATCHES["format_doctor_schedules"]:
+        mock_llm = MagicMock()
+        mock_llm.ainvoke = fake_ainvoke
+        mock_llm_fn.return_value = mock_llm
+        result = await patient_agent_node(state, CONFIG)
+    return result, mock_send
+
+
+def _register_payment_calls(result: dict) -> list[dict]:
+    calls = []
+    for m in result.get("messages", []):
+        for tc in (getattr(m, "tool_calls", None) or []):
+            if tc.get("name") == "register_payment":
+                calls.append(tc)
+    return calls
+
+
+async def test_receipt_with_text_only_response_forces_register_payment():
+    """LLM responde texto puro a um comprovante (a alucinação do caso Isadora):
+    o guard injeta register_payment com os dados extraídos da própria mensagem,
+    e o texto alucinado NÃO é enviado ao paciente."""
+    state = _make_patient_agent_state(messages=[HumanMessage(content=_RECEIPT_MSG)])
+    ai_response = AIMessage(content="A taxa de reserva já foi recebida e a vaga está garantida! 😊")
+
+    result, mock_send = await _run_agent_with_response(state, ai_response)
+
+    calls = _register_payment_calls(result)
+    assert len(calls) == 1, "guard não injetou register_payment"
+    args = calls[0]["args"]
+    assert args["amount"] == "100,00"
+    assert args["drive_link"] == "https://drive.google.com/file/d/1PR9/view?usp=drivesdk"
+    assert "COMPROVANTE DE PAGAMENTO" in args["image_description"]
+    mock_send.assert_not_awaited(), "texto alucinado foi enviado ao paciente"
+
+
+async def test_receipt_with_other_tool_calls_appends_register_payment():
+    """Comprovante como resposta ao resumo de agendamento: a LLM chamou só
+    confirm_appointment. O guard adiciona register_payment DEPOIS dela (a consulta
+    precisa existir antes de anexar a taxa), e o guard de confirmação prematura
+    não pode interceptar — o comprovante É a confirmação (prompt, linha 528)."""
+    state = _make_patient_agent_state(messages=[
+        AIMessage(content="Só confirmar antes de registrar: ..."),
+        HumanMessage(content=_RECEIPT_MSG),
+    ])
+    ai_response = AIMessage(content="", tool_calls=[{
+        "name": "confirm_appointment",
+        "args": {"slot_datetime": "2026-08-10T11:00:00", "slot_duration_minutes": 60, "modality": "presencial"},
+        "id": "call_confirm",
+        "type": "tool_call",
+    }])
+
+    result, mock_send = await _run_agent_with_response(state, ai_response)
+
+    last = result["messages"][-1]
+    names = [tc["name"] for tc in (getattr(last, "tool_calls", None) or [])]
+    assert names == ["confirm_appointment", "register_payment"], names
+    mock_send.assert_not_awaited(), "guard de confirmação prematura interceptou o comprovante"
+
+
+async def test_receipt_guard_does_not_refire_after_register_payment_ran():
+    """Volta do ToolNode no mesmo turno: register_payment já executou e a LLM está
+    redigindo a resposta final. O guard NÃO pode reinjetar a tool (loop infinito de
+    registros duplicados)."""
+    from langchain_core.messages import ToolMessage
+
+    state = _make_patient_agent_state(messages=[
+        HumanMessage(content=_RECEIPT_MSG),
+        AIMessage(content="", tool_calls=[{
+            "name": "register_payment",
+            "args": {"amount": "100,00", "drive_link": "", "image_description": "x"},
+            "id": "call_rp", "type": "tool_call",
+        }]),
+        ToolMessage(content="Comprovante recebido e registrado com sucesso! ✅",
+                    tool_call_id="call_rp", name="register_payment"),
+    ])
+    ai_response = AIMessage(content="Pronto! A taxa de reserva está registrada. 😊")
+
+    result, mock_send = await _run_agent_with_response(state, ai_response)
+
+    assert not _register_payment_calls(result), "guard reinjetou register_payment após execução"
+    mock_send.assert_awaited()  # resposta final vai ao paciente normalmente
+
+
+async def test_receipt_guard_does_not_duplicate_llm_call():
+    """Quando a LLM já chamou register_payment por conta própria, o guard não
+    adiciona uma segunda chamada."""
+    state = _make_patient_agent_state(messages=[HumanMessage(content=_RECEIPT_MSG)])
+    ai_response = AIMessage(content="", tool_calls=[{
+        "name": "register_payment",
+        "args": {"amount": "100,00", "drive_link": "", "image_description": "x"},
+        "id": "call_rp", "type": "tool_call",
+    }])
+
+    result, _ = await _run_agent_with_response(state, ai_response)
+
+    assert len(_register_payment_calls(result)) == 1
+
+
+async def test_receipt_guard_skips_silent_mode():
+    """Em modo atendente o registro é guiado pelo prompt (a atendente informa o
+    valor); o guard não injeta nada — consistente com os demais guards."""
+    state = _make_patient_agent_state(
+        silent_mode=True,
+        messages=[HumanMessage(content=f"[Instrução da atendente]: registre\n{_RECEIPT_MSG}")],
+    )
+    ai_response = AIMessage(content="Nota para a equipe: qual o valor a registrar?")
+
+    result, _ = await _run_agent_with_response(state, ai_response)
+
+    assert not _register_payment_calls(result)
