@@ -2765,6 +2765,56 @@ async def test_request_document_succeeds_even_if_sheets_and_email_fail():
     assert "✅" in result
 
 
+async def test_request_document_receita_controlada_registra_e_orienta_retirada():
+    """Pedido de emissão de receita controlada (ex.: Ritalina) grava a medicação na
+    planilha E responde com a orientação de receita física / retirada presencial.
+
+    Caso Davi/Daniel (5582993088617): o pai pediu 'providenciar uma receita para
+    buscar', que agora é roteado para request_document em vez de só handoff.
+    """
+    from app.graph.tools import request_document
+    client, _, _ = _make_supabase_client()
+    with patch("app.graph.tools.get_supabase", new_callable=AsyncMock, return_value=client), \
+         patch("app.graph.tools.log_event", new_callable=AsyncMock), \
+         patch("app.graph.tools._notify_clinic", new_callable=AsyncMock) as mock_notify, \
+         patch("app.google_sheets.append_document_request", new_callable=AsyncMock) as mock_sheets, \
+         patch("app.email_sender.send_document_request_email", new_callable=AsyncMock):
+        result = await request_document.coroutine(
+            document_type="receita",
+            patient_email="daniel@example.com",
+            state=_make_state(patient_name="Davi", patient_age=14),
+            config=CONFIG,
+            medication_note="Ritalina LA 40mg",
+        )
+    # planilha recebe a medicação na coluna de observação (índice 5)
+    assert mock_sheets.await_args.args[4] == "receita"
+    assert mock_sheets.await_args.args[5] == "Ritalina LA 40mg"
+    # resposta orienta retirada presencial (medicação controlada = receita física)
+    assert "física" in result.lower()
+    assert "retirada" in result.lower()
+    # clínica é notificada com o aviso de receita física
+    assert "FÍSICA" in mock_notify.await_args.args[0]
+
+
+async def test_request_document_receita_sem_medicacao_pede_medicacao():
+    """Receita sem medicação informada não registra — Eva pergunta qual medicação."""
+    from app.graph.tools import request_document
+    client, _, _ = _make_supabase_client()
+    with patch("app.graph.tools.get_supabase", new_callable=AsyncMock, return_value=client), \
+         patch("app.graph.tools.log_event", new_callable=AsyncMock), \
+         patch("app.graph.tools._notify_clinic", new_callable=AsyncMock), \
+         patch("app.google_sheets.append_document_request", new_callable=AsyncMock) as mock_sheets, \
+         patch("app.email_sender.send_document_request_email", new_callable=AsyncMock):
+        result = await request_document.coroutine(
+            document_type="receita",
+            patient_email="daniel@example.com",
+            state=_make_state(medication_note=None),
+            config=CONFIG,
+        )
+    assert "medicação" in result.lower()
+    mock_sheets.assert_not_awaited()
+
+
 # ── transfer_to_human ─────────────────────────────────────────────────────────
 
 async def test_transfer_to_human_deactivates_user():
