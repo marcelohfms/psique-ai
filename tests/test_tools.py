@@ -784,34 +784,88 @@ async def test_confirm_appointment_insert_uses_patient_id_and_contact_id():
     assert "user_id" not in _insert_payload
 
 
-async def test_confirm_appointment_multi_patient_uses_user_db_id_over_stale_patient_name():
-    """Quando o contato tem múltiplos pacientes (ex: gêmeas), o agendamento deve ir para
-    o paciente de state["user_db_id"] — não para quem quer que patient_name aponte.
-    patient_name é uma string solta que pode ficar dessincronizada de user_db_id (caso
-    Renata Monteiro / Laila+Suzi Viana, 5581996962165, 08/07/2026: no meio da conversa
-    sobre a Suzi, app/main.py sincronizou patient_name de volta para "Laila" — a escolha
-    arbitrária de get_user_by_phone — enquanto user_db_id seguia correto (Suzi). O
-    agendamento foi então gravado no patient_id da Laila e depois cancelado como "consulta
-    da Laila", cancelando na real a consulta paga da Suzi)."""
+async def test_confirm_appointment_multi_patient_empty_override_asks_for_name():
+    """Contato com múltiplos pacientes e SEM patient_name_override: em vez de gravar no
+    escuro pelo user_db_id/patient_name congelados (que causou o caso Renata/Laila+Suzi,
+    5581996962165, 14/08/2026 — consulta pedida para Laila nasceu sob Suzi), a tool pede o
+    nome completo e NÃO cria evento nem insere agendamento."""
+    from app.graph.tools import confirm_appointment
+    client, table, execute = _make_supabase_client()
+    _laila = {"id": "laila-id", "patient_name": "Laila Monteiro Viana", "name": "Renata Monteiro"}
+    _suzi = {"id": "suzi-id", "patient_name": "Suzi Monteiro Viana", "name": "Renata Monteiro"}
+    create_event = AsyncMock(return_value="evt-should-not-happen")
+    with patch("app.graph.tools._get_doctor_calendar_id", new_callable=AsyncMock, return_value="cal123"), \
+         patch("app.google_calendar.create_event", create_event), \
+         patch("app.graph.tools.get_supabase", new_callable=AsyncMock, return_value=client), \
+         patch("app.graph.tools.get_users_by_phone", new_callable=AsyncMock, return_value=[_laila, _suzi]), \
+         patch("app.graph.tools.log_event", new_callable=AsyncMock), \
+         patch("app.graph.tools._notify_clinic", new_callable=AsyncMock):
+        result = await confirm_appointment.coroutine(
+            slot_datetime="2026-03-23T09:00:00",
+            slot_duration_minutes=60,
+            state=_make_state(user_db_id="suzi-id", patient_name="Laila Monteiro Viana", patient_email="renata@example.com"),
+            config=CONFIG,
+        )
+    assert "NÃO ENVIE AO PACIENTE" in result
+    assert "nome completo" in result.lower()
+    assert not table.insert.called
+    assert not create_event.called
+
+
+async def test_confirm_appointment_multi_patient_nonunique_override_asks_for_name():
+    """Override que não casa com exatamente um paciente (typo 'Layla', nome parcial, ou dois
+    irmãos parecidos) NÃO pode cair no fallback user_db_id — _match_patient_by_name devolve
+    None e a rede de segurança pede o nome, sem gravar. Trava o risco principal do design."""
+    from app.graph.tools import confirm_appointment
+    client, table, execute = _make_supabase_client()
+    _laila = {"id": "laila-id", "patient_name": "Laila Monteiro Viana", "name": "Renata Monteiro"}
+    _suzi = {"id": "suzi-id", "patient_name": "Suzi Monteiro Viana", "name": "Renata Monteiro"}
+    create_event = AsyncMock(return_value="evt-should-not-happen")
+    with patch("app.graph.tools._get_doctor_calendar_id", new_callable=AsyncMock, return_value="cal123"), \
+         patch("app.google_calendar.create_event", create_event), \
+         patch("app.graph.tools.get_supabase", new_callable=AsyncMock, return_value=client), \
+         patch("app.graph.tools.get_users_by_phone", new_callable=AsyncMock, return_value=[_laila, _suzi]), \
+         patch("app.graph.tools.log_event", new_callable=AsyncMock), \
+         patch("app.graph.tools._notify_clinic", new_callable=AsyncMock):
+        result = await confirm_appointment.coroutine(
+            slot_datetime="2026-03-23T09:00:00",
+            slot_duration_minutes=60,
+            state=_make_state(user_db_id="suzi-id", patient_name="Suzi Monteiro Viana", patient_email="renata@example.com"),
+            config=CONFIG,
+            patient_name_override="Layla",
+        )
+    assert "NÃO ENVIE AO PACIENTE" in result
+    assert not table.insert.called
+    assert not create_event.called
+
+
+async def test_confirm_appointment_multi_patient_valid_override_with_session_note_inserts():
+    """A 2ª sessão da 1ª consulta de menor dividida chama confirm_appointment de novo para o
+    MESMO paciente, com session_note. Num contato multi-paciente, desde que o override do menor
+    seja passado, a rede de segurança NÃO deve travar — o agendamento é inserido normalmente."""
     from app.graph.tools import confirm_appointment
     client, table, execute = _make_supabase_client()
     _laila = {"id": "laila-id", "patient_name": "Laila Monteiro Viana", "name": "Renata Monteiro"}
     _suzi = {"id": "suzi-id", "patient_name": "Suzi Monteiro Viana", "name": "Renata Monteiro"}
     with patch("app.graph.tools._get_doctor_calendar_id", new_callable=AsyncMock, return_value="cal123"), \
-         patch("app.google_calendar.create_event", new_callable=AsyncMock, return_value="evt-twins"), \
+         patch("app.google_calendar.create_event", new_callable=AsyncMock, return_value="evt-split-2"), \
          patch("app.graph.tools.get_supabase", new_callable=AsyncMock, return_value=client), \
          patch("app.graph.tools.get_users_by_phone", new_callable=AsyncMock, return_value=[_laila, _suzi]), \
          patch("app.graph.tools.log_event", new_callable=AsyncMock), \
          patch("app.graph.tools._notify_clinic", new_callable=AsyncMock):
-        await confirm_appointment.coroutine(
+        result = await confirm_appointment.coroutine(
             slot_datetime="2026-03-23T09:00:00",
             slot_duration_minutes=60,
-            # user_db_id corretamente aponta pra Suzi; patient_name ficou "preso" em Laila.
-            state=_make_state(user_db_id="suzi-id", patient_name="Laila Monteiro Viana", patient_email="renata@example.com"),
+            state=_make_state(user_db_id="suzi-id", patient_name="Suzi Monteiro Viana", patient_email="renata@example.com"),
             config=CONFIG,
+            session_note="2ª hora — paciente",
+            patient_name_override="Laila Monteiro Viana",
         )
+    assert "AGENDAMENTO_OK" in result
+    assert "nome completo" not in result.lower()
+    assert table.insert.called
     _insert_payload = table.insert.call_args[0][0]
-    assert _insert_payload.get("patient_id") == "suzi-id"
+    assert _insert_payload.get("patient_id") == "laila-id"
 
 
 async def test_confirm_appointment_multi_patient_override_beats_user_db_id():
@@ -883,7 +937,11 @@ async def test_guard_does_not_block_sibling_on_shared_phone():
     """Contraprova da guarda acima: 23 contatos têm mais de um paciente (famílias que
     usam um telefone só). Resolver pelo telefone NÃO pode bloquear o agendamento de um
     irmão porque outro tem consulta marcada — a guarda precisa mirar exatamente o
-    paciente desta conversa (caso Daniela/Silvia/Flavia Passos, 5581981179458)."""
+    paciente desta conversa (caso Daniela/Silvia/Flavia Passos, 5581981179458).
+
+    Com a política de override obrigatório para contato multi-paciente, o nome do
+    irmão-alvo vai em patient_name_override; a asserção segue sendo que o guard mira
+    exatamente esse paciente."""
     from app.graph.tools import confirm_appointment
     client, table, execute = _make_supabase_client()
     _silvia = {"id": "silvia-id", "patient_name": "Silvia De Souza Passos", "name": "Daniela Passos"}
@@ -902,6 +960,7 @@ async def test_guard_does_not_block_sibling_on_shared_phone():
             slot_duration_minutes=60,
             state=_make_state(user_db_id="flavia-id", patient_name="Flavia Souza Passos"),
             config=CONFIG,
+            patient_name_override="Flavia Souza Passos",
         )
     # Consultou a agenda da Flavia — não a da Silvia (que get_user_by_phone devolveria).
     _eq_args = [c.args for c in table.eq.call_args_list if c.args and c.args[0] == "patient_id"]

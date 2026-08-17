@@ -984,6 +984,43 @@ async def confirm_appointment(
     #
     # A 1ª sessão da consulta dividida, quando o guard libera a 2ª (ver exceção abaixo).
     # Fica fora do try para o insert conseguir ler a taxa já paga mesmo se o guard falhar.
+    # ── Rede de segurança multi-paciente ──────────────────────────────────────
+    # Para contatos que administram vários pacientes (irmãos no mesmo telefone), só
+    # prosseguir se patient_name_override singularizar UM paciente. Sem override único,
+    # _resolve_patient_for_booking cairia no user_db_id/patient_name congelados e gravaria
+    # o irmão errado (caso Renata/Laila+Suzi, 5581996962165, 14/08/2026: consulta pedida
+    # para Laila nasceu sob Suzi). _match_patient_by_name devolve None para override vazio,
+    # typo ou nome que casa com >1 irmão — em todos esses casos pedimos o nome completo em
+    # vez de agendar no escuro. Fica ANTES do create_event/insert (nunca cria evento sob o
+    # irmão errado) e usa as MESMAS funções de _resolve_patient_for_booking (paridade).
+    _phone_sn = config["configurable"]["phone"].replace("@s.whatsapp.net", "")
+    try:
+        _all_users_sn = await get_users_by_phone(_phone_sn)
+    except Exception:
+        # Supabase indisponível: não dá para avaliar multi-paciente aqui. Segue o fluxo
+        # normal, que trata a falha de resolução adiante com rollback do evento do Calendar.
+        # Loga (como o guard abaixo) para deixar rastro se a degradação mascarar algo.
+        _logger.warning(
+            "confirm_appointment: rede multi-paciente não avaliada (get_users_by_phone falhou) phone=%s",
+            _phone_sn, exc_info=True,
+        )
+        _all_users_sn = []
+    if len(_all_users_sn) > 1 and _match_patient_by_name(_all_users_sn, patient_name_override) is None:
+        _names_sn = ", ".join(
+            u.get("patient_name") or u.get("name") or "Paciente" for u in _all_users_sn
+        )
+        _logger.warning(
+            "confirm_appointment: contato multi-paciente sem override único — pedindo nome. phone=%s",
+            _phone_sn,
+        )
+        return (
+            "[INSTRUÇÃO INTERNA — NÃO ENVIE AO PACIENTE] Este contato administra mais de um "
+            f"paciente ({_names_sn}) e não deu para identificar com segurança para qual a "
+            "consulta é. Pergunte ao contato: 'Qual o nome completo do paciente para quem "
+            "deseja agendar?' e rechame confirm_appointment com esse nome em "
+            "patient_name_override."
+        )
+
     _split_sibling: dict | None = None
     try:
         _supabase = await get_supabase()
