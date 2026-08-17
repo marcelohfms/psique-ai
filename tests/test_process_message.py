@@ -3918,6 +3918,106 @@ async def test_pending_appointment_reschedule_guard_resumes_the_llm():
     assert not sent, "a instrução interna nunca pode ser enviada ao paciente"
 
 
+async def _run_pending_confirm_returning(tool_result):
+    """Fast-path de pending_appointment com confirm_appointment devolvendo
+    `tool_result`. Retorna (result, sent, transfer_mock)."""
+    from app.graph.nodes import patient_agent_node
+    from app.graph.tools import confirm_appointment, transfer_to_human
+
+    state = _make_patient_agent_state(
+        preferred_doctor="bruna",
+        messages=[
+            AIMessage(content="Só confirmar antes de registrar: 19/08 às 16:00 ..."),
+            HumanMessage(content="[Instrução da atendente]: sim"),
+        ],
+        pending_appointment={
+            "slot_datetime": "2026-08-19T16:00:00",
+            "slot_duration_minutes": 60,
+            "modality": "online",
+            "doctor": "bruna",
+        },
+    )
+
+    sent = []
+
+    async def fake_send_text(phone, text):
+        sent.append(text)
+
+    transfer_mock = AsyncMock(return_value="Transferido.")
+
+    with patch.object(confirm_appointment, "coroutine", new_callable=AsyncMock, return_value=tool_result), \
+         patch.object(transfer_to_human, "coroutine", transfer_mock), \
+         patch("app.whatsapp.send_text", side_effect=fake_send_text), \
+         patch("app.database.save_message", new_callable=AsyncMock), \
+         patch("app.graph.nodes.get_upcoming_appointments", new_callable=AsyncMock, return_value=[]), \
+         patch("app.graph.nodes.get_user_by_phone", new_callable=AsyncMock, return_value={"price_adjustment_notified_at": "2026-01-01"}), \
+         patch("app.graph.nodes.get_last_assistant_message_time", new_callable=AsyncMock, return_value=None):
+        result = await patient_agent_node(state, CONFIG)
+
+    return result, sent, transfer_mock
+
+
+@pytest.mark.parametrize("tool_result", [
+    # Dia com exceção que não cobre o horário escolhido — caso Geórgia
+    # (5583998264807, 17/08/2026): a Eva ofereceu 19/08 às 16h de manhã, o 16h da
+    # Dra. Bruna foi bloqueado à tarde e a paciente só respondeu à noite.
+    "[INSTRUÇÃO INTERNA — NÃO ENVIE AO PACIENTE] Este horário não está dentro da "
+    "disponibilidade de Dra. Bruna no dia 19/08/2026. Avise o paciente com empatia e "
+    "chame get_available_slots para buscar outro horário disponível.",
+    # Dia inteiro bloqueado por exceção
+    "[INSTRUÇÃO INTERNA — NÃO ENVIE AO PACIENTE] Dra. Bruna não tem atendimento no dia "
+    "19/08/2026. Avise o paciente com empatia e chame get_available_slots para buscar "
+    "outro horário disponível.",
+    # Dia da semana fora da grade do médico
+    "[INSTRUÇÃO INTERNA — NÃO ENVIE AO PACIENTE] Dra. Bruna não atende quinta-feira. "
+    "Avise o paciente com empatia e chame get_available_slots para buscar outro "
+    "horário disponível.",
+    # Horário fora das janelas do dia regular
+    "[INSTRUÇÃO INTERNA — NÃO ENVIE AO PACIENTE] Este horário (16:00) está fora da "
+    "grade de atendimento de Dra. Bruna. Avise o paciente com empatia e chame "
+    "get_available_slots para buscar outro horário disponível.",
+])
+async def test_pending_confirm_slot_unavailable_offers_new_slots(tool_result):
+    """Caso Geórgia (5583998264807, 17/08/2026): a Eva ofereceu 19/08 às 16h com a
+    Dra. Bruna às 10:35, o horário foi bloqueado na grade às 15:50 e a paciente só
+    respondeu "online" às 19:24. O confirm_appointment recusou com a instrução
+    interna mandando chamar get_available_slots — mas o fast-path de
+    pending_appointment só reconhecia "acabou de ser ocupado" e "já tem consulta",
+    então a recusa caiu no ramo de erro inesperado: "Tive um problema ao confirmar o
+    agendamento" + transfer_to_human, e a paciente ficou sem agendamento.
+
+    Qualquer recusa que mande buscar novos horários tem de voltar para a LLM (com
+    RESUME_AFTER_TOOL) para ela avisar o paciente e oferecer outros horários."""
+    from langchain_core.messages import ToolMessage
+    from app.graph.nodes import RESUME_AFTER_TOOL
+    from app.graph.graph import _route_patient_agent
+
+    result, sent, transfer_mock = await _run_pending_confirm_returning(tool_result)
+
+    assert result.get("pending_appointment") is None
+    last = result["messages"][-1]
+    assert isinstance(last, ToolMessage), "a instrução interna deve chegar à LLM como ToolMessage"
+    assert "get_available_slots" in last.content
+    assert last.additional_kwargs.get(RESUME_AFTER_TOOL) is True
+    assert _route_patient_agent({"messages": result["messages"]}) == "patient_agent"
+    transfer_mock.assert_not_called()
+    assert not any("problema ao confirmar" in t for t in sent), (
+        "recusa de horário não é erro inesperado — a Eva deve oferecer outros horários"
+    )
+    assert not sent, "a instrução interna nunca pode ser enviada ao paciente"
+
+
+async def test_pending_confirm_unexpected_error_still_transfers():
+    """Erro que a Eva não sabe resolver sozinha (sem instrução para buscar novos
+    horários) continua indo para a equipe — o fallback não pode ser afrouxado."""
+    result, sent, transfer_mock = await _run_pending_confirm_returning(
+        "[INSTRUÇÃO INTERNA — NÃO ENVIE AO PACIENTE] Falha inesperada ao gravar a consulta."
+    )
+
+    transfer_mock.assert_called_once()
+    assert any("problema ao confirmar" in t for t in sent)
+
+
 async def _run_pending_confirm_with_pending_reschedule(resched_rows, **tool_returns):
     """patient_agent_node no fast-path de pending_appointment, com o banco
     devolvendo `resched_rows` na consulta de agendamentos em pending_reschedule."""
