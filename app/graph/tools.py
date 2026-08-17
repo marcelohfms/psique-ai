@@ -12,7 +12,8 @@ from langgraph.prebuilt import InjectedState
 import logging
 
 from app.whatsapp import send_text
-from app.database import get_supabase, log_event, upsert_user, get_user_by_phone, get_users_by_phone, _phone_variants, DOCTOR_IDS, DOCTOR_NAMES
+from app.database import get_supabase, log_event, upsert_user, get_user_by_phone, get_users_by_phone, DOCTOR_IDS, DOCTOR_NAMES
+from app.phone import _phone_variants
 from app.chatwoot import get_conversation_id, unassign_agent_bot, add_label
 
 logger = logging.getLogger(__name__)
@@ -1423,9 +1424,10 @@ async def cancel_appointment(
 
     # Fetch appointment data before canceling for the notification
     client = await get_supabase()
-    appt_result = await client.from_("appointments").select("start_time, booking_fee_paid_at").eq("appointment_id", appointment_id).maybe_single().execute()
+    appt_result = await client.from_("appointments").select("start_time, booking_fee_paid_at, patient_id").eq("appointment_id", appointment_id).maybe_single().execute()
     old_start_time = (appt_result.data or {}).get("start_time")
     fee_was_paid = bool((appt_result.data or {}).get("booking_fee_paid_at"))
+    _this_patient_id = (appt_result.data or {}).get("patient_id")
 
     # Cancel in Google Calendar (frees the slot in both cases)
     await cancel_event(calendar_id, appointment_id)
@@ -1448,6 +1450,50 @@ async def cancel_appointment(
     else:
         formatted_old = "horário não disponível"
 
+    # ── Aviso de consultas irmãs ainda ativas ────────────────────────────────
+    # A primeira consulta infantil é dividida em DOIS agendamentos que coexistem
+    # (responsáveis + paciente), ambos com o MESMO patient_id. Quando o pedido é
+    # "cancelar as consultas", a Eva precisa cancelar os dois — mas o LLM pode
+    # anunciar cancelar todos e emitir só uma chamada, reportando ambos como
+    # canceladas (caso Marcelo Brayner, 5581999865181, 13/08/2026: cancelou a de
+    # 17/08 mas deixou a de 24/08 scheduled). Aqui a própria tool que rodou avisa,
+    # via instrução interna, que ainda há consulta(s) ativa(s) DO MESMO PACIENTE.
+    # Escopado por patient_id de propósito: um contato pode gerenciar vários
+    # pacientes (mãe que marca para si, o filho e a filha) e cancelar a consulta
+    # de um NÃO deve sinalizar as consultas dos outros como "pendentes de cancelar".
+    sibling_note = ""
+    try:
+        if _this_patient_id is not None:
+            _others_res = await client.from_("appointments").select(
+                "appointment_id, start_time"
+            ).eq("patient_id", _this_patient_id).in_(
+                "status", ["scheduled", "pending_reschedule"]
+            ).execute()
+            _remaining = [
+                a for a in (_others_res.data or [])
+                if a.get("appointment_id") != appointment_id
+            ]
+            if _remaining:
+                _lines = []
+                for _o in _remaining:
+                    _st = _o.get("start_time")
+                    _fmt = (
+                        datetime.fromisoformat(_st).astimezone(TZ).strftime("%d/%m/%Y às %H:%M")
+                        if _st else "horário não disponível"
+                    )
+                    _lines.append(f"- {_fmt} (ID: {_o.get('appointment_id')})")
+                sibling_note = (
+                    "\n\n[INSTRUÇÃO INTERNA — NÃO ENVIE AO PACIENTE] Este paciente/contato "
+                    f"ainda tem {len(_remaining)} consulta(s) ATIVA(S):\n" + "\n".join(_lines) +
+                    "\nSe o pedido foi cancelar MAIS DE UMA consulta (ex: primeira consulta "
+                    "infantil dividida em duas partes — dois agendamentos que coexistem), chame "
+                    "cancel_appointment para CADA uma dessas antes de responder. NÃO diga que "
+                    "'as consultas foram canceladas' enquanto ainda houver consulta ativa listada acima."
+                )
+    except Exception:
+        # Nunca falhar o cancelamento por causa do aviso auxiliar.
+        logging.getLogger(__name__).exception("cancel_appointment: falha ao checar consultas irmãs")
+
     if new_status == "pending_reschedule":
         await _notify_clinic(
             f"Consulta liberada para remarcação 🔄\n"
@@ -1458,7 +1504,7 @@ async def cancel_appointment(
             phone=phone,
             subject=f"Consulta liberada para remarcação — {patient_name}",
         )
-        return "FEE_PRESERVED\nSlot liberado e taxa de reserva preservada para remarcação futura. ✅"
+        return "FEE_PRESERVED\nSlot liberado e taxa de reserva preservada para remarcação futura. ✅" + sibling_note
     else:
         await _notify_clinic(
             f"Agendamento cancelado! ❌\n"
@@ -1468,7 +1514,109 @@ async def cancel_appointment(
             phone=phone,
             subject=f"Agendamento cancelado — {patient_name}",
         )
-        return "Consulta cancelada com sucesso. ✅"
+        return "Consulta cancelada com sucesso. ✅" + sibling_note
+
+
+@tool
+async def cancel_all_appointments(
+    appointment_id: str,
+    state: Annotated[dict, InjectedState],
+    config: RunnableConfig,
+    preserve_fee: bool = False,
+) -> str:
+    """Cancela DE UMA VEZ as duas partes da primeira consulta de UM paciente. Passe o appointment_id
+    de QUALQUER uma das consultas do paciente — a ferramenta cancela todas as consultas ativas
+    (scheduled/pending_reschedule) que compartilham o MESMO paciente.
+
+    Use quando o paciente pede para cancelar/desmarcar TODAS as consultas dele e há mais de uma ativa —
+    tipicamente a primeira consulta infantil, dividida em duas partes (responsáveis + paciente), que
+    são dois agendamentos que coexistem. Assim você não corre o risco de cancelar só uma e deixar a
+    outra ativa. Se houver apenas UMA consulta ativa, prefira cancel_appointment.
+
+    IMPORTANTE: escopo é por PACIENTE, não pelo contato. Se o contato gerencia vários pacientes e
+    quer cancelar as consultas de mais de um, chame esta ferramenta uma vez para cada paciente (com
+    um appointment_id de cada). Nunca presuma que "cancelar tudo" inclui outros pacientes.
+
+    preserve_fee=True: mantém a taxa já paga para remarcação futura (status → pending_reschedule);
+    preserve_fee=False (padrão): cancelamento definitivo (status → canceled). O reembolso, quando
+    cabível, continua sendo tratado à parte (register_refund_request), igual a cancel_appointment.
+    """
+    from app.google_calendar import cancel_event
+
+    client = await get_supabase()
+    phone = config["configurable"]["phone"]
+    users = await get_users_by_phone(phone)
+    contact_patient_ids = [u["id"] for u in users]
+    name_by_id = {
+        u["id"]: (u.get("patient_name") or u.get("name") or "Paciente") for u in users
+    }
+
+    # Resolve o paciente a partir do appointment_id informado e valida que pertence
+    # a este contato (impede cancelar consulta de outro número).
+    ref = await client.from_("appointments").select(
+        "patient_id"
+    ).eq("appointment_id", appointment_id).maybe_single().execute()
+    target_patient_id = (ref.data or {}).get("patient_id")
+    if target_patient_id is None or target_patient_id not in contact_patient_ids:
+        return "ID de agendamento inválido para este contato."
+
+    res = await client.from_("appointments").select(
+        "appointment_id, start_time, booking_fee_paid_at, doctor_id, patient_id, status"
+    ).eq("patient_id", target_patient_id).in_(
+        "status", ["scheduled", "pending_reschedule"]
+    ).order("start_time").execute()
+    appts = res.data or []
+    if not appts:
+        return "Não há consultas ativas para cancelar."
+
+    canceled = []
+    for a in appts:
+        aid = a["appointment_id"]
+        doctor_key = DOCTOR_NAMES.get(a.get("doctor_id"))
+        calendar_id = await _get_doctor_calendar_id(doctor_key) if doctor_key else None
+        # Libera o slot no Calendar (quando o médico é conhecido)
+        if calendar_id:
+            await cancel_event(calendar_id, aid)
+        fee_was_paid = bool(a.get("booking_fee_paid_at"))
+        new_status = "pending_reschedule" if (preserve_fee and fee_was_paid) else "canceled"
+        await client.from_("appointments").update({
+            "status": new_status,
+            "updated_at": datetime.now(TZ).isoformat(),
+        }).eq("appointment_id", aid).execute()
+        await log_event(
+            "appointment_canceled", phone,
+            {"appointment_id": aid, "preserve_fee": preserve_fee, "batch": True},
+        )
+        st = a.get("start_time")
+        fmt = (
+            datetime.fromisoformat(st).astimezone(TZ).strftime("%d/%m/%Y às %H:%M")
+            if st else "horário não disponível"
+        )
+        doctor_label = {"julio": "Dr. Júlio", "bruna": "Dra. Bruna"}.get(doctor_key, "médico(a)")
+        canceled.append({
+            "patient": name_by_id.get(a.get("patient_id"), "Paciente"),
+            "when": fmt,
+            "doctor": doctor_label,
+            "status": new_status,
+        })
+
+    # Notifica a clínica uma única vez, com o resumo do lote
+    lines = "\n".join(f"- {c['patient']} — {c['when']} — {c['doctor']}" for c in canceled)
+    any_preserved = any(c["status"] == "pending_reschedule" for c in canceled)
+    await _notify_clinic(
+        f"Cancelamento em lote ❌ ({len(canceled)} consulta(s)):\n{lines}"
+        + ("\nTaxa(s) de reserva preservada(s) para remarcação futura." if any_preserved else ""),
+        phone=phone,
+        subject=f"Cancelamento em lote — {canceled[0]['patient']}",
+    )
+
+    body = "\n".join(f"- {c['when']} ({c['doctor']})" for c in canceled)
+    if any_preserved:
+        return (
+            f"FEE_PRESERVED\n{len(canceled)} consulta(s) liberada(s), taxa preservada para "
+            f"remarcação futura. ✅\n{body}"
+        )
+    return f"{len(canceled)} consulta(s) cancelada(s) com sucesso. ✅\n{body}"
 
 
 @tool
@@ -2860,13 +3008,19 @@ async def register_payment(
             )
 
         user_ids = [u["id"] for u in all_users]
-        _appt_lookback = (datetime.now(TZ) - timedelta(days=15)).isoformat()
 
+        # No date window: the patient may settle the saldo of a consultation that
+        # happened weeks/months ago. A now-15d lower bound hid that completed appt,
+        # leaving seen_users empty so Eva asked "Para qual paciente é este
+        # comprovante?" for a phone with a single, unambiguous patient (caso Danniela,
+        # 5581991950147 — same root as the override-path double booking fee). The
+        # window was never needed for disambiguation: multiple patients on one phone
+        # are already caught above from get_users_by_phone, before this query runs.
         appts_result = await client.from_("appointments").select(
             "appointment_id, start_time, doctor_id, status, patients(id, name)"
         ).in_("patient_id", user_ids).in_(
             "status", ["scheduled", "completed"]
-        ).gte("start_time", _appt_lookback).order("start_time", desc=True).execute()
+        ).order("start_time", desc=True).execute()
 
         active_appts = appts_result.data or []
 
@@ -3134,36 +3288,28 @@ async def register_payment(
     # ── Rename Drive file ──────────────────────────────────────────────────────
     # new_filename is passed WITHOUT an extension — rename_file preserves whatever
     # extension the file was actually uploaded with (jpg or pdf), instead of the
-    # previous hardcoded ".jpg" that mislabeled every PDF receipt.
+    # previous hardcoded ".jpg" that mislabeled every PDF receipt. It returns the
+    # resolved name (extension included), which is then handed to
+    # append_payment_receipt so the comprovante link in the Pagamentos sheet displays
+    # exactly the name the file has in Drive.
     _drive_rename_failed = False
+    _receipt_filename = ""
     if drive_link:
         try:
-            from app.google_drive import rename_file
+            from app.google_drive import build_receipt_filename, rename_file
             # Support both /d/{id}/... and ?id={id} URL formats
             _fid_match = _re.search(r'/d/([^/?&#\s]+)', drive_link) or \
                          _re.search(r'[?&]id=([^?&#\s]+)', drive_link)
             if not _fid_match:
                 raise ValueError(f"Cannot extract file_id from drive_link: {drive_link!r}")
             file_id = _fid_match.group(1)
-            # Keep only digits/separators from amount ("100,00", "R$ 100,00", "?" →
-            # all normalized), then use "-" instead of ","/"." so the value can't
-            # collide with filename/extension parsing. Falls back to a placeholder
-            # when the amount wasn't identified, instead of emitting a broken
-            # trailing "_R$.jpg"/"_R$?.jpg".
-            _amount_digits = _re.sub(r"[^\d,.]", "", amount or "")
-            amount_clean = _amount_digits.replace(",", "-").replace(".", "-") if _amount_digits else "valor-nao-identificado"
-            date_clean   = (
-                appointment_dt.split(" ")[0].replace("/", "-")
-                if appointment_dt != "—"
-                else datetime.now(TZ).strftime("%d-%m-%Y")
-            )
-            safe_name    = patient_name.replace(" ", "_")
-            new_filename = f"{safe_name}_{date_clean}_R${amount_clean}"
-            await rename_file(file_id, new_filename)
-            _logger.info("DRIVE_RENAME OK file_id=%s new_name=%s", file_id, new_filename)
+            new_filename = build_receipt_filename(patient_name, appointment_dt, amount)
+            _receipt_filename = await rename_file(file_id, new_filename)
+            _logger.info("DRIVE_RENAME OK file_id=%s new_name=%s", file_id, _receipt_filename)
         except Exception:
             _logger.exception("DRIVE_RENAME FAILED drive_link=%r", drive_link)
             _drive_rename_failed = True
+            _receipt_filename = ""
     # The webViewLink is keyed by file ID, not filename, so the link the clinic
     # receives below still opens the right file even if the rename below failed —
     # only the friendly filename in Drive is affected. Still worth flagging: the
@@ -3247,6 +3393,7 @@ async def register_payment(
             await append_payment_receipt(
                 patient_name, patient_phone, doctor_label, appointment_dt,
                 amount, drive_link, payment_type="Consulta", payment_method_override="",
+                receipt_filename=_receipt_filename,
             )
         except Exception:
             _logger.exception("SHEETS_APPEND FAILED patient=%s", patient_name)
@@ -3330,7 +3477,7 @@ async def register_payment(
     # ── Record in Google Sheets ────────────────────────────────────────────────
     _sheets_append_failed = False
     try:
-        await append_payment_receipt(patient_name, patient_phone, doctor_label, appointment_dt, amount, drive_link, payment_type=payment_type, payment_method_override=_sheets_payment_method)
+        await append_payment_receipt(patient_name, patient_phone, doctor_label, appointment_dt, amount, drive_link, payment_type=payment_type, payment_method_override=_sheets_payment_method, receipt_filename=_receipt_filename)
     except Exception:
         _logger.exception("SHEETS_APPEND FAILED patient=%s", patient_name)
         _sheets_append_failed = True

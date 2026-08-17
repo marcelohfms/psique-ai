@@ -6,7 +6,8 @@ PHONE = "5581991947587"
 
 
 async def main():
-    from app.database import get_supabase, _phone_variants, DOCTOR_NAMES
+    from app.database import get_supabase, DOCTOR_NAMES
+    from app.phone import _phone_variants
     from datetime import datetime
     from zoneinfo import ZoneInfo
     TZ = ZoneInfo("America/Recife")

@@ -3,7 +3,8 @@ from dotenv import load_dotenv
 load_dotenv()
 
 async def main():
-    from app.database import get_supabase, _strip_phone
+    from app.database import get_supabase
+    from app.phone import _strip_phone
     from datetime import datetime
     from zoneinfo import ZoneInfo
     TZ = ZoneInfo("America/Recife")

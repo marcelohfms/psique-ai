@@ -3918,6 +3918,106 @@ async def test_pending_appointment_reschedule_guard_resumes_the_llm():
     assert not sent, "a instrução interna nunca pode ser enviada ao paciente"
 
 
+async def _run_pending_confirm_returning(tool_result):
+    """Fast-path de pending_appointment com confirm_appointment devolvendo
+    `tool_result`. Retorna (result, sent, transfer_mock)."""
+    from app.graph.nodes import patient_agent_node
+    from app.graph.tools import confirm_appointment, transfer_to_human
+
+    state = _make_patient_agent_state(
+        preferred_doctor="bruna",
+        messages=[
+            AIMessage(content="Só confirmar antes de registrar: 19/08 às 16:00 ..."),
+            HumanMessage(content="[Instrução da atendente]: sim"),
+        ],
+        pending_appointment={
+            "slot_datetime": "2026-08-19T16:00:00",
+            "slot_duration_minutes": 60,
+            "modality": "online",
+            "doctor": "bruna",
+        },
+    )
+
+    sent = []
+
+    async def fake_send_text(phone, text):
+        sent.append(text)
+
+    transfer_mock = AsyncMock(return_value="Transferido.")
+
+    with patch.object(confirm_appointment, "coroutine", new_callable=AsyncMock, return_value=tool_result), \
+         patch.object(transfer_to_human, "coroutine", transfer_mock), \
+         patch("app.whatsapp.send_text", side_effect=fake_send_text), \
+         patch("app.database.save_message", new_callable=AsyncMock), \
+         patch("app.graph.nodes.get_upcoming_appointments", new_callable=AsyncMock, return_value=[]), \
+         patch("app.graph.nodes.get_user_by_phone", new_callable=AsyncMock, return_value={"price_adjustment_notified_at": "2026-01-01"}), \
+         patch("app.graph.nodes.get_last_assistant_message_time", new_callable=AsyncMock, return_value=None):
+        result = await patient_agent_node(state, CONFIG)
+
+    return result, sent, transfer_mock
+
+
+@pytest.mark.parametrize("tool_result", [
+    # Dia com exceção que não cobre o horário escolhido — caso Geórgia
+    # (5583998264807, 17/08/2026): a Eva ofereceu 19/08 às 16h de manhã, o 16h da
+    # Dra. Bruna foi bloqueado à tarde e a paciente só respondeu à noite.
+    "[INSTRUÇÃO INTERNA — NÃO ENVIE AO PACIENTE] Este horário não está dentro da "
+    "disponibilidade de Dra. Bruna no dia 19/08/2026. Avise o paciente com empatia e "
+    "chame get_available_slots para buscar outro horário disponível.",
+    # Dia inteiro bloqueado por exceção
+    "[INSTRUÇÃO INTERNA — NÃO ENVIE AO PACIENTE] Dra. Bruna não tem atendimento no dia "
+    "19/08/2026. Avise o paciente com empatia e chame get_available_slots para buscar "
+    "outro horário disponível.",
+    # Dia da semana fora da grade do médico
+    "[INSTRUÇÃO INTERNA — NÃO ENVIE AO PACIENTE] Dra. Bruna não atende quinta-feira. "
+    "Avise o paciente com empatia e chame get_available_slots para buscar outro "
+    "horário disponível.",
+    # Horário fora das janelas do dia regular
+    "[INSTRUÇÃO INTERNA — NÃO ENVIE AO PACIENTE] Este horário (16:00) está fora da "
+    "grade de atendimento de Dra. Bruna. Avise o paciente com empatia e chame "
+    "get_available_slots para buscar outro horário disponível.",
+])
+async def test_pending_confirm_slot_unavailable_offers_new_slots(tool_result):
+    """Caso Geórgia (5583998264807, 17/08/2026): a Eva ofereceu 19/08 às 16h com a
+    Dra. Bruna às 10:35, o horário foi bloqueado na grade às 15:50 e a paciente só
+    respondeu "online" às 19:24. O confirm_appointment recusou com a instrução
+    interna mandando chamar get_available_slots — mas o fast-path de
+    pending_appointment só reconhecia "acabou de ser ocupado" e "já tem consulta",
+    então a recusa caiu no ramo de erro inesperado: "Tive um problema ao confirmar o
+    agendamento" + transfer_to_human, e a paciente ficou sem agendamento.
+
+    Qualquer recusa que mande buscar novos horários tem de voltar para a LLM (com
+    RESUME_AFTER_TOOL) para ela avisar o paciente e oferecer outros horários."""
+    from langchain_core.messages import ToolMessage
+    from app.graph.nodes import RESUME_AFTER_TOOL
+    from app.graph.graph import _route_patient_agent
+
+    result, sent, transfer_mock = await _run_pending_confirm_returning(tool_result)
+
+    assert result.get("pending_appointment") is None
+    last = result["messages"][-1]
+    assert isinstance(last, ToolMessage), "a instrução interna deve chegar à LLM como ToolMessage"
+    assert "get_available_slots" in last.content
+    assert last.additional_kwargs.get(RESUME_AFTER_TOOL) is True
+    assert _route_patient_agent({"messages": result["messages"]}) == "patient_agent"
+    transfer_mock.assert_not_called()
+    assert not any("problema ao confirmar" in t for t in sent), (
+        "recusa de horário não é erro inesperado — a Eva deve oferecer outros horários"
+    )
+    assert not sent, "a instrução interna nunca pode ser enviada ao paciente"
+
+
+async def test_pending_confirm_unexpected_error_still_transfers():
+    """Erro que a Eva não sabe resolver sozinha (sem instrução para buscar novos
+    horários) continua indo para a equipe — o fallback não pode ser afrouxado."""
+    result, sent, transfer_mock = await _run_pending_confirm_returning(
+        "[INSTRUÇÃO INTERNA — NÃO ENVIE AO PACIENTE] Falha inesperada ao gravar a consulta."
+    )
+
+    transfer_mock.assert_called_once()
+    assert any("problema ao confirmar" in t for t in sent)
+
+
 async def _run_pending_confirm_with_pending_reschedule(resched_rows, **tool_returns):
     """patient_agent_node no fast-path de pending_appointment, com o banco
     devolvendo `resched_rows` na consulta de agendamentos em pending_reschedule."""
@@ -4315,3 +4415,216 @@ def test_duration_rule_menor_em_acompanhamento_usa_60_minutos():
 
     assert "slot_duration_minutes=60" in rule
     assert "acompanhamento" in rule
+
+
+# ── Guard: comprovante no turno exige register_payment ───────────────────────
+# Caso Isadora de Sousa Costa (5581988417858, 07/08/2026): a paciente enviou o
+# comprovante da taxa, Eva respondeu com texto puro ("a taxa de reserva já foi
+# recebida") sem chamar register_payment. booking_fee_paid_at ficou NULL, o cron
+# cobrou a paciente de novo 2h depois e a consulta entrou na fila do cancelamento
+# automático. Mesmo padrão: Denise Alencar (23/07) e Juliana Feitosa (04/08).
+
+_RECEIPT_MSG = (
+    "[imagem]: COMPROVANTE DE PAGAMENTO: valor transferido R$ 100,00, chave PIX "
+    "42006848000178, nome do destinatário Psique, data/hora da transação 07/08/2026 "
+    "às 15:00:36, texto adicional: Reserva consulta Isadora. "
+    "[drive_link:https://drive.google.com/file/d/1PR9/view?usp=drivesdk]"
+)
+
+_GUARD_RECEIPT_PATCHES = dict(
+    get_upcoming_appointments=patch(
+        "app.graph.nodes.get_upcoming_appointments", new_callable=AsyncMock, return_value=[]),
+    get_user_by_phone=patch(
+        "app.graph.nodes.get_user_by_phone", new_callable=AsyncMock,
+        return_value={"price_adjustment_notified_at": "2026-01-01"}),
+    get_last_assistant_message_time=patch(
+        "app.graph.nodes.get_last_assistant_message_time", new_callable=AsyncMock, return_value=None),
+    format_doctor_schedules=patch(
+        "app.google_calendar.format_doctor_schedules", return_value="seg-sex"),
+)
+
+
+async def _run_agent_with_response(state: dict, ai_response) -> tuple[dict, AsyncMock]:
+    """Roda patient_agent_node com a resposta da LLM mockada; retorna (result, send_text)."""
+    from app.graph.nodes import patient_agent_node
+
+    async def fake_ainvoke(messages):
+        return ai_response
+
+    with patch("app.graph.nodes._get_agent_llm") as mock_llm_fn, \
+         patch("app.graph.nodes.send_text", new_callable=AsyncMock) as mock_send, \
+         patch("app.graph.nodes.save_message", new_callable=AsyncMock), \
+         _GUARD_RECEIPT_PATCHES["get_upcoming_appointments"], \
+         _GUARD_RECEIPT_PATCHES["get_user_by_phone"], \
+         _GUARD_RECEIPT_PATCHES["get_last_assistant_message_time"], \
+         _GUARD_RECEIPT_PATCHES["format_doctor_schedules"]:
+        mock_llm = MagicMock()
+        mock_llm.ainvoke = fake_ainvoke
+        mock_llm_fn.return_value = mock_llm
+        result = await patient_agent_node(state, CONFIG)
+    return result, mock_send
+
+
+def _register_payment_calls(result: dict) -> list[dict]:
+    calls = []
+    for m in result.get("messages", []):
+        for tc in (getattr(m, "tool_calls", None) or []):
+            if tc.get("name") == "register_payment":
+                calls.append(tc)
+    return calls
+
+
+async def test_receipt_with_text_only_response_forces_register_payment():
+    """LLM responde texto puro a um comprovante (a alucinação do caso Isadora):
+    o guard injeta register_payment com os dados extraídos da própria mensagem,
+    e o texto alucinado NÃO é enviado ao paciente."""
+    state = _make_patient_agent_state(messages=[HumanMessage(content=_RECEIPT_MSG)])
+    ai_response = AIMessage(content="A taxa de reserva já foi recebida e a vaga está garantida! 😊")
+
+    result, mock_send = await _run_agent_with_response(state, ai_response)
+
+    calls = _register_payment_calls(result)
+    assert len(calls) == 1, "guard não injetou register_payment"
+    args = calls[0]["args"]
+    assert args["amount"] == "100,00"
+    assert args["drive_link"] == "https://drive.google.com/file/d/1PR9/view?usp=drivesdk"
+    assert "COMPROVANTE DE PAGAMENTO" in args["image_description"]
+    mock_send.assert_not_awaited(), "texto alucinado foi enviado ao paciente"
+
+
+async def test_receipt_with_other_tool_calls_appends_register_payment():
+    """Comprovante como resposta ao resumo de agendamento: a LLM chamou só
+    confirm_appointment. O guard adiciona register_payment DEPOIS dela (a consulta
+    precisa existir antes de anexar a taxa), e o guard de confirmação prematura
+    não pode interceptar — o comprovante É a confirmação (prompt, linha 528)."""
+    state = _make_patient_agent_state(messages=[
+        AIMessage(content="Só confirmar antes de registrar: ..."),
+        HumanMessage(content=_RECEIPT_MSG),
+    ])
+    ai_response = AIMessage(content="", tool_calls=[{
+        "name": "confirm_appointment",
+        "args": {"slot_datetime": "2026-08-10T11:00:00", "slot_duration_minutes": 60, "modality": "presencial"},
+        "id": "call_confirm",
+        "type": "tool_call",
+    }])
+
+    result, mock_send = await _run_agent_with_response(state, ai_response)
+
+    last = result["messages"][-1]
+    names = [tc["name"] for tc in (getattr(last, "tool_calls", None) or [])]
+    assert names == ["confirm_appointment", "register_payment"], names
+    mock_send.assert_not_awaited(), "guard de confirmação prematura interceptou o comprovante"
+
+
+async def test_receipt_guard_does_not_refire_after_register_payment_ran():
+    """Volta do ToolNode no mesmo turno: register_payment já executou e a LLM está
+    redigindo a resposta final. O guard NÃO pode reinjetar a tool (loop infinito de
+    registros duplicados)."""
+    from langchain_core.messages import ToolMessage
+
+    state = _make_patient_agent_state(messages=[
+        HumanMessage(content=_RECEIPT_MSG),
+        AIMessage(content="", tool_calls=[{
+            "name": "register_payment",
+            "args": {"amount": "100,00", "drive_link": "", "image_description": "x"},
+            "id": "call_rp", "type": "tool_call",
+        }]),
+        ToolMessage(content="Comprovante recebido e registrado com sucesso! ✅",
+                    tool_call_id="call_rp", name="register_payment"),
+    ])
+    ai_response = AIMessage(content="Pronto! A taxa de reserva está registrada. 😊")
+
+    result, mock_send = await _run_agent_with_response(state, ai_response)
+
+    assert not _register_payment_calls(result), "guard reinjetou register_payment após execução"
+    mock_send.assert_awaited()  # resposta final vai ao paciente normalmente
+
+
+async def test_receipt_guard_does_not_duplicate_llm_call():
+    """Quando a LLM já chamou register_payment por conta própria, o guard não
+    adiciona uma segunda chamada."""
+    state = _make_patient_agent_state(messages=[HumanMessage(content=_RECEIPT_MSG)])
+    ai_response = AIMessage(content="", tool_calls=[{
+        "name": "register_payment",
+        "args": {"amount": "100,00", "drive_link": "", "image_description": "x"},
+        "id": "call_rp", "type": "tool_call",
+    }])
+
+    result, _ = await _run_agent_with_response(state, ai_response)
+
+    assert len(_register_payment_calls(result)) == 1
+
+
+async def test_receipt_guard_skips_silent_mode():
+    """Em modo atendente o registro é guiado pelo prompt (a atendente informa o
+    valor); o guard não injeta nada — consistente com os demais guards."""
+    state = _make_patient_agent_state(
+        silent_mode=True,
+        messages=[HumanMessage(content=f"[Instrução da atendente]: registre\n{_RECEIPT_MSG}")],
+    )
+    ai_response = AIMessage(content="Nota para a equipe: qual o valor a registrar?")
+
+    result, _ = await _run_agent_with_response(state, ai_response)
+
+    assert not _register_payment_calls(result)
+
+
+# ── Retry de falha transitória na chamada do LLM ──────────────────────────────
+# Caso Norma/Ian (5581988007007, 01/08/2026): um ConnectError de DNS durante a
+# chamada do LLM matou o run e a resposta dela ao lembrete de retorno ficou sem
+# processamento. O retry fica na camada da chamada do LLM (idempotente) e NÃO no
+# nó inteiro — os nós enviam mensagens via send_text, e retry de nó reenviaria
+# mensagens já entregues (duplicatas).
+
+
+async def test_llm_transient_connection_error_is_retried():
+    import httpx
+    import openai
+    from langchain_core.runnables import RunnableLambda
+    from app.graph.nodes import _with_transient_retry
+
+    calls = {"n": 0}
+
+    def flaky(_input):
+        calls["n"] += 1
+        if calls["n"] < 3:
+            raise openai.APIConnectionError(request=httpx.Request("POST", "https://api.openai.com/v1"))
+        return "ok"
+
+    wrapped = _with_transient_retry(RunnableLambda(flaky))
+    assert await wrapped.ainvoke("x") == "ok"
+    assert calls["n"] == 3
+
+
+async def test_llm_transient_error_gives_up_after_max_attempts():
+    import httpx
+    import openai
+    from langchain_core.runnables import RunnableLambda
+    from app.graph.nodes import _with_transient_retry
+
+    calls = {"n": 0}
+
+    def always_down(_input):
+        calls["n"] += 1
+        raise openai.APIConnectionError(request=httpx.Request("POST", "https://api.openai.com/v1"))
+
+    wrapped = _with_transient_retry(RunnableLambda(always_down))
+    with pytest.raises(openai.APIConnectionError):
+        await wrapped.ainvoke("x")
+    assert calls["n"] == 3
+
+
+async def test_llm_non_transient_error_is_not_retried():
+    from langchain_core.runnables import RunnableLambda
+    from app.graph.nodes import _with_transient_retry
+
+    calls = {"n": 0}
+
+    def broken(_input):
+        calls["n"] += 1
+        raise ValueError("erro de programação não deve ser re-tentado")
+
+    wrapped = _with_transient_retry(RunnableLambda(broken))
+    with pytest.raises(ValueError):
+        await wrapped.ainvoke("x")
+    assert calls["n"] == 1

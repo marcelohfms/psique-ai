@@ -18,7 +18,7 @@ async def main():
         c = await client.from_("contacts").select("name,phone").eq("phone", n).execute()
         if not c.data:
             # try legacy/canonical variant
-            from app.database import _phone_variants
+            from app.phone import _phone_variants
             for v in _phone_variants(n):
                 c = await client.from_("contacts").select("name,phone").eq("phone", v).execute()
                 if c.data:

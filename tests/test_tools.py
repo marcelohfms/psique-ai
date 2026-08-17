@@ -1871,6 +1871,7 @@ async def test_cancel_appointment_cancels_and_notifies():
          patch("app.google_calendar.cancel_event", new_callable=AsyncMock) as mock_cancel, \
          patch("app.graph.tools.get_supabase", new_callable=AsyncMock, return_value=client), \
          patch("app.graph.tools.get_user_by_phone", new_callable=AsyncMock, return_value=None), \
+         patch("app.graph.tools.get_users_by_phone", new_callable=AsyncMock, return_value=[]), \
          patch("app.graph.tools.log_event", new_callable=AsyncMock), \
          patch("app.graph.tools._notify_clinic", new_callable=AsyncMock) as mock_notify:
         result = await cancel_appointment.coroutine(
@@ -1879,8 +1880,168 @@ async def test_cancel_appointment_cancels_and_notifies():
             config=CONFIG,
         )
     assert "cancelada" in result.lower()
+    assert "INSTRUÇÃO INTERNA" not in result  # paciente sem outras consultas ativas
     mock_cancel.assert_awaited_once_with("cal123", "evt-abc")
     mock_notify.assert_called()
+
+
+async def test_cancel_appointment_warns_about_remaining_sibling():
+    """Primeira consulta infantil = dois agendamentos que coexistem. Ao cancelar um,
+    a tool deve avisar (instrução interna) que ainda há consulta ATIVA do mesmo
+    paciente, para a Eva não reportar 'as consultas foram canceladas' tendo cancelado
+    só uma. Regressão do caso Marcelo Brayner (5581999865181, 13/08/2026): Eva
+    anunciou cancelar as duas partes (17/08 e 24/08) mas só chamou cancel_appointment
+    na de 17/08 e mesmo assim confirmou ambas — a de 24/08 ficou scheduled."""
+    from app.graph.tools import cancel_appointment
+    client, table, execute = _make_supabase_client()
+    execute.side_effect = [
+        MagicMock(data={"start_time": "2026-08-17T14:00:00-03:00", "booking_fee_paid_at": None, "patient_id": "child-1"}),  # appt select
+        MagicMock(data=[]),  # status update
+        MagicMock(data=[  # outras consultas ativas do MESMO paciente (inclui a que acabou de cancelar)
+            {"appointment_id": "evt-cancelada", "start_time": "2026-08-17T14:00:00-03:00"},
+            {"appointment_id": "evt-sibling", "start_time": "2026-08-24T14:00:00-03:00"},
+        ]),
+    ]
+    with patch("app.graph.tools._get_doctor_calendar_id", new_callable=AsyncMock, return_value="cal123"), \
+         patch("app.google_calendar.cancel_event", new_callable=AsyncMock), \
+         patch("app.graph.tools.get_supabase", new_callable=AsyncMock, return_value=client), \
+         patch("app.graph.tools.get_user_by_phone", new_callable=AsyncMock, return_value=None), \
+         patch("app.graph.tools.get_users_by_phone", new_callable=AsyncMock, return_value=[{"id": "child-1"}]), \
+         patch("app.graph.tools.log_event", new_callable=AsyncMock), \
+         patch("app.graph.tools._notify_clinic", new_callable=AsyncMock):
+        result = await cancel_appointment.coroutine(
+            appointment_id="evt-cancelada",
+            state=_make_state(),
+            config=CONFIG,
+        )
+    assert "INSTRUÇÃO INTERNA" in result
+    assert "evt-sibling" in result          # aponta a consulta que ainda está ativa
+    assert "evt-cancelada" not in result.split("INSTRUÇÃO INTERNA")[1]  # não lista a já cancelada
+    assert "24/08/2026" in result
+
+
+# ── cancel_all_appointments ──────────────────────────────────────────────────
+
+async def test_cancel_all_appointments_cancels_every_active_one():
+    """Cancela as duas partes da primeira consulta do MESMO paciente de uma vez.
+    Deve liberar o Calendar de cada uma e marcar todas como canceled."""
+    from app.graph.tools import cancel_all_appointments
+    from app.database import DOCTOR_IDS
+    client, table, execute = _make_supabase_client()
+    julio = DOCTOR_IDS["julio"]
+    execute.side_effect = [
+        MagicMock(data={"patient_id": "child-1"}),  # resolve patient do appointment de referência
+        MagicMock(data=[  # select das consultas ativas do paciente
+            {"appointment_id": "evt-17", "start_time": "2026-08-17T14:00:00-03:00",
+             "booking_fee_paid_at": "2026-08-04T17:57:00-03:00", "doctor_id": julio,
+             "patient_id": "child-1", "status": "scheduled"},
+            {"appointment_id": "evt-24", "start_time": "2026-08-24T14:00:00-03:00",
+             "booking_fee_paid_at": None, "doctor_id": julio,
+             "patient_id": "child-1", "status": "scheduled"},
+        ]),
+        MagicMock(data=[]),  # update evt-17
+        MagicMock(data=[]),  # update evt-24
+    ]
+    with patch("app.graph.tools._get_doctor_calendar_id", new_callable=AsyncMock, return_value="cal-julio"), \
+         patch("app.google_calendar.cancel_event", new_callable=AsyncMock) as mock_cancel, \
+         patch("app.graph.tools.get_supabase", new_callable=AsyncMock, return_value=client), \
+         patch("app.graph.tools.get_users_by_phone", new_callable=AsyncMock,
+               return_value=[{"id": "child-1", "patient_name": "Marcelo Filho"}]), \
+         patch("app.graph.tools.log_event", new_callable=AsyncMock) as mock_log, \
+         patch("app.graph.tools._notify_clinic", new_callable=AsyncMock) as mock_notify:
+        result = await cancel_all_appointments.coroutine(
+            appointment_id="evt-17",
+            state=_make_state(),
+            config=CONFIG,
+        )
+    assert "2 consulta(s) cancelada(s)" in result
+    assert "17/08/2026" in result and "24/08/2026" in result
+    assert mock_cancel.await_count == 2  # libera o Calendar das duas
+    mock_cancel.assert_any_await("cal-julio", "evt-17")
+    mock_cancel.assert_any_await("cal-julio", "evt-24")
+    assert mock_log.await_count == 2
+    mock_notify.assert_called_once()  # uma única notificação de lote
+
+
+async def test_cancel_all_appointments_rejects_appointment_of_other_contact():
+    """appointment_id cujo patient_id não pertence a este contato → recusa, sem cancelar nada."""
+    from app.graph.tools import cancel_all_appointments
+    client, table, execute = _make_supabase_client()
+    execute.side_effect = [MagicMock(data={"patient_id": "estranho-99"})]  # patient de outro contato
+    with patch("app.graph.tools._get_doctor_calendar_id", new_callable=AsyncMock, return_value="cal-julio"), \
+         patch("app.google_calendar.cancel_event", new_callable=AsyncMock) as mock_cancel, \
+         patch("app.graph.tools.get_supabase", new_callable=AsyncMock, return_value=client), \
+         patch("app.graph.tools.get_users_by_phone", new_callable=AsyncMock,
+               return_value=[{"id": "child-1"}]), \
+         patch("app.graph.tools.log_event", new_callable=AsyncMock), \
+         patch("app.graph.tools._notify_clinic", new_callable=AsyncMock) as mock_notify:
+        result = await cancel_all_appointments.coroutine(
+            appointment_id="evt-de-outro",
+            state=_make_state(),
+            config=CONFIG,
+        )
+    assert "inválido" in result.lower()
+    mock_cancel.assert_not_awaited()
+    mock_notify.assert_not_called()
+
+
+async def test_cancel_all_appointments_no_active_returns_message():
+    """Sem consultas ativas: não chama Calendar nem notifica a clínica."""
+    from app.graph.tools import cancel_all_appointments
+    client, table, execute = _make_supabase_client()
+    execute.side_effect = [
+        MagicMock(data={"patient_id": "child-1"}),  # resolve patient
+        MagicMock(data=[]),                          # select vazio
+    ]
+    with patch("app.graph.tools._get_doctor_calendar_id", new_callable=AsyncMock, return_value="cal-julio"), \
+         patch("app.google_calendar.cancel_event", new_callable=AsyncMock) as mock_cancel, \
+         patch("app.graph.tools.get_supabase", new_callable=AsyncMock, return_value=client), \
+         patch("app.graph.tools.get_users_by_phone", new_callable=AsyncMock,
+               return_value=[{"id": "child-1"}]), \
+         patch("app.graph.tools.log_event", new_callable=AsyncMock), \
+         patch("app.graph.tools._notify_clinic", new_callable=AsyncMock) as mock_notify:
+        result = await cancel_all_appointments.coroutine(
+            appointment_id="evt-17",
+            state=_make_state(),
+            config=CONFIG,
+        )
+    assert "não há consultas ativas" in result.lower()
+    mock_cancel.assert_not_awaited()
+    mock_notify.assert_not_called()
+
+
+async def test_cancel_all_appointments_preserve_fee_keeps_paid_ones():
+    """preserve_fee=True: consultas com taxa paga viram pending_reschedule (FEE_PRESERVED)."""
+    from app.graph.tools import cancel_all_appointments
+    from app.database import DOCTOR_IDS
+    client, table, execute = _make_supabase_client()
+    julio = DOCTOR_IDS["julio"]
+    execute.side_effect = [
+        MagicMock(data={"patient_id": "child-1"}),  # resolve patient
+        MagicMock(data=[
+            {"appointment_id": "evt-17", "start_time": "2026-08-17T14:00:00-03:00",
+             "booking_fee_paid_at": "2026-08-04T17:57:00-03:00", "doctor_id": julio,
+             "patient_id": "child-1", "status": "scheduled"},
+        ]),
+        MagicMock(data=[]),
+    ]
+    with patch("app.graph.tools._get_doctor_calendar_id", new_callable=AsyncMock, return_value="cal-julio"), \
+         patch("app.google_calendar.cancel_event", new_callable=AsyncMock), \
+         patch("app.graph.tools.get_supabase", new_callable=AsyncMock, return_value=client), \
+         patch("app.graph.tools.get_users_by_phone", new_callable=AsyncMock,
+               return_value=[{"id": "child-1", "patient_name": "Marcelo Filho"}]), \
+         patch("app.graph.tools.log_event", new_callable=AsyncMock), \
+         patch("app.graph.tools._notify_clinic", new_callable=AsyncMock):
+        result = await cancel_all_appointments.coroutine(
+            appointment_id="evt-17",
+            state=_make_state(),
+            config=CONFIG,
+            preserve_fee=True,
+        )
+    # a chamada de update deve ter marcado pending_reschedule
+    update_call = [c for c in table.update.call_args_list]
+    assert any(c.args and c.args[0].get("status") == "pending_reschedule" for c in update_call)
+    assert "FEE_PRESERVED" in result
 
 
 # ── mark_reschedule_in_progress ───────────────────────────────────────────────
@@ -2663,6 +2824,56 @@ async def test_request_document_succeeds_even_if_sheets_and_email_fail():
     assert "✅" in result
 
 
+async def test_request_document_receita_controlada_registra_e_orienta_retirada():
+    """Pedido de emissão de receita controlada (ex.: Ritalina) grava a medicação na
+    planilha E responde com a orientação de receita física / retirada presencial.
+
+    Caso Davi/Daniel (5582993088617): o pai pediu 'providenciar uma receita para
+    buscar', que agora é roteado para request_document em vez de só handoff.
+    """
+    from app.graph.tools import request_document
+    client, _, _ = _make_supabase_client()
+    with patch("app.graph.tools.get_supabase", new_callable=AsyncMock, return_value=client), \
+         patch("app.graph.tools.log_event", new_callable=AsyncMock), \
+         patch("app.graph.tools._notify_clinic", new_callable=AsyncMock) as mock_notify, \
+         patch("app.google_sheets.append_document_request", new_callable=AsyncMock) as mock_sheets, \
+         patch("app.email_sender.send_document_request_email", new_callable=AsyncMock):
+        result = await request_document.coroutine(
+            document_type="receita",
+            patient_email="daniel@example.com",
+            state=_make_state(patient_name="Davi", patient_age=14),
+            config=CONFIG,
+            medication_note="Ritalina LA 40mg",
+        )
+    # planilha recebe a medicação na coluna de observação (índice 5)
+    assert mock_sheets.await_args.args[4] == "receita"
+    assert mock_sheets.await_args.args[5] == "Ritalina LA 40mg"
+    # resposta orienta retirada presencial (medicação controlada = receita física)
+    assert "física" in result.lower()
+    assert "retirada" in result.lower()
+    # clínica é notificada com o aviso de receita física
+    assert "FÍSICA" in mock_notify.await_args.args[0]
+
+
+async def test_request_document_receita_sem_medicacao_pede_medicacao():
+    """Receita sem medicação informada não registra — Eva pergunta qual medicação."""
+    from app.graph.tools import request_document
+    client, _, _ = _make_supabase_client()
+    with patch("app.graph.tools.get_supabase", new_callable=AsyncMock, return_value=client), \
+         patch("app.graph.tools.log_event", new_callable=AsyncMock), \
+         patch("app.graph.tools._notify_clinic", new_callable=AsyncMock), \
+         patch("app.google_sheets.append_document_request", new_callable=AsyncMock) as mock_sheets, \
+         patch("app.email_sender.send_document_request_email", new_callable=AsyncMock):
+        result = await request_document.coroutine(
+            document_type="receita",
+            patient_email="daniel@example.com",
+            state=_make_state(medication_note=None),
+            config=CONFIG,
+        )
+    assert "medicação" in result.lower()
+    mock_sheets.assert_not_awaited()
+
+
 # ── transfer_to_human ─────────────────────────────────────────────────────────
 
 async def test_transfer_to_human_deactivates_user():
@@ -2945,6 +3156,53 @@ async def test_register_payment_rename_uses_no_extension_and_sanitizes_amount():
     assert "." not in new_filename
     assert "," not in new_filename
     assert "100-00" in new_filename
+
+
+async def test_register_payment_forwards_resolved_drive_filename_to_sheet():
+    """The extension is only known after the rename (rename_file reads the current
+    name from Drive), so register_payment must hand the resolved name to
+    append_payment_receipt instead of letting the sheet rebuild its own — otherwise
+    the comprovante text in column I never matches the file (caso PDF: sheet dizia
+    .jpg; e a vírgula do valor divergia do hífen do nome real)."""
+    from app.graph.tools import register_payment
+    client, _, _ = _make_supabase_client_with_appointment()
+    resolved = "Maria_23-03-2026_R$100-00.pdf"
+    with patch("app.graph.tools.get_supabase", new_callable=AsyncMock, return_value=client), \
+         patch("app.graph.tools.get_users_by_phone", new_callable=AsyncMock, return_value=[{"id": "user-123", "patient_name": "Maria"}]), \
+         patch("app.graph.tools.log_event", new_callable=AsyncMock), \
+         patch("app.graph.tools._notify_clinic", new_callable=AsyncMock), \
+         patch("app.google_drive.rename_file", new_callable=AsyncMock, return_value=resolved), \
+         patch("app.google_sheets.append_payment_receipt", new_callable=AsyncMock) as mock_sheets, \
+         patch("app.graph.tools.send_text", new_callable=AsyncMock):
+        await register_payment.coroutine(
+            amount="R$ 100,00",
+            drive_link="https://drive.google.com/file/d/abc/view",
+            state=_make_state(),
+            config=CONFIG,
+        )
+    assert mock_sheets.call_args.kwargs["receipt_filename"] == resolved
+
+
+async def test_register_payment_rename_failure_leaves_sheet_filename_unresolved():
+    """If the rename failed, there is no resolved name to show — pass none through so
+    append_payment_receipt falls back to the canonical stem instead of displaying a
+    name the Drive file does not have."""
+    from app.graph.tools import register_payment
+    client, _, _ = _make_supabase_client_with_appointment()
+    with patch("app.graph.tools.get_supabase", new_callable=AsyncMock, return_value=client), \
+         patch("app.graph.tools.get_users_by_phone", new_callable=AsyncMock, return_value=[{"id": "user-123", "patient_name": "Maria"}]), \
+         patch("app.graph.tools.log_event", new_callable=AsyncMock), \
+         patch("app.graph.tools._notify_clinic", new_callable=AsyncMock), \
+         patch("app.google_drive.rename_file", new_callable=AsyncMock, side_effect=Exception("Drive unavailable")), \
+         patch("app.google_sheets.append_payment_receipt", new_callable=AsyncMock) as mock_sheets, \
+         patch("app.graph.tools.send_text", new_callable=AsyncMock):
+        await register_payment.coroutine(
+            amount="R$ 100,00",
+            drive_link="https://drive.google.com/file/d/abc/view",
+            state=_make_state(),
+            config=CONFIG,
+        )
+    assert mock_sheets.call_args.kwargs["receipt_filename"] == ""
 
 
 def _make_supabase_client_with_canceled_appointment(slot_taken=False):
@@ -3264,6 +3522,131 @@ async def test_register_payment_multiple_patients_on_phone_demands_new_tool_call
     # e precisa exigir a nova chamada da tool, não só a pergunta
     assert "register_payment" in result
     assert "patient_name_override" in result
+
+
+def _make_supabase_client_self_path_old_completed():
+    """Supabase client for the SELF-PATH late-balance case: the patient pays the
+    saldo from their OWN number (no patient_name_override), and their only
+    appointment is a COMPLETED consultation more than 15 days ago whose booking
+    fee was already paid.
+
+    The mock is date-aware for every appointment lookup that applies a
+    `.gte("start_time", ...)` lower bound: if the window starts after the consult
+    date (e.g. now-15d for a 35-day-old consult) it hides the appointment, exactly
+    like the real database. Two windows matter here:
+      - the SELF-PATH resolution query (`appts_result`) — hiding the appt made
+        `seen_users` empty, so Eva asked "Para qual paciente é este comprovante?"
+        even though the phone has a single, unambiguous patient (caso Danniela,
+        5581991950147, same root as the override-path double-fee bug);
+      - PRIORITY 3 (`completed_raw`) — hiding it made expected_remaining the full
+        price instead of price-100.
+
+    Call order (client.from_):
+      1. appts_result   — resolution (appointments + patients join)
+      2. scheduled_raw  — empty (no active appointment)         [PRIORITY 1]
+      3. future_canceled — empty (nothing to reactivate)        [PRIORITY 2]
+      4. completed_raw  — the old completed appt, iff window includes it [PRIORITY 3]
+      5. patients custom_price → None
+      6+. updates / misc → empty
+    """
+    now = datetime.now(TZ)
+    consult_start = now - timedelta(days=35)      # consultation already happened, >15d ago
+    resolution_appt = {
+        "appointment_id": "apt-old-completed",
+        "start_time": consult_start.isoformat(),
+        "doctor_id": "18b01f87-eacd-4905-bd4a-a8293991e6fd",  # Dra. Bruna
+        "status": "completed",
+        "patients": {"id": "dan-id", "name": "Danniela Azevedo Ramos De Almeida"},
+    }
+    completed_appt = {
+        "appointment_id": "apt-old-completed",
+        "start_time": consult_start.isoformat(),
+        "end_time": (consult_start + timedelta(hours=1)).isoformat(),
+        "doctor_id": "18b01f87-eacd-4905-bd4a-a8293991e6fd",
+        "paid_at": None,
+        "booking_fee_paid_at": (now - timedelta(days=58)).isoformat(),  # paid a previous month
+        "status": "completed",
+        "consultation_type": None,
+        "booking_fee_waived": False,
+    }
+    empty = MagicMock(data=[])
+
+    captured = {"start_gte": None}
+
+    def _gte(col, val):
+        if col == "start_time":
+            captured["start_gte"] = val
+        return table
+
+    def _hidden():
+        lb = captured["start_gte"]
+        return lb is not None and datetime.fromisoformat(lb) > consult_start
+
+    def _side_effect(*_a, **_kw):
+        _side_effect.call_count += 1
+        n = _side_effect.call_count
+        if n == 1:
+            hidden = _hidden()
+            captured["start_gte"] = None
+            return empty if hidden else MagicMock(data=[resolution_appt])   # appts_result
+        if n in (2, 3):
+            captured["start_gte"] = None
+            return empty                                                    # PRIORITY 1 / 2
+        if n == 4:
+            hidden = _hidden()
+            captured["start_gte"] = None
+            return empty if hidden else MagicMock(data=[completed_appt])    # PRIORITY 3
+        captured["start_gte"] = None
+        return empty
+
+    _side_effect.call_count = 0
+
+    execute = AsyncMock(side_effect=_side_effect)
+    table = MagicMock()
+    for m in ("select", "eq", "in_", "limit", "single", "maybe_single",
+              "order", "insert", "update", "upsert", "is_", "gt", "lt", "neq", "ilike"):
+        getattr(table, m).return_value = table
+    table.gte = MagicMock(side_effect=_gte)
+    table.execute = execute
+    client = MagicMock()
+    client.from_.return_value = table
+    return client
+
+
+async def test_register_payment_self_path_resolves_old_completed_appointment():
+    """Self-path (patient pays from their own number, no name override): a saldo
+    for a consultation that happened more than 15 days ago must resolve to that
+    patient and settle the consultation — NOT trigger "Para qual paciente é este
+    comprovante?" nor charge the booking fee again.
+
+    Same root as caso Danniela (5581991950147, 12/08/2026), but in the SELF-PATH
+    resolution query, which bounded appointments to now-15d. The phone has a
+    single unambiguous patient, so the 15-day window only ever hid the right
+    answer — it was never needed for disambiguation (that is handled earlier from
+    get_users_by_phone). With the window gone, R$550 QUITA a R$650 consult whose
+    R$100 fee was already paid."""
+    from app.graph.tools import register_payment
+    client = _make_supabase_client_self_path_old_completed()
+    with patch("app.graph.tools.get_supabase", new_callable=AsyncMock, return_value=client), \
+         patch("app.graph.tools.get_users_by_phone", new_callable=AsyncMock,
+               return_value=[{"id": "dan-id", "patient_name": "Danniela Azevedo Ramos De Almeida"}]), \
+         patch("app.graph.tools.log_event", new_callable=AsyncMock), \
+         patch("app.graph.tools.send_text", new_callable=AsyncMock), \
+         patch("app.google_drive.rename_file", new_callable=AsyncMock), \
+         patch("app.google_sheets.append_payment_receipt", new_callable=AsyncMock) as mock_sheets, \
+         patch("app.graph.tools._notify_clinic", new_callable=AsyncMock):
+        result = await register_payment.coroutine(
+            amount="550,00",
+            drive_link="https://drive.google.com/file/d/abc/view",
+            state=_make_state(preferred_doctor="bruna"),
+            config=CONFIG,
+        )
+
+    assert "Para qual paciente" not in result
+    mock_sheets.assert_awaited_once()
+    assert mock_sheets.call_args.kwargs["payment_type"] == "Consulta"
+    assert "QUITADA" in result
+    assert "Pagamento Parcial" not in result
 
 
 async def test_register_payment_override_ambiguous_name_demands_new_tool_call():
