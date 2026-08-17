@@ -3251,36 +3251,28 @@ async def register_payment(
     # ── Rename Drive file ──────────────────────────────────────────────────────
     # new_filename is passed WITHOUT an extension — rename_file preserves whatever
     # extension the file was actually uploaded with (jpg or pdf), instead of the
-    # previous hardcoded ".jpg" that mislabeled every PDF receipt.
+    # previous hardcoded ".jpg" that mislabeled every PDF receipt. It returns the
+    # resolved name (extension included), which is then handed to
+    # append_payment_receipt so the comprovante link in the Pagamentos sheet displays
+    # exactly the name the file has in Drive.
     _drive_rename_failed = False
+    _receipt_filename = ""
     if drive_link:
         try:
-            from app.google_drive import rename_file
+            from app.google_drive import build_receipt_filename, rename_file
             # Support both /d/{id}/... and ?id={id} URL formats
             _fid_match = _re.search(r'/d/([^/?&#\s]+)', drive_link) or \
                          _re.search(r'[?&]id=([^?&#\s]+)', drive_link)
             if not _fid_match:
                 raise ValueError(f"Cannot extract file_id from drive_link: {drive_link!r}")
             file_id = _fid_match.group(1)
-            # Keep only digits/separators from amount ("100,00", "R$ 100,00", "?" →
-            # all normalized), then use "-" instead of ","/"." so the value can't
-            # collide with filename/extension parsing. Falls back to a placeholder
-            # when the amount wasn't identified, instead of emitting a broken
-            # trailing "_R$.jpg"/"_R$?.jpg".
-            _amount_digits = _re.sub(r"[^\d,.]", "", amount or "")
-            amount_clean = _amount_digits.replace(",", "-").replace(".", "-") if _amount_digits else "valor-nao-identificado"
-            date_clean   = (
-                appointment_dt.split(" ")[0].replace("/", "-")
-                if appointment_dt != "—"
-                else datetime.now(TZ).strftime("%d-%m-%Y")
-            )
-            safe_name    = patient_name.replace(" ", "_")
-            new_filename = f"{safe_name}_{date_clean}_R${amount_clean}"
-            await rename_file(file_id, new_filename)
-            _logger.info("DRIVE_RENAME OK file_id=%s new_name=%s", file_id, new_filename)
+            new_filename = build_receipt_filename(patient_name, appointment_dt, amount)
+            _receipt_filename = await rename_file(file_id, new_filename)
+            _logger.info("DRIVE_RENAME OK file_id=%s new_name=%s", file_id, _receipt_filename)
         except Exception:
             _logger.exception("DRIVE_RENAME FAILED drive_link=%r", drive_link)
             _drive_rename_failed = True
+            _receipt_filename = ""
     # The webViewLink is keyed by file ID, not filename, so the link the clinic
     # receives below still opens the right file even if the rename below failed —
     # only the friendly filename in Drive is affected. Still worth flagging: the
@@ -3364,6 +3356,7 @@ async def register_payment(
             await append_payment_receipt(
                 patient_name, patient_phone, doctor_label, appointment_dt,
                 amount, drive_link, payment_type="Consulta", payment_method_override="",
+                receipt_filename=_receipt_filename,
             )
         except Exception:
             _logger.exception("SHEETS_APPEND FAILED patient=%s", patient_name)
@@ -3447,7 +3440,7 @@ async def register_payment(
     # ── Record in Google Sheets ────────────────────────────────────────────────
     _sheets_append_failed = False
     try:
-        await append_payment_receipt(patient_name, patient_phone, doctor_label, appointment_dt, amount, drive_link, payment_type=payment_type, payment_method_override=_sheets_payment_method)
+        await append_payment_receipt(patient_name, patient_phone, doctor_label, appointment_dt, amount, drive_link, payment_type=payment_type, payment_method_override=_sheets_payment_method, receipt_filename=_receipt_filename)
     except Exception:
         _logger.exception("SHEETS_APPEND FAILED patient=%s", patient_name)
         _sheets_append_failed = True

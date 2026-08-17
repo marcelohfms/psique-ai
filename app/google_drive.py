@@ -1,6 +1,7 @@
 import asyncio
 import io
 import os
+import re
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
@@ -57,28 +58,63 @@ def _upload_and_share(service, folder_id: str, filename: str, image_bytes: bytes
     return file.get("webViewLink", f"https://drive.google.com/file/d/{file_id}/view")
 
 
-def _rename_file(service, file_id: str, new_name: str) -> None:
-    """Rename a Drive file, preserving its current extension.
+def build_receipt_filename(patient_name: str, appointment_dt: str, amount: str) -> str:
+    """Canonical comprovante (payment receipt) filename, WITHOUT extension.
+
+    Single source of truth for this name: it is both what the Drive file is renamed
+    to (see rename_file, which appends the file's real extension) and what the
+    Pagamentos sheet displays as the comprovante hyperlink text (see
+    app.google_sheets.append_payment_receipt). Rebuilding it separately in each
+    place is what made the sheet show a name no file in Drive ever had.
+
+    Format: "{Nome_Do_Paciente}_{DD-MM-AAAA}_R${valor}"
+      - amount keeps only digits/separators ("R$ 600,00" → "600,00"), then uses "-"
+        instead of ","/"." so the value can't collide with extension parsing.
+        Falls back to "valor-nao-identificado" when the amount wasn't identified
+        (amount="?" or empty), instead of emitting a broken trailing "_R$".
+      - appointment_dt is the linked appointment ("DD/MM/AAAA HH:MM"); today's date
+        is used when there is no linked appointment ("—" or empty).
+    """
+    amount_digits = re.sub(r"[^\d,.]", "", amount or "")
+    amount_clean = (
+        amount_digits.replace(",", "-").replace(".", "-")
+        if amount_digits
+        else "valor-nao-identificado"
+    )
+    date_clean = (
+        appointment_dt.split(" ")[0].replace("/", "-")
+        if appointment_dt and appointment_dt != "—"
+        else datetime.now(TZ).strftime("%d-%m-%Y")
+    )
+    safe_name = (patient_name or "paciente").replace(" ", "_")
+    return f"{safe_name}_{date_clean}_R${amount_clean}"
+
+
+def _rename_file(service, file_id: str, new_name: str) -> str:
+    """Rename a Drive file, preserving its current extension. Returns the final name.
 
     new_name is passed WITHOUT an extension — callers (e.g. register_payment)
     don't reliably know whether the underlying upload was a jpg or a pdf, so we
     read the file's existing name from Drive and reuse its extension instead of
-    guessing/hardcoding one.
+    guessing/hardcoding one. The resolved name is returned because the extension is
+    only known here, and the Pagamentos sheet has to display exactly this name.
     """
     meta = service.files().get(fileId=file_id, fields="name").execute()
     current_name = meta.get("name", "")
     _, dot, ext = current_name.rpartition(".")
     final_name = f"{new_name}.{ext}" if dot else new_name
     service.files().update(fileId=file_id, body={"name": final_name}).execute()
+    return final_name
 
 
-async def rename_file(file_id: str, new_name: str) -> None:
-    """Rename an existing Drive file. new_name should have no extension — the
-    file's current extension is preserved automatically (see _rename_file)."""
+async def rename_file(file_id: str, new_name: str) -> str:
+    """Rename an existing Drive file and return its final name. new_name should have
+    no extension — the file's current extension is preserved automatically and
+    included in the returned name (see _rename_file)."""
     creds = _credentials()
     service = build("drive", "v3", credentials=creds)
     loop = asyncio.get_running_loop()
-    await loop.run_in_executor(None, _rename_file, service, file_id, new_name)
+    return await loop.run_in_executor(None, _rename_file, service, file_id, new_name)
 
 
 async def upload_image(image_bytes: bytes, filename: str, mimetype: str = "image/jpeg") -> str:
