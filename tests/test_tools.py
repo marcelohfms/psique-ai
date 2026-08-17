@@ -1812,6 +1812,7 @@ async def test_cancel_appointment_cancels_and_notifies():
          patch("app.google_calendar.cancel_event", new_callable=AsyncMock) as mock_cancel, \
          patch("app.graph.tools.get_supabase", new_callable=AsyncMock, return_value=client), \
          patch("app.graph.tools.get_user_by_phone", new_callable=AsyncMock, return_value=None), \
+         patch("app.graph.tools.get_users_by_phone", new_callable=AsyncMock, return_value=[]), \
          patch("app.graph.tools.log_event", new_callable=AsyncMock), \
          patch("app.graph.tools._notify_clinic", new_callable=AsyncMock) as mock_notify:
         result = await cancel_appointment.coroutine(
@@ -1820,8 +1821,168 @@ async def test_cancel_appointment_cancels_and_notifies():
             config=CONFIG,
         )
     assert "cancelada" in result.lower()
+    assert "INSTRUÇÃO INTERNA" not in result  # paciente sem outras consultas ativas
     mock_cancel.assert_awaited_once_with("cal123", "evt-abc")
     mock_notify.assert_called()
+
+
+async def test_cancel_appointment_warns_about_remaining_sibling():
+    """Primeira consulta infantil = dois agendamentos que coexistem. Ao cancelar um,
+    a tool deve avisar (instrução interna) que ainda há consulta ATIVA do mesmo
+    paciente, para a Eva não reportar 'as consultas foram canceladas' tendo cancelado
+    só uma. Regressão do caso Marcelo Brayner (5581999865181, 13/08/2026): Eva
+    anunciou cancelar as duas partes (17/08 e 24/08) mas só chamou cancel_appointment
+    na de 17/08 e mesmo assim confirmou ambas — a de 24/08 ficou scheduled."""
+    from app.graph.tools import cancel_appointment
+    client, table, execute = _make_supabase_client()
+    execute.side_effect = [
+        MagicMock(data={"start_time": "2026-08-17T14:00:00-03:00", "booking_fee_paid_at": None, "patient_id": "child-1"}),  # appt select
+        MagicMock(data=[]),  # status update
+        MagicMock(data=[  # outras consultas ativas do MESMO paciente (inclui a que acabou de cancelar)
+            {"appointment_id": "evt-cancelada", "start_time": "2026-08-17T14:00:00-03:00"},
+            {"appointment_id": "evt-sibling", "start_time": "2026-08-24T14:00:00-03:00"},
+        ]),
+    ]
+    with patch("app.graph.tools._get_doctor_calendar_id", new_callable=AsyncMock, return_value="cal123"), \
+         patch("app.google_calendar.cancel_event", new_callable=AsyncMock), \
+         patch("app.graph.tools.get_supabase", new_callable=AsyncMock, return_value=client), \
+         patch("app.graph.tools.get_user_by_phone", new_callable=AsyncMock, return_value=None), \
+         patch("app.graph.tools.get_users_by_phone", new_callable=AsyncMock, return_value=[{"id": "child-1"}]), \
+         patch("app.graph.tools.log_event", new_callable=AsyncMock), \
+         patch("app.graph.tools._notify_clinic", new_callable=AsyncMock):
+        result = await cancel_appointment.coroutine(
+            appointment_id="evt-cancelada",
+            state=_make_state(),
+            config=CONFIG,
+        )
+    assert "INSTRUÇÃO INTERNA" in result
+    assert "evt-sibling" in result          # aponta a consulta que ainda está ativa
+    assert "evt-cancelada" not in result.split("INSTRUÇÃO INTERNA")[1]  # não lista a já cancelada
+    assert "24/08/2026" in result
+
+
+# ── cancel_all_appointments ──────────────────────────────────────────────────
+
+async def test_cancel_all_appointments_cancels_every_active_one():
+    """Cancela as duas partes da primeira consulta do MESMO paciente de uma vez.
+    Deve liberar o Calendar de cada uma e marcar todas como canceled."""
+    from app.graph.tools import cancel_all_appointments
+    from app.database import DOCTOR_IDS
+    client, table, execute = _make_supabase_client()
+    julio = DOCTOR_IDS["julio"]
+    execute.side_effect = [
+        MagicMock(data={"patient_id": "child-1"}),  # resolve patient do appointment de referência
+        MagicMock(data=[  # select das consultas ativas do paciente
+            {"appointment_id": "evt-17", "start_time": "2026-08-17T14:00:00-03:00",
+             "booking_fee_paid_at": "2026-08-04T17:57:00-03:00", "doctor_id": julio,
+             "patient_id": "child-1", "status": "scheduled"},
+            {"appointment_id": "evt-24", "start_time": "2026-08-24T14:00:00-03:00",
+             "booking_fee_paid_at": None, "doctor_id": julio,
+             "patient_id": "child-1", "status": "scheduled"},
+        ]),
+        MagicMock(data=[]),  # update evt-17
+        MagicMock(data=[]),  # update evt-24
+    ]
+    with patch("app.graph.tools._get_doctor_calendar_id", new_callable=AsyncMock, return_value="cal-julio"), \
+         patch("app.google_calendar.cancel_event", new_callable=AsyncMock) as mock_cancel, \
+         patch("app.graph.tools.get_supabase", new_callable=AsyncMock, return_value=client), \
+         patch("app.graph.tools.get_users_by_phone", new_callable=AsyncMock,
+               return_value=[{"id": "child-1", "patient_name": "Marcelo Filho"}]), \
+         patch("app.graph.tools.log_event", new_callable=AsyncMock) as mock_log, \
+         patch("app.graph.tools._notify_clinic", new_callable=AsyncMock) as mock_notify:
+        result = await cancel_all_appointments.coroutine(
+            appointment_id="evt-17",
+            state=_make_state(),
+            config=CONFIG,
+        )
+    assert "2 consulta(s) cancelada(s)" in result
+    assert "17/08/2026" in result and "24/08/2026" in result
+    assert mock_cancel.await_count == 2  # libera o Calendar das duas
+    mock_cancel.assert_any_await("cal-julio", "evt-17")
+    mock_cancel.assert_any_await("cal-julio", "evt-24")
+    assert mock_log.await_count == 2
+    mock_notify.assert_called_once()  # uma única notificação de lote
+
+
+async def test_cancel_all_appointments_rejects_appointment_of_other_contact():
+    """appointment_id cujo patient_id não pertence a este contato → recusa, sem cancelar nada."""
+    from app.graph.tools import cancel_all_appointments
+    client, table, execute = _make_supabase_client()
+    execute.side_effect = [MagicMock(data={"patient_id": "estranho-99"})]  # patient de outro contato
+    with patch("app.graph.tools._get_doctor_calendar_id", new_callable=AsyncMock, return_value="cal-julio"), \
+         patch("app.google_calendar.cancel_event", new_callable=AsyncMock) as mock_cancel, \
+         patch("app.graph.tools.get_supabase", new_callable=AsyncMock, return_value=client), \
+         patch("app.graph.tools.get_users_by_phone", new_callable=AsyncMock,
+               return_value=[{"id": "child-1"}]), \
+         patch("app.graph.tools.log_event", new_callable=AsyncMock), \
+         patch("app.graph.tools._notify_clinic", new_callable=AsyncMock) as mock_notify:
+        result = await cancel_all_appointments.coroutine(
+            appointment_id="evt-de-outro",
+            state=_make_state(),
+            config=CONFIG,
+        )
+    assert "inválido" in result.lower()
+    mock_cancel.assert_not_awaited()
+    mock_notify.assert_not_called()
+
+
+async def test_cancel_all_appointments_no_active_returns_message():
+    """Sem consultas ativas: não chama Calendar nem notifica a clínica."""
+    from app.graph.tools import cancel_all_appointments
+    client, table, execute = _make_supabase_client()
+    execute.side_effect = [
+        MagicMock(data={"patient_id": "child-1"}),  # resolve patient
+        MagicMock(data=[]),                          # select vazio
+    ]
+    with patch("app.graph.tools._get_doctor_calendar_id", new_callable=AsyncMock, return_value="cal-julio"), \
+         patch("app.google_calendar.cancel_event", new_callable=AsyncMock) as mock_cancel, \
+         patch("app.graph.tools.get_supabase", new_callable=AsyncMock, return_value=client), \
+         patch("app.graph.tools.get_users_by_phone", new_callable=AsyncMock,
+               return_value=[{"id": "child-1"}]), \
+         patch("app.graph.tools.log_event", new_callable=AsyncMock), \
+         patch("app.graph.tools._notify_clinic", new_callable=AsyncMock) as mock_notify:
+        result = await cancel_all_appointments.coroutine(
+            appointment_id="evt-17",
+            state=_make_state(),
+            config=CONFIG,
+        )
+    assert "não há consultas ativas" in result.lower()
+    mock_cancel.assert_not_awaited()
+    mock_notify.assert_not_called()
+
+
+async def test_cancel_all_appointments_preserve_fee_keeps_paid_ones():
+    """preserve_fee=True: consultas com taxa paga viram pending_reschedule (FEE_PRESERVED)."""
+    from app.graph.tools import cancel_all_appointments
+    from app.database import DOCTOR_IDS
+    client, table, execute = _make_supabase_client()
+    julio = DOCTOR_IDS["julio"]
+    execute.side_effect = [
+        MagicMock(data={"patient_id": "child-1"}),  # resolve patient
+        MagicMock(data=[
+            {"appointment_id": "evt-17", "start_time": "2026-08-17T14:00:00-03:00",
+             "booking_fee_paid_at": "2026-08-04T17:57:00-03:00", "doctor_id": julio,
+             "patient_id": "child-1", "status": "scheduled"},
+        ]),
+        MagicMock(data=[]),
+    ]
+    with patch("app.graph.tools._get_doctor_calendar_id", new_callable=AsyncMock, return_value="cal-julio"), \
+         patch("app.google_calendar.cancel_event", new_callable=AsyncMock), \
+         patch("app.graph.tools.get_supabase", new_callable=AsyncMock, return_value=client), \
+         patch("app.graph.tools.get_users_by_phone", new_callable=AsyncMock,
+               return_value=[{"id": "child-1", "patient_name": "Marcelo Filho"}]), \
+         patch("app.graph.tools.log_event", new_callable=AsyncMock), \
+         patch("app.graph.tools._notify_clinic", new_callable=AsyncMock):
+        result = await cancel_all_appointments.coroutine(
+            appointment_id="evt-17",
+            state=_make_state(),
+            config=CONFIG,
+            preserve_fee=True,
+        )
+    # a chamada de update deve ter marcado pending_reschedule
+    update_call = [c for c in table.update.call_args_list]
+    assert any(c.args and c.args[0].get("status") == "pending_reschedule" for c in update_call)
+    assert "FEE_PRESERVED" in result
 
 
 # ── mark_reschedule_in_progress ───────────────────────────────────────────────
