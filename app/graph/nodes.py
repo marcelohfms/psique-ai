@@ -2284,6 +2284,76 @@ async def patient_agent_node(state: ConversationState, config: RunnableConfig) -
                  [t["name"] for t in response.tool_calls] if response.tool_calls else [],
                  len(response.content) if response.content else 0)
 
+    # ── Guard: comprovante no turno exige register_payment ────────────────────
+    # A Eva já respondeu a um comprovante com texto puro ("a taxa de reserva já
+    # foi recebida") sem chamar register_payment — booking_fee_paid_at ficou NULL,
+    # o cron cobrou a paciente de novo 2h depois e a consulta entrou na fila do
+    # cancelamento automático (caso Isadora de Sousa Costa, 5581988417858,
+    # 07/08/2026; mesmo padrão em Denise Alencar 23/07 e Juliana Feitosa 04/08).
+    # O prompt já proíbe isso seis vezes; a garantia real precisa ser código: se
+    # a mensagem do turno é um comprovante e a resposta não chama
+    # register_payment, injeta a tool call — o ToolNode executa e a LLM volta
+    # para redigir a resposta com o resultado real. Pula em silent_mode (registro
+    # guiado pela atendente, que informa o valor), como os demais guards.
+    from app.media import IMAGE_TAG as _IMG_TAG, is_payment_receipt_message as _is_receipt
+    _last_h_idx = next(
+        (i for i in range(len(clean_messages) - 1, -1, -1)
+         if getattr(clean_messages[i], "type", "") == "human"),
+        None,
+    )
+    _receipt_needs_register = False
+    _receipt_content = ""
+    if _last_h_idx is not None and not state.get("silent_mode"):
+        _receipt_content = str(getattr(clean_messages[_last_h_idx], "content", "") or "")
+        if _is_receipt(_receipt_content):
+            # Volta do ToolNode no mesmo turno: register_payment já rodou para
+            # esta mensagem — reinjetar aqui viraria loop de registros duplicados.
+            _register_ran = any(
+                (getattr(m, "type", "") == "tool" and getattr(m, "name", "") == "register_payment")
+                or any(
+                    tc.get("name") == "register_payment"
+                    for tc in (getattr(m, "tool_calls", None) or [])
+                )
+                for m in clean_messages[_last_h_idx + 1:]
+            )
+            _receipt_needs_register = not _register_ran
+
+    if _receipt_needs_register and not any(
+        tc.get("name") == "register_payment" for tc in (response.tool_calls or [])
+    ):
+        import re as _re_rp
+        import uuid as _uuid_rp
+        _dl_m = _re_rp.search(r"\[drive_link:(\S+?)\]", _receipt_content)
+        _img_idx = _receipt_content.find(_IMG_TAG)
+        _img_desc = (
+            _receipt_content[_img_idx + len(_IMG_TAG):].strip()
+            if _img_idx != -1 else _receipt_content
+        )
+        _am_m = _re_rp.search(r"R\$\s*([\d.]*\d+,\d{2})", _img_desc)
+        _forced_rp = {
+            "name": "register_payment",
+            "args": {
+                "amount": _am_m.group(1) if _am_m else "?",
+                "drive_link": _dl_m.group(1) if _dl_m else "",
+                "image_description": _img_desc,
+            },
+            "id": str(_uuid_rp.uuid4()),
+            "type": "tool_call",
+        }
+        _logger.warning(
+            "GUARD_RECEIPT_REGISTER: comprovante no turno sem register_payment na resposta "
+            "(tool_calls=%s) — injetando register_payment. phone=%s",
+            [tc.get("name") for tc in (response.tool_calls or [])], state.get("phone"),
+        )
+        _kept_tcs = list(response.tool_calls or [])
+        response = AIMessage(
+            # Sem tool calls, o texto é uma afirmação solta sobre um pagamento
+            # não registrado ("taxa recebida") — descarta em vez de arquivar a
+            # alucinação no histórico. Com tool calls legítimas, preserva.
+            content=response.content if _kept_tcs else "",
+            tool_calls=_kept_tcs + [_forced_rp],
+        )
+
     # ── Guard: block premature confirm_appointment ────────────────────────────
     # If the LLM is trying to call confirm_appointment but the patient has NOT
     # yet confirmed (pending_appointment is not set), intercept the call:
@@ -2294,6 +2364,11 @@ async def patient_agent_node(state: ConversationState, config: RunnableConfig) -
         response.tool_calls
         and not state.get("silent_mode")
         and not state.get("pending_appointment")
+        # Comprovante no turno CONTA como confirmação (prompt: "uma imagem de
+        # comprovante enviada como resposta a este resumo TAMBÉM vale como
+        # confirmação afirmativa") — interceptar aqui descartaria o
+        # register_payment injetado pelo GUARD_RECEIPT_REGISTER acima.
+        and not _receipt_needs_register
         and any(tc.get("name") == "confirm_appointment" for tc in response.tool_calls)
     ):
         _confirm_tc = next(tc for tc in response.tool_calls if tc.get("name") == "confirm_appointment")
