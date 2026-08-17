@@ -1899,6 +1899,31 @@ async def patient_agent_node(state: ConversationState, config: RunnableConfig) -
                         additional_kwargs={RESUME_AFTER_TOOL: True},
                     )
                     return {"pending_appointment": None, "messages": [_ai3, _tm3], "silent_mode": False, **_sync_updates}
+                elif "get_available_slots" in _result_body:
+                    # O horário não é agendável e a própria instrução interna diz o
+                    # caminho: avisar o paciente e buscar outros horários. Cobre dia
+                    # bloqueado, horário fora da grade/da exceção do dia e bloco que
+                    # não cabe no expediente — hoje e qualquer recusa futura que peça
+                    # get_available_slots. Antes disso só "acabou de ser ocupado" e
+                    # "já tem consulta" eram reconhecidos, e o resto caía no ramo de
+                    # erro inesperado: a paciente levava "Tive um problema ao confirmar
+                    # o agendamento" + handoff em vez de novas opções (caso Geórgia,
+                    # 5583998264807, 17/08/2026 — 19/08 às 16h com a Dra. Bruna foi
+                    # ofertado de manhã e bloqueado na grade antes de ela responder).
+                    _pa_logger.warning(
+                        "PENDING_APPT_CONFIRM slot indisponível — devolvendo à LLM phone=%s result=%.200s",
+                        state.get("phone"), _result_body,
+                    )
+                    from langchain_core.messages import AIMessage as _AI5, ToolMessage as _TM5
+                    import uuid as _uuid5
+                    _tc5 = str(_uuid5.uuid4())
+                    _ai5 = _AI5(content="", tool_calls=[{"name": "confirm_appointment", "args": {}, "id": _tc5, "type": "tool_use"}])
+                    _tm5 = _TM5(
+                        content=_result_body,
+                        tool_call_id=_tc5,
+                        additional_kwargs={RESUME_AFTER_TOOL: True},
+                    )
+                    return {"pending_appointment": None, "messages": [_ai5, _tm5], "silent_mode": False, **_sync_updates}
                 else:
                     # Unexpected error — notify attendant and transfer.
                     _pa_logger.error("PENDING_APPT_CONFIRM unexpected error phone=%s result=%.300s", state.get("phone"), _result_body)
