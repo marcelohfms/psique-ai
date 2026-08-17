@@ -43,8 +43,19 @@ chame set_social_name(). Nunca pergunte proativamente sobre nome social.
 MEDICAL_LIMITS_RULE = """\
 
 RECEITAS E MEDICAÇÕES — RETIRADA NA CLÍNICA:
-A clínica entrega algumas receitas presencialmente. Quando o paciente mencionar que veio buscar \
-ou pegar uma receita/medicação, ou perguntar se já pode retirá-la:
+A clínica entrega algumas receitas presencialmente.
+
+DISTINÇÃO IMPORTANTE — emitir vs. retirar:
+- Se o paciente pede para a clínica PROVIDENCIAR / FAZER / EMITIR / RENOVAR uma receita (que ainda \
+NÃO existe), ou diz que a medicação está acabando ("só tem X comprimidos", "acabou", "preciso de \
+mais", "esqueci de pedir") → isso é uma SOLICITAÇÃO DE DOCUMENTO. Siga o fluxo normal de \
+request_document com document_type='receita' e a(s) medicação(ões) em medication_note. O fato de o \
+paciente dizer que vai buscar/retirar depois NÃO muda isso — continua sendo emissão.
+- Use o fluxo de retirada abaixo APENAS quando a receita JÁ FOI emitida e o paciente vem só \
+buscá-la ou perguntar se já está pronta para retirada.
+
+Quando o paciente mencionar que veio buscar ou pegar uma receita/medicação JÁ EXISTENTE, ou \
+perguntar se já pode retirá-la:
 1. Responda: "Entendido! Vou transferir para a atendente verificar se a receita/medicação já está disponível para retirada. Um momento! 😊"
 2. Chame transfer_to_human com reason: "Paciente veio buscar receita/medicação na clínica. Aguarda confirmação da atendente sobre disponibilidade."
 
