@@ -1,3 +1,4 @@
+from datetime import datetime
 from unittest.mock import AsyncMock
 
 import attendant_db
@@ -559,8 +560,13 @@ async def test_upload_comprovante_preserva_extensao_do_mimetype(monkeypatch):
         return "https://drive.google.com/file/d/xyz/view"
 
     monkeypatch.setattr(payments, "_upload_comprovante_sync", fake_sync)
-    await payments.upload_comprovante("João Silva", "10/07/2026 14:00", "550", b"data", "image/jpeg")
+    link, filename = await payments.upload_comprovante(
+        "João Silva", "10/07/2026 14:00", "550", b"data", "image/jpeg"
+    )
     assert captured["filename"] == "João_Silva_10-07-2026_R$550.jpg"
+    # O nome volta junto com o link: só este caminho conhece a extensão (mimetype),
+    # e a planilha precisa exibir exatamente o nome que o arquivo tem no Drive.
+    assert (link, filename) == ("https://drive.google.com/file/d/xyz/view", "João_Silva_10-07-2026_R$550.jpg")
 
 
 async def test_upload_comprovante_pdf(monkeypatch):
@@ -571,8 +577,11 @@ async def test_upload_comprovante_pdf(monkeypatch):
         return "https://drive.google.com/file/d/xyz/view"
 
     monkeypatch.setattr(payments, "_upload_comprovante_sync", fake_sync)
-    await payments.upload_comprovante("João Silva", "10/07/2026 14:00", "550", b"data", "application/pdf")
+    _, filename = await payments.upload_comprovante(
+        "João Silva", "10/07/2026 14:00", "550", b"data", "application/pdf"
+    )
     assert captured["filename"] == "João_Silva_10-07-2026_R$550.pdf"
+    assert filename == "João_Silva_10-07-2026_R$550.pdf"
 
 
 async def test_upload_comprovante_mimetype_desconhecido_usa_jpg(monkeypatch):
@@ -585,3 +594,103 @@ async def test_upload_comprovante_mimetype_desconhecido_usa_jpg(monkeypatch):
     monkeypatch.setattr(payments, "_upload_comprovante_sync", fake_sync)
     await payments.upload_comprovante("João Silva", "10/07/2026 14:00", "550", b"data", "application/octet-stream")
     assert captured["filename"].endswith(".jpg")
+
+
+# ── build_receipt_filename ───────────────────────────────────────────────────
+
+
+def test_build_receipt_filename_formato_canonico():
+    assert payments.build_receipt_filename("João Silva", "10/07/2026 14:00", "550") == \
+        "João_Silva_10-07-2026_R$550"
+
+
+def test_build_receipt_filename_normaliza_valor_com_prefixo_e_virgula():
+    # Bug: o texto do hyperlink usava o valor cru ("R$ 100,00"), enquanto o arquivo
+    # no Drive ficava com "100-00" — dois nomes diferentes para o mesmo comprovante.
+    assert payments.build_receipt_filename("Ana Paula", "01/08/2026 09:00", "R$ 100,00") == \
+        "Ana_Paula_01-08-2026_R$100-00"
+
+
+def test_build_receipt_filename_sem_valor_usa_placeholder():
+    assert payments.build_receipt_filename("Ana Paula", "01/08/2026 09:00", "?") == \
+        "Ana_Paula_01-08-2026_R$valor-nao-identificado"
+
+
+def test_build_receipt_filename_sem_consulta_usa_data_de_hoje():
+    hoje = datetime.now(payments._TZ).strftime("%d-%m-%Y")
+    assert payments.build_receipt_filename("Ana Paula", "—", "550") == f"Ana_Paula_{hoje}_R$550"
+    assert payments.build_receipt_filename("Ana Paula", "", "550") == f"Ana_Paula_{hoje}_R$550"
+
+
+# ── _append_payment_sheet: texto do hyperlink ────────────────────────────────
+
+
+async def _run_append_sheet(monkeypatch, **kwargs):
+    """Roda _append_payment_sheet com Google Sheets stubado e devolve o texto do
+    hyperlink escrito na coluna I (None se nenhum hyperlink foi escrito)."""
+    monkeypatch.setenv("GOOGLE_SHEETS_PAYMENTS_ID", "sheet-123")
+    monkeypatch.setenv("GOOGLE_REFRESH_TOKEN", "refresh")
+    monkeypatch.setenv("GOOGLE_CLIENT_ID", "client")
+    monkeypatch.setenv("GOOGLE_CLIENT_SECRET", "secret")
+
+    captured = {}
+
+    class _FakeAppend:
+        def execute(self):
+            return {"updates": {"updatedRange": "Pagamentos!A5:J5"}}
+
+    class _FakeValues:
+        def append(self, **_kw):
+            return _FakeAppend()
+
+    class _FakeSpreadsheets:
+        def values(self):
+            return _FakeValues()
+
+    class _FakeService:
+        def spreadsheets(self):
+            return _FakeSpreadsheets()
+
+    monkeypatch.setattr(payments, "Credentials", lambda **_kw: object())
+    monkeypatch.setattr(payments, "build", lambda *_a, **_kw: _FakeService())
+
+    def fake_hyperlink(service, spreadsheet_id, updated_range, drive_link, filename):
+        captured["filename"] = filename
+        captured["drive_link"] = drive_link
+
+    monkeypatch.setattr(payments, "_set_hyperlink_cell", fake_hyperlink)
+
+    defaults = dict(
+        patient_name="João Silva", phone="5581999998888", doctor_name="Dr. Júlio",
+        appointment_dt="10/07/2026 14:00", amount="550",
+        payment_type="Consulta", payment_method="PIX",
+    )
+    await payments._append_payment_sheet(**{**defaults, **kwargs})
+    return captured.get("filename")
+
+
+async def test_append_sheet_usa_nome_real_do_arquivo_no_drive(monkeypatch):
+    # O texto do hyperlink tem que ser o nome que o arquivo REALMENTE tem no Drive
+    # (com extensão), não um nome remontado aqui — quem abre a planilha procura o
+    # arquivo por esse texto.
+    filename = await _run_append_sheet(
+        monkeypatch,
+        drive_link="https://drive.google.com/file/d/abc/view",
+        receipt_filename="João_Silva_10-07-2026_R$550.pdf",
+    )
+    assert filename == "João_Silva_10-07-2026_R$550.pdf"
+
+
+async def test_append_sheet_sem_receipt_filename_cai_no_helper(monkeypatch):
+    # Sem o nome vindo do upload, usa o mesmo tronco canônico (sem extensão) —
+    # nunca um nome inventado.
+    filename = await _run_append_sheet(
+        monkeypatch,
+        drive_link="https://drive.google.com/file/d/abc/view",
+        amount="R$ 550,00",
+    )
+    assert filename == "João_Silva_10-07-2026_R$550-00"
+
+
+async def test_append_sheet_sem_drive_link_nao_escreve_hyperlink(monkeypatch):
+    assert await _run_append_sheet(monkeypatch) is None
