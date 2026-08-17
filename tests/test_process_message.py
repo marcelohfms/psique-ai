@@ -4467,3 +4467,64 @@ async def test_receipt_guard_skips_silent_mode():
     result, _ = await _run_agent_with_response(state, ai_response)
 
     assert not _register_payment_calls(result)
+
+
+# ── Retry de falha transitória na chamada do LLM ──────────────────────────────
+# Caso Norma/Ian (5581988007007, 01/08/2026): um ConnectError de DNS durante a
+# chamada do LLM matou o run e a resposta dela ao lembrete de retorno ficou sem
+# processamento. O retry fica na camada da chamada do LLM (idempotente) e NÃO no
+# nó inteiro — os nós enviam mensagens via send_text, e retry de nó reenviaria
+# mensagens já entregues (duplicatas).
+
+
+async def test_llm_transient_connection_error_is_retried():
+    import httpx
+    import openai
+    from langchain_core.runnables import RunnableLambda
+    from app.graph.nodes import _with_transient_retry
+
+    calls = {"n": 0}
+
+    def flaky(_input):
+        calls["n"] += 1
+        if calls["n"] < 3:
+            raise openai.APIConnectionError(request=httpx.Request("POST", "https://api.openai.com/v1"))
+        return "ok"
+
+    wrapped = _with_transient_retry(RunnableLambda(flaky))
+    assert await wrapped.ainvoke("x") == "ok"
+    assert calls["n"] == 3
+
+
+async def test_llm_transient_error_gives_up_after_max_attempts():
+    import httpx
+    import openai
+    from langchain_core.runnables import RunnableLambda
+    from app.graph.nodes import _with_transient_retry
+
+    calls = {"n": 0}
+
+    def always_down(_input):
+        calls["n"] += 1
+        raise openai.APIConnectionError(request=httpx.Request("POST", "https://api.openai.com/v1"))
+
+    wrapped = _with_transient_retry(RunnableLambda(always_down))
+    with pytest.raises(openai.APIConnectionError):
+        await wrapped.ainvoke("x")
+    assert calls["n"] == 3
+
+
+async def test_llm_non_transient_error_is_not_retried():
+    from langchain_core.runnables import RunnableLambda
+    from app.graph.nodes import _with_transient_retry
+
+    calls = {"n": 0}
+
+    def broken(_input):
+        calls["n"] += 1
+        raise ValueError("erro de programação não deve ser re-tentado")
+
+    wrapped = _with_transient_retry(RunnableLambda(broken))
+    with pytest.raises(ValueError):
+        await wrapped.ainvoke("x")
+    assert calls["n"] == 1
