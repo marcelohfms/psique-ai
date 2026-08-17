@@ -1,6 +1,6 @@
 ---
 name: payment-receipt-drive-format
-description: Use whenever renaming, naming, or referencing a payment receipt (comprovante de pagamento) file in Google Drive for this project, or when asked "qual o formato do comprovante de pagamento" / "como renomear o comprovante". Also use when writing or reviewing code that touches register_payment's Drive-rename logic in app/graph/tools.py, or a one-off script that registers a payment manually and needs the Drive filename to match what the bot would have produced.
+description: Use whenever renaming, naming, or referencing a payment receipt (comprovante de pagamento) file in Google Drive for this project, or when asked "qual o formato do comprovante de pagamento" / "como renomear o comprovante". Also use when writing or reviewing code that touches register_payment's Drive-rename logic in app/graph/tools.py, the dashboard's copy of the same format in dashboard/payments.py (build_receipt_filename, upload_comprovante, _append_payment_sheet), or a one-off script that registers a payment manually and needs the Drive filename to match what the bot would have produced.
 ---
 
 # Payment Receipt (Comprovante) — Google Drive Filename Format
@@ -64,4 +64,20 @@ await append_payment_receipt(..., receipt_filename=final_filename)
 
 Older one-off scripts under `scripts/` predate the helper and still inline the format — leave them as historical records, but don't copy from them.
 
-**The attendant dashboard is a separate deployable** (`dashboard/`, own Dockerfile/pyproject, imports nothing from `app/`) and still has its own copies of this format in `dashboard/payments.py` (`upload_comprovante` and `_append_payment_sheet`), which do NOT agree with each other. Don't assume a file named by the panel follows the format above.
+## The attendant dashboard has its own copy
+
+**The dashboard is a separate deployable** (`dashboard/`, own Dockerfile/pyproject, imports nothing
+from `app/`), so it carries its own `dashboard/payments.py::build_receipt_filename` — the same
+normalization as the one above, duplicated on purpose (it differs only in a defensive `str()` around
+the amount and the module-local timezone name). A file named by the panel follows the same format as
+one named by the bot (true since 2026-08-17; before that the panel's two call sites disagreed with
+each other and neither matched the sheet).
+
+**Any change to the format has to be made on both sides.** There is no shared module and no import
+that would catch the drift — only these two helpers staying in sync by hand.
+
+The panel's flow differs in one way worth knowing: it *uploads* the file rather than renaming an
+existing one, so it knows the extension from the mimetype instead of reading it back from Drive.
+`upload_comprovante` returns `(drive_link, filename)`, and because upload and payment are two
+separate HTTP requests, that filename round-trips through the browser (`receipt_filename` in the
+`/pagar` body) to reach `_append_payment_sheet`.
