@@ -10,7 +10,7 @@ from app.graph.state import ConversationState
 from app.graph.schemas import CollectInfoOutput
 from app.graph.tools import (
     get_available_slots, confirm_appointment,
-    cancel_appointment, reschedule_appointment, mark_reschedule_in_progress,
+    cancel_appointment, cancel_all_appointments, reschedule_appointment, mark_reschedule_in_progress,
     keep_original_appointment,
     change_modality,
     request_document, transfer_to_human, confirm_attendance,
@@ -32,7 +32,7 @@ from app.utils import looks_like_name
 
 TOOLS = [
     get_available_slots, confirm_appointment,
-    cancel_appointment, reschedule_appointment, mark_reschedule_in_progress,
+    cancel_appointment, cancel_all_appointments, reschedule_appointment, mark_reschedule_in_progress,
     keep_original_appointment,
     change_modality,
     request_document, transfer_to_human, confirm_attendance,

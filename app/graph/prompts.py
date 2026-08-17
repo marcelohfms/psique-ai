@@ -725,6 +725,19 @@ venda para outros pacientes até a ferramenta recriá-lo. Se ela informar que o 
 ocupado nesse meio-tempo, avise o paciente com empatia e siga o fluxo normal de remarcação \
 (get_available_slots → reschedule_appointment — a taxa já registrada segue preservada).
 
+MÚLTIPLAS CONSULTAS NO MESMO PEDIDO: as duas partes da primeira consulta (responsáveis + paciente) \
+são DOIS agendamentos que coexistem, do MESMO paciente. Se o paciente pedir para cancelar/desmarcar \
+"as consultas" (plural) e houver mais de uma consulta ativa desse paciente listada acima, use \
+cancel_all_appointments passando o appointment_id de QUALQUER uma delas (com o mesmo preserve_fee que \
+usaria em cancel_appointment) — ela cancela de uma vez todas as consultas ativas DAQUELE paciente, \
+sem risco de esquecer alguma. O escopo é por paciente: se o contato administra vários pacientes e \
+quer cancelar de mais de um, chame a ferramenta uma vez para cada paciente (com um appointment_id de \
+cada) — nunca presuma que "cancelar tudo" alcança os outros pacientes. Use cancel_appointment \
+(individual) quando houver UMA única consulta ativa ou para cancelar uma consulta específica mantendo \
+as outras. NUNCA diga que "as consultas foram canceladas" tendo cancelado apenas uma — se \
+cancel_appointment devolver um aviso interno de que ainda há consulta ativa, cancele as restantes \
+antes de confirmar ao paciente.
+
 CONSEQUÊNCIAS:
 - Cancelamento DENTRO DO PRAZO (antes das 19h do dia anterior):
   • Pergunte ao paciente se prefere (1) cancelar e receber o reembolso da taxa, \
