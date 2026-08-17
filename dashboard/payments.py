@@ -134,6 +134,43 @@ async def _send_clinic_email(subject: str, body: str, phone: str = "") -> None:
         raise
 
 
+def build_receipt_filename(patient_name: str, appointment_dt: str, amount: str) -> str:
+    """Nome canônico do comprovante de pagamento, SEM extensão.
+
+    Fonte única desse nome dentro do dashboard: é o que o arquivo recebe no Drive
+    (upload_comprovante acrescenta a extensão do mimetype) e o que a planilha
+    Pagamentos exibe como texto do hyperlink (_append_payment_sheet). Montar o nome
+    separado em cada lugar é o que fazia a planilha mostrar um nome que nenhum
+    arquivo do Drive tinha.
+
+    Formato: "{Nome_Do_Paciente}_{DD-MM-AAAA}_R${valor}"
+      - amount mantém só dígitos/separadores ("R$ 600,00" → "600,00") e troca ","/"."
+        por "-" para o valor não colidir com a análise da extensão. Cai no
+        placeholder "valor-nao-identificado" quando o valor não veio, em vez de
+        emitir um "_R$" solto no fim.
+      - appointment_dt é a consulta vinculada ("DD/MM/AAAA HH:MM"); sem consulta
+        vinculada ("—" ou vazio) usa a data de hoje.
+
+    Espelha app/google_drive.py::build_receipt_filename — o dashboard é um
+    deployable separado e não importa nada de app/, então a duplicação é
+    proposital; ver a skill payment-receipt-drive-format. Qualquer mudança de
+    formato tem que ser feita nos dois lados.
+    """
+    amount_digits = re.sub(r"[^\d,.]", "", str(amount or ""))
+    amount_clean = (
+        amount_digits.replace(",", "-").replace(".", "-")
+        if amount_digits
+        else "valor-nao-identificado"
+    )
+    date_clean = (
+        appointment_dt.split(" ")[0].replace("/", "-")
+        if appointment_dt and appointment_dt != "—"
+        else datetime.now(_TZ).strftime("%d-%m-%Y")
+    )
+    safe_name = (patient_name or "paciente").replace(" ", "_")
+    return f"{safe_name}_{date_clean}_R${amount_clean}"
+
+
 def _set_hyperlink_cell(service, spreadsheet_id: str, updated_range: str, drive_link: str, filename: str) -> None:
     """Update the comprovante cell (column I) with a clickable hyperlink (text=filename, link=drive_link)."""
     match = re.search(r"'?([^'!]+)'?!(?:[A-Z]+)(\d+)", updated_range)
@@ -184,7 +221,17 @@ async def _append_payment_sheet(
     payment_type: str,
     payment_method: str,
     drive_link: str = "",
+    receipt_filename: str = "",
 ) -> None:
+    """Grava a linha do pagamento na planilha Pagamentos.
+
+    receipt_filename: nome final que o comprovante tem no Drive, como devolvido por
+    upload_comprovante — inclui a extensão real (jpg/pdf), que só o caminho do
+    upload conhece (vem do mimetype). Repassá-lo mantém o texto do hyperlink igual
+    ao nome do arquivo. Sem ele (comprovante que não passou por upload_comprovante),
+    usa o mesmo tronco canônico de build_receipt_filename — o nome sem extensão,
+    nunca um nome inventado.
+    """
     spreadsheet_id = os.environ.get("GOOGLE_SHEETS_PAYMENTS_ID")
     if not spreadsheet_id:
         raise RuntimeError("GOOGLE_SHEETS_PAYMENTS_ID não configurado — pagamento NÃO gravado na planilha")
@@ -221,9 +268,12 @@ async def _append_payment_sheet(
     logger.info("_append_payment_sheet: row written at range=%r patient=%s", updated_range, patient_name)
 
     if drive_link and updated_range:
-        safe_name = patient_name.replace(" ", "_")
-        date_clean = appointment_dt.split(" ")[0].replace("/", "-") if appointment_dt else now.split(" ")[0]
-        filename = f"{safe_name}_{date_clean}_R${amount}"
+        # Quem abre a planilha procura o arquivo no Drive por esse texto, então ele
+        # tem que ser o nome real: prefere o nome resolvido no upload (com extensão)
+        # e, na falta dele, o mesmo helper que o upload usa.
+        filename = receipt_filename.strip() or build_receipt_filename(
+            patient_name, appointment_dt, amount
+        )
         try:
             service = build("sheets", "v4", credentials=creds)
             await loop.run_in_executor(
@@ -270,21 +320,24 @@ _MIME_EXT = {
 }
 
 
-async def upload_comprovante(patient_name: str, appointment_dt: str, amount: str, file_bytes: bytes, mimetype: str) -> str:
-    """Upload a payment receipt (image or PDF) to the payments Drive folder. Returns the shareable link.
+async def upload_comprovante(
+    patient_name: str, appointment_dt: str, amount: str, file_bytes: bytes, mimetype: str
+) -> tuple[str, str]:
+    """Envia o comprovante (imagem ou PDF) à pasta de pagamentos do Drive.
 
-    Filename follows the same convention register_payment uses (see skill
+    Retorna `(link_compartilhável, nome_do_arquivo)`. O nome sai daqui porque a
+    extensão só é conhecida neste caminho (vem do mimetype), e a planilha precisa
+    exibir exatamente esse nome — quem chama repassa a `mark_paid`
+    (`receipt_filename`), que o entrega a `_append_payment_sheet`.
+
+    Segue a mesma convenção do register_payment (ver a skill
     payment-receipt-drive-format): {Nome_Do_Paciente}_{DD-MM-AAAA}_R${valor}.{ext}.
-    The extension is derived from the mimetype — omitting it (as before) left the
-    Drive file without an extension, unlike every other upload path in the codebase.
     """
-    date_clean = appointment_dt.split(" ")[0].replace("/", "-") if appointment_dt else datetime.now(_TZ).strftime("%d-%m-%Y")
-    safe_name = patient_name.replace(" ", "_")
-    amount_clean = str(amount).replace(",", "-").replace(".", "-")
     ext = _MIME_EXT.get(mimetype.lower(), "jpg")
-    filename = f"{safe_name}_{date_clean}_R${amount_clean}.{ext}"
+    filename = f"{build_receipt_filename(patient_name, appointment_dt, amount)}.{ext}"
     loop = asyncio.get_running_loop()
-    return await loop.run_in_executor(None, _upload_comprovante_sync, filename, file_bytes, mimetype)
+    drive_link = await loop.run_in_executor(None, _upload_comprovante_sync, filename, file_bytes, mimetype)
+    return drive_link, filename
 
 
 def _phone_variants(phone: str) -> list[str]:
@@ -493,6 +546,7 @@ async def mark_paid(
     data_hora: str,
     phone: str,
     drive_link: str = "",
+    receipt_filename: str = "",
 ) -> None:
     """Grava o pagamento no agendamento e tenta registrar na planilha/e-mail (best-effort).
 
@@ -501,6 +555,8 @@ async def mark_paid(
     representa uma 1ª consulta dividida em duas sessões (ver compute_pendencias) —
     todas as linhas são atualizadas juntas.
     `drive_link`: link do comprovante já enviado ao Drive (opcional — ver upload_comprovante).
+    `receipt_filename`: nome real do arquivo no Drive, devolvido junto com o link por
+    upload_comprovante — vira o texto do hyperlink na planilha.
     """
     now = datetime.now(timezone.utc).isoformat()
     appointment_ids = appointment_id.split(",")
@@ -523,6 +579,7 @@ async def mark_paid(
             payment_type=payment_type,
             payment_method=forma_label,
             drive_link=drive_link,
+            receipt_filename=receipt_filename,
         )
     except Exception:
         logger.exception("SHEETS_APPEND FAILED patient=%s appointment_id=%s", paciente, appointment_id)

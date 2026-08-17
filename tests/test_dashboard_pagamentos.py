@@ -102,6 +102,37 @@ async def test_pagar_consulta_atualiza_paid_at(mock_supabase):
 
 
 @pytest.mark.asyncio
+async def test_pagar_repassa_nome_do_comprovante_ate_a_planilha(mock_supabase):
+    """O nome real do arquivo no Drive percorre rota → mark_paid → planilha.
+
+    A extensão só é conhecida no upload (vem do mimetype), e upload e pagamento são
+    duas requisições separadas — sem esse repasse a planilha remontava o nome por
+    conta própria e exibia um nome que arquivo nenhum do Drive tinha.
+    """
+    update_mock = AsyncMock(return_value=AsyncMock(data=[{}]))
+    mock_supabase.from_.return_value.update.return_value.eq.return_value.execute = update_mock
+    mock_supabase.from_.return_value.insert.return_value.execute = AsyncMock(
+        return_value=AsyncMock(data=[{}])
+    )
+
+    with patch("payments._append_payment_sheet", new_callable=AsyncMock) as mock_sheets, \
+         patch("payments._send_clinic_email", new_callable=AsyncMock), \
+         patch("attendant_db.log_event", new_callable=AsyncMock):
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
+            resp = await ac.post(
+                "/api/pagamentos/appt-321/pagar",
+                json={"tipo": "consulta", "valor": 550, "forma_pagamento": "PIX",
+                      "paciente": "João Silva", "medico": "Dr. Júlio",
+                      "data_hora": "10/07/2026 14:00", "phone": "5511999990000",
+                      "drive_link": "https://drive.google.com/file/d/abc123/view",
+                      "receipt_filename": "João_Silva_10-07-2026_R$550.pdf"},
+                headers=HEADERS,
+            )
+    assert resp.status_code == 200
+    assert mock_sheets.call_args.kwargs["receipt_filename"] == "João_Silva_10-07-2026_R$550.pdf"
+
+
+@pytest.mark.asyncio
 async def test_pagar_tipo_invalido_retorna_400():
     """POST /api/pagamentos/{id}/pagar com tipo desconhecido retorna 400."""
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:

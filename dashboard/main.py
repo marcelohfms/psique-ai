@@ -246,6 +246,7 @@ class PagarBody(BaseModel):
     data_hora: str
     phone: str
     drive_link: str = ""  # link do comprovante já enviado ao Drive (ver /pagamentos/{id}/comprovante)
+    receipt_filename: str = ""  # nome do arquivo no Drive, devolvido pela mesma rota
 
 
 @app.post("/api/pagamentos/{appointment_id}/comprovante")
@@ -260,11 +261,11 @@ async def api_upload_comprovante(
     content = await file.read()
     mimetype = file.content_type or "image/jpeg"
     try:
-        drive_link = await payments.upload_comprovante(paciente, data_hora, valor, content, mimetype)
+        drive_link, filename = await payments.upload_comprovante(paciente, data_hora, valor, content, mimetype)
     except Exception:
         logger.exception("UPLOAD_COMPROVANTE_FAILED appt=%s paciente=%s", appointment_id, paciente)
         raise HTTPException(status_code=502, detail="Falha ao enviar comprovante ao Drive")
-    return {"drive_link": drive_link}
+    return {"drive_link": drive_link, "receipt_filename": filename}
 
 
 class RetornoBody(BaseModel):
@@ -342,6 +343,7 @@ async def api_pagar(
         client, appointment_id, body.tipo, body.valor, body.forma_pagamento,
         body.paciente, body.medico, body.data_hora, body.phone,
         drive_link=body.drive_link,
+        receipt_filename=body.receipt_filename,
     )
     return {"ok": True}
 

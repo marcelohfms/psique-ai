@@ -181,7 +181,7 @@ async function marcarPago(btn) {
   if (isNaN(valor) || valor < 0) { alert("Valor inválido."); return; }
   btn.disabled = true;
 
-  let drive_link = "";
+  let drive_link = "", receipt_filename = "";
   if (file) {
     const form = new FormData();
     form.append("paciente", card.dataset.paciente);
@@ -193,7 +193,7 @@ async function marcarPago(btn) {
       body: form,
     });
     if (!upload.ok) { alert("Erro ao enviar comprovante."); btn.disabled = false; return; }
-    ({ drive_link } = await upload.json());
+    ({ drive_link, receipt_filename } = await upload.json());
   }
 
   const r = await fetch(`/api/atendente/pagamentos/${card.dataset.appt}/pagar?token=${encodeURIComponent(TOKEN)}`, {
@@ -203,7 +203,7 @@ async function marcarPago(btn) {
       tipo: card.dataset.tipo, valor, forma_pagamento,
       paciente: card.dataset.paciente, medico: card.dataset.medico,
       data_hora: card.dataset.dataHora, phone: card.dataset.phone,
-      conversation_id: CONVERSATION_ID, drive_link,
+      conversation_id: CONVERSATION_ID, drive_link, receipt_filename,
     }),
   });
   if (!r.ok) { alert("Erro ao registrar pagamento."); btn.disabled = false; return; }
