@@ -103,17 +103,39 @@ def _trim_history(messages: list, max_hist: int = None) -> list:
     return clean_messages
 
 
+def _with_transient_retry(runnable):
+    """Retry com backoff para queda transitória de rede/DNS na chamada do LLM.
+
+    O SDK da OpenAI já re-tenta rápido (2x em segundos); esta camada cobre
+    quedas um pouco mais longas, que hoje matam o run e deixam o paciente sem
+    resposta (caso Norma/Ian, 5581988007007, 01/08/2026: ConnectError de DNS).
+    O retry fica AQUI, na chamada do LLM (sem side effects), e não no nó — os
+    nós enviam mensagens via send_text, e re-executar o nó inteiro reenviaria
+    mensagens já entregues.
+    """
+    import openai
+    return runnable.with_retry(
+        retry_if_exception_type=(openai.APIConnectionError,),
+        wait_exponential_jitter=True,
+        stop_after_attempt=3,
+    )
+
+
 def _get_collect_llm():
     global _collect_llm
     if _collect_llm is None:
-        _collect_llm = ChatOpenAI(model="gpt-4.1", temperature=0).with_structured_output(CollectInfoOutput)
+        _collect_llm = _with_transient_retry(
+            ChatOpenAI(model="gpt-4.1", temperature=0).with_structured_output(CollectInfoOutput)
+        )
     return _collect_llm
 
 
 def _get_agent_llm():
     global _agent_llm
     if _agent_llm is None:
-        _agent_llm = ChatOpenAI(model="gpt-4.1", temperature=0).bind_tools(TOOLS)
+        _agent_llm = _with_transient_retry(
+            ChatOpenAI(model="gpt-4.1", temperature=0).bind_tools(TOOLS)
+        )
     return _agent_llm
 
 
