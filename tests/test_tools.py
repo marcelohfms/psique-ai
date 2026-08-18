@@ -5267,3 +5267,41 @@ async def test_register_payment_blocks_foreign_key_no_side_effects():
     assert "outra chave" in result.lower()
     mock_db.assert_not_called()       # rejeitou antes de tocar o Supabase
     mock_sheet.assert_not_called()    # nada gravado na planilha
+
+
+@pytest.mark.asyncio
+async def test_register_payment_clinic_key_passes_guard():
+    # Comprovante com a chave da clínica NÃO é barrado: a tool avança além do guard.
+    from app.graph.tools import register_payment
+
+    desc = ("COMPROVANTE DE PAGAMENTO: R$ 100,00, chave PIX 42.006.848/0001-78, "
+            "nome do destinatário PSIQUE, 18/08/2026.")
+    state = {"messages": [], "preferred_doctor": "julio"}
+    config = {"configurable": {"phone": "5581999999999"}}
+    with patch("app.graph.tools.get_supabase", new_callable=AsyncMock,
+               side_effect=RuntimeError("reached get_supabase")) as mock_db:
+        with pytest.raises(RuntimeError, match="reached get_supabase"):
+            await register_payment.coroutine(
+                amount="100,00", drive_link="", state=state, config=config,
+                image_description=desc,
+            )
+    mock_db.assert_called_once()  # passou pelo guard
+
+
+@pytest.mark.asyncio
+async def test_register_payment_panel_skips_guard_even_with_foreign_desc():
+    # Pagamento do painel (is_link=True) ignora o guard mesmo com desc de chave estrangeira.
+    from app.graph.tools import register_payment
+
+    desc = ("COMPROVANTE DE PAGAMENTO: chave PIX +55 81 99242 4522, "
+            "nome do destinatário José Reinaldo.")
+    state = {"messages": [], "preferred_doctor": "julio"}
+    config = {"configurable": {"phone": "5581999999999"}}
+    with patch("app.graph.tools.get_supabase", new_callable=AsyncMock,
+               side_effect=RuntimeError("reached get_supabase")) as mock_db:
+        with pytest.raises(RuntimeError, match="reached get_supabase"):
+            await register_payment.coroutine(
+                amount="100,00", drive_link="", state=state, config=config,
+                image_description=desc, is_link=True,
+            )
+    mock_db.assert_called_once()  # guard pulado, avançou
