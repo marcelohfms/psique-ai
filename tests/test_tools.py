@@ -2929,6 +2929,31 @@ async def test_request_document_accepts_requisicao_type():
     assert "Requisição" in mock_notify.await_args.kwargs["subject"]
 
 
+async def test_request_document_accepts_atestado_type():
+    """atestado é um tipo válido de documento (ex.: atestado para justificar faltas
+    escolares). Caso Bento/Sandro (5581995397978): o pai pediu 'providenciar um
+    atestado para apresentar ao colégio' e a Eva só confirmava verbalmente sem
+    registrar, porque 'atestado' não estava no enum de request_document."""
+    from app.graph.tools import request_document
+    client, _, _ = _make_supabase_client()
+    with patch("app.graph.tools.get_supabase", new_callable=AsyncMock, return_value=client), \
+         patch("app.graph.tools.log_event", new_callable=AsyncMock), \
+         patch("app.graph.tools._notify_clinic", new_callable=AsyncMock) as mock_notify, \
+         patch("app.google_sheets.append_document_request", new_callable=AsyncMock) as mock_sheets, \
+         patch("app.email_sender.send_document_request_email", new_callable=AsyncMock):
+        result = await request_document.coroutine(
+            document_type="atestado",
+            patient_email="maria@example.com",
+            state=_make_state(),
+            config=CONFIG,
+        )
+    assert "atestado" in result
+    assert "✅" in result
+    # planilha recebe o tipo bruto e a clínica é notificada com o rótulo "Atestado"
+    assert mock_sheets.await_args.args[4] == "atestado"
+    assert "Atestado" in mock_notify.await_args.kwargs["subject"]
+
+
 async def test_request_document_succeeds_even_if_sheets_and_email_fail():
     """Fire-and-forget: sheets/email errors must not surface."""
     from app.graph.tools import request_document
