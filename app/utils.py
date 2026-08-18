@@ -1,4 +1,5 @@
 import re as _re
+import unicodedata as _ud
 
 _COMPOUND_FIRST_NAMES = {"maria", "ana", "joão", "joao", "josé", "jose"}
 _LINKING_WORDS = {"de", "do", "da", "dos", "das", "e"}
@@ -22,6 +23,29 @@ _CONFIRMATIONS = {
     "sim", "não", "nao", "isso", "exato", "correto", "ok",
     "ele", "ela", "eu", "certo", "isso mesmo",
 }
+
+# Tokens que nunca aparecem num nome próprio brasileiro, mas são comuns quando a
+# resposta de outra pergunta é capturada por engano no campo do nome. Basta um
+# token (comparado por PALAVRA INTEIRA, com acento removido) para reprovar:
+# "Eu não sou paciente Ainda" (resposta de "você é paciente?") virou user_name +
+# guardian_name — Carlos Alberto, 5581982691700, 06/08/2026. A comparação é por
+# palavra inteira de propósito: "Simone" não contém "sim", "Consuela" não contém
+# "consulta". Um falso negativo (barrar nome real) só faz a Eva reperguntar o
+# nome — barato; um falso positivo (aceitar lixo) vira cirurgia manual em banco
+# + checkpoint — caro. Por isso o blocklist é enxuto e de altíssimo sinal.
+_NON_NAME_TOKENS = {
+    "eu", "sou", "nao", "sim", "ainda", "paciente", "consulta",
+    "agendar", "marcar", "remarcar", "primeira", "retorno",
+    "acompanhamento", "receita", "atestado", "quero", "gostaria",
+    "preciso", "seria", "estou",
+}
+
+
+def _fold(s: str) -> str:
+    """Lowercase + remove acentos, para comparar tokens sem depender de acento."""
+    return "".join(
+        c for c in _ud.normalize("NFD", s.lower()) if _ud.category(c) != "Mn"
+    )
 
 
 def looks_like_name(text: str) -> bool:
@@ -58,6 +82,11 @@ def looks_like_name(text: str) -> bool:
     if any(p in tl for p in _NON_NAME_PHRASES):
         return False
     if tl in _CONFIRMATIONS:
+        return False
+    # Uma resposta de conversa de uma linha só ("Eu não sou paciente ainda",
+    # "Quero uma receita") não tem quebra de linha nem dígito, então escapava de
+    # todas as guardas acima. Um único token de conversa denuncia a frase.
+    if {_fold(w) for w in _re.findall(r"[^\W\d_]+", t)} & _NON_NAME_TOKENS:
         return False
     if not _re.search(r'[a-zA-ZÀ-ú]{2,}', t):
         return False
