@@ -357,6 +357,98 @@ async def test_orphaned_invalid_tool_call_recovery_answers_pending_call():
         gg.chatbot = original
 
 
+# ── _strip_orphan_tool_calls: sanitize unbalanced tool-call history ───────────
+# Regression guard for the caso Kimmy/Darleide (5581999656460): a ToolMessage
+# left in the checkpoint without the AIMessage that emitted it made every
+# subsequent turn 400 on OpenAI ("tool_calls must be followed by tool messages")
+# and permanently bricked the thread. The sanitizer that assembles the OpenAI
+# request must drop both kinds of unbalanced messages so a failed tool call can
+# never poison a thread forever.
+
+def test_strip_drops_orphan_tool_message_without_emitting_ai():
+    """A ToolMessage whose tool_call_id was never emitted by any AIMessage is
+    dropped (the caso Kimmy poison)."""
+    from langchain_core.messages import ToolMessage
+    from app.graph.nodes import _strip_orphan_tool_calls
+    msgs = [
+        HumanMessage(content="oi"),
+        ToolMessage(content="Erro interno — tente novamente.", tool_call_id="call_ORPHAN"),
+        HumanMessage(content="ainda aí?"),
+    ]
+    cleaned = _strip_orphan_tool_calls(msgs)
+    assert all(getattr(m, "type", None) != "tool" for m in cleaned)
+    assert [m.content for m in cleaned] == ["oi", "ainda aí?"]
+
+
+def test_strip_keeps_balanced_tool_call_pair():
+    """A normal AIMessage(tool_call) → ToolMessage(response) pair is preserved."""
+    from langchain_core.messages import ToolMessage
+    from app.graph.nodes import _strip_orphan_tool_calls
+    ai = AIMessage(
+        content="",
+        tool_calls=[{"name": "get_available_slots", "args": {}, "id": "call_OK", "type": "tool_call"}],
+    )
+    tool = ToolMessage(content="slots...", tool_call_id="call_OK")
+    msgs = [HumanMessage(content="oi"), ai, tool, AIMessage(content="pronto")]
+    cleaned = _strip_orphan_tool_calls(msgs)
+    assert cleaned == msgs
+
+
+def test_strip_drops_ai_tool_call_without_response():
+    """An AIMessage that emits a tool_call with no responding ToolMessage is
+    dropped (would otherwise 400)."""
+    from app.graph.nodes import _strip_orphan_tool_calls
+    ai = AIMessage(
+        content="",
+        tool_calls=[{"name": "confirm_appointment", "args": {}, "id": "call_PENDING", "type": "tool_call"}],
+    )
+    msgs = [HumanMessage(content="oi"), ai, HumanMessage(content="e aí?")]
+    cleaned = _strip_orphan_tool_calls(msgs)
+    assert ai not in cleaned
+    assert [m.content for m in cleaned] == ["oi", "e aí?"]
+
+
+def test_strip_drops_partially_answered_parallel_tool_calls():
+    """An AIMessage emitting two tool_calls with only one answered is dropped
+    together with the dangling ToolMessage — leaving one unanswered id would
+    still 400."""
+    from langchain_core.messages import ToolMessage
+    from app.graph.nodes import _strip_orphan_tool_calls
+    ai = AIMessage(
+        content="",
+        tool_calls=[
+            {"name": "get_available_slots", "args": {}, "id": "call_A", "type": "tool_call"},
+            {"name": "get_available_slots", "args": {}, "id": "call_B", "type": "tool_call"},
+        ],
+    )
+    tool_a = ToolMessage(content="ok", tool_call_id="call_A")  # call_B never answered
+    msgs = [HumanMessage(content="oi"), ai, tool_a]
+    cleaned = _strip_orphan_tool_calls(msgs)
+    assert ai not in cleaned
+    assert tool_a not in cleaned
+    assert [m.content for m in cleaned] == ["oi"]
+
+
+def test_strip_drops_orphan_invalid_tool_call_message():
+    """invalid_tool_calls (truncated JSON args) without a response are also
+    dropped — the model hitting the token cap lands here, not in tool_calls."""
+    from app.graph.nodes import _strip_orphan_tool_calls
+    ai = AIMessage(
+        content="",
+        invalid_tool_calls=[{
+            "name": "confirm_attendance",
+            "args": '{"appointment_id":"cal_2p7...',
+            "id": "call_TRUNC",
+            "error": "unterminated json",
+            "type": "invalid_tool_call",
+        }],
+    )
+    msgs = [HumanMessage(content="boa tarde"), ai]
+    cleaned = _strip_orphan_tool_calls(msgs)
+    assert ai not in cleaned
+    assert [m.content for m in cleaned] == ["boa tarde"]
+
+
 async def test_existing_patient_agent_syncs_missing_doctor_and_returning():
     """When stage=patient_agent but preferred_doctor/is_returning_patient are missing, sync from DB."""
     import app.graph.graph as gg

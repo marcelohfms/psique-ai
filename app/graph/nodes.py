@@ -59,18 +59,72 @@ RESUME_AFTER_TOOL = "eva_resume_after_tool"
 
 # ── History trimming helpers ──────────────────────────────────────────────────
 
+def _emitted_tool_call_ids(msg) -> list:
+    """Todos os tool_call_ids que uma AIMessage emitiu — tool_calls válidos,
+    invalid_tool_calls (args truncados pelo cap de tokens) e a cópia crua em
+    additional_kwargs.tool_calls que alguns providers deixam. Um id em qualquer
+    um desses lugares exige uma ToolMessage de resposta, senão a OpenAI dá 400."""
+    ids: list = []
+    for bucket in (
+        getattr(msg, "tool_calls", None) or [],
+        getattr(msg, "invalid_tool_calls", None) or [],
+        (getattr(msg, "additional_kwargs", None) or {}).get("tool_calls") or [],
+    ):
+        for tc in bucket:
+            tid = tc.get("id") if isinstance(tc, dict) else getattr(tc, "id", None)
+            if tid:
+                ids.append(tid)
+    return ids
+
+
 def _strip_orphan_tool_calls(messages: list) -> list:
     """
-    Remove orphan tool_calls: AIMessages with tool_calls not followed by ToolMessages.
-    Returns a cleaned list of messages.
+    Sanitiza o histórico para nunca violar a regra de pareamento de tool-calls da
+    OpenAI ("uma assistant message com 'tool_calls' precisa ser seguida por tool
+    messages respondendo cada tool_call_id; e toda tool message precisa responder
+    a um tool_call anterior"). Neutraliza os DOIS lados do desbalanceamento:
+
+    - AIMessage que emite tool_call(s) sem TODA resposta correspondente → dropada.
+    - ToolMessage cujo tool_call_id nenhuma AIMessage (mantida) emitiu → dropada.
+
+    O segundo caso é o que bricka o thread para sempre: uma ToolMessage órfã fica
+    na lista de mensagens persistida, então TODO turno seguinte manda o histórico
+    corrompido pra OpenAI e leva 400, o grafo grava __error__ e morre antes de a
+    Eva responder — e, diferente de um __error__ transitório, NÃO se auto-cura
+    (caso Kimmy/Darleide, 5581999656460, muda de 20/07 a 18/08/2026). Sanitizar
+    aqui, no caminho que monta a chamada da OpenAI, garante que um único erro de
+    tool não envenene o thread permanentemente.
     """
     raw_messages = list(messages)
+
+    # tool_call_ids que alguma ToolMessage de fato responde.
+    responded_ids = {
+        getattr(m, "tool_call_id", None)
+        for m in raw_messages
+        if getattr(m, "type", None) == "tool"
+    }
+    responded_ids.discard(None)
+
+    # Uma AIMessage com tool_calls só é mantida se TODOS os ids emitidos foram
+    # respondidos. Guardamos os ids das mantidas para saber quais ToolMessages
+    # têm um emissor válido. (responded_ids é fixo, então uma passada basta.)
+    valid_emitted_ids: set = set()
+    for msg in raw_messages:
+        if getattr(msg, "type", None) == "ai":
+            eids = _emitted_tool_call_ids(msg)
+            if eids and all(e in responded_ids for e in eids):
+                valid_emitted_ids.update(eids)
+
     clean_messages = []
-    for i, msg in enumerate(raw_messages):
-        if getattr(msg, "tool_calls", None):
-            next_msg = raw_messages[i + 1] if i + 1 < len(raw_messages) else None
-            if next_msg is None or next_msg.type != "tool":
-                continue  # skip orphan tool call
+    for msg in raw_messages:
+        mtype = getattr(msg, "type", None)
+        if mtype == "ai":
+            eids = _emitted_tool_call_ids(msg)
+            if eids and not all(e in responded_ids for e in eids):
+                continue  # AIMessage com tool_call sem resposta → dropa
+        elif mtype == "tool":
+            if getattr(msg, "tool_call_id", None) not in valid_emitted_ids:
+                continue  # ToolMessage órfã (sem AIMessage emissora) → dropa
         clean_messages.append(msg)
     return clean_messages
 
