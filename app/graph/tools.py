@@ -2989,6 +2989,21 @@ async def register_payment(
 
     from app.google_sheets import append_payment_receipt
 
+    # ── Guard: comprovante para chave que não é da clínica ─────────────────────
+    # Só inspeciona quando há imagem de comprovante; pagamentos do painel/atendente
+    # (is_link / payment_method, sem image_description) passam direto.
+    if image_description and not is_link and not payment_method:
+        if _receipt_destination_is_foreign(image_description):
+            _logger.warning(
+                "REGISTER_PAYMENT blocked: destino estrangeiro | desc=%r",
+                image_description[:160],
+            )
+            return (
+                "⚠️ Esse comprovante foi para outra chave PIX, não para a da clínica. "
+                f"NÃO registrei o pagamento. Peça ao paciente para conferir e refazer o "
+                f"PIX para a chave {CORRECT_PIX_KEY} (CNPJ PSIQUE) e reenviar o comprovante."
+            )
+
     phone = config["configurable"]["phone"]
     client = await get_supabase()
 

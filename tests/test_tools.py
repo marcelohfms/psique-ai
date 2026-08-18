@@ -5241,3 +5241,29 @@ def test_third_party_cpf_is_flagged():
     desc = ("COMPROVANTE DE PAGAMENTO: R$ 100,00, chave PIX 123.456.789-00, "
             "nome do destinatário Fulano de Tal, 18/08/2026.")
     assert _receipt_destination_is_foreign(desc) is True
+
+
+@pytest.mark.asyncio
+async def test_register_payment_blocks_foreign_key_no_side_effects():
+    from app.graph.tools import register_payment
+
+    desc = ("COMPROVANTE DE PAGAMENTO: valor transferido R$ 100,00, "
+            "chave PIX +55 81 99242 4522, nome do destinatário José Reinaldo, "
+            "18/08/2026 - 11:00:07.")
+    state = {"messages": [], "preferred_doctor": "julio"}
+    config = {"configurable": {"phone": "5581992424522"}}
+
+    with patch("app.graph.tools.get_supabase", new_callable=AsyncMock) as mock_db, \
+         patch("app.google_sheets.append_payment_receipt", new_callable=AsyncMock) as mock_sheet:
+        result = await register_payment.coroutine(
+            amount="100,00",
+            drive_link="https://drive.google.com/file/d/ABC/view",
+            state=state,
+            config=config,
+            image_description=desc,
+        )
+
+    assert "42006848000178" in result
+    assert "outra chave" in result.lower()
+    mock_db.assert_not_called()       # rejeitou antes de tocar o Supabase
+    mock_sheet.assert_not_called()    # nada gravado na planilha
