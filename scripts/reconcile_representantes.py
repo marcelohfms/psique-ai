@@ -16,7 +16,6 @@ import sys
 from dotenv import load_dotenv
 load_dotenv()
 
-import app.database  # noqa: F401 — carrega database antes de patients (evita import circular)
 from app.database import get_supabase
 from app.patients import normalize_phone
 

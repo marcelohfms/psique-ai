@@ -1,5 +1,29 @@
-import os
-from supabase import AsyncClient, acreate_client
+# _strip_phone: uso interno (3 chamadas).
+from app.phone import _strip_phone
+from app.supabase_client import get_supabase
+
+# A API legada de `users` daqui é um adaptador sobre o modelo de
+# patients/contacts. get_patients_by_contact saiu da lista: era re-export puro,
+# sem uso interno — quem precisa importa de app.patients.
+#
+# From-import (binding estático) porque os testes destes 4 fazem
+# patch("app.database.X"): eles stubam a fronteira database->patients. Os nomes
+# do bloco abaixo usam o estilo oposto, por stubarem a camada patients inteira.
+from app.patients import (
+    get_contact_by_phone,
+    link_patient_contact,
+    upsert_contact,
+    upsert_patient,
+)
+
+# Acesso via objeto de módulo, não `from app.patients import X`: garante que as
+# chamadas que database.py faz a patients resolvam em tempo de chamada, para
+# que patch("app.patients.X") consiga interceptá-las. As auto-chamadas que
+# patients.py faz a si mesmo (patients.py:149 e :324) já resolvem pelos globals
+# do próprio módulo patients, independente do estilo de import usado aqui —
+# não são elas que dependem disto.
+# Trocar por from-import quebra 14 patches (7 testes) em tests/test_database_shim.py.
+from app import patients
 
 # ── Doctor ID map (from doctors table) ───────────────────────────────────────
 
@@ -10,44 +34,7 @@ DOCTOR_IDS: dict[str, str] = {
 
 DOCTOR_NAMES: dict[str, str] = {v: k for k, v in DOCTOR_IDS.items()}
 
-# ── Supabase client ───────────────────────────────────────────────────────────
-
-_supabase: AsyncClient | None = None
-
-
-async def get_supabase() -> AsyncClient:
-    global _supabase
-    if _supabase is None:
-        _supabase = await acreate_client(
-            os.environ["SUPABASE_URL"],
-            os.environ["SUPABASE_KEY"],
-        )
-    return _supabase
-
-
 # ── User helpers ──────────────────────────────────────────────────────────────
-
-def _strip_phone(phone: str) -> str:
-    return phone.replace("@s.whatsapp.net", "")
-
-
-def _phone_variants(phone: str) -> list[str]:
-    """Return both the 9-digit and 8-digit variants of a Brazilian mobile number.
-
-    Brazilian mobiles gained a leading 9 in 2012–2016. Chatwoot/Evolution may
-    deliver the same number with or without the extra 9, causing duplicate users.
-    We normalise to the WITH-9 form (current standard) and also try the legacy form.
-    """
-    digits = _strip_phone(phone)
-    # Must be a Brazilian mobile: 55 + 2-digit DDD + 8 or 9 digits
-    if len(digits) == 13 and digits.startswith("55"):
-        # Has the 9 already (55 + DDD + 9XXXXXXXX)
-        return [digits, digits[:4] + digits[5:]]   # also try without the 9
-    if len(digits) == 12 and digits.startswith("55"):
-        # Missing the 9 (55 + DDD + 8XXXXXXXX)
-        return [digits[:4] + "9" + digits[4:], digits]  # canonical with-9 first
-    return [digits]
-
 
 # Campos copiados de `patients` para o dict legado (formato antigo de `users`).
 _PATIENT_COPY_FIELDS = (
@@ -208,8 +195,7 @@ async def upsert_user(phone: str, data: dict, user_id: str | None = None) -> str
     # Resolve patient_id via phone lookup when not supplied, to avoid blind INSERT
     resolved_id = user_id
     if patient_data and not resolved_id:
-        from app.patients import resolve_active_patient
-        resolved = await resolve_active_patient(phone)
+        resolved = await patients.resolve_active_patient(phone)
         patient = resolved.get("patient")
         if patient:
             resolved_id = patient.get("id")
@@ -273,16 +259,13 @@ async def _reconcile_returning_patient(
       duplicado no existente. merge_duplicate_patient recusa quando o "duplicado"
       tem qualquer consulta — pode ser um paciente legítimo, não um duplicado.
     """
-    from app.patients import (
-        find_patient_by_name_birth, get_patient_by_id, merge_duplicate_patient,
-    )
-    current = await get_patient_by_id(resolved_id) if resolved_id else None
+    current = await patients.get_patient_by_id(resolved_id) if resolved_id else None
     name = patient_data.get("name") or (current or {}).get("name")
     birth_date = patient_data.get("birth_date") or (current or {}).get("birth_date")
     if not name or not birth_date:
         return resolved_id
 
-    candidate = await find_patient_by_name_birth(name, birth_date, exclude_id=resolved_id)
+    candidate = await patients.find_patient_by_name_birth(name, birth_date, exclude_id=resolved_id)
     if not candidate:
         return resolved_id
 
@@ -293,7 +276,7 @@ async def _reconcile_returning_patient(
             "(nome+nascimento)", phone, candidate["id"],
         )
         return candidate["id"]
-    if await merge_duplicate_patient(resolved_id, candidate["id"]):
+    if await patients.merge_duplicate_patient(resolved_id, candidate["id"]):
         _log.getLogger(__name__).info(
             "RETORNANTE_MESCLADO: phone=%s duplicado %s mesclado no paciente "
             "existente %s", phone, resolved_id, candidate["id"],
@@ -586,15 +569,3 @@ async def get_last_assistant_message_time(phone: str):
 # AsyncPostgresSaver.from_conn_string is an async context manager in v3.x
 # Use it directly in the FastAPI lifespan (see main.py)
 
-
-# ── Shim bindings (Tasks 9-10) ────────────────────────────────────────────────
-# Importado no FINAL do módulo para evitar import circular: app/patients.py faz
-# `from app.database import get_supabase`, então database.py precisa estar
-# totalmente inicializado antes de importar de app.patients.
-from app.patients import (  # noqa: E402
-    get_contact_by_phone,
-    get_patients_by_contact,
-    upsert_contact,
-    upsert_patient,
-    link_patient_contact,
-)

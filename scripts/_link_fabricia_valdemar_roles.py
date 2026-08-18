@@ -11,7 +11,8 @@ FABRICIA = "a108f0d2-b582-4a3c-9eca-2ab0c897e5a2"   # contact_id
 
 
 async def main():
-    from app.database import get_supabase, link_patient_contact
+    from app.database import get_supabase
+    from app.patients import link_patient_contact
 
     for role in ("financeiro", "consulta"):
         await link_patient_contact(

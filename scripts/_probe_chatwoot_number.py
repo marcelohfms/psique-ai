@@ -20,8 +20,6 @@ import traceback
 from dotenv import load_dotenv
 load_dotenv()
 
-import app.database  # noqa: F401 — evita import circular
-
 
 async def _timed(label: str, coro):
     t = time.monotonic()
@@ -39,7 +37,8 @@ async def main():
     import httpx
     from app.chatwoot import (
         _base_url, _account_id, _headers, _inbox_id, _strip_phone,
-        _phone_variants, _search_contact, _find_conversation_for_contact,
+        _phone_variants, _search_contact, _get_contact_conversations,
+        _pick_conversation,
     )
 
     raw = sys.argv[1] if len(sys.argv) > 1 else os.environ.get("PROBE_PHONE", "")
@@ -87,11 +86,18 @@ async def main():
         except Exception as e:
             print(f"[conversations] FALHOU após {time.monotonic() - t:.1f}s: {type(e).__name__}: {e!r}")
 
-        # 4) _find_conversation_for_contact (o que o código usa)
+        # 4) o caminho que o código usa: listar conversas e escolher a da inbox.
+        # find_or_create_conversation (app/chatwoot.py) faz esta mesma sequência.
+        # A listagem é a chamada de rede; a escolha é pura, então só a primeira
+        # é cronometrada.
         try:
-            await _timed("_find_conversation_for_contact", _find_conversation_for_contact(client, contact_id))
+            all_convs = await _timed(
+                "_get_contact_conversations",
+                _get_contact_conversations(client, contact_id),
+            )
         except Exception:
             return
+        print(f"[_pick_conversation] -> {_pick_conversation(all_convs)!r}")
 
 
 if __name__ == "__main__":

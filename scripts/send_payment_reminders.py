@@ -20,13 +20,14 @@ Requires in Supabase:
 """
 import asyncio
 import os
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
 from dotenv import load_dotenv
 load_dotenv()
 
 from app.graph.prompts import get_pix_key as _get_pix_key
+from app.patients import get_contact_by_id
 
 TZ = ZoneInfo("America/Recife")
 
@@ -38,6 +39,14 @@ DOCTOR_KEYS = {
     "d5baa58b-a788-4f40-b8c0-512c189150be": "julio",
     "18b01f87-eacd-4905-bd4a-a8293991e6fd": "bruna",
 }
+
+# Templates aprovados no Meta (UTILITY, pt_BR) usados fora da janela de 24h.
+# Params posicionais: {{1}} contato · {{2}} referência da consulta · {{3}} médico · {{4}} data/hora
+TEMPLATE_REMINDER = "taxa_reserva_lembrete"
+TEMPLATE_CANCEL = "taxa_reserva_cancelamento"
+
+# Janela de atendimento do WhatsApp: fora dela, só template é entregável.
+WHATSAPP_WINDOW_HOURS = 24
 
 
 def payment_reminder_message(contact_first_name: str, doctor_label: str, date_str: str, patient_first_name: str | None = None) -> str:
@@ -72,6 +81,60 @@ async def send_whatsapp(phone: str, text: str) -> None:
     await send_text(phone_fmt, text)
 
 
+def _consulta_ref(kind: str, patient_first: str | None) -> str:
+    """Frase que vira o param {{2}} do template, espelhando os builders de texto
+    livre. patient_first é None quando o contato é o próprio paciente."""
+    if kind == "reminder":
+        return f"a consulta de {patient_first}" if patient_first else "sua consulta"
+    return f"da consulta de {patient_first}" if patient_first else "da sua consulta"
+
+
+async def _send_template(phone: str, template_name: str, body_params: dict, content: str) -> None:
+    """Envia um template aprovado via Chatwoot (entregável fora da janela de 24h).
+    Espelha scripts/send_appointment_reminders.py::send_reminder_template."""
+    from app.chatwoot import find_or_create_conversation, send_template_message
+    phone_wpp = phone if "@s.whatsapp.net" in phone else f"{phone}@s.whatsapp.net"
+    conv_id = await find_or_create_conversation(phone_wpp)
+    await send_template_message(
+        conv_id,
+        template_name=template_name,
+        language="pt_BR",
+        category="UTILITY",
+        body_params=body_params,
+        content=content,
+    )
+
+
+async def _notify(client, phone: str, *, kind: str, free_text: str,
+                  contact_first: str, patient_first: str | None,
+                  doctor_label: str, date_str: str, now: datetime) -> bool:
+    """Notifica um contato: texto livre dentro da janela de 24h, template
+    aprovado fora dela. Retorna True se o envio teve sucesso.
+
+    kind='reminder' | 'cancel'. free_text é a mensagem livre já montada pelo
+    builder correspondente (usada dentro da janela e como `content` do template)."""
+    if kind not in ("reminder", "cancel"):
+        raise ValueError(f"kind inválido: {kind!r}")
+    template_name = TEMPLATE_REMINDER if kind == "reminder" else TEMPLATE_CANCEL
+    body_params = {
+        "1": contact_first,
+        "2": _consulta_ref(kind, patient_first),
+        "3": doctor_label,
+        "4": date_str,
+    }
+    tag = "payment_reminder" if kind == "reminder" else "payment_cancel"
+    try:
+        if await _window_open(client, phone, now):
+            await send_whatsapp(phone, free_text)
+        else:
+            await _send_template(phone, template_name, body_params, free_text)
+        print(f"  [{tag}] enviado para {phone}")
+        return True
+    except Exception as e:
+        print(f"  [{tag}] FALHOU para {phone}: {e}")
+        return False
+
+
 async def get_financial_contacts(client, patient_id: str) -> list[dict]:
     """Return all contacts with role 'financeiro' for a patient (phone + name)."""
     result = await (
@@ -87,6 +150,20 @@ async def get_financial_contacts(client, patient_id: str) -> list[dict]:
         if c.get("phone"):
             contacts.append({"phone": c["phone"], "name": c.get("name", "")})
     return contacts
+
+
+async def _reminder_recipients(appt: dict, financial_contacts: list[dict]) -> list[dict]:
+    """Destinatários do lembrete/cancelamento de taxa: só o contato que fez a
+    reserva (appointments.contact_id). Fallback para os contatos financeiros
+    quando o agendamento não gravou contact_id (linhas antigas/remarcações).
+
+    NÃO usar para a guarda de comprovante nem para o e-mail à clínica — esses
+    continuam sobre TODOS os contatos financeiros.
+    """
+    booking = await get_contact_by_id(appt.get("contact_id"))
+    if booking and booking.get("phone"):
+        return [{"phone": booking["phone"], "name": booking.get("name")}]
+    return financial_contacts
 
 
 async def save_to_checkpoint(graph, phone: str, message: str, patient_name: str, doctor_key: str) -> None:
@@ -134,6 +211,35 @@ async def cancel_calendar_event(appointment_id: str, doctor_id: str, supabase_cl
         print(f"  Calendar cancel failed (non-fatal): {e}")
 
 
+async def _window_open(client, phone: str, now: datetime) -> bool:
+    """True se o contato mandou alguma mensagem (role='user') nas últimas
+    WHATSAPP_WINDOW_HOURS. Fora dessa janela, o Meta só entrega template aprovado
+    — mensagem livre é aceita pelo Chatwoot mas descartada silenciosamente.
+
+    Reaproveita a normalização de telefone de find_receipt_in_conversation
+    (contacts.phone e messages.phone divergem no 9º dígito). Erro na consulta =>
+    'fechada' (fail-safe: força o caminho de template, que é entregável)."""
+    from app.phone import _phone_variants
+
+    cutoff = (now - timedelta(hours=WHATSAPP_WINDOW_HOURS)).astimezone(timezone.utc).isoformat()
+    variants = _phone_variants(phone)
+    try:
+        res = await (
+            client.from_("messages")
+            .select("created_at")
+            .in_("phone", variants)
+            .eq("role", "user")
+            .gte("created_at", cutoff)
+            .order("created_at", desc=True)
+            .limit(1)
+            .execute()
+        )
+    except Exception as e:
+        print(f"  [window] lookup falhou para {variants}: {e} — assumindo janela fechada")
+        return False
+    return bool(res.data)
+
+
 async def find_receipt_in_conversation(client, phones: list[str], since_iso: str) -> dict | None:
     """Return the most recent payment-receipt message sent by any of `phones`
     after `since_iso`, or None.
@@ -145,7 +251,7 @@ async def find_receipt_in_conversation(client, phones: list[str], since_iso: str
     Bernardo Lima Beltrão Teixeira, 5581987415206, 2026-07-31).
     """
     from app.media import RECEIPT_PREFIX, is_payment_receipt_message
-    from app.database import _phone_variants
+    from app.phone import _phone_variants
 
     for phone in phones:
         # `contacts.phone` and `messages.phone` disagree on the 9th digit for a
@@ -184,14 +290,29 @@ async def find_receipt_in_conversation(client, phones: list[str], since_iso: str
 
 async def _block_cancel_receipt_found(client, appt: dict, receipt: dict,
                                       patient_name: str, doctor_label: str,
-                                      date_str: str, phones: list[str]) -> None:
-    """Skip the cancellation and ask the clinic to check the receipt by hand.
+                                      date_str: str, phones: list[str],
+                                      *, action: str = "cancel") -> None:
+    """Skip the cancellation (or the reminder, action="reminder") and ask the
+    clinic to check the receipt by hand.
     Emails only once per appointment — this job runs every 30 minutes."""
     from app.database import log_event
 
+    if action == "reminder":
+        _tag = "payment_reminder"
+        _event_type = "payment_reminder_blocked_receipt_found"
+        _subject = f"⚠️ Cobrança automática bloqueada — {patient_name}"
+        _headline = "O lembrete de cobrança da taxa de reserva abaixo NÃO foi enviado."
+        _action_verb = "Lembrete não enviado"
+    else:
+        _tag = "payment_cancel"
+        _event_type = "payment_cancel_blocked_receipt_found"
+        _subject = f"⚠️ Cancelamento automático bloqueado — {patient_name}"
+        _headline = "A consulta abaixo NÃO foi cancelada por falta de pagamento."
+        _action_verb = "Cancelamento não executado"
+
     appointment_id = appt["appointment_id"]
-    print(f"  [payment_cancel] BLOQUEADO — comprovante encontrado na conversa de {patient_name} "
-          f"({receipt.get('created_at')}). Cancelamento não executado.")
+    print(f"  [{_tag}] BLOQUEADO — comprovante encontrado na conversa de {patient_name} "
+          f"({receipt.get('created_at')}). {_action_verb}.")
 
     already_flagged = False
     try:
@@ -203,7 +324,7 @@ async def _block_cancel_receipt_found(client, appt: dict, receipt: dict,
         existing = await (
             client.from_("events")
             .select("id")
-            .eq("event_type", "payment_cancel_blocked_receipt_found")
+            .eq("event_type", _event_type)
             .contains("metadata", {"appointment_id": appointment_id})
             .limit(1)
             .execute()
@@ -211,7 +332,7 @@ async def _block_cancel_receipt_found(client, appt: dict, receipt: dict,
         already_flagged = bool(existing.data)
     except Exception as e:
         # Fail loud-ish: an unnoticed failure here silently restores the spam.
-        print(f"  [payment_cancel] flag lookup failed (email may repeat): {e}")
+        print(f"  [{_tag}] flag lookup failed (email may repeat): {e}")
 
     if already_flagged:
         # Already registered and already emailed on an earlier run — logging again
@@ -220,14 +341,14 @@ async def _block_cancel_receipt_found(client, appt: dict, receipt: dict,
 
     for phone in phones:
         try:
-            await log_event("payment_cancel_blocked_receipt_found", phone, {
+            await log_event(_event_type, phone, {
                 "appointment_id": appointment_id,
                 "start_time": appt["start_time"],
                 "receipt_at": receipt.get("created_at"),
                 "lookup_failed": receipt.get("lookup_failed", False),
             })
         except Exception as e:
-            print(f"  [payment_cancel] log_event failed for {phone}: {e}")
+            print(f"  [{_tag}] log_event failed for {phone}: {e}")
 
     try:
         from app.email_sender import send_clinic_notification_email
@@ -238,8 +359,8 @@ async def _block_cancel_receipt_found(client, appt: dict, receipt: dict,
                  "mas a taxa não consta como paga no sistema."
         )
         await send_clinic_notification_email(
-            f"⚠️ Cancelamento automático bloqueado — {patient_name}",
-            f"A consulta abaixo NÃO foi cancelada por falta de pagamento.\n\n"
+            _subject,
+            f"{_headline}\n\n"
             f"Paciente: {patient_name}\n"
             f"Médico(a): {doctor_label}\n"
             f"Data/hora: {date_str}\n"
@@ -248,19 +369,108 @@ async def _block_cancel_receipt_found(client, appt: dict, receipt: dict,
             f"⚠️ Confira o comprovante na conversa e registre o pagamento manualmente "
             f"(ou cancele a consulta, se o comprovante não for válido).",
         )
-        print("  [payment_cancel] Clinic notification email sent (cancel blocked).")
+        print(f"  [{_tag}] Clinic notification email sent ({action} blocked).")
     except Exception as e:
-        print(f"  [payment_cancel] Clinic email (cancel blocked) failed: {e}")
+        print(f"  [{_tag}] Clinic email ({action} blocked) failed: {e}")
+
+
+def _is_courtesy(appt: dict) -> bool:
+    """Paciente cortesia (patients.custom_price == 0): a consulta é inteiramente
+    gratuita e NÃO deve nenhuma taxa de reserva. Diferente de booking_fee_waived
+    (taxa dispensada numa consulta que ainda tem preço), a cortesia não deveria nem
+    ser cobrada nem auto-cancelada por falta de pagamento — independentemente de
+    como o agendamento foi criado (bot, dashboard ou atendente). Caso Lucas Raphael
+    (contato Silvana, 5581973460726, 11/08/2026)."""
+    return (appt.get("patients") or {}).get("custom_price") == 0
+
+
+async def _send_payment_reminder(client, appt: dict, graph, now: datetime) -> None:
+    """Send the 2h booking-fee reminder to the financial contacts of a single
+    appointment — unless a payment receipt already exists in the conversation.
+
+    Guarda do comprovante (caso Isadora de Sousa Costa, 5581988417858,
+    07/08/2026): a paciente enviou o comprovante às 15:01, Eva não chamou
+    register_payment, e às 17:04 este cron cobrou a taxa que já tinha sido paga
+    ("De novo?"). Comprovante na conversa → não cobrar, avisar a clínica."""
+    appointment_id = appt["appointment_id"]
+    patient_id = appt.get("patient_id")
+    if not patient_id:
+        print(f"  [payment_reminder] Skipping {appointment_id} — no patient_id")
+        return
+
+    if _is_courtesy(appt):
+        print(f"  [payment_reminder] Skipping {appointment_id} — paciente cortesia (custom_price=0)")
+        return
+
+    start_dt = datetime.fromisoformat(appt["start_time"]).astimezone(TZ)
+    date_str = start_dt.strftime("%d/%m/%Y às %H:%M")
+    doctor_label = DOCTOR_LABELS.get(appt.get("doctor_id", ""), "médico(a)")
+    doctor_key = DOCTOR_KEYS.get(appt.get("doctor_id", ""), "")
+    patient_name = (appt.get("patients") or {}).get("name", "paciente")
+
+    financial_contacts = await get_financial_contacts(client, patient_id)
+    if not financial_contacts:
+        print(f"  [payment_reminder] No financial contacts for patient_id={patient_id}")
+        return
+
+    _contact_phones = [c["phone"] for c in financial_contacts]
+    _receipt = await find_receipt_in_conversation(
+        client, _contact_phones, appt.get("created_at") or appt["start_time"],
+    )
+    if _receipt:
+        if _receipt.get("lookup_failed"):
+            # Diferente do cancelamento, adiar uma cobrança em 30 minutos é
+            # inofensivo — sem e-mail, a próxima execução tenta de novo.
+            print(f"  [payment_reminder] Busca do comprovante falhou — lembrete adiado para {appointment_id}")
+            return
+        await _block_cancel_receipt_found(
+            client, appt, _receipt, patient_name, doctor_label, date_str,
+            _contact_phones, action="reminder",
+        )
+        return
+
+    recipients = await _reminder_recipients(appt, financial_contacts)
+
+    any_sent = False
+    for contact in recipients:
+        phone = contact["phone"]
+        from app.utils import display_name as _dn
+        contact_first = _dn(contact["name"] or patient_name)
+        # Show patient name separately only when contact and patient differ
+        patient_first = _dn(patient_name) if contact["name"] and contact["name"] != patient_name else None
+        message = payment_reminder_message(contact_first, doctor_label, date_str, patient_first)
+        sent = await _notify(client, phone, kind="reminder", free_text=message,
+                             contact_first=contact_first, patient_first=patient_first,
+                             doctor_label=doctor_label, date_str=date_str, now=now)
+        any_sent = any_sent or sent
+        if graph and sent:
+            try:
+                await save_to_checkpoint(graph, phone, message, patient_name, doctor_key)
+            except Exception as e:
+                print(f"  [payment_reminder] save_to_checkpoint failed (non-fatal): {e}")
+
+    if any_sent:
+        try:
+            await client.from_("appointments").update({
+                "payment_reminder_sent_at": now.isoformat(),
+            }).eq("appointment_id", appointment_id).execute()
+        except Exception as e:
+            print(f"  [payment_reminder] DB update failed for {appointment_id}: {e}")
 
 
 async def _cancel_unpaid_appointment(client, appt: dict, graph, now: datetime) -> None:
     """Notify financial contacts, then cancel a single appointment whose booking fee
     was never paid within 2h of the payment reminder. Cancellation only proceeds if
-    at least one contact was successfully notified via WhatsApp."""
+    at least one contact was successfully notified (texto livre dentro da janela de
+    24h, ou template aprovado fora dela)."""
     appointment_id = appt["appointment_id"]
     patient_id = appt.get("patient_id")
     if not patient_id:
         print(f"  [payment_cancel] Skipping {appointment_id} — no patient_id")
+        return
+
+    if _is_courtesy(appt):
+        print(f"  [payment_cancel] Skipping {appointment_id} — paciente cortesia (custom_price=0)")
         return
 
     start_dt = datetime.fromisoformat(appt["start_time"]).astimezone(TZ)
@@ -290,22 +500,23 @@ async def _cancel_unpaid_appointment(client, appt: dict, graph, now: datetime) -
         return
 
     # Must notify at least one contact before canceling
+    recipients = await _reminder_recipients(appt, financial_contacts)
+
     any_notified = False
     notified_phones = []
-    for contact in financial_contacts:
+    for contact in recipients:
         phone = contact["phone"]
         from app.utils import display_name as _dn
         contact_first = _dn(contact["name"] or patient_name)
         patient_first = _dn(patient_name) if contact["name"] and contact["name"] != patient_name else None
         message = payment_cancel_message(contact_first, doctor_label, date_str, patient_first)
-        try:
-            await send_whatsapp(phone, message)
+        sent = await _notify(client, phone, kind="cancel", free_text=message,
+                             contact_first=contact_first, patient_first=patient_first,
+                             doctor_label=doctor_label, date_str=date_str, now=now)
+        if sent:
             any_notified = True
             notified_phones.append(phone)
-            print(f"  [payment_cancel] WhatsApp enviado para {phone}.")
-        except Exception as e:
-            print(f"  [payment_cancel] WhatsApp FALHOU para {phone}: {e}")
-        if graph:
+        if graph and sent:
             try:
                 await save_to_checkpoint(graph, phone, message, patient_name, doctor_key)
             except Exception as e:
@@ -355,7 +566,7 @@ async def _cancel_unpaid_appointment(client, appt: dict, graph, now: datetime) -
             f"Paciente: {patient_name}\n"
             f"Médico(a): {doctor_label}\n"
             f"Data/hora: {date_str}\n"
-            f"Contatos notificados: {', '.join(c['phone'] for c in financial_contacts)}\n\n"
+            f"Contatos notificados: {', '.join(notified_phones)}\n\n"
             f"A vaga foi liberada no Google Calendar."
         )
         for attempt in range(1, 3):
@@ -394,7 +605,7 @@ async def main():
 
     _appt_select = (
         "appointment_id, start_time, doctor_id, created_at, payment_reminder_sent_at, "
-        "patient_id, patients(name)"
+        "contact_id, patient_id, patients(name, custom_price)"
     )
 
     # ── Step 1: 1st reminder (not yet reminded, booked >= 2h ago) ─────────────
@@ -450,50 +661,7 @@ async def main():
     try:
         # ── Process 2h reminders ──────────────────────────────────────────────
         for appt in reminder_appts:
-            appointment_id = appt["appointment_id"]
-            patient_id = appt.get("patient_id")
-            if not patient_id:
-                print(f"  [payment_reminder] Skipping {appointment_id} — no patient_id")
-                continue
-
-            start_dt = datetime.fromisoformat(appt["start_time"]).astimezone(TZ)
-            date_str = start_dt.strftime("%d/%m/%Y às %H:%M")
-            doctor_label = DOCTOR_LABELS.get(appt.get("doctor_id", ""), "médico(a)")
-            doctor_key = DOCTOR_KEYS.get(appt.get("doctor_id", ""), "")
-            patient_name = (appt.get("patients") or {}).get("name", "paciente")
-
-            financial_contacts = await get_financial_contacts(client, patient_id)
-            if not financial_contacts:
-                print(f"  [payment_reminder] No financial contacts for patient_id={patient_id}")
-                continue
-
-            any_sent = False
-            for contact in financial_contacts:
-                phone = contact["phone"]
-                from app.utils import display_name as _dn
-                contact_first = _dn(contact["name"] or patient_name)
-                # Show patient name separately only when contact and patient differ
-                patient_first = _dn(patient_name) if contact["name"] and contact["name"] != patient_name else None
-                message = payment_reminder_message(contact_first, doctor_label, date_str, patient_first)
-                try:
-                    await send_whatsapp(phone, message)
-                    any_sent = True
-                    print(f"  [payment_reminder] Sent to {phone} — {patient_name}")
-                except Exception as e:
-                    print(f"  [payment_reminder] Failed to send to {phone}: {e}")
-                if graph:
-                    try:
-                        await save_to_checkpoint(graph, phone, message, patient_name, doctor_key)
-                    except Exception as e:
-                        print(f"  [payment_reminder] save_to_checkpoint failed (non-fatal): {e}")
-
-            if any_sent:
-                try:
-                    await client.from_("appointments").update({
-                        "payment_reminder_sent_at": now.isoformat(),
-                    }).eq("appointment_id", appointment_id).execute()
-                except Exception as e:
-                    print(f"  [payment_reminder] DB update failed for {appointment_id}: {e}")
+            await _send_payment_reminder(client, appt, graph, now)
 
         # ── Process 4h cancellations ──────────────────────────────────────────
         for appt in cancel_appts:
