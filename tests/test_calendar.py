@@ -116,6 +116,37 @@ def test_parse_day_semana_seguinte_variant(freeze_calendar_tuesday):
     assert result == date(2026, 7, 15)
 
 
+# ── "próxima quarta" logo após já ter mostrado essa quarta ─────────────────────
+# Regression Clara (558197140676, 2026-08-18, terça): a Eva ofertou quarta 19/08,
+# a paciente respondeu "Próxima quarta" e a Eva repetiu os MESMOS slots de 19/08.
+# Ao pé da letra "próxima quarta" numa terça É a quarta de amanhã — por isso o
+# fix é de prompt (instruir a Eva a passar "quarta da próxima semana" para
+# avançar), não da tool. Estes testes fixam o contraste que motiva a regra.
+
+def test_parse_day_proxima_quarta_is_literal_this_week(freeze_calendar_tuesday):
+    """'próxima quarta' numa terça = a quarta de amanhã (mesma semana) — a
+    armadilha: se a Eva repassar essa expressão à tool, volta a mesma data."""
+    from app.google_calendar import _parse_day
+    assert _parse_day("próxima quarta") == date(2026, 7, 8)
+
+
+def test_parse_day_quarta_proxima_semana_advances(freeze_calendar_tuesday):
+    """Para avançar de fato, a Eva deve passar 'quarta da próxima semana'."""
+    from app.google_calendar import _parse_day
+    assert _parse_day("quarta da próxima semana") == date(2026, 7, 15)
+
+
+def test_prompt_guides_advancing_when_same_weekday_already_offered():
+    """Ambos os blocos de prompt (paciente existente e novo) devem instruir a
+    avançar uma semana quando o paciente pede 'próxima [dia]' logo após já ter
+    visto esse mesmo dia — nunca repetir a lista já enviada."""
+    from app.graph.prompts import EXISTING_PATIENT_SYSTEM, NEW_PATIENT_SYSTEM
+    for block in (EXISTING_PATIENT_SYSTEM, NEW_PATIENT_SYSTEM):
+        assert "próxima quarta" in block
+        assert "da próxima semana" in block
+        assert "NUNCA repita a lista de horários" in block
+
+
 # ── mês sozinho não é um dia ───────────────────────────────────────────────────
 # Regression Elisabete/Isaac (5581987385089, 2026-08-02): a paciente perguntou
 # "quais os dias disponíveis nesse mês?" e a LLM chamou a tool com
