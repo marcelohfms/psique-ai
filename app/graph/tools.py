@@ -15,6 +15,7 @@ from app.whatsapp import send_text
 from app.database import get_supabase, log_event, upsert_user, get_user_by_phone, get_users_by_phone, DOCTOR_IDS, DOCTOR_NAMES
 from app.phone import _phone_variants
 from app.chatwoot import get_conversation_id, unassign_agent_bot, add_label
+from app.graph.prompts import CORRECT_PIX_KEY
 
 logger = logging.getLogger(__name__)
 
@@ -2918,6 +2919,46 @@ def _payment_disambiguation_prompt(context: str, names: str) -> str:
         "NUNCA diga que o comprovante foi recebido/registrado, nem que a consulta está "
         "garantida, antes de uma chamada de register_payment retornar sucesso."
     )
+
+
+_CLINIC_PIX_DIGITS = re.sub(r"\D", "", CORRECT_PIX_KEY)  # "42006848000178"
+
+
+def _receipt_destination_is_foreign(image_description: str) -> bool:
+    """True somente quando o comprovante mostra INEQUIVOCAMENTE uma chave de
+    destino diferente da chave PIX da clínica (CORRECT_PIX_KEY).
+
+    Fail-open: retorna False em qualquer caso ambíguo — texto vazio, sem token de
+    chave legível, ou chave mascarada/curta (< 11 dígitos). Só barra quando há um
+    token de chave/CPF/CNPJ com >= 11 dígitos que não casa (nem por substring) com
+    o CNPJ da clínica.
+    """
+    if not image_description:
+        return False
+
+    full_digits = re.sub(r"\D", "", image_description)
+    # CNPJ da clínica aparece em qualquer lugar do texto → é da clínica.
+    if _CLINIC_PIX_DIGITS in full_digits:
+        return False
+
+    # Extrai o token de destino: trecho após "chave PIX" / "CPF" / "CNPJ" até
+    # a próxima vírgula, ponto-e-vírgula ou fim de linha.
+    m = re.search(
+        r"(?:chave\s*pix|cpf\s*/?\s*cnpj|cnpj|cpf)\s*[:\-]?\s*([^,;\n]+)",
+        image_description,
+        re.IGNORECASE,
+    )
+    if not m:
+        return False
+
+    dest_digits = re.sub(r"\D", "", m.group(1))
+    if len(dest_digits) < 11:
+        return False  # mascarada/curta → fail-open
+
+    if _CLINIC_PIX_DIGITS in dest_digits or dest_digits in _CLINIC_PIX_DIGITS:
+        return False  # casa (inclusive máscara que é substring) → clínica
+
+    return True
 
 
 @tool

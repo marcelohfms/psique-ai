@@ -5201,3 +5201,43 @@ async def test_resolve_patient_com_varios_pacientes_e_nada_identificando_prefere
         )
 
     assert user["id"] == "duda-id"
+
+
+# ── Guard: comprovante PIX para chave que não é da clínica ───────────────────
+from app.graph.tools import _receipt_destination_is_foreign
+
+
+def test_foreign_phone_key_is_flagged():
+    # Caso real João Pedro: PIX para a própria chave-telefone, não para o CNPJ.
+    desc = ("COMPROVANTE DE PAGAMENTO: valor transferido R$ 100,00, "
+            "chave PIX +55 81 99242 4522, nome do destinatário José Reinaldo da Costa "
+            "Gomes Filho, data/hora da transação 18/08/2026 - 11:00:07.")
+    assert _receipt_destination_is_foreign(desc) is True
+
+
+def test_clinic_cnpj_with_punctuation_passes():
+    desc = ("COMPROVANTE DE PAGAMENTO: valor R$ 100,00, "
+            "chave PIX 42.006.848/0001-78, nome do destinatário PSIQUE, 18 AGO 2026.")
+    assert _receipt_destination_is_foreign(desc) is False
+
+
+def test_clinic_cnpj_plain_digits_passes():
+    desc = ("COMPROVANTE DE PAGAMENTO: R$ 100,00, chave PIX 42006848000178, "
+            "destinatário PSIQUE.")
+    assert _receipt_destination_is_foreign(desc) is False
+
+
+def test_masked_key_without_foreign_key_passes():
+    # Máscara curta, sem chave estrangeira legível → fail-open.
+    desc = "COMPROVANTE DE PAGAMENTO: R$ 100,00, chave PIX ***.848/1-78, PSIQUE."
+    assert _receipt_destination_is_foreign(desc) is False
+
+
+def test_empty_description_passes():
+    assert _receipt_destination_is_foreign("") is False
+
+
+def test_third_party_cpf_is_flagged():
+    desc = ("COMPROVANTE DE PAGAMENTO: R$ 100,00, chave PIX 123.456.789-00, "
+            "nome do destinatário Fulano de Tal, 18/08/2026.")
+    assert _receipt_destination_is_foreign(desc) is True
