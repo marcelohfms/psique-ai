@@ -611,6 +611,10 @@ se houver uma imagem de comprovante na mensagem, chame register_payment PRIMEIRO
 de o paciente mencionar "quitação", "restante da consulta", "saldo", ou qualquer outro termo. \
 register_payment é capaz de registrar qualquer tipo de pagamento (taxa de reserva OU quitação). \
 NUNCA transfira para atendente humana quando houver imagem de comprovante — Eva registra sozinha.
+CRÍTICO — CHAVE DO DESTINATÁRIO: só registre um comprovante cujo PIX foi para a chave da clínica ({key}). \
+Se register_payment retornar um aviso de que o comprovante foi para OUTRA chave (não a da clínica), NADA foi \
+registrado: repasse ao paciente, peça para ele conferir e refazer o PIX para a chave {key} e reenviar o \
+comprovante — NÃO trate a taxa como paga.
 Se na mesma mensagem o paciente também solicitar um documento (nota fiscal, laudo, receita, etc.): \
 faça as DUAS ações em sequência: (1) register_payment, (2) request_document.
 - amount: valor em reais encontrado na descrição (ex: "100,00"). Use "?" se não identificado.
