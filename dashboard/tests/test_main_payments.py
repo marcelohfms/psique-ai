@@ -25,8 +25,10 @@ def test_api_pagar_repassa_drive_link_para_mark_paid(monkeypatch):
     calls = {}
 
     async def fake_mark_paid(_client, appointment_id, tipo, valor, forma_pagamento,
-                              paciente, medico, data_hora, phone, drive_link=""):
+                              paciente, medico, data_hora, phone, drive_link="",
+                              receipt_filename=""):
         calls["drive_link"] = drive_link
+        calls["receipt_filename"] = receipt_filename
 
     monkeypatch.setattr(dashboard_main, "get_supabase", lambda: object())
     monkeypatch.setattr(payments, "mark_paid", fake_mark_paid)
@@ -37,10 +39,14 @@ def test_api_pagar_repassa_drive_link_para_mark_paid(monkeypatch):
         json={"tipo": "consulta", "valor": 550, "forma_pagamento": "PIX",
               "paciente": "Natalia", "medico": "Dra. Bruna", "data_hora": "01/07/2026 15:00",
               "phone": "5581999688071",
-              "drive_link": "https://drive.google.com/file/d/abc123/view"},
+              "drive_link": "https://drive.google.com/file/d/abc123/view",
+              "receipt_filename": "Natalia_01-07-2026_R$550.pdf"},
     )
     assert r.status_code == 200
     assert calls["drive_link"] == "https://drive.google.com/file/d/abc123/view"
+    # O nome real do arquivo no Drive volta do upload e tem que chegar inteiro à
+    # planilha — é ele que a atendente usa para achar o comprovante.
+    assert calls["receipt_filename"] == "Natalia_01-07-2026_R$550.pdf"
 
 
 def test_api_pagamentos_no_show_requires_auth():
@@ -72,12 +78,12 @@ def test_api_upload_comprovante_requires_auth():
     assert r.status_code == 401
 
 
-def test_api_upload_comprovante_retorna_drive_link(monkeypatch):
+def test_api_upload_comprovante_retorna_drive_link_e_nome(monkeypatch):
     calls = {}
 
     async def fake_upload(patient_name, appointment_dt, amount, file_bytes, mimetype):
         calls["upload"] = (patient_name, appointment_dt, amount, file_bytes, mimetype)
-        return "https://drive.google.com/file/d/abc123/view"
+        return "https://drive.google.com/file/d/abc123/view", "João_10-07-2026_R$100.jpg"
 
     monkeypatch.setattr(payments, "upload_comprovante", fake_upload)
 
@@ -88,7 +94,10 @@ def test_api_upload_comprovante_retorna_drive_link(monkeypatch):
         files={"file": ("comprovante.jpg", b"fake-image-bytes", "image/jpeg")},
     )
     assert r.status_code == 200
-    assert r.json() == {"drive_link": "https://drive.google.com/file/d/abc123/view"}
+    assert r.json() == {
+        "drive_link": "https://drive.google.com/file/d/abc123/view",
+        "receipt_filename": "João_10-07-2026_R$100.jpg",
+    }
     assert calls["upload"] == ("João", "10/07/2026 14:00", "100", b"fake-image-bytes", "image/jpeg")
 
 

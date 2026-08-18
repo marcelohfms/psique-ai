@@ -10,7 +10,7 @@ from app.graph.state import ConversationState
 from app.graph.schemas import CollectInfoOutput
 from app.graph.tools import (
     get_available_slots, confirm_appointment,
-    cancel_appointment, reschedule_appointment, mark_reschedule_in_progress,
+    cancel_appointment, cancel_all_appointments, reschedule_appointment, mark_reschedule_in_progress,
     keep_original_appointment,
     change_modality,
     request_document, transfer_to_human, confirm_attendance,
@@ -32,7 +32,7 @@ from app.utils import looks_like_name
 
 TOOLS = [
     get_available_slots, confirm_appointment,
-    cancel_appointment, reschedule_appointment, mark_reschedule_in_progress,
+    cancel_appointment, cancel_all_appointments, reschedule_appointment, mark_reschedule_in_progress,
     keep_original_appointment,
     change_modality,
     request_document, transfer_to_human, confirm_attendance,
@@ -103,17 +103,39 @@ def _trim_history(messages: list, max_hist: int = None) -> list:
     return clean_messages
 
 
+def _with_transient_retry(runnable):
+    """Retry com backoff para queda transitória de rede/DNS na chamada do LLM.
+
+    O SDK da OpenAI já re-tenta rápido (2x em segundos); esta camada cobre
+    quedas um pouco mais longas, que hoje matam o run e deixam o paciente sem
+    resposta (caso Norma/Ian, 5581988007007, 01/08/2026: ConnectError de DNS).
+    O retry fica AQUI, na chamada do LLM (sem side effects), e não no nó — os
+    nós enviam mensagens via send_text, e re-executar o nó inteiro reenviaria
+    mensagens já entregues.
+    """
+    import openai
+    return runnable.with_retry(
+        retry_if_exception_type=(openai.APIConnectionError,),
+        wait_exponential_jitter=True,
+        stop_after_attempt=3,
+    )
+
+
 def _get_collect_llm():
     global _collect_llm
     if _collect_llm is None:
-        _collect_llm = ChatOpenAI(model="gpt-4.1", temperature=0).with_structured_output(CollectInfoOutput)
+        _collect_llm = _with_transient_retry(
+            ChatOpenAI(model="gpt-4.1", temperature=0).with_structured_output(CollectInfoOutput)
+        )
     return _collect_llm
 
 
 def _get_agent_llm():
     global _agent_llm
     if _agent_llm is None:
-        _agent_llm = ChatOpenAI(model="gpt-4.1", temperature=0).bind_tools(TOOLS)
+        _agent_llm = _with_transient_retry(
+            ChatOpenAI(model="gpt-4.1", temperature=0).bind_tools(TOOLS)
+        )
     return _agent_llm
 
 
@@ -1877,6 +1899,31 @@ async def patient_agent_node(state: ConversationState, config: RunnableConfig) -
                         additional_kwargs={RESUME_AFTER_TOOL: True},
                     )
                     return {"pending_appointment": None, "messages": [_ai3, _tm3], "silent_mode": False, **_sync_updates}
+                elif "get_available_slots" in _result_body:
+                    # O horário não é agendável e a própria instrução interna diz o
+                    # caminho: avisar o paciente e buscar outros horários. Cobre dia
+                    # bloqueado, horário fora da grade/da exceção do dia e bloco que
+                    # não cabe no expediente — hoje e qualquer recusa futura que peça
+                    # get_available_slots. Antes disso só "acabou de ser ocupado" e
+                    # "já tem consulta" eram reconhecidos, e o resto caía no ramo de
+                    # erro inesperado: a paciente levava "Tive um problema ao confirmar
+                    # o agendamento" + handoff em vez de novas opções (caso Geórgia,
+                    # 5583998264807, 17/08/2026 — 19/08 às 16h com a Dra. Bruna foi
+                    # ofertado de manhã e bloqueado na grade antes de ela responder).
+                    _pa_logger.warning(
+                        "PENDING_APPT_CONFIRM slot indisponível — devolvendo à LLM phone=%s result=%.200s",
+                        state.get("phone"), _result_body,
+                    )
+                    from langchain_core.messages import AIMessage as _AI5, ToolMessage as _TM5
+                    import uuid as _uuid5
+                    _tc5 = str(_uuid5.uuid4())
+                    _ai5 = _AI5(content="", tool_calls=[{"name": "confirm_appointment", "args": {}, "id": _tc5, "type": "tool_use"}])
+                    _tm5 = _TM5(
+                        content=_result_body,
+                        tool_call_id=_tc5,
+                        additional_kwargs={RESUME_AFTER_TOOL: True},
+                    )
+                    return {"pending_appointment": None, "messages": [_ai5, _tm5], "silent_mode": False, **_sync_updates}
                 else:
                     # Unexpected error — notify attendant and transfer.
                     _pa_logger.error("PENDING_APPT_CONFIRM unexpected error phone=%s result=%.300s", state.get("phone"), _result_body)
@@ -2286,6 +2333,76 @@ async def patient_agent_node(state: ConversationState, config: RunnableConfig) -
                  [t["name"] for t in response.tool_calls] if response.tool_calls else [],
                  len(response.content) if response.content else 0)
 
+    # ── Guard: comprovante no turno exige register_payment ────────────────────
+    # A Eva já respondeu a um comprovante com texto puro ("a taxa de reserva já
+    # foi recebida") sem chamar register_payment — booking_fee_paid_at ficou NULL,
+    # o cron cobrou a paciente de novo 2h depois e a consulta entrou na fila do
+    # cancelamento automático (caso Isadora de Sousa Costa, 5581988417858,
+    # 07/08/2026; mesmo padrão em Denise Alencar 23/07 e Juliana Feitosa 04/08).
+    # O prompt já proíbe isso seis vezes; a garantia real precisa ser código: se
+    # a mensagem do turno é um comprovante e a resposta não chama
+    # register_payment, injeta a tool call — o ToolNode executa e a LLM volta
+    # para redigir a resposta com o resultado real. Pula em silent_mode (registro
+    # guiado pela atendente, que informa o valor), como os demais guards.
+    from app.media import IMAGE_TAG as _IMG_TAG, is_payment_receipt_message as _is_receipt
+    _last_h_idx = next(
+        (i for i in range(len(clean_messages) - 1, -1, -1)
+         if getattr(clean_messages[i], "type", "") == "human"),
+        None,
+    )
+    _receipt_needs_register = False
+    _receipt_content = ""
+    if _last_h_idx is not None and not state.get("silent_mode"):
+        _receipt_content = str(getattr(clean_messages[_last_h_idx], "content", "") or "")
+        if _is_receipt(_receipt_content):
+            # Volta do ToolNode no mesmo turno: register_payment já rodou para
+            # esta mensagem — reinjetar aqui viraria loop de registros duplicados.
+            _register_ran = any(
+                (getattr(m, "type", "") == "tool" and getattr(m, "name", "") == "register_payment")
+                or any(
+                    tc.get("name") == "register_payment"
+                    for tc in (getattr(m, "tool_calls", None) or [])
+                )
+                for m in clean_messages[_last_h_idx + 1:]
+            )
+            _receipt_needs_register = not _register_ran
+
+    if _receipt_needs_register and not any(
+        tc.get("name") == "register_payment" for tc in (response.tool_calls or [])
+    ):
+        import re as _re_rp
+        import uuid as _uuid_rp
+        _dl_m = _re_rp.search(r"\[drive_link:(\S+?)\]", _receipt_content)
+        _img_idx = _receipt_content.find(_IMG_TAG)
+        _img_desc = (
+            _receipt_content[_img_idx + len(_IMG_TAG):].strip()
+            if _img_idx != -1 else _receipt_content
+        )
+        _am_m = _re_rp.search(r"R\$\s*([\d.]*\d+,\d{2})", _img_desc)
+        _forced_rp = {
+            "name": "register_payment",
+            "args": {
+                "amount": _am_m.group(1) if _am_m else "?",
+                "drive_link": _dl_m.group(1) if _dl_m else "",
+                "image_description": _img_desc,
+            },
+            "id": str(_uuid_rp.uuid4()),
+            "type": "tool_call",
+        }
+        _logger.warning(
+            "GUARD_RECEIPT_REGISTER: comprovante no turno sem register_payment na resposta "
+            "(tool_calls=%s) — injetando register_payment. phone=%s",
+            [tc.get("name") for tc in (response.tool_calls or [])], state.get("phone"),
+        )
+        _kept_tcs = list(response.tool_calls or [])
+        response = AIMessage(
+            # Sem tool calls, o texto é uma afirmação solta sobre um pagamento
+            # não registrado ("taxa recebida") — descarta em vez de arquivar a
+            # alucinação no histórico. Com tool calls legítimas, preserva.
+            content=response.content if _kept_tcs else "",
+            tool_calls=_kept_tcs + [_forced_rp],
+        )
+
     # ── Guard: block premature confirm_appointment ────────────────────────────
     # If the LLM is trying to call confirm_appointment but the patient has NOT
     # yet confirmed (pending_appointment is not set), intercept the call:
@@ -2296,6 +2413,11 @@ async def patient_agent_node(state: ConversationState, config: RunnableConfig) -
         response.tool_calls
         and not state.get("silent_mode")
         and not state.get("pending_appointment")
+        # Comprovante no turno CONTA como confirmação (prompt: "uma imagem de
+        # comprovante enviada como resposta a este resumo TAMBÉM vale como
+        # confirmação afirmativa") — interceptar aqui descartaria o
+        # register_payment injetado pelo GUARD_RECEIPT_REGISTER acima.
+        and not _receipt_needs_register
         and any(tc.get("name") == "confirm_appointment" for tc in response.tool_calls)
     ):
         _confirm_tc = next(tc for tc in response.tool_calls if tc.get("name") == "confirm_appointment")

@@ -39,7 +39,7 @@ async def test_reminder_sent_to_all_agendamento_contacts():
     client, table = _client()
     contacts = [{"phone": "5581111"}, {"phone": "5581222"}]
     now = datetime(2026, 6, 19, 7, 0, tzinfo=TZ)
-    with patch("scripts.send_appointment_reminders.get_contacts_for_patient",
+    with patch("scripts.send_appointment_reminders.get_reminder_contacts",
                new_callable=AsyncMock, return_value=contacts), \
          patch("scripts.send_appointment_reminders.send_reminder_template",
                new_callable=AsyncMock) as mock_send:
@@ -57,7 +57,7 @@ async def test_reminder_includes_inactive_contacts():
     # pode silenciar o lembrete de consulta — é transacional, não conversacional.
     client, table = _client()
     now = datetime(2026, 6, 19, 7, 0, tzinfo=TZ)
-    with patch("scripts.send_appointment_reminders.get_contacts_for_patient",
+    with patch("scripts.send_appointment_reminders.get_reminder_contacts",
                new_callable=AsyncMock, return_value=[{"phone": "5581111"}]) as mock_gcfp, \
          patch("scripts.send_appointment_reminders.send_reminder_template",
                new_callable=AsyncMock):
@@ -72,7 +72,7 @@ async def test_reminder_skips_when_no_agendamento_contact():
     # sem contato agendamento -> não envia nem marca (apenas loga e pula)
     client, table = _client()
     now = datetime(2026, 6, 19, 7, 0, tzinfo=TZ)
-    with patch("scripts.send_appointment_reminders.get_contacts_for_patient",
+    with patch("scripts.send_appointment_reminders.get_reminder_contacts",
                new_callable=AsyncMock, return_value=[]), \
          patch("scripts.send_appointment_reminders.send_reminder_template",
                new_callable=AsyncMock) as mock_send:
@@ -95,7 +95,7 @@ async def test_reminder_marks_sent_if_at_least_one_succeeds():
         if phone == "5581111":
             raise RuntimeError("falha transitória")
 
-    with patch("scripts.send_appointment_reminders.get_contacts_for_patient",
+    with patch("scripts.send_appointment_reminders.get_reminder_contacts",
                new_callable=AsyncMock, return_value=contacts), \
          patch("scripts.send_appointment_reminders.send_reminder_template",
                side_effect=flaky):
@@ -126,3 +126,19 @@ async def test_day_of_query_selects_patient_id():
 
     select_calls = [c.args[0] for c in table.select.call_args_list]
     assert any("patient_id" in call and "patients(" in call for call in select_calls), select_calls
+
+
+@pytest.mark.asyncio
+async def test_appt_reminder_adult_with_self_only_self():
+    # get_reminder_contacts já aplica a regra; o cron só precisa chamá-la.
+    client, table = _client()
+    with patch("scripts.send_appointment_reminders.get_reminder_contacts",
+               new=AsyncMock(return_value=[{"phone": "5581000"}])) as grc, \
+         patch("scripts.send_appointment_reminders.send_reminder_template",
+               new=AsyncMock()) as send:
+        await rem._send_reminder_to_contacts(
+            client, _appt(), "lembrete_dia_consulta", "reminder_day_of_sent_at",
+            datetime.now(TZ), None,
+        )
+    grc.assert_awaited_once_with("p-joao", "consulta", include_inactive=True)
+    assert send.await_count == 1

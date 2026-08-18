@@ -4,15 +4,12 @@ Substitui gradualmente o modelo antigo de `users` (ver app/database.py).
 """
 import logging
 import unicodedata
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 
-from app.database import get_supabase
+from app.phone import _phone_variants, _strip_phone
+from app.supabase_client import get_supabase
 
 logger = logging.getLogger(__name__)
-
-
-def _strip_phone(phone: str) -> str:
-    return phone.replace("@s.whatsapp.net", "")
 
 
 def normalize_phone(phone: str) -> str:
@@ -39,7 +36,6 @@ async def get_contact_by_phone(phone: str) -> dict | None:
     Tenta a forma canônica (com 9) primeiro. Se não encontrar, tenta a variante
     sem o 9 — necessário para contatos legados gravados antes da normalização.
     """
-    from app.database import _phone_variants
     client = await get_supabase()
     for variant in _phone_variants(phone):
         result = (
@@ -52,6 +48,21 @@ async def get_contact_by_phone(phone: str) -> dict | None:
         if rows:
             return rows[0]
     return None
+
+
+async def get_contact_by_id(contact_id: str | None) -> dict | None:
+    """Retorna a linha de `contacts` por id, ou None (inclui id None)."""
+    if not contact_id:
+        return None
+    client = await get_supabase()
+    result = (
+        await client.from_("contacts")
+        .select("*")
+        .eq("id", contact_id)
+        .execute()
+    )
+    rows = result.data or []
+    return rows[0] if rows else None
 
 
 async def get_patients_by_contact(contact_id: str, role: str | None = None) -> list[dict]:
@@ -105,6 +116,43 @@ async def get_contacts_for_patient(patient_id: str, role: str, include_inactive:
     return out
 
 
+async def get_reminder_contacts(
+    patient_id: str, role: str, include_inactive: bool = False
+) -> list[dict]:
+    """Contatos que devem receber um lembrete de consulta/retorno.
+
+    Regra: paciente ADULTO (idade >= 18) que tem ao menos um contato próprio
+    (is_self=True) recebe o lembrete SÓ nesse(s) contato(s) — os responsáveis
+    são omitidos. Menor de idade, paciente sem contato próprio, ou birth_date
+    ausente/imparseável caem no comportamento padrão: todos os contatos do
+    papel (mesma semântica active/include_inactive de get_contacts_for_patient).
+    """
+    client = await get_supabase()
+    result = (
+        await client.from_("patient_contacts")
+        .select("contact_id, is_self, contacts(*)")
+        .eq("patient_id", patient_id)
+        .eq("role", role)
+        .execute()
+    )
+
+    seen: set[str] = set()
+    rows: list[dict] = []
+    for row in (result.data or []):
+        contact = row.get("contacts")
+        if contact and (include_inactive or contact.get("active")) and contact["id"] not in seen:
+            seen.add(contact["id"])
+            rows.append({"is_self": bool(row.get("is_self")), "contact": contact})
+
+    self_contacts = [r["contact"] for r in rows if r["is_self"]]
+    if self_contacts:
+        patient = await get_patient_by_id(patient_id)
+        age = _compute_age((patient or {}).get("birth_date"))
+        if age is not None and age >= 18:
+            return self_contacts
+    return [r["contact"] for r in rows]
+
+
 def normalize_person_name(name: str | None) -> str:
     """Forma canônica de um nome para COMPARAÇÃO (nunca para gravação):
     sem acentos, minúsculas, espaços internos colapsados."""
@@ -126,6 +174,26 @@ def _birth_date_variants(birth_date: str) -> list[str]:
         except ValueError:
             continue
     return [raw]
+
+
+def _compute_age(birth_date: str | None) -> int | None:
+    """Idade em anos completos a partir de `patients.birth_date`.
+
+    Aceita as duas grafias que convivem no banco (dd/mm/aaaa do chat e ISO de
+    imports). Retorna None quando ausente ou não parseável — o chamador trata
+    None como "idade desconhecida" e NÃO suprime contatos nesse caso.
+    """
+    raw = (birth_date or "").strip()
+    for fmt in ("%d/%m/%Y", "%Y-%m-%d"):
+        try:
+            bd = datetime.strptime(raw, fmt).date()
+            break
+        except ValueError:
+            continue
+    else:
+        return None
+    today = date.today()
+    return today.year - bd.year - ((today.month, today.day) < (bd.month, bd.day))
 
 
 async def get_patient_by_id(patient_id: str) -> dict | None:

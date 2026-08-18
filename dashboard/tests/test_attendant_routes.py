@@ -261,7 +261,8 @@ def test_pagar_registra_e_envia_confirmacao(client, monkeypatch):
     async def fake_get_client():
         return object()
     async def fake_mark_paid(_client, appointment_id, tipo, valor, forma_pagamento,
-                              paciente, medico, data_hora, phone, drive_link=""):
+                              paciente, medico, data_hora, phone, drive_link="",
+                              receipt_filename=""):
         calls["mark_paid"] = (appointment_id, tipo, valor)
     async def fake_send_confirmation(conversation_id, text):
         calls["confirm"] = (conversation_id, text)
@@ -447,11 +448,11 @@ def test_upload_comprovante_requires_token(client):
     assert r.status_code == 401
 
 
-def test_upload_comprovante_retorna_drive_link(client, monkeypatch):
+def test_upload_comprovante_retorna_drive_link_e_nome(client, monkeypatch):
     calls = {}
     async def fake_upload(patient_name, appointment_dt, amount, file_bytes, mimetype):
         calls["upload"] = (patient_name, appointment_dt, amount, file_bytes, mimetype)
-        return "https://drive.google.com/file/d/abc123/view"
+        return "https://drive.google.com/file/d/abc123/view", "João_10-07-2026_R$100.jpg"
     monkeypatch.setattr(payments, "upload_comprovante", fake_upload)
 
     r = client.post(
@@ -461,7 +462,10 @@ def test_upload_comprovante_retorna_drive_link(client, monkeypatch):
         files={"file": ("comprovante.jpg", b"fake-image-bytes", "image/jpeg")},
     )
     assert r.status_code == 200
-    assert r.json() == {"drive_link": "https://drive.google.com/file/d/abc123/view"}
+    assert r.json() == {
+        "drive_link": "https://drive.google.com/file/d/abc123/view",
+        "receipt_filename": "João_10-07-2026_R$100.jpg",
+    }
     assert calls["upload"] == ("João", "10/07/2026 14:00", "100", b"fake-image-bytes", "image/jpeg")
 
 
@@ -484,8 +488,10 @@ def test_pagar_repassa_drive_link_para_mark_paid(client, monkeypatch):
     async def fake_get_client():
         return object()
     async def fake_mark_paid(_client, appointment_id, tipo, valor, forma_pagamento,
-                              paciente, medico, data_hora, phone, drive_link=""):
+                              paciente, medico, data_hora, phone, drive_link="",
+                              receipt_filename=""):
         calls["drive_link"] = drive_link
+        calls["receipt_filename"] = receipt_filename
     async def fake_log(event_type, phone, metadata):
         return None
 
@@ -499,10 +505,12 @@ def test_pagar_repassa_drive_link_para_mark_paid(client, monkeypatch):
         json={"tipo": "consulta", "valor": 550, "forma_pagamento": "PIX",
               "paciente": "Natalia", "medico": "Dra. Bruna", "data_hora": "01/07/2026 15:00",
               "phone": "5581999688071",
-              "drive_link": "https://drive.google.com/file/d/abc123/view"},
+              "drive_link": "https://drive.google.com/file/d/abc123/view",
+              "receipt_filename": "Natalia_01-07-2026_R$550.pdf"},
     )
     assert r.status_code == 200
     assert calls["drive_link"] == "https://drive.google.com/file/d/abc123/view"
+    assert calls["receipt_filename"] == "Natalia_01-07-2026_R$550.pdf"
 
 
 # ── No-show (falta) ─────────────────────────────────────────────────────────

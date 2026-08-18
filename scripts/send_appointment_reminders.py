@@ -25,8 +25,7 @@ load_dotenv()
 # para diagnosticar timeouts na resolução de conversa por número.
 logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s %(message)s")
 
-import app.database  # noqa: F401 — carrega database antes de patients (evita import circular)
-from app.patients import get_contacts_for_patient
+from app.patients import get_reminder_contacts
 
 TZ = ZoneInfo("America/Recife")
 
@@ -159,7 +158,7 @@ async def _send_reminder_to_contacts(client, appt, template_name, sent_col, now,
     # include_inactive=True: lembrete de consulta é transacional e deve chegar
     # mesmo se o contato estiver com o bot pausado (ex.: transferido para
     # atendimento humano) — pausa do bot não deve silenciar avisos de horário.
-    contacts = await get_contacts_for_patient(patient_id, "consulta", include_inactive=True) if patient_id else []
+    contacts = await get_reminder_contacts(patient_id, "consulta", include_inactive=True) if patient_id else []
     if not contacts:
         print(f"  [SKIP] appt {appointment_id} sem contato de consulta (patient_id={patient_id})")
         return []

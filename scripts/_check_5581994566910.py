@@ -5,7 +5,8 @@ load_dotenv()
 PHONE = "5581994566910"
 
 async def main():
-    from app.database import get_supabase, get_users_by_phone, _phone_variants
+    from app.database import get_supabase, get_users_by_phone
+    from app.phone import _phone_variants
     from datetime import datetime
     from zoneinfo import ZoneInfo
     TZ = ZoneInfo("America/Recife")
