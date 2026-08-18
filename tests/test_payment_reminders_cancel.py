@@ -585,6 +585,31 @@ async def test_notify_returns_false_on_send_failure():
 
 
 @pytest.mark.asyncio
+async def test_notify_logs_exception_type_when_str_is_empty(capsys):
+    """Algumas exceções (ex.: timeouts do httpx) têm str(e) vazio: sem logar o TIPO,
+    o cron só imprimiria 'FALHOU para <phone>: ' e a causa real sumiria. Deve logar
+    o nome da classe da exceção mesmo quando a mensagem é vazia."""
+    client, _ = _client()
+    now = datetime(2026, 8, 14, 9, 30, tzinfo=TZ)
+
+    class _TimeoutSemMensagem(Exception):
+        pass
+
+    assert str(_TimeoutSemMensagem()) == ""  # reproduz o cenário: str(e) vazio
+
+    with patch("scripts.send_payment_reminders._window_open", new_callable=AsyncMock, return_value=False), \
+         patch("scripts.send_payment_reminders._send_template",
+               new_callable=AsyncMock, side_effect=_TimeoutSemMensagem()):
+        ok = await spr._notify(client, "5581999767413", kind="cancel", free_text="x",
+                               contact_first="Mariana", patient_first="Bento",
+                               doctor_label="Dr. Júlio", date_str="27/08/2026 às 14:00", now=now)
+
+    assert ok is False
+    out = capsys.readouterr().out
+    assert "_TimeoutSemMensagem" in out  # o TIPO aparece mesmo com str(e) vazio
+
+
+@pytest.mark.asyncio
 async def test_notify_raises_on_invalid_kind():
     """kind inesperado deve falhar alto (ValueError), não cair silenciosamente no
     caminho de cancelamento."""
