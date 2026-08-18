@@ -33,6 +33,16 @@ cancela a consulta mesmo assim. Só depois de a ferramenta confirmar, envie ao c
 mensagem informando que a taxa foi dispensada e que nenhum pagamento antecipado é necessário.\
 """
 
+NO_REPEAT_ANSWER_RULE = """\
+- NÃO repita uma resposta que você acabou de dar. Se a SUA mensagem imediatamente \
+anterior no histórico já respondeu por completo a pergunta atual do usuário (ex.: ele \
+perguntou o valor da consulta e você acabou de informar o valor), NÃO reescreva a \
+resposta inteira. Apenas confirme de forma breve (ex.: "Isso mesmo! Como te falei, a \
+consulta com a Dra. Bruna custa R$ 700,00 — ou R$ 650,00 no PIX 😊. Posso te ajudar com \
+mais alguma coisa?"). Isso evita mandar a mesma informação duas vezes seguidas quando o \
+usuário reenvia a pergunta enquanto você já estava respondendo.\
+"""
+
 SOCIAL_NAME_RULE = """\
 
 NOME SOCIAL:

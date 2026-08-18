@@ -1418,6 +1418,19 @@ async def test_patient_agent_injects_greeting_on_first_turn():
     assert "Carlos" in system_msg.content
 
 
+async def test_patient_agent_prompt_has_no_repeat_answer_rule():
+    """A regra anti-repetição (NO_REPEAT_ANSWER_RULE) deve estar sempre presente no
+    system prompt do patient_agent — mitiga a resposta dobrada quando o usuário
+    reenvia a mesma pergunta enquanto a Eva já estava respondendo (caso João Augusto,
+    5581982810672, 12/08/2026: valor da consulta respondido 2x com 10s de diferença)."""
+    from app.graph.prompts import NO_REPEAT_ANSWER_RULE
+
+    state = _make_patient_agent_state(messages=[HumanMessage(content="qual o valor?")])
+    system_msg = await _run_patient_agent(state, last_assistant_time=None)
+    assert system_msg is not None
+    assert NO_REPEAT_ANSWER_RULE in system_msg.content
+
+
 async def test_patient_agent_hydrates_social_name_from_db():
     """social_name ausente no state (ex: checkpoint novo) deve ser hidratado do
     banco, igual a patient_name/financial_name, e incluído no update retornado
