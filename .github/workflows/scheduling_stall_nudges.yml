@@ -1,0 +1,35 @@
+name: Send scheduling stall nudges
+
+on:
+  schedule:
+    - cron: "*/30 * * * *"  # a cada 30 min; o script só envia entre 8h–20h Recife
+  workflow_dispatch:         # allow manual runs for testing
+
+jobs:
+  scheduling-stall-nudges:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v5
+
+      - name: Install dependencies
+        run: uv sync --frozen --no-dev
+
+      - name: Nudge patients who saw slots but did not confirm
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+          SUPABASE_CONNECTION_STRING: ${{ secrets.SUPABASE_CONNECTION_STRING }}
+          WHATSAPP_TOKEN: ${{ secrets.WHATSAPP_TOKEN }}
+          WHATSAPP_PHONE_NUMBER_ID: ${{ secrets.WHATSAPP_PHONE_NUMBER_ID }}
+          PIX_KEY: ${{ secrets.PIX_KEY }}
+          GOOGLE_CLIENT_ID: ${{ secrets.GOOGLE_CLIENT_ID }}
+          GOOGLE_CLIENT_SECRET: ${{ secrets.GOOGLE_CLIENT_SECRET }}
+          GOOGLE_REFRESH_TOKEN: ${{ secrets.GOOGLE_REFRESH_TOKEN }}
+          CHATWOOT_BASE_URL: ${{ secrets.CHATWOOT_BASE_URL }}
+          CHATWOOT_ACCOUNT_ID: ${{ secrets.CHATWOOT_ACCOUNT_ID }}
+          CHATWOOT_AGENT_BOT_TOKEN: ${{ secrets.CHATWOOT_AGENT_BOT_TOKEN }}
+          CHATWOOT_INBOX_ID: ${{ secrets.CHATWOOT_INBOX_ID }}
+          CHATWOOT_USER_TOKEN: ${{ secrets.CHATWOOT_USER_TOKEN }}
+        run: uv run python scripts/send_scheduling_stall_nudges.py
