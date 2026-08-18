@@ -4166,9 +4166,19 @@ _NOME_COMPROVANTE = (
     "destinatário 42.006.848/0001-78, nome do destinatário PSIQUE, data/hora da "
     "transação 08/jul/26 11:11. [drive_link:https://drive.google.com/file/d/1Br2/view]"
 )
+# Resposta da pergunta "você é paciente?" capturada como nome, sem quebra de
+# linha nem pontuação — passava por todas as guardas antigas e virou user_name +
+# guardian_name (Carlos Alberto, 5581982691700, 06/08/2026).
+_NOME_IS_PATIENT = "Eu não sou paciente Ainda"
+# Outras respostas de conversa de uma linha só que não podem virar nome.
+_NOME_QUERO_RECEITA = "Quero uma receita"
+_NOME_PRIMEIRA_CONSULTA = "seria a primeira consulta"
 
 
-@pytest.mark.parametrize("valor", [_NOME_LAUDO, _NOME_PRIMEIRA, _NOME_COMPROVANTE])
+@pytest.mark.parametrize("valor", [
+    _NOME_LAUDO, _NOME_PRIMEIRA, _NOME_COMPROVANTE,
+    _NOME_IS_PATIENT, _NOME_QUERO_RECEITA, _NOME_PRIMEIRA_CONSULTA,
+])
 def test_looks_like_name_rejeita_corpo_de_mensagem(valor):
     from app.utils import looks_like_name
 
@@ -4182,6 +4192,11 @@ def test_looks_like_name_rejeita_corpo_de_mensagem(valor):
     "Raphaelle Beltrão",                         # acento
     "Eduardo Araújo Emery",
     "Jean-Pierre Silva",                         # hífen
+    # Nomes reais que colidem por SUBSTRING com tokens do blocklist — só podem
+    # ser barrados por palavra inteira, nunca por substring.
+    "Simone Andrade",                            # "Simone" contém "sim"
+    "Consuela Marques",                          # "Consuela" contém "consu" de "consulta"
+    "Ainoã Pereira",                             # "Ainoã" contém "ain" de "ainda"
 ])
 def test_looks_like_name_aceita_nomes_reais(nome):
     """Falso negativo aqui é pior que falso positivo: a Eva repergunta o nome
