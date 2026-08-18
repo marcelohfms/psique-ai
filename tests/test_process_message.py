@@ -4856,3 +4856,113 @@ async def test_resposta_indecifravel_repergunta_em_vez_de_assumir():
 
     assert result.get("is_patient") is not True
     assert "paciente" in mock_send.call_args[0][1].lower()
+
+
+# ── Nome do responsável — o quarto caminho que gravava sem validar ───────────
+# Caso Beatriz (5587996089614, 04/08/2026): guardian_name foi capturado como
+# "Por gentileza, veja se ele consegue atender na quinta-feira". O #126 fechou
+# os caminhos do user_name e do patient_name e a extração da LLM; o passo
+# programático do responsável ficou de fora — e ele grava em guardian_name E
+# user_name de uma vez, passando por cima da validação do Step 2.
+
+_FRASE_EDUCADA = "Por gentileza, veja se ele consegue atender na quinta-feira"
+
+
+@pytest.mark.parametrize("frase", [
+    _FRASE_EDUCADA,
+    "Ela pode ir na segunda de manhã se tiver vaga",
+    "Prefiro que seja com o doutor Júlio por favor",
+])
+def test_looks_like_name_rejeita_frase_educada(frase):
+    """Frases bem formadas atravessavam a guarda: uma vírgula só, nenhum dígito,
+    menos de 80 caracteres e sem começar por artigo."""
+    from app.utils import looks_like_name
+
+    assert looks_like_name(frase) is False
+
+
+@pytest.mark.parametrize("nome", [
+    "Marcelo Rodrigues de Souza Brayner Filho",   # 6 palavras, partículas de e do
+    "Maria da Conceição dos Santos",
+    "Ana Luiza",
+    "Raphaelle Beltrão",
+    "José de Alencar e Silva",
+])
+def test_looks_like_name_ainda_aceita_nome_completo(nome):
+    """O aperto não pode barrar nome de gente — falso negativo faz a Eva
+    reperguntar o nome para sempre."""
+    from app.utils import looks_like_name
+
+    assert looks_like_name(nome) is True
+
+
+async def test_nome_do_responsavel_nao_aceita_frase():
+    """O passo do responsável precisa reperguntar em vez de gravar a frase."""
+    from app.graph.nodes import collect_info_node
+    from app.graph.schemas import CollectInfoOutput
+
+    state = {
+        "phone": PHONE,
+        "messages": [
+            HumanMessage(content="Quero agendar uma consulta"),
+            AIMessage(content="Qual é o nome completo do responsável pelo paciente?"),
+            HumanMessage(content=_FRASE_EDUCADA),
+        ],
+        "user_name": "Silvana",
+        "patient_name": "Beatriz",
+        "patient_age": 15,
+        "birth_date": "10/05/2011",
+        "is_patient": False,
+        "_is_patient_confirmed": True,
+        "is_returning_patient": False,
+        "patient_cpf": "12345678900",
+    }
+    with patch("app.graph.nodes._get_collect_llm") as mock_llm_fn, \
+         patch("app.graph.nodes.send_text", new_callable=AsyncMock) as mock_send, \
+         patch("app.graph.nodes.save_message", new_callable=AsyncMock), \
+         patch("app.graph.nodes.get_users_by_phone", new_callable=AsyncMock, return_value=[]), \
+         patch("app.graph.nodes.upsert_user", new_callable=AsyncMock, return_value="p1"), \
+         patch("app.graph.nodes.log_event", new_callable=AsyncMock):
+        mock_llm = MagicMock()
+        mock_llm.ainvoke = AsyncMock(return_value=CollectInfoOutput(reply="ok", is_complete=False))
+        mock_llm_fn.return_value = mock_llm
+        result = await collect_info_node(state, {})
+
+    assert result.get("guardian_name") != _FRASE_EDUCADA
+    assert "responsável" in mock_send.call_args[0][1].lower()
+
+
+async def test_passo_do_responsavel_nao_sobrescreve_user_name_com_frase():
+    """O passo grava em guardian_name E user_name. Sem validação aqui, ele
+    contorna a guarda do Step 2 e corrompe também o nome do contato — que o
+    upsert_user então copia para o paciente."""
+    from app.graph.nodes import collect_info_node
+    from app.graph.schemas import CollectInfoOutput
+
+    state = {
+        "phone": PHONE,
+        "messages": [
+            HumanMessage(content="Quero agendar uma consulta"),
+            AIMessage(content="Qual é o nome completo do responsável pelo paciente?"),
+            HumanMessage(content=_FRASE_EDUCADA),
+        ],
+        "patient_name": "Beatriz",
+        "patient_age": 15,
+        "birth_date": "10/05/2011",
+        "is_patient": False,
+        "_is_patient_confirmed": True,
+        "is_returning_patient": False,
+        "patient_cpf": "12345678900",
+    }
+    with patch("app.graph.nodes._get_collect_llm") as mock_llm_fn, \
+         patch("app.graph.nodes.send_text", new_callable=AsyncMock), \
+         patch("app.graph.nodes.save_message", new_callable=AsyncMock), \
+         patch("app.graph.nodes.get_users_by_phone", new_callable=AsyncMock, return_value=[]), \
+         patch("app.graph.nodes.upsert_user", new_callable=AsyncMock, return_value="p1"), \
+         patch("app.graph.nodes.log_event", new_callable=AsyncMock):
+        mock_llm = MagicMock()
+        mock_llm.ainvoke = AsyncMock(return_value=CollectInfoOutput(reply="ok", is_complete=False))
+        mock_llm_fn.return_value = mock_llm
+        result = await collect_info_node(state, {})
+
+    assert result.get("user_name") != _FRASE_EDUCADA
