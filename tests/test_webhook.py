@@ -754,6 +754,71 @@ async def test_process_chatwoot_attachments_forwards_phone_for_pdf():
     mock_describe.assert_awaited_once_with(b"fake-pdf-bytes", phone="5511999999999@s.whatsapp.net")
 
 
+# ── Detecção de PDF em anexo ──────────────────────────────────────────────────
+# Formatos conferidos contra anexos reais da instância (Chatwoot 4.16.2): o campo
+# é `extension` (não `file_extension`), vem None na maioria dos anexos, e o
+# data_url é sempre uma URL de redirect do ActiveStorage, sem extensão.
+
+
+def test_attachment_is_pdf_by_content_type():
+    from app.main import _attachment_is_pdf
+    assert _attachment_is_pdf({
+        "content_type": "application/pdf", "extension": None,
+        "data_url": "https://cw.example.com/rails/active_storage/blobs/redirect/eyJfcmFpbHMi",
+    })
+
+
+def test_attachment_is_pdf_by_extension_when_content_type_is_generic():
+    """O ganho real do campo `extension`: WhatsApp entregando PDF como
+    application/octet-stream, caso em que o content_type não salva."""
+    from app.main import _attachment_is_pdf
+    assert _attachment_is_pdf({
+        "content_type": "application/octet-stream", "extension": "pdf",
+        "data_url": "https://cw.example.com/rails/active_storage/blobs/redirect/eyJfcmFpbHMi",
+    })
+
+
+def test_attachment_is_pdf_accepts_extension_with_leading_dot():
+    from app.main import _attachment_is_pdf
+    assert _attachment_is_pdf({"content_type": "", "extension": ".PDF", "data_url": ""})
+
+
+def test_attachment_is_pdf_rejects_non_pdf():
+    from app.main import _attachment_is_pdf
+    assert not _attachment_is_pdf({
+        "content_type": "image/jpeg", "extension": None,
+        "data_url": "https://cw.example.com/rails/active_storage/blobs/redirect/eyJfcmFpbHMi",
+    })
+
+
+def test_attachment_is_pdf_tolerates_missing_fields():
+    from app.main import _attachment_is_pdf
+    assert not _attachment_is_pdf({})
+
+
+async def test_process_chatwoot_attachments_detects_pdf_via_extension():
+    """PDF com content_type genérico é processado como PDF, não cai no
+    fallback '[pdf-recebido]'."""
+    from app.main import _process_chatwoot_attachments
+    attachments = [{
+        "file_type": "file", "content_type": "application/octet-stream", "extension": "pdf",
+        "data_url": "https://cw.example.com/rails/active_storage/blobs/redirect/eyJfcmFpbHMi",
+    }]
+
+    with patch("httpx.AsyncClient") as mock_client_cls, \
+         patch("app.media.describe_pdf_bytes", new_callable=AsyncMock, return_value="[pdf]: ok") as mock_describe:
+        mock_resp = AsyncMock()
+        mock_resp.raise_for_status = lambda: None
+        mock_resp.content = b"fake-pdf-bytes"
+        mock_client = mock_client_cls.return_value.__aenter__.return_value
+        mock_client.get = AsyncMock(return_value=mock_resp)
+
+        result = await _process_chatwoot_attachments(attachments, phone="5511999999999@s.whatsapp.net")
+
+    assert result == "[pdf]: ok"
+    mock_describe.assert_awaited_once()
+
+
 async def test_chatwoot_webhook_passes_phone_to_attachment_processing(async_client):
     """The webhook handler must pass the extracted phone through to
     _process_chatwoot_attachments (regression guard for the missing-phone bug)."""
