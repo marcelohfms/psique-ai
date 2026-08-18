@@ -20,6 +20,7 @@ Requires in Supabase:
 """
 import asyncio
 import os
+import traceback
 from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
@@ -131,7 +132,10 @@ async def _notify(client, phone: str, *, kind: str, free_text: str,
         print(f"  [{tag}] enviado para {phone}")
         return True
     except Exception as e:
-        print(f"  [{tag}] FALHOU para {phone}: {e}")
+        # str(e) vem vazio em algumas exceções (ex.: timeouts do httpx) — sem o tipo
+        # e o traceback, a causa real do envio falho nunca aparece no log do cron.
+        print(f"  [{tag}] FALHOU para {phone}: {type(e).__name__}: {e}")
+        traceback.print_exc()
         return False
 
 
