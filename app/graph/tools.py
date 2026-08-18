@@ -1169,6 +1169,40 @@ async def confirm_appointment(
         except Exception:
             pass  # Non-fatal — proceed to Calendar check
 
+        # Guard 1b: same slot already held by ANOTHER patient of this doctor, per Supabase.
+        # Guard 1 only catches the same patient; Guard 2 checks the Calendar, which is blind
+        # to a `scheduled` row whose event is missing — exactly the fantasma slot that made
+        # the clinic sell one 17h to two patients (caso Maria Clara). fetch_supabase_busy now
+        # stops get_available_slots from OFFERING such a slot; this is the confirm-time
+        # backstop for the one that slips through anyway (e.g. a stale link reused). Overlap
+        # semantics (start < slot_end AND end > slot_start) mirror fetch_supabase_busy so a
+        # longer appointment straddling the slot is caught too.
+        try:
+            _supabase = await get_supabase()
+            _phone = config["configurable"]["phone"]
+            _self_pids = {u["id"] for u in await get_users_by_phone(_phone)}
+            _doctor_id = DOCTOR_IDS.get(doctor)
+            _slot_end_check = start + timedelta(minutes=slot_duration_minutes)
+            if _doctor_id:
+                _clash = await _supabase.from_("appointments").select(
+                    "appointment_id, patient_id"
+                ).eq("doctor_id", _doctor_id).eq("status", "scheduled").lt(
+                    "start_time", _slot_end_check.isoformat()
+                ).gt("end_time", start.isoformat()).execute()
+                _others = [r for r in (_clash.data or []) if r.get("patient_id") not in _self_pids]
+                if _others:
+                    _logger.warning(
+                        "confirm_appointment: cross-patient slot clash doctor=%s slot=%s conflicting=%s",
+                        doctor, start.isoformat(), [r.get("appointment_id") for r in _others],
+                    )
+                    return (
+                        f"[INSTRUÇÃO INTERNA — NÃO ENVIE AO PACIENTE] "
+                        f"Este horário ({start.strftime('%d/%m/%Y às %H:%M')}) já está ocupado por outra consulta. "
+                        "Avise o paciente com empatia que o horário foi preenchido e chame get_available_slots novamente para buscar outro horário disponível."
+                    )
+        except Exception:
+            pass  # Non-fatal — proceed to Calendar check
+
         # Guard 2: check Google Calendar for conflicts
         from app.google_calendar import _get_busy, _credentials
         from googleapiclient.discovery import build as _build

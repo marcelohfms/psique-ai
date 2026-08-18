@@ -1360,6 +1360,65 @@ async def test_confirm_appointment_guard0_applies_even_with_force_encaixe():
     mock_create.assert_not_called()
 
 
+async def test_confirm_appointment_blocks_when_slot_taken_by_another_patient_in_supabase():
+    """Guard 1b: o horário já está ocupado por OUTRO paciente do mesmo médico segundo o
+    Supabase, mesmo que o evento não exista no Calendar. A Guard 1 só pega o próprio
+    paciente e a Guard 2 só olha o Calendar — cega justamente à linha `scheduled` cujo
+    evento sumiu (o slot-fantasma do caso Maria Clara: dois pacientes no mesmo 17h, os
+    dois pagando). fetch_supabase_busy já impede a Eva de OFERECER esse slot; esta guarda
+    é a rede de segurança no momento do confirm, para o slot que escapa mesmo assim."""
+    from app.graph.tools import confirm_appointment
+    client, table, execute = _make_supabase_client()
+    table.lt.return_value = table  # _make_supabase_client não encadeia lt/gt por padrão
+    table.gt.return_value = table
+    def _side(*a, **k):
+        # A Guard 1b é a única query que encadeia .gt("end_time", ...) — devolve a
+        # linha de OUTRO paciente só nela; as demais guardas ficam vazias.
+        if table.gt.called:
+            return MagicMock(data=[{"appointment_id": "evt-outro", "patient_id": "patient-OUTRO"}])
+        return MagicMock(data=[])
+    execute.side_effect = _side
+    with patch("app.graph.tools._get_doctor_calendar_id", new_callable=AsyncMock, return_value="cal123"), \
+         patch("app.graph.tools.get_supabase", new_callable=AsyncMock, return_value=client), \
+         patch("app.graph.tools.get_users_by_phone", new_callable=AsyncMock, return_value=[{"id": "patient-1"}]), \
+         patch("app.graph.tools.get_user_by_phone", new_callable=AsyncMock, return_value={"id": "patient-1"}), \
+         patch("app.google_calendar.create_event", new_callable=AsyncMock) as mock_create:
+        result = await confirm_appointment.coroutine(
+            slot_datetime="2026-03-23T09:00:00",
+            slot_duration_minutes=60,
+            state=_make_state(user_db_id="patient-1"),
+            config=CONFIG,
+        )
+    assert "já está ocupado" in result
+    mock_create.assert_not_called()
+
+
+async def test_confirm_appointment_slot_clash_guard_bypassed_by_force_encaixe():
+    """force_encaixe pula a Guard 1b junto com as demais guardas de conflito de agenda:
+    a atendente pediu explicitamente para encaixar sobre um horário ocupado."""
+    from app.graph.tools import confirm_appointment
+    client, table, execute = _make_supabase_client()
+    # Guard 1b nem deve rodar sob force_encaixe; se rodasse, esta linha bloquearia.
+    execute.return_value = MagicMock(data=[{"appointment_id": "evt-outro", "patient_id": "patient-OUTRO"}])
+    with patch("app.graph.tools._get_doctor_calendar_id", new_callable=AsyncMock, return_value="cal123"), \
+         patch("app.google_calendar.create_event", new_callable=AsyncMock, return_value="evt-encaixe"), \
+         patch("app.graph.tools.get_supabase", new_callable=AsyncMock, return_value=client), \
+         patch("app.graph.tools.get_users_by_phone", new_callable=AsyncMock, return_value=[{"id": "patient-1"}]), \
+         patch("app.graph.tools.get_user_by_phone", new_callable=AsyncMock, return_value={"id": "patient-1"}), \
+         patch("app.graph.tools.log_event", new_callable=AsyncMock), \
+         patch("app.graph.tools._notify_clinic", new_callable=AsyncMock):
+        result = await confirm_appointment.coroutine(
+            slot_datetime="2026-07-08T13:00:00",
+            slot_duration_minutes=60,
+            state=_make_state(silent_mode=True, user_db_id="patient-1"),
+            config=CONFIG,
+            force_encaixe=True,
+        )
+    assert "já está ocupado" not in result
+    assert "evt-encaixe" in result
+
+
+
 # ── confirm_appointment: 1ª consulta de menor dividida em duas sessões ─────────
 
 def _split_state(**kwargs) -> dict:
