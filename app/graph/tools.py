@@ -15,6 +15,7 @@ from app.whatsapp import send_text
 from app.database import get_supabase, log_event, upsert_user, get_user_by_phone, get_users_by_phone, DOCTOR_IDS, DOCTOR_NAMES
 from app.phone import _phone_variants
 from app.chatwoot import get_conversation_id, unassign_agent_bot, add_label
+from app.graph.prompts import CORRECT_PIX_KEY
 
 logger = logging.getLogger(__name__)
 
@@ -2920,6 +2921,46 @@ def _payment_disambiguation_prompt(context: str, names: str) -> str:
     )
 
 
+_CLINIC_PIX_DIGITS = re.sub(r"\D", "", CORRECT_PIX_KEY)  # "42006848000178"
+
+
+def _receipt_destination_is_foreign(image_description: str) -> bool:
+    """True somente quando o comprovante mostra INEQUIVOCAMENTE uma chave de
+    destino diferente da chave PIX da clínica (CORRECT_PIX_KEY).
+
+    Fail-open: retorna False em qualquer caso ambíguo — texto vazio, sem token de
+    chave legível, ou chave mascarada/curta (< 11 dígitos). Só barra quando há um
+    token de chave/CPF/CNPJ com >= 11 dígitos que não casa (nem por substring) com
+    o CNPJ da clínica.
+    """
+    if not image_description:
+        return False
+
+    full_digits = re.sub(r"\D", "", image_description)
+    # CNPJ da clínica aparece em qualquer lugar do texto → é da clínica.
+    if _CLINIC_PIX_DIGITS in full_digits:
+        return False
+
+    # Extrai o token de destino: trecho após "chave PIX" / "CPF" / "CNPJ" até
+    # a próxima vírgula, ponto-e-vírgula ou fim de linha.
+    m = re.search(
+        r"(?:chave\s*pix|cpf\s*/?\s*cnpj|cnpj|cpf)\s*[:\-]?\s*([^,;\n]+)",
+        image_description,
+        re.IGNORECASE,
+    )
+    if not m:
+        return False
+
+    dest_digits = re.sub(r"\D", "", m.group(1))
+    if len(dest_digits) < 11:
+        return False  # mascarada/curta → fail-open
+
+    if _CLINIC_PIX_DIGITS in dest_digits or dest_digits in _CLINIC_PIX_DIGITS:
+        return False  # casa (inclusive máscara que é substring) → clínica
+
+    return True
+
+
 @tool
 async def register_payment(
     amount: str,
@@ -2947,6 +2988,21 @@ async def register_payment(
     _logger = _log.getLogger(__name__)
 
     from app.google_sheets import append_payment_receipt
+
+    # ── Guard: comprovante para chave que não é da clínica ─────────────────────
+    # Só inspeciona quando há imagem de comprovante; pagamentos do painel/atendente
+    # (is_link / payment_method, sem image_description) passam direto.
+    if image_description and not is_link and not payment_method:
+        if _receipt_destination_is_foreign(image_description):
+            _logger.warning(
+                "REGISTER_PAYMENT blocked: destino estrangeiro | desc=%r",
+                image_description[:160],
+            )
+            return (
+                "⚠️ Esse comprovante foi para outra chave PIX, não para a da clínica. "
+                f"NÃO registrei o pagamento. Peça ao paciente para conferir e refazer o "
+                f"PIX para a chave {CORRECT_PIX_KEY} (CNPJ PSIQUE) e reenviar o comprovante."
+            )
 
     phone = config["configurable"]["phone"]
     client = await get_supabase()
