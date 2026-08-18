@@ -1,0 +1,28 @@
+name: Send scheduling stall report
+
+on:
+  schedule:
+    - cron: "0 11 * * *"  # 08h Recife (UTC-3), todo dia
+  workflow_dispatch:        # allow manual runs for testing
+
+jobs:
+  scheduling-stall-report:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v5
+
+      - name: Install dependencies
+        run: uv sync --frozen --no-dev
+
+      - name: Email clinic about patients who did not finish scheduling
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+          SMTP_HOST: ${{ secrets.SMTP_HOST }}
+          SMTP_PORT: ${{ secrets.SMTP_PORT }}
+          SMTP_USER: ${{ secrets.SMTP_USER }}
+          SMTP_PASSWORD: ${{ secrets.SMTP_PASSWORD }}
+          CLINIC_NOTIFY_EMAIL: ${{ secrets.CLINIC_NOTIFY_EMAIL }}
+        run: uv run python scripts/send_scheduling_stall_report.py
