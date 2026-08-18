@@ -596,6 +596,42 @@ async def get_available_slots(
     slot_duration_minutes: 120 para primeira consulta <18 anos, 60 para outros casos.
     preferred_shift: use "qualquer" para verificar todos os turnos e oferecer opções.
     """
+    result = await _get_available_slots_impl(
+        preferred_day, preferred_shift, slot_duration_minutes, state, config
+    )
+    # Rastreio de "pediu data e não continuou" (carrinho abandonado de consulta):
+    # registra a oferta SÓ quando horários reais foram apresentados. O texto de uma
+    # oferta sempre traz ao menos um HH:MM, enquanto mensagens de indisponibilidade,
+    # erro ou restrição cadastral não — então servem de discriminador barato e
+    # robusto a reformulações. Fire-and-forget: nunca deixa o rastreio quebrar o fluxo.
+    try:
+        if re.search(r"\b\d{1,2}:\d{2}\b", result):
+            await log_event(
+                "slots_offered",
+                config["configurable"]["phone"],
+                {
+                    "doctor": await _resolve_doctor(state, config),
+                    "preferred_day": preferred_day,
+                    "preferred_shift": preferred_shift,
+                    "slot_duration_minutes": slot_duration_minutes,
+                },
+            )
+    except Exception:
+        logger.exception("Falha ao registrar slots_offered (ignorada)")
+    return result
+
+
+async def _get_available_slots_impl(
+    preferred_day: str,
+    preferred_shift: Literal["manha", "tarde", "noite", "qualquer"],
+    slot_duration_minutes: Literal[60, 120],
+    state: Annotated[dict, InjectedState],
+    config: RunnableConfig,
+) -> str:
+    """Implementação de get_available_slots (sem o decorator @tool). Toda a lógica
+    de busca e formatação de horários vive aqui; o wrapper público acima registra
+    o evento slots_offered quando esta função devolve horários reais. O contrato
+    voltado ao LLM está no docstring do wrapper."""
     from app.google_calendar import get_available_slots as _get_slots, _parse_day, DOCTOR_SCHEDULES, SHIFT_HOURS, _WEEKDAYS_PT
 
     doctor = await _resolve_doctor(state, config)

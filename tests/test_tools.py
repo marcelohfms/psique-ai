@@ -113,6 +113,70 @@ async def test_get_available_slots_no_slots_returns_message():
     assert "Não encontrei horários disponíveis para segunda-feira" in result
 
 
+async def test_get_available_slots_logs_slots_offered_when_slots_returned():
+    """Rastreio de 'pediu data e não continuou': quando horários reais são
+    apresentados ao paciente, emite o evento slots_offered (fire-and-forget)
+    que alimenta a auditoria de agendamento abandonado."""
+    from app.graph.tools import get_available_slots
+    slots = [
+        (datetime(2026, 3, 23, 9, 0, tzinfo=TZ), "escolha"),
+        (datetime(2026, 3, 23, 10, 0, tzinfo=TZ), "online"),
+    ]
+    with patch("app.graph.tools._get_doctor_calendar_id", new_callable=AsyncMock, return_value="cal123"), \
+         patch("app.google_calendar.get_available_slots", new_callable=AsyncMock, return_value=slots), \
+         patch("app.graph.tools.log_event", new_callable=AsyncMock) as mock_log:
+        await get_available_slots.coroutine(
+            preferred_day="segunda",
+            preferred_shift="manha",
+            slot_duration_minutes=60,
+            state=_make_state(),
+            config=CONFIG,
+        )
+    mock_log.assert_awaited_once()
+    args, _ = mock_log.call_args
+    assert args[0] == "slots_offered"
+    assert args[1] == PHONE
+    assert args[2]["doctor"] == "julio"
+    assert args[2]["preferred_day"] == "segunda"
+    assert args[2]["preferred_shift"] == "manha"
+    assert args[2]["slot_duration_minutes"] == 60
+
+
+async def test_get_available_slots_no_slots_does_not_log_offer():
+    """Sem horários (mensagem de indisponibilidade, sem HH:MM), NÃO emite
+    slots_offered — não houve oferta que o paciente pudesse aceitar."""
+    from app.graph.tools import get_available_slots
+    with patch("app.graph.tools._get_doctor_calendar_id", new_callable=AsyncMock, return_value="cal123"), \
+         patch("app.google_calendar.get_available_slots", new_callable=AsyncMock, return_value=[]), \
+         patch("app.graph.tools.log_event", new_callable=AsyncMock) as mock_log:
+        await get_available_slots.coroutine(
+            preferred_day="segunda",
+            preferred_shift="manha",
+            slot_duration_minutes=60,
+            state=_make_state(),
+            config=CONFIG,
+        )
+    mock_log.assert_not_awaited()
+
+
+async def test_get_available_slots_restriction_message_does_not_log_offer():
+    """Mensagem de restrição de médico (ex.: Dra. Bruna < 12 anos) não contém
+    HH:MM e não deve emitir slots_offered."""
+    from app.graph.tools import get_available_slots
+    with patch("app.graph.tools._get_doctor_calendar_id", new_callable=AsyncMock, return_value="cal-bruna"), \
+         patch("app.google_calendar.get_available_slots", new_callable=AsyncMock, return_value=[]), \
+         patch("app.graph.tools.log_event", new_callable=AsyncMock) as mock_log:
+        result = await get_available_slots.coroutine(
+            preferred_day="segunda",
+            preferred_shift="manha",
+            slot_duration_minutes=60,
+            state=_make_state(preferred_doctor="bruna", patient_age=8),
+            config=CONFIG,
+        )
+    assert "Dra. Bruna atende apenas" in result
+    mock_log.assert_not_awaited()
+
+
 async def test_get_available_slots_urgent_same_day_calls_transfer_to_human_directly():
     """Regression: the model previously had to remember to call transfer_to_human
     after seeing "AGENDAMENTO_URGENTE", and sometimes it only told the patient it
