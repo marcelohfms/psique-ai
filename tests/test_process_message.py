@@ -4748,3 +4748,111 @@ async def test_llm_non_transient_error_is_not_retried():
     with pytest.raises(ValueError):
         await wrapped.ainvoke("x")
     assert calls["n"] == 1
+# ── "para você ou para outra pessoa?" respondida com um nome ─────────────────
+# Caso Beatriz (5587996089614, 04/08/2026). A mãe respondeu com o nome da filha:
+#
+#   Eva  | A consulta é para você ou para outra pessoa?
+#   mãe  | Beatriz Loyola Gomes de Vasconcélos
+#
+# O passo usava lista negra — is_pat = not any(palavra_de_negação). Um nome não
+# contém "não", "filha" nem "para minha", então a AUSÊNCIA de negação virava
+# afirmação: is_patient=True, e patient_name recebeu o user_name (que naquele
+# momento era outra frase solta). is_patient já estava em False e foi INVERTIDO.
+
+def _mae_state(**over):
+    state = {
+        "phone": PHONE,
+        "messages": [
+            HumanMessage(content="Gostaria de agendar uma consulta"),
+            AIMessage(content="A consulta é para você ou para outra pessoa?"),
+            HumanMessage(content="Beatriz Loyola Gomes de Vasconcélos"),
+        ],
+        "user_name": "Silvana Loyola",
+    }
+    state.update(over)
+    return state
+
+
+async def _run(state):
+    from app.graph.nodes import collect_info_node
+    from app.graph.schemas import CollectInfoOutput
+    with patch("app.graph.nodes._get_collect_llm") as mock_llm_fn, \
+         patch("app.graph.nodes.send_text", new_callable=AsyncMock) as mock_send, \
+         patch("app.graph.nodes.save_message", new_callable=AsyncMock), \
+         patch("app.graph.nodes.get_users_by_phone", new_callable=AsyncMock, return_value=[]), \
+         patch("app.graph.nodes.upsert_user", new_callable=AsyncMock, return_value="p1"), \
+         patch("app.graph.nodes.log_event", new_callable=AsyncMock):
+        mock_llm = MagicMock()
+        mock_llm.ainvoke = AsyncMock(return_value=CollectInfoOutput(reply="ok", is_complete=False))
+        mock_llm_fn.return_value = mock_llm
+        return await collect_info_node(state, {}), mock_send
+
+
+async def test_responder_com_nome_de_outra_pessoa_nao_vira_is_patient_true():
+    """Responder com um nome diferente do próprio significa "é para essa pessoa"."""
+    result, _ = await _run(_mae_state())
+
+    assert result.get("is_patient") is False
+    assert result.get("patient_name") == "Beatriz Loyola Gomes de Vasconcélos"
+
+
+async def test_responder_com_nome_de_outra_pessoa_nao_inverte_is_patient_ja_definido():
+    """No caso real is_patient já estava em False e a resposta o inverteu para True."""
+    result, _ = await _run(_mae_state(is_patient=False))
+
+    assert result.get("is_patient") is not True
+
+
+async def test_responder_com_o_proprio_nome_significa_para_mim():
+    """Quem responde com o próprio nome está dizendo que é o paciente."""
+    result, _ = await _run(_mae_state(
+        messages=[
+            HumanMessage(content="Gostaria de agendar uma consulta"),
+            AIMessage(content="A consulta é para você ou para outra pessoa?"),
+            HumanMessage(content="Silvana Loyola"),
+        ],
+    ))
+
+    assert result.get("is_patient") is True
+
+
+async def test_resposta_afirmativa_continua_valendo():
+    """"para mim", "sim", "eu mesma" continuam significando que o contato é o paciente."""
+    for resposta in ("Para mim", "sim", "eu mesma", "É comigo"):
+        result, _ = await _run(_mae_state(
+            messages=[
+                HumanMessage(content="Gostaria de agendar uma consulta"),
+                AIMessage(content="A consulta é para você ou para outra pessoa?"),
+                HumanMessage(content=resposta),
+            ],
+        ))
+        assert result.get("is_patient") is True, resposta
+
+
+async def test_resposta_de_parentesco_continua_valendo():
+    """"Para minha filha" continua significando que é para outra pessoa."""
+    result, _ = await _run(_mae_state(
+        messages=[
+            HumanMessage(content="Gostaria de agendar uma consulta"),
+            AIMessage(content="A consulta é para você ou para outra pessoa?"),
+            HumanMessage(content="Para minha filha"),
+        ],
+    ))
+
+    assert result.get("is_patient") is False
+
+
+async def test_resposta_indecifravel_repergunta_em_vez_de_assumir():
+    """Nem negação, nem afirmação, nem nome: reperguntar é melhor que assumir o
+    lado destrutivo. is_patient=True copia user_name para patient_name e pula a
+    pergunta do nome do paciente, sem chance de recuperação."""
+    result, mock_send = await _run(_mae_state(
+        messages=[
+            HumanMessage(content="Gostaria de agendar uma consulta"),
+            AIMessage(content="A consulta é para você ou para outra pessoa?"),
+            HumanMessage(content="urgente 123"),
+        ],
+    ))
+
+    assert result.get("is_patient") is not True
+    assert "paciente" in mock_send.call_args[0][1].lower()
