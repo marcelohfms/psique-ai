@@ -367,6 +367,194 @@ async def test_get_available_slots_qualquer_dia_extends_to_next_week_when_few():
     assert "outras semanas" in result.lower()
 
 
+# ── _search_week — varredura de uma semana específica ─────────────────────────
+
+async def test_search_week_next_week_lists_all_days_with_slots():
+    """_search_week(1) sob _FrozenDTTuesday deve varrer 13–17/07 (seg–sex da
+    semana seguinte) e listar todos os dias com vaga, sem teto de 3 dias."""
+    from app.graph.tools import _search_week
+
+    async def _fake_slots(*, calendar_id, preferred_day, preferred_shift, slot_minutes, doctor_key, **_kw):
+        if preferred_shift == "manha" and preferred_day in ("2026-07-13", "2026-07-15", "2026-07-17"):
+            d = int(preferred_day[-2:])
+            return [(datetime(2026, 7, d, 9, 0, tzinfo=TZ), "escolha")]
+        return []
+
+    with patch("app.graph.tools.datetime", _FrozenDTTuesday), \
+         patch("app.graph.tools._prefetch_supabase_busy", new_callable=AsyncMock, return_value=None), \
+         patch("app.google_calendar.get_available_slots", new_callable=AsyncMock, side_effect=_fake_slots) as mock_slots:
+        result = await _search_week(
+            week_offset=1,
+            calendar_id="cal123",
+            doctor="julio",
+            preferred_shift="manha",
+            slot_duration_minutes=60,
+        )
+
+    assert "13/07" in result
+    assert "15/07" in result
+    assert "17/07" in result
+    called_days = {c.kwargs["preferred_day"] for c in mock_slots.call_args_list}
+    assert "2026-07-07" not in called_days   # nunca tocou a semana atual
+    assert "2026-07-20" not in called_days   # nunca passou da semana seguinte
+
+
+async def test_search_week_this_week_only_remaining_business_days():
+    """_search_week(0) sob _FrozenDTTuesday varre só ter–sex (07–10/07),
+    nunca segunda (06/07, já passou)."""
+    from app.graph.tools import _search_week
+
+    async def _fake_slots(*, calendar_id, preferred_day, preferred_shift, slot_minutes, doctor_key, **_kw):
+        if preferred_shift == "manha" and preferred_day == "2026-07-08":
+            return [(datetime(2026, 7, 8, 9, 0, tzinfo=TZ), "escolha")]
+        return []
+
+    with patch("app.graph.tools.datetime", _FrozenDTTuesday), \
+         patch("app.graph.tools._prefetch_supabase_busy", new_callable=AsyncMock, return_value=None), \
+         patch("app.google_calendar.get_available_slots", new_callable=AsyncMock, side_effect=_fake_slots) as mock_slots:
+        result = await _search_week(
+            week_offset=0,
+            calendar_id="cal123",
+            doctor="julio",
+            preferred_shift="manha",
+            slot_duration_minutes=60,
+        )
+
+    assert "08/07" in result
+    called_days = {c.kwargs["preferred_day"] for c in mock_slots.call_args_list}
+    assert "2026-07-06" not in called_days   # segunda já passou
+
+
+async def test_search_week_falls_back_to_any_day_when_target_week_empty():
+    """Semana alvo vazia → delega a _search_any_day (nunca 'não encontrei')."""
+    from app.graph.tools import _search_week
+
+    async def _fake_slots(*, calendar_id, preferred_day, preferred_shift, slot_minutes, doctor_key, **_kw):
+        # nada na semana seguinte (13–17), só na semana atual (08/07)
+        if preferred_shift == "manha" and preferred_day == "2026-07-08":
+            return [(datetime(2026, 7, 8, 9, 0, tzinfo=TZ), "escolha")]
+        return []
+
+    with patch("app.graph.tools.datetime", _FrozenDTTuesday), \
+         patch("app.graph.tools._prefetch_supabase_busy", new_callable=AsyncMock, return_value=None), \
+         patch("app.google_calendar.get_available_slots", new_callable=AsyncMock, side_effect=_fake_slots):
+        result = await _search_week(
+            week_offset=1,
+            calendar_id="cal123",
+            doctor="julio",
+            preferred_shift="manha",
+            slot_duration_minutes=60,
+        )
+
+    assert "08/07" in result   # veio do fallback _search_any_day
+
+
+# ── get_available_slots — expressão de semana → relação (não pergunta o dia) ──
+
+async def test_get_available_slots_proxima_semana_lists_next_week():
+    """'próxima semana' → lista dias da semana seguinte, sem CLARIFICAÇÃO."""
+    from app.graph.tools import get_available_slots
+
+    async def _fake_slots(*, calendar_id, preferred_day, preferred_shift, slot_minutes, doctor_key, **_kw):
+        if preferred_shift == "manha" and preferred_day in ("2026-07-13", "2026-07-15"):
+            d = int(preferred_day[-2:])
+            return [(datetime(2026, 7, d, 9, 0, tzinfo=TZ), "escolha")]
+        return []
+
+    with patch("app.graph.tools.datetime", _FrozenDTTuesday), \
+         patch("app.graph.tools._prefetch_supabase_busy", new_callable=AsyncMock, return_value=None), \
+         patch("app.graph.tools._get_doctor_calendar_id", new_callable=AsyncMock, return_value="cal123"), \
+         patch("app.google_calendar.get_available_slots", new_callable=AsyncMock, side_effect=_fake_slots):
+        result = await get_available_slots.coroutine(
+            preferred_day="próxima semana",
+            preferred_shift="manha",
+            slot_duration_minutes=60,
+            state=_make_state(),
+            config=CONFIG,
+        )
+
+    assert "CLARIFICAÇÃO" not in result
+    assert "13/07" in result
+    assert "15/07" in result
+
+
+async def test_get_available_slots_proxima_semana_works_with_qualquer_shift():
+    """Regressão da armadilha: 'próxima semana' + shift 'qualquer' NÃO pode cair
+    em 'Não entendi a data' — o roteamento vem antes do branch de shift."""
+    from app.graph.tools import get_available_slots
+
+    async def _fake_slots(*, calendar_id, preferred_day, preferred_shift, slot_minutes, doctor_key, **_kw):
+        if preferred_day == "2026-07-13" and preferred_shift == "tarde":
+            return [(datetime(2026, 7, 13, 14, 0, tzinfo=TZ), "escolha")]
+        return []
+
+    with patch("app.graph.tools.datetime", _FrozenDTTuesday), \
+         patch("app.graph.tools._prefetch_supabase_busy", new_callable=AsyncMock, return_value=None), \
+         patch("app.graph.tools._get_doctor_calendar_id", new_callable=AsyncMock, return_value="cal123"), \
+         patch("app.google_calendar.get_available_slots", new_callable=AsyncMock, side_effect=_fake_slots):
+        result = await get_available_slots.coroutine(
+            preferred_day="próxima semana",
+            preferred_shift="qualquer",
+            slot_duration_minutes=60,
+            state=_make_state(),
+            config=CONFIG,
+        )
+
+    assert "Não entendi a data" not in result
+    assert "13/07" in result
+
+
+async def test_get_available_slots_essa_semana_lists_remaining_days():
+    """'essa semana' → dias úteis restantes desta semana (ter–sex)."""
+    from app.graph.tools import get_available_slots
+
+    async def _fake_slots(*, calendar_id, preferred_day, preferred_shift, slot_minutes, doctor_key, **_kw):
+        if preferred_shift == "manha" and preferred_day == "2026-07-09":
+            return [(datetime(2026, 7, 9, 9, 0, tzinfo=TZ), "escolha")]
+        return []
+
+    with patch("app.graph.tools.datetime", _FrozenDTTuesday), \
+         patch("app.graph.tools._prefetch_supabase_busy", new_callable=AsyncMock, return_value=None), \
+         patch("app.graph.tools._get_doctor_calendar_id", new_callable=AsyncMock, return_value="cal123"), \
+         patch("app.google_calendar.get_available_slots", new_callable=AsyncMock, side_effect=_fake_slots):
+        result = await get_available_slots.coroutine(
+            preferred_day="essa semana",
+            preferred_shift="manha",
+            slot_duration_minutes=60,
+            state=_make_state(),
+            config=CONFIG,
+        )
+
+    assert "CLARIFICAÇÃO" not in result
+    assert "09/07" in result
+
+
+async def test_get_available_slots_em_breve_uses_any_day():
+    """'em breve' (vago genérico) → próximos dias com vaga, sem CLARIFICAÇÃO."""
+    from app.graph.tools import get_available_slots
+
+    async def _fake_slots(*, calendar_id, preferred_day, preferred_shift, slot_minutes, doctor_key, **_kw):
+        if preferred_shift == "manha" and preferred_day in ("2026-07-07", "2026-07-08"):
+            d = int(preferred_day[-2:])
+            return [(datetime(2026, 7, d, 9, 0, tzinfo=TZ), "escolha")]
+        return []
+
+    with patch("app.graph.tools.datetime", _FrozenDTTuesday), \
+         patch("app.graph.tools._prefetch_supabase_busy", new_callable=AsyncMock, return_value=None), \
+         patch("app.graph.tools._get_doctor_calendar_id", new_callable=AsyncMock, return_value="cal123"), \
+         patch("app.google_calendar.get_available_slots", new_callable=AsyncMock, side_effect=_fake_slots):
+        result = await get_available_slots.coroutine(
+            preferred_day="em breve",
+            preferred_shift="manha",
+            slot_duration_minutes=60,
+            state=_make_state(),
+            config=CONFIG,
+        )
+
+    assert "CLARIFICAÇÃO" not in result
+    assert "07/07" in result
+
+
 # ── get_available_slots — "final de <mês>" (última semana do mês) ─────────────
 # Regression Dione/Pedro Lins (5581999578203, 2026-07-30): a responsável pediu
 # "final de agosto" com turno "tarde" e a Eva ofereceu 06/08, 10/08 e 13/08 —
@@ -405,6 +593,41 @@ async def test_get_available_slots_final_de_agosto_only_offers_last_week():
     assert "10/08" not in result
     assert "13/08" not in result
     assert "25/08" in result
+
+
+async def test_get_available_slots_ultima_semana_de_agosto_routes_to_month_scan():
+    """'última semana de agosto' contém "semana", mas deve continuar no month
+    scan (25–31) — o catch-all de "semana" NÃO pode sequestrar a frase por causa
+    do substring, senão ofereceria qualquer dia da semana atual."""
+    from datetime import date as _date
+    from app.graph.tools import get_available_slots
+
+    async def _fake_slots(*, calendar_id, preferred_day, preferred_shift, slot_minutes, doctor_key, **_kw):
+        d = _date.fromisoformat(preferred_day)
+        if preferred_shift == "tarde" and d.month == 8:
+            return [(datetime(2026, 8, d.day, 14, 0, tzinfo=TZ), "escolha")]
+        return []
+
+    with patch("app.graph.tools.datetime", _FrozenDTTuesday), \
+         patch("app.graph.tools._get_doctor_calendar_id", new_callable=AsyncMock, return_value="cal123"), \
+         patch("app.google_calendar.get_available_slots", new_callable=AsyncMock, side_effect=_fake_slots) as mock_slots:
+        result = await get_available_slots.coroutine(
+            preferred_day="última semana de agosto",
+            preferred_shift="tarde",
+            slot_duration_minutes=60,
+            state=_make_state(),
+            config=CONFIG,
+        )
+
+    # Todas as consultas ao calendário caíram na última semana de agosto (25–31)
+    called_days = {c.kwargs["preferred_day"] for c in mock_slots.call_args_list}
+    assert called_days, "esperava chamadas ao calendário"
+    assert all(
+        _date(2026, 8, 25) <= _date.fromisoformat(d) <= _date(2026, 8, 31)
+        for d in called_days
+    ), called_days
+    # E ofereceu dias da última semana (month scan rodou, catch-all não sequestrou)
+    assert "25/08" in result or "27/08" in result
 
 
 async def test_get_available_slots_final_de_agosto_no_slots_says_final_do_mes():
@@ -784,12 +1007,20 @@ async def test_pick_doctor_by_earliest_availability_bruna_uses_60min():
     assert julio_durations == {120}
 
 
-async def test_get_available_slots_semana_que_vem_still_asks_clarification():
-    """Regressão: separar 'qualquer'/'tanto faz' de _vague_patterns não pode quebrar
-    o fluxo de esclarecimento para 'semana que vem' (sem dia informado)."""
+async def test_get_available_slots_semana_que_vem_lists_next_week():
+    """'semana que vem' agora lista a semana seguinte em vez de pedir clarificação
+    (comportamento novo — antes devolvia CLARIFICAÇÃO NECESSÁRIA)."""
     from app.graph.tools import get_available_slots
-    with patch("app.graph.tools._get_doctor_calendar_id", new_callable=AsyncMock, return_value="cal123"), \
-         patch("app.google_calendar.get_available_slots", new_callable=AsyncMock) as mock_slots:
+
+    async def _fake_slots(*, calendar_id, preferred_day, preferred_shift, slot_minutes, doctor_key, **_kw):
+        if preferred_shift == "manha" and preferred_day == "2026-07-14":
+            return [(datetime(2026, 7, 14, 9, 0, tzinfo=TZ), "escolha")]
+        return []
+
+    with patch("app.graph.tools.datetime", _FrozenDTTuesday), \
+         patch("app.graph.tools._prefetch_supabase_busy", new_callable=AsyncMock, return_value=None), \
+         patch("app.graph.tools._get_doctor_calendar_id", new_callable=AsyncMock, return_value="cal123"), \
+         patch("app.google_calendar.get_available_slots", new_callable=AsyncMock, side_effect=_fake_slots):
         result = await get_available_slots.coroutine(
             preferred_day="semana que vem",
             preferred_shift="manha",
@@ -797,8 +1028,9 @@ async def test_get_available_slots_semana_que_vem_still_asks_clarification():
             state=_make_state(),
             config=CONFIG,
         )
-    assert "CLARIFICAÇÃO NECESSÁRIA" in result
-    mock_slots.assert_not_called()
+
+    assert "CLARIFICAÇÃO" not in result
+    assert "14/07" in result
 
 
 # ── confirm_appointment ───────────────────────────────────────────────────────
