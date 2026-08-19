@@ -595,6 +595,41 @@ async def test_get_available_slots_final_de_agosto_only_offers_last_week():
     assert "25/08" in result
 
 
+async def test_get_available_slots_ultima_semana_de_agosto_routes_to_month_scan():
+    """'última semana de agosto' contém "semana", mas deve continuar no month
+    scan (25–31) — o catch-all de "semana" NÃO pode sequestrar a frase por causa
+    do substring, senão ofereceria qualquer dia da semana atual."""
+    from datetime import date as _date
+    from app.graph.tools import get_available_slots
+
+    async def _fake_slots(*, calendar_id, preferred_day, preferred_shift, slot_minutes, doctor_key, **_kw):
+        d = _date.fromisoformat(preferred_day)
+        if preferred_shift == "tarde" and d.month == 8:
+            return [(datetime(2026, 8, d.day, 14, 0, tzinfo=TZ), "escolha")]
+        return []
+
+    with patch("app.graph.tools.datetime", _FrozenDTTuesday), \
+         patch("app.graph.tools._get_doctor_calendar_id", new_callable=AsyncMock, return_value="cal123"), \
+         patch("app.google_calendar.get_available_slots", new_callable=AsyncMock, side_effect=_fake_slots) as mock_slots:
+        result = await get_available_slots.coroutine(
+            preferred_day="última semana de agosto",
+            preferred_shift="tarde",
+            slot_duration_minutes=60,
+            state=_make_state(),
+            config=CONFIG,
+        )
+
+    # Todas as consultas ao calendário caíram na última semana de agosto (25–31)
+    called_days = {c.kwargs["preferred_day"] for c in mock_slots.call_args_list}
+    assert called_days, "esperava chamadas ao calendário"
+    assert all(
+        _date(2026, 8, 25) <= _date.fromisoformat(d) <= _date(2026, 8, 31)
+        for d in called_days
+    ), called_days
+    # E ofereceu dias da última semana (month scan rodou, catch-all não sequestrou)
+    assert "25/08" in result or "27/08" in result
+
+
 async def test_get_available_slots_final_de_agosto_no_slots_says_final_do_mes():
     """Sem vagas na última semana → mensagem fala do FINAL do mês, sem oferecer
     dias do início/meio como fallback silencioso."""
