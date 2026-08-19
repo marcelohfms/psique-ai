@@ -379,20 +379,55 @@ async def test_merge_duplicate_patient_reponta_links_e_apaga_duplicado():
     tables["patients"].delete.assert_called_once()
 
 
-async def test_merge_duplicate_patient_aborta_se_dup_tem_consulta():
-    """Guard anti-engano: se o 'duplicado' tem QUALQUER consulta, pode ser um
-    paciente legítimo de longa data — não mesclar."""
+async def test_merge_duplicate_patient_sem_consulta_reponta_so_os_links():
+    """Duplicado sem consulta: migra (no-op de appointments) e reponta os links."""
     client, tables = _client_multi_table({
-        "appointments": [{"id": "a1"}],
+        "appointments": [],
+        "patient_contacts": [
+            {"patient_id": "p-dup", "contact_id": "c-x", "role": "consulta",
+             "is_self": False, "relationship": "pai"},
+        ],
+        "patients": [],
     })
     with patch("app.patients.get_supabase", new_callable=AsyncMock, return_value=client), \
          patch("app.patients.link_patient_contact", new_callable=AsyncMock) as mock_link:
         merged = await patients.merge_duplicate_patient("p-dup", "p-real")
 
-    assert merged is False
-    mock_link.assert_not_awaited()
-    # nada além da checagem de appointments foi consultado — nenhum delete
-    assert "patients" not in tables and "patient_contacts" not in tables
+    assert merged is True
+    mock_link.assert_awaited_once_with(
+        "p-real", "c-x", "consulta", is_self=False, relationship="pai"
+    )
+    tables["patient_contacts"].delete.assert_called_once()
+    tables["patients"].delete.assert_called_once()
+
+
+async def test_merge_duplicate_patient_migra_consultas_do_dup():
+    """Self-healing (caso Catarina): quando o duplicado já tem consulta, migra a
+    consulta para o cadastro real (repoint patient_id) em vez de recusar — nenhum
+    histórico é perdido e sobra um único prontuário."""
+    client, tables = _client_multi_table({
+        "appointments": [{"id": "a1", "appointment_id": "evt-1"}],
+        "patient_contacts": [
+            {"patient_id": "p-dup", "contact_id": "c-cat", "role": "agendamento",
+             "is_self": True, "relationship": "self"},
+        ],
+        "patients": [],
+    })
+    with patch("app.patients.get_supabase", new_callable=AsyncMock, return_value=client), \
+         patch("app.patients.link_patient_contact", new_callable=AsyncMock) as mock_link:
+        merged = await patients.merge_duplicate_patient("p-dup", "p-real")
+
+    assert merged is True
+    # consultas do duplicado repontadas para o paciente real
+    tables["appointments"].update.assert_called_once_with({"patient_id": "p-real"})
+    tables["appointments"].eq.assert_any_call("patient_id", "p-dup")
+    # vínculo do contato recriado no paciente real
+    mock_link.assert_awaited_once_with(
+        "p-real", "c-cat", "agendamento", is_self=True, relationship="self"
+    )
+    # links e linha do duplicado removidos
+    tables["patient_contacts"].delete.assert_called_once()
+    tables["patients"].delete.assert_called_once()
 
 
 async def test_merge_duplicate_patient_recusa_ids_iguais_ou_vazios():

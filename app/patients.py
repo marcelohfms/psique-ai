@@ -244,36 +244,27 @@ async def find_patient_by_name_birth(
     return None
 
 
-async def _patient_has_any_appointment(patient_id: str) -> bool:
-    """True se existe QUALQUER appointment (qualquer status) para o paciente."""
-    client = await get_supabase()
-    result = (
-        await client.from_("appointments")
-        .select("id")
-        .eq("patient_id", patient_id)
-        .limit(1)
-        .execute()
-    )
-    return bool(result.data)
-
-
 async def merge_duplicate_patient(dup_id: str | None, target_id: str | None) -> bool:
-    """Mescla um paciente DUPLICADO recém-criado no cadastro existente.
+    """Mescla um paciente DUPLICADO no cadastro existente e devolve True.
 
-    Reponta os vínculos de patient_contacts do duplicado para o alvo e apaga o
-    duplicado. Recusa (False) quando o duplicado tem qualquer consulta — nesse
-    caso pode ser um paciente legítimo de longa data, não um duplicado de
-    cadastro (só o fluxo de cadastro cria pacientes sem consulta alguma).
+    Migra as consultas do duplicado para o alvo (repoint de patient_id), reponta
+    os vínculos de patient_contacts e apaga o duplicado. É self-healing: mesmo
+    quando o duplicado JÁ tem consulta agendada, consolida tudo num único
+    prontuário em vez de recusar (caso Catarina, 5581999273053, 19/08/2026: a
+    ficha nova, criada no passo do nome, já tinha a consulta agendada quando a
+    reconciliação por nome+nascimento tentou mesclar — o antigo guard recusava e
+    a duplicata sobrevivia). A segurança contra homônimos fica em quem chama:
+    find_patient_by_name_birth só devolve match ÚNICO por nome normalizado +
+    data de nascimento exata.
     """
     if not dup_id or not target_id or dup_id == target_id:
         return False
-    if await _patient_has_any_appointment(dup_id):
-        logger.warning(
-            "MERGE_PACIENTE_RECUSADO: %s tem consultas — não é duplicado seguro "
-            "de mesclar em %s", dup_id, target_id,
-        )
-        return False
     client = await get_supabase()
+    # Migra qualquer consulta do duplicado para o cadastro real — nenhum
+    # histórico é perdido ao apagar o duplicado logo abaixo.
+    await client.from_("appointments").update(
+        {"patient_id": target_id}
+    ).eq("patient_id", dup_id).execute()
     links = (
         await client.from_("patient_contacts")
         .select("*")

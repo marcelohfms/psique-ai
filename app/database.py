@@ -256,8 +256,9 @@ async def _reconcile_returning_patient(
       existente direto — o vínculo do contato é criado por quem chamou.
     - resolved_id aponta para um paciente (no fluxo do chat, o duplicado criado
       no passo do nome, antes de sabermos is_returning_patient): mescla o
-      duplicado no existente. merge_duplicate_patient recusa quando o "duplicado"
-      tem qualquer consulta — pode ser um paciente legítimo, não um duplicado.
+      duplicado no existente. merge_duplicate_patient é self-healing — migra a
+      consulta do duplicado para o cadastro real mesmo que ela já esteja
+      agendada (caso Catarina, 19/08/2026), consolidando num único prontuário.
     """
     current = await patients.get_patient_by_id(resolved_id) if resolved_id else None
     name = patient_data.get("name") or (current or {}).get("name")
