@@ -737,6 +737,31 @@ async def _get_available_slots_impl(
             slot_duration_minutes=slot_duration_minutes,
         )
 
+    # ── Expressão de semana (sem dia específico) → oferece a relação da semana
+    # em vez de perguntar o dia. Precisa vir ANTES do branch preferred_shift ==
+    # "qualquer": para "próxima semana" + shift "qualquer", _parse_day devolve
+    # None e aquele branch responderia "Não entendi a data". ──────────────────
+    if weekday_key is None:
+        _next_week_markers = ("xima semana", "semana que vem", "semana seguinte")
+        _this_week_markers = ("essa semana", "esta semana", "dessa semana", "desta semana")
+        if any(m in preferred_day_norm for m in _next_week_markers):
+            return await _search_week(
+                week_offset=1, calendar_id=calendar_id, doctor=doctor,
+                preferred_shift=preferred_shift, slot_duration_minutes=slot_duration_minutes,
+            )
+        if any(m in preferred_day_norm for m in _this_week_markers):
+            return await _search_week(
+                week_offset=0, calendar_id=calendar_id, doctor=doctor,
+                preferred_shift=preferred_shift, slot_duration_minutes=slot_duration_minutes,
+            )
+        # Catch-all deliberadamente amplo: qualquer menção a "semana" sem dia nomeado
+        # (incl. "fim de semana") cai em "próximos dias com vaga" em vez de travar.
+        if "em breve" in preferred_day_norm or "semana" in preferred_day_norm:
+            return await _search_any_day(
+                calendar_id=calendar_id, doctor=doctor,
+                preferred_shift=preferred_shift, slot_duration_minutes=slot_duration_minutes,
+            )
+
     # ── "qualquer" shift: check all shifts and return summary ─────────────────
     if preferred_shift == "qualquer":
         base_date_q = _parse_day(preferred_day)
@@ -787,14 +812,6 @@ async def _get_available_slots_impl(
                     )
             # No slots at all this week — try the next occurrence (only for weekday names)
         return f"Não há horários disponíveis para {header}. Deseja tentar outro dia?"
-
-    # ── Vague expressions (e.g. "próxima semana") → ask for specific day ─────
-    _vague_patterns = ("semana", "em breve")
-    if weekday_key is None and any(p in preferred_day_norm for p in _vague_patterns):
-        return (
-            "CLARIFICAÇÃO NECESSÁRIA: O paciente disse uma expressão vaga (ex: 'próxima semana'). "
-            "Pergunte qual dia da semana prefere (segunda a sexta) antes de chamar get_available_slots novamente."
-        )
 
     if weekday_key is not None:
         # Verify doctor works this weekday/shift at all before iterating
