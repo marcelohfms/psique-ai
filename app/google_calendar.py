@@ -35,7 +35,7 @@ SCHEDULE_EXCEPTIONS: dict[str, dict[str, list[tuple[int, int, int, int, str]]]] 
         "2026-07-23": [],                                                       # Quinta: sem atendimento (bloqueado)
         "2026-07-16": [],                                                       # Quinta: feriado Nossa Senhora do Carmo (Recife)
         "2026-08-03": [(9, 0, 12, 0, "escolha"), (14, 0, 17, 0, "escolha")],   # Segunda: 17h bloqueado
-        "2026-08-20": [(9, 0, 10, 0, "escolha"), (11, 0, 12, 0, "escolha"), (14, 0, 18, 0, "escolha")],  # Quinta: 10h e 18h-20h bloqueados
+        "2026-08-20": [(9, 0, 10, 0, "escolha"), (15, 0, 18, 0, "escolha")],  # Quinta: 10h, 11h, 14h e 18h-20h bloqueados
         "2026-08-31": [(9, 0, 12, 0, "escolha")],                              # Segunda: tarde (a partir das 14h) bloqueada
         "2026-09-07": [],                                                       # Segunda: feriado Independência do Brasil
         "2026-10-12": [],                                                       # Segunda: feriado Nossa Sra. Aparecida
