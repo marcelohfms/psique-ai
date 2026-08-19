@@ -566,6 +566,41 @@ async def _search_any_day(calendar_id: str, doctor: str, preferred_shift: str, s
     return prefix + "\n\n".join(sections)
 
 
+async def _search_week(
+    week_offset: int, calendar_id: str, doctor: str,
+    preferred_shift: str, slot_duration_minutes: int,
+) -> str:
+    """Lista os horários de UMA semana específica (offset em relação à atual):
+    week_offset=0 → dias úteis restantes desta semana; week_offset>=1 → seg–sex
+    daquela semana. Diferente de _search_any_day, não há teto de dias — a semana
+    já é um intervalo limitado. Se a semana alvo não tiver nenhuma vaga, delega a
+    _search_any_day para oferecer os próximos dias com vaga."""
+    from app.google_calendar import get_available_slots as _get_slots
+
+    start, end = _week_range(week_offset)
+    _sb_busy = await _prefetch_supabase_busy(doctor, start, end)
+
+    found: list[tuple[date, dict]] = []
+    for day in _business_days(start, end):
+        day_shifts = await _slots_for_any_day(
+            day, calendar_id, doctor, preferred_shift, slot_duration_minutes, _get_slots,
+            supabase_busy=_sb_busy,
+        )
+        if day_shifts:
+            found.append((day, day_shifts))
+
+    if not found:
+        return await _search_any_day(
+            calendar_id=calendar_id,
+            doctor=doctor,
+            preferred_shift=preferred_shift,
+            slot_duration_minutes=slot_duration_minutes,
+        )
+
+    sections = [_format_any_day_section(day, day_shifts, preferred_shift) for day, day_shifts in found]
+    return "\n\n".join(sections)
+
+
 @tool
 async def get_available_slots(
     preferred_day: str,

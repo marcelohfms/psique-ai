@@ -367,6 +367,88 @@ async def test_get_available_slots_qualquer_dia_extends_to_next_week_when_few():
     assert "outras semanas" in result.lower()
 
 
+# ── _search_week — varredura de uma semana específica ─────────────────────────
+
+async def test_search_week_next_week_lists_all_days_with_slots():
+    """_search_week(1) sob _FrozenDTTuesday deve varrer 13–17/07 (seg–sex da
+    semana seguinte) e listar todos os dias com vaga, sem teto de 3 dias."""
+    from app.graph.tools import _search_week
+
+    async def _fake_slots(*, calendar_id, preferred_day, preferred_shift, slot_minutes, doctor_key, **_kw):
+        if preferred_shift == "manha" and preferred_day in ("2026-07-13", "2026-07-15", "2026-07-17"):
+            d = int(preferred_day[-2:])
+            return [(datetime(2026, 7, d, 9, 0, tzinfo=TZ), "escolha")]
+        return []
+
+    with patch("app.graph.tools.datetime", _FrozenDTTuesday), \
+         patch("app.graph.tools._prefetch_supabase_busy", new_callable=AsyncMock, return_value=None), \
+         patch("app.google_calendar.get_available_slots", new_callable=AsyncMock, side_effect=_fake_slots) as mock_slots:
+        result = await _search_week(
+            week_offset=1,
+            calendar_id="cal123",
+            doctor="julio",
+            preferred_shift="manha",
+            slot_duration_minutes=60,
+        )
+
+    assert "13/07" in result
+    assert "15/07" in result
+    assert "17/07" in result
+    called_days = {c.kwargs["preferred_day"] for c in mock_slots.call_args_list}
+    assert "2026-07-07" not in called_days   # nunca tocou a semana atual
+    assert "2026-07-20" not in called_days   # nunca passou da semana seguinte
+
+
+async def test_search_week_this_week_only_remaining_business_days():
+    """_search_week(0) sob _FrozenDTTuesday varre só ter–sex (07–10/07),
+    nunca segunda (06/07, já passou)."""
+    from app.graph.tools import _search_week
+
+    async def _fake_slots(*, calendar_id, preferred_day, preferred_shift, slot_minutes, doctor_key, **_kw):
+        if preferred_shift == "manha" and preferred_day == "2026-07-08":
+            return [(datetime(2026, 7, 8, 9, 0, tzinfo=TZ), "escolha")]
+        return []
+
+    with patch("app.graph.tools.datetime", _FrozenDTTuesday), \
+         patch("app.graph.tools._prefetch_supabase_busy", new_callable=AsyncMock, return_value=None), \
+         patch("app.google_calendar.get_available_slots", new_callable=AsyncMock, side_effect=_fake_slots) as mock_slots:
+        result = await _search_week(
+            week_offset=0,
+            calendar_id="cal123",
+            doctor="julio",
+            preferred_shift="manha",
+            slot_duration_minutes=60,
+        )
+
+    assert "08/07" in result
+    called_days = {c.kwargs["preferred_day"] for c in mock_slots.call_args_list}
+    assert "2026-07-06" not in called_days   # segunda já passou
+
+
+async def test_search_week_falls_back_to_any_day_when_target_week_empty():
+    """Semana alvo vazia → delega a _search_any_day (nunca 'não encontrei')."""
+    from app.graph.tools import _search_week
+
+    async def _fake_slots(*, calendar_id, preferred_day, preferred_shift, slot_minutes, doctor_key, **_kw):
+        # nada na semana seguinte (13–17), só na semana atual (08/07)
+        if preferred_shift == "manha" and preferred_day == "2026-07-08":
+            return [(datetime(2026, 7, 8, 9, 0, tzinfo=TZ), "escolha")]
+        return []
+
+    with patch("app.graph.tools.datetime", _FrozenDTTuesday), \
+         patch("app.graph.tools._prefetch_supabase_busy", new_callable=AsyncMock, return_value=None), \
+         patch("app.google_calendar.get_available_slots", new_callable=AsyncMock, side_effect=_fake_slots):
+        result = await _search_week(
+            week_offset=1,
+            calendar_id="cal123",
+            doctor="julio",
+            preferred_shift="manha",
+            slot_duration_minutes=60,
+        )
+
+    assert "08/07" in result   # veio do fallback _search_any_day
+
+
 # ── get_available_slots — "final de <mês>" (última semana do mês) ─────────────
 # Regression Dione/Pedro Lins (5581999578203, 2026-07-30): a responsável pediu
 # "final de agosto" com turno "tarde" e a Eva ofereceu 06/08, 10/08 e 13/08 —
