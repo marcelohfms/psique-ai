@@ -4689,6 +4689,178 @@ async def test_receipt_guard_skips_silent_mode():
     assert not _register_payment_calls(result)
 
 
+# ── Guard: promessa de documento no turno exige request_document ──────────────
+# Caso Carlos Henrique de Almeida (5581995163026, 24/08/2026): após quitar a
+# consulta, o paciente pediu o documento para deduzir no imposto de renda. A Eva
+# interpretou corretamente ("o documento correto é a nota fiscal") mas respondeu
+# com texto puro ("Vou solicitar a emissão da nota fiscal... tudo bem?") SEM
+# chamar request_document. Nada foi persistido — nem documents, nem evento, nem
+# planilha — e a clínica ficou sem sinal de que a NF era necessária. O prompt já
+# proíbe o "vou solicitar, tudo bem?" (linha 1153); a garantia real é código,
+# espelhando o GUARD_RECEIPT_REGISTER.
+
+def _request_document_calls(result: dict) -> list[dict]:
+    calls = []
+    for m in result.get("messages", []):
+        for tc in (getattr(m, "tool_calls", None) or []):
+            if tc.get("name") == "request_document":
+                calls.append(tc)
+    return calls
+
+
+async def test_document_promise_text_only_forces_request_document():
+    """A alucinação do caso Carlos: a Eva narra que vai emitir a nota fiscal mas
+    não chama a tool. O guard injeta request_document com o tipo inferido da
+    narração e o e-mail do state; o texto com o "tudo bem?" NÃO vai ao paciente."""
+    state = _make_patient_agent_state(
+        patient_email="carlos@email.com",
+        messages=[
+            HumanMessage(content="Pode enviar o comprovante para deduzir no imposto de renda?"),
+        ],
+    )
+    ai_response = AIMessage(content=(
+        "Claro, Carlos! Para deduzir no imposto de renda, o documento correto é a "
+        "nota fiscal da consulta. Vou solicitar a emissão da nota fiscal e ela será "
+        "enviada para o seu e-mail carlos@email.com assim que estiver pronta, tudo bem?"
+    ))
+
+    result, mock_send = await _run_agent_with_response(state, ai_response)
+
+    calls = _request_document_calls(result)
+    assert len(calls) == 1, "guard não injetou request_document"
+    assert calls[0]["args"]["document_type"] == "nota_fiscal"
+    assert calls[0]["args"]["patient_email"] == "carlos@email.com"
+    mock_send.assert_not_awaited(), "texto com 'tudo bem?' foi enviado ao paciente"
+
+
+async def test_document_promise_does_not_refire_after_request_document_ran():
+    """Volta do ToolNode: request_document já executou e a LLM redige a resposta
+    final (que pode conter 'será enviada'). O guard NÃO pode reinjetar."""
+    from langchain_core.messages import ToolMessage
+
+    state = _make_patient_agent_state(
+        patient_email="carlos@email.com",
+        messages=[
+            HumanMessage(content="Preciso da nota fiscal para o imposto de renda."),
+            AIMessage(content="", tool_calls=[{
+                "name": "request_document",
+                "args": {"document_type": "nota_fiscal", "patient_email": "carlos@email.com"},
+                "id": "call_doc", "type": "tool_call",
+            }]),
+            ToolMessage(content="Solicitação de nota fiscal registrada.",
+                        tool_call_id="call_doc", name="request_document"),
+        ],
+    )
+    ai_response = AIMessage(content=(
+        "Pronto, Carlos! Sua nota fiscal foi solicitada e será enviada para o seu "
+        "e-mail assim que estiver pronta. 😊"
+    ))
+
+    result, mock_send = await _run_agent_with_response(state, ai_response)
+
+    assert not _request_document_calls(result), "guard reinjetou após execução"
+    mock_send.assert_awaited()
+
+
+async def test_document_promise_future_consultation_deferral_does_not_fire():
+    """Consulta ainda vai acontecer: a Eva corretamente explica que o recibo/NF só
+    pode ser providenciado depois da consulta. NÃO é promessa de emissão — o guard
+    não pode injetar request_document (prompt, linhas 1154-1158)."""
+    state = _make_patient_agent_state(
+        patient_email="carlos@email.com",
+        messages=[HumanMessage(content="Já pode emitir a nota fiscal da minha consulta?")],
+    )
+    ai_response = AIMessage(content=(
+        "Carlos, a nota fiscal só pode ser providenciada depois que a consulta "
+        "acontecer. Assim que ela ocorrer, é só me avisar que eu solicito. 😊"
+    ))
+
+    result, _ = await _run_agent_with_response(state, ai_response)
+
+    assert not _request_document_calls(result), "guard disparou num deferimento legítimo"
+
+
+async def test_document_mention_without_commitment_does_not_fire():
+    """A Eva apenas oferece/pergunta sobre documentos, sem se comprometer a emitir.
+    Sem verbo de compromisso, o guard não injeta nada."""
+    state = _make_patient_agent_state(
+        patient_email="carlos@email.com",
+        messages=[HumanMessage(content="Vocês emitem algum comprovante?")],
+    )
+    ai_response = AIMessage(content=(
+        "Sim! Podemos emitir nota fiscal ou recibo da consulta. Qual deles você "
+        "prefere?"
+    ))
+
+    result, _ = await _run_agent_with_response(state, ai_response)
+
+    assert not _request_document_calls(result)
+
+
+async def test_document_promise_skipped_without_email():
+    """Sem e-mail no cadastro, injetar request_document gravaria um pedido com
+    e-mail em branco (não chega ao paciente). O guard não injeta — o fluxo normal
+    (pedir o e-mail antes) é responsabilidade do prompt."""
+    state = _make_patient_agent_state(
+        patient_email=None,
+        messages=[HumanMessage(content="Preciso da nota fiscal.")],
+    )
+    ai_response = AIMessage(content=(
+        "Claro! Vou solicitar a emissão da nota fiscal e ela será enviada para o "
+        "seu e-mail assim que estiver pronta."
+    ))
+
+    result, _ = await _run_agent_with_response(state, ai_response)
+
+    assert not _request_document_calls(result)
+
+
+async def test_document_promise_skips_silent_mode():
+    """Modo atendente: o registro de documento é guiado manualmente; o guard não
+    injeta — consistente com os demais guards."""
+    state = _make_patient_agent_state(
+        silent_mode=True,
+        patient_email="carlos@email.com",
+        messages=[HumanMessage(content="[Instrução da atendente]: veja a NF")],
+    )
+    ai_response = AIMessage(content="Vou solicitar a emissão da nota fiscal para o paciente.")
+
+    result, _ = await _run_agent_with_response(state, ai_response)
+
+    assert not _request_document_calls(result)
+
+
+def test_detect_document_promise_pure_logic():
+    """Detector puro: reconhece compromisso de emissão, ignora deferimento e
+    menções sem compromisso, e mapeia o tipo de documento."""
+    from app.graph.nodes import _detect_document_promise
+
+    # compromissos → tipo inferido
+    assert _detect_document_promise(
+        "Vou solicitar a emissão da nota fiscal e ela será enviada para o seu e-mail."
+    ) == "nota_fiscal"
+    assert _detect_document_promise(
+        "Perfeito, vou providenciar o seu laudo e enviaremos por e-mail."
+    ) == "laudo"
+    assert _detect_document_promise(
+        "Seu recibo será enviado para o e-mail cadastrado."
+    ) == "recibo"
+    assert _detect_document_promise(
+        "Recibo para o plano de saúde? Vou solicitar a emissão agora."
+    ) == "nota_fiscal"
+
+    # deferimento legítimo → None
+    assert _detect_document_promise(
+        "A nota fiscal só pode ser providenciada depois que a consulta acontecer."
+    ) is None
+    # menção sem compromisso → None
+    assert _detect_document_promise(
+        "Podemos emitir nota fiscal ou recibo. Qual você prefere?"
+    ) is None
+    # texto sem documento → None
+    assert _detect_document_promise("Perfeito, Carlos! Qualquer coisa é só chamar.") is None
+
+
 # ── Retry de falha transitória na chamada do LLM ──────────────────────────────
 # Caso Norma/Ian (5581988007007, 01/08/2026): um ConnectError de DNS durante a
 # chamada do LLM matou o run e a resposta dela ao lembrete de retorno ficou sem
