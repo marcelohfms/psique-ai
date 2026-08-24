@@ -2688,83 +2688,112 @@ async def request_external_contact(
     from app.email_sender import send_external_contact_request_email
 
     phone = config["configurable"]["phone"]
-    patient_name = state.get("patient_name") or state.get("user_name") or ""
-    if not patient_name:
-        _u = await get_user_by_phone(phone)
-        patient_name = (_u or {}).get("patient_name") or (_u or {}).get("name") or "Paciente"
-    patient_age = state.get("patient_age")
+    phone_clean = phone.replace("@s.whatsapp.net", "")
     doctor_key = state.get("preferred_doctor", "")
-    doctor_id = DOCTOR_IDS.get(doctor_key)
+    doctor_label = {"julio": "Dr. Júlio", "bruna": "Dra. Bruna"}.get(doctor_key, "médico(a)")
+    try:
+        patient_name = state.get("patient_name") or state.get("user_name") or ""
+        if not patient_name:
+            _u = await get_user_by_phone(phone)
+            patient_name = (_u or {}).get("patient_name") or (_u or {}).get("name") or "Paciente"
+        patient_age = state.get("patient_age")
+        doctor_id = DOCTOR_IDS.get(doctor_key)
 
-    client = await get_supabase()
+        client = await get_supabase()
 
-    # Fetch doctor email from doctors table (agenda_id = email)
-    doctor_email = ""
-    if doctor_id:
-        result = await client.from_("doctors").select("agenda_id").eq("doctor_id", doctor_id).single().execute()
-        doctor_email = result.data.get("agenda_id", "") if result.data else ""
+        # Fetch doctor email from doctors table (agenda_id = email)
+        doctor_email = ""
+        if doctor_id:
+            result = await client.from_("doctors").select("agenda_id").eq("doctor_id", doctor_id).single().execute()
+            doctor_email = result.data.get("agenda_id", "") if result.data else ""
 
-    # Build content string for human-readable summary
-    content = f"Contato com {third_party_role.lower()}: {third_party_name}"
-    if reason:
-        content += f" — {reason}"
+        # Build content string for human-readable summary
+        content = f"Contato com {third_party_role.lower()}: {third_party_name}"
+        if reason:
+            content += f" — {reason}"
 
-    # Insert row into requests table
-    await client.from_("requests").insert({
-        "type": "contato_terceiro",
-        "phone": phone,
-        "patient_name": patient_name,
-        "doctor_id": doctor_id,
-        "content": content,
-        "metadata": {
+        # Insert row into requests table
+        await client.from_("requests").insert({
+            "type": "contato_terceiro",
+            "phone": phone,
+            "patient_name": patient_name,
+            "doctor_id": doctor_id,
+            "content": content,
+            "metadata": {
+                "third_party_role": third_party_role,
+                "third_party_name": third_party_name,
+                "third_party_contact": third_party_contact,
+            },
+        }).execute()
+
+        await log_event("external_contact_requested", phone, {
             "third_party_role": third_party_role,
             "third_party_name": third_party_name,
-            "third_party_contact": third_party_contact,
-        },
-    }).execute()
+            "reason": reason,
+            "patient_name": patient_name,
+        })
 
-    await log_event("external_contact_requested", phone, {
-        "third_party_role": third_party_role,
-        "third_party_name": third_party_name,
-        "reason": reason,
-        "patient_name": patient_name,
-    })
+        # Send email to doctor — fire-and-forget
+        try:
+            await send_external_contact_request_email(
+                doctor_key=doctor_key,
+                doctor_email=doctor_email,
+                patient_name=patient_name,
+                patient_age=patient_age,
+                phone=phone,
+                third_party_role=third_party_role,
+                third_party_name=third_party_name,
+                third_party_contact=third_party_contact,
+                reason=reason,
+            )
+        except Exception:
+            pass
 
-    # Send email to doctor — fire-and-forget
-    try:
-        await send_external_contact_request_email(
-            doctor_key=doctor_key,
-            doctor_email=doctor_email,
-            patient_name=patient_name,
-            patient_age=patient_age,
-            phone=phone,
-            third_party_role=third_party_role,
-            third_party_name=third_party_name,
-            third_party_contact=third_party_contact,
-            reason=reason,
+        # Notify clinic
+        notify_msg = (
+            f"📞 Pedido de contato com {third_party_role}\n"
+            f"Paciente: {patient_name}\n"
+            f"Médico(a): {doctor_label}\n"
+            f"Terceiro: {third_party_name}"
+        )
+        if third_party_contact:
+            notify_msg += f"\nContato do terceiro: {third_party_contact}"
+        if reason:
+            notify_msg += f"\nMotivo: {reason}"
+        await _notify_clinic(notify_msg, phone=phone_clean, subject=f"Pedido de contato — {patient_name}")
+
+        return (
+            f"Pedido registrado! ✅\n"
+            f"Encaminhamos para o {doctor_label} para que entre em contato com {third_party_name}."
         )
     except Exception:
-        pass
-
-    # Notify clinic
-    phone_clean = phone.replace("@s.whatsapp.net", "")
-    doctor_label = {"julio": "Dr. Júlio", "bruna": "Dra. Bruna"}.get(doctor_key, "médico(a)")
-    notify_msg = (
-        f"📞 Pedido de contato com {third_party_role}\n"
-        f"Paciente: {patient_name}\n"
-        f"Médico(a): {doctor_label}\n"
-        f"Terceiro: {third_party_name}"
-    )
-    if third_party_contact:
-        notify_msg += f"\nContato do terceiro: {third_party_contact}"
-    if reason:
-        notify_msg += f"\nMotivo: {reason}"
-    await _notify_clinic(notify_msg, phone=phone_clean, subject=f"Pedido de contato — {patient_name}")
-
-    return (
-        f"Pedido registrado! ✅\n"
-        f"Encaminhamos para o {doctor_label} para que entre em contato com {third_party_name}."
-    )
+        # Sem isto, qualquer falha (ex.: tabela `requests` ausente) sobe como
+        # "Erro interno" e a Eva fica muda — o paciente não recebe resposta.
+        logger.exception("request_external_contact failed phone=%s", phone)
+        try:
+            await log_event("external_contact_request_failed", phone_clean, {
+                "third_party_role": third_party_role,
+                "third_party_name": third_party_name,
+                "reason": reason,
+            })
+        except Exception:
+            pass
+        # Best-effort: sinaliza a clínica pra não perder o pedido silenciosamente.
+        try:
+            fail_msg = (
+                f"⚠️ Falha ao registrar automaticamente um pedido de contato externo — verifique manualmente.\n"
+                f"Terceiro: {third_party_name} ({third_party_role})\n"
+                f"Médico(a): {doctor_label}"
+            )
+            if reason:
+                fail_msg += f"\nMotivo: {reason}"
+            await _notify_clinic(fail_msg, phone=phone_clean, subject="Falha — pedido de contato externo")
+        except Exception:
+            pass
+        return (
+            "Recebi seu pedido e já sinalizei para a nossa equipe. 😊 "
+            "Em breve retornamos por aqui com o encaminhamento."
+        )
 
 
 @tool
@@ -2781,63 +2810,78 @@ async def nudge_external_contact(
     from app.email_sender import send_external_contact_nudge_email
 
     phone = config["configurable"]["phone"]
-    patient_name = state.get("patient_name") or state.get("user_name") or "Paciente"
-    patient_age = state.get("patient_age")
-    patient_email = state.get("patient_email") or ""
-    doctor_key = state.get("preferred_doctor", "")
-    doctor_id = DOCTOR_IDS.get(doctor_key)
-
-    client = await get_supabase()
-
-    # Find most recent external contact request for this patient
     phone_clean = phone.replace("@s.whatsapp.net", "")
-    requests = await client.from_("requests").select("*").eq("phone", phone).eq(
-        "type", "contato_terceiro"
-    ).order("created_at", desc=True).limit(1).execute()
-
-    if not requests.data:
-        return "Não encontramos um pedido anterior de contato com terceiro. Você gostaria de fazer um novo pedido?"
-
-    request = requests.data[0]
-    created_at = request.get("created_at", "data não registrada")
-    metadata = request.get("metadata") or {}
-    third_party_name = metadata.get("third_party_name", "")
-    third_party_role = metadata.get("third_party_role", "")
-
-    # Fetch doctor email
-    doctor_email = ""
-    if doctor_id:
-        res = await client.from_("doctors").select("agenda_id").eq("doctor_id", doctor_id).single().execute()
-        doctor_email = res.data.get("agenda_id", "") if res.data else ""
-
     try:
-        await send_external_contact_nudge_email(
-            doctor_key=doctor_key,
-            doctor_email=doctor_email,
-            patient_name=patient_name,
-            patient_age=patient_age,
-            phone=phone_clean,
-            patient_email=patient_email,
-            third_party_name=third_party_name,
-            third_party_role=third_party_role,
-            patient_message=patient_message,
-            created_at=created_at,
+        patient_name = state.get("patient_name") or state.get("user_name") or "Paciente"
+        patient_age = state.get("patient_age")
+        patient_email = state.get("patient_email") or ""
+        doctor_key = state.get("preferred_doctor", "")
+        doctor_id = DOCTOR_IDS.get(doctor_key)
+
+        client = await get_supabase()
+
+        # Find most recent external contact request for this patient
+        requests = await client.from_("requests").select("*").eq("phone", phone).eq(
+            "type", "contato_terceiro"
+        ).order("created_at", desc=True).limit(1).execute()
+
+        if not requests.data:
+            return "Não encontramos um pedido anterior de contato com terceiro. Você gostaria de fazer um novo pedido?"
+
+        request = requests.data[0]
+        created_at = request.get("created_at", "data não registrada")
+        metadata = request.get("metadata") or {}
+        third_party_name = metadata.get("third_party_name", "")
+        third_party_role = metadata.get("third_party_role", "")
+
+        # Fetch doctor email
+        doctor_email = ""
+        if doctor_id:
+            res = await client.from_("doctors").select("agenda_id").eq("doctor_id", doctor_id).single().execute()
+            doctor_email = res.data.get("agenda_id", "") if res.data else ""
+
+        try:
+            await send_external_contact_nudge_email(
+                doctor_key=doctor_key,
+                doctor_email=doctor_email,
+                patient_name=patient_name,
+                patient_age=patient_age,
+                phone=phone_clean,
+                patient_email=patient_email,
+                third_party_name=third_party_name,
+                third_party_role=third_party_role,
+                patient_message=patient_message,
+                created_at=created_at,
+            )
+        except Exception:
+            logger.exception("nudge_external_contact: email failed phone=%s", phone)
+
+        await log_event("external_contact_nudge_sent", phone_clean, {
+            "third_party_name": third_party_name,
+            "third_party_role": third_party_role,
+            "patient_name": patient_name,
+            "patient_message": patient_message,
+        })
+
+        doctor_label = {"julio": "Dr. Júlio", "bruna": "Dra. Bruna"}.get(doctor_key, "médico(a)")
+        return (
+            f"Aviso enviado! ✅\n"
+            f"Encaminhamos sua cobrança para o {doctor_label} sobre o contato com {third_party_name}."
         )
     except Exception:
-        logger.exception("nudge_external_contact: email failed phone=%s", phone)
-
-    await log_event("external_contact_nudge_sent", phone_clean, {
-        "third_party_name": third_party_name,
-        "third_party_role": third_party_role,
-        "patient_name": patient_name,
-        "patient_message": patient_message,
-    })
-
-    doctor_label = {"julio": "Dr. Júlio", "bruna": "Dra. Bruna"}.get(doctor_key, "médico(a)")
-    return (
-        f"Aviso enviado! ✅\n"
-        f"Encaminhamos sua cobrança para o {doctor_label} sobre o contato com {third_party_name}."
-    )
+        # Sem isto, qualquer falha (ex.: tabela `requests` ausente) sobe como
+        # "Erro interno" e a Eva fica muda — o paciente não recebe resposta.
+        logger.exception("nudge_external_contact failed phone=%s", phone)
+        try:
+            await log_event("external_contact_nudge_failed", phone_clean, {
+                "patient_message": patient_message,
+            })
+        except Exception:
+            pass
+        return (
+            "Recebi sua mensagem e já sinalizei sua cobrança para a nossa equipe. 😊 "
+            "Assim que houver retorno sobre o contato, avisamos você por aqui."
+        )
 
 
 @tool
