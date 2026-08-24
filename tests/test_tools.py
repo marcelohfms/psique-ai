@@ -3309,6 +3309,55 @@ async def test_request_document_succeeds_even_if_sheets_and_email_fail():
     assert "✅" in result
 
 
+def _make_supabase_client_with_recent_doc_event():
+    """Client onde a query de dedup (events/document_requested) devolve um hit,
+    mas todas as outras tabelas devolvem vazio."""
+    empty_execute = AsyncMock(return_value=MagicMock(data=[]))
+    hit_execute = AsyncMock(return_value=MagicMock(data=[{"id": 1}]))
+
+    def _table(execute):
+        t = MagicMock()
+        for m in ("select", "eq", "in_", "limit", "single", "maybe_single",
+                  "gte", "order", "insert", "update", "upsert", "or_", "filter", "is_"):
+            getattr(t, m).return_value = t
+        t.execute = execute
+        return t
+
+    events_table = _table(hit_execute)
+    other_table = _table(empty_execute)
+    client = MagicMock()
+    client.from_.side_effect = lambda name: events_table if name == "events" else other_table
+    return client, events_table, other_table
+
+
+async def test_request_document_skips_duplicate_within_window():
+    """Race de mensagem dupla: duas mensagens do paciente em poucos segundos disparam
+    dois request_document. O 2º deve ser idempotente — não insere linha extra em
+    documents, não reescreve a planilha, não notifica nem manda 2º e-mail ao médico
+    (caso Bernardo Lima Beltrão Teixeira, 5581987415206, 24/08/2026 — 25s de intervalo)."""
+    from app.graph.tools import request_document
+    client, events_table, other_table = _make_supabase_client_with_recent_doc_event()
+    with patch("app.graph.tools.get_supabase", new_callable=AsyncMock, return_value=client), \
+         patch("app.graph.tools.log_event", new_callable=AsyncMock) as mock_log, \
+         patch("app.graph.tools._notify_clinic", new_callable=AsyncMock) as mock_notify, \
+         patch("app.google_sheets.append_document_request", new_callable=AsyncMock) as mock_sheets, \
+         patch("app.email_sender.send_document_request_email", new_callable=AsyncMock) as mock_email:
+        result = await request_document.coroutine(
+            document_type="relatorio",
+            patient_email="rlabanatomia@gmail.com",
+            state=_make_state(patient_name="Bernardo Lima Beltrão Teixeira", patient_age=10),
+            config=CONFIG,
+        )
+    # resposta idempotente de sucesso
+    assert "✅" in result
+    # nenhum efeito colateral de registro no 2º disparo
+    other_table.insert.assert_not_called()
+    mock_log.assert_not_awaited()
+    mock_notify.assert_not_awaited()
+    mock_sheets.assert_not_awaited()
+    mock_email.assert_not_awaited()
+
+
 async def test_request_document_receita_controlada_registra_e_orienta_retirada():
     """Pedido de emissão de receita controlada (ex.: Ritalina) grava a medicação na
     planilha E responde com a orientação de receita física / retirada presencial.
