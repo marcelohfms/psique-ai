@@ -2451,6 +2451,29 @@ async def reschedule_appointment(
     return f"Consulta remarcada com sucesso! ✅\n{doctor_label} — {formatted_new}"
 
 
+# Janela de dedup para request_document. Duas mensagens do paciente em poucos
+# segundos disparam dois request_document, gerando linha duplicada em
+# documents/planilha e 2 e-mails ao médico (caso Bernardo Lima Beltrão Teixeira,
+# 5581987415206, 24/08/2026 — 25s de intervalo). Re-pedidos LEGÍTIMOS do mesmo
+# tipo acontecem horas/dias depois (caso Ian Vittor, 4,5h), então a janela é curta.
+_DOC_DEDUP_WINDOW_MINUTES = 3
+
+
+def _document_success_message(document_type: str, is_controlled: bool) -> str:
+    """Mensagem de sucesso do request_document, compartilhada entre o registro
+    normal e o short-circuit de dedup (idempotência)."""
+    if is_controlled:
+        return (
+            "Solicitação registrada! ✅\n"
+            "O medicamento solicitado requer receita física. Assim que estiver disponível, "
+            "nossa atendente entrará em contato para informar sobre a retirada presencial na clínica."
+        )
+    return (
+        f"Solicitação de {document_type} registrada com sucesso! ✅\n"
+        f"Já encaminhamos para o setor responsável e em breve será enviado para você."
+    )
+
+
 @tool
 async def request_document(
     document_type: Literal["nota_fiscal", "recibo", "laudo", "exame", "relatorio", "receita", "declaracao", "requisicao", "atestado"],
@@ -2524,6 +2547,22 @@ async def request_document(
 
     client = await get_supabase()
 
+    # Dedup: se já houve uma solicitação DO MESMO TIPO para este telefone nos
+    # últimos minutos, este é o 2º disparo da mesma mensagem dupla — não registra
+    # de novo (evita linha duplicada em documents/planilha e 2º e-mail ao médico).
+    from datetime import timezone as _tz
+    _dedup_cutoff = (datetime.now(_tz.utc) - timedelta(minutes=_DOC_DEDUP_WINDOW_MINUTES)).isoformat()
+    _recent_doc = await client.from_("events").select("id") \
+        .eq("event_type", "document_requested") \
+        .eq("metadata->>document_type", document_type) \
+        .in_("phone", _phone_variants(phone)) \
+        .gte("created_at", _dedup_cutoff) \
+        .limit(1).execute()
+    if _recent_doc.data:
+        _log.getLogger(__name__).warning(
+            "REQUEST_DOC_DEDUP skip duplicate type=%s phone=%s", document_type, phone)
+        return _document_success_message(document_type, is_controlled)
+
     # Fetch doctor email from doctors table (agenda_id = email)
     doctor_email = ""
     if doctor_id:
@@ -2588,17 +2627,7 @@ async def request_document(
         notify_msg += "\n\n⚠️ RECEITA FÍSICA — o paciente deverá retirar presencialmente na clínica."
     await _notify_clinic(notify_msg, subject=f"Solicitação de {doc_label} — {patient_name}")
 
-    if is_controlled:
-        return (
-            "Solicitação registrada! ✅\n"
-            "O medicamento solicitado requer receita física. Assim que estiver disponível, "
-            "nossa atendente entrará em contato para informar sobre a retirada presencial na clínica."
-        )
-
-    return (
-        f"Solicitação de {document_type} registrada com sucesso! ✅\n"
-        f"Já encaminhamos para o setor responsável e em breve será enviado para você."
-    )
+    return _document_success_message(document_type, is_controlled)
 
 
 @tool
