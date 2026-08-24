@@ -2786,6 +2786,111 @@ async def test_reschedule_appointment_blocks_when_new_slot_busy():
     mock_create.assert_not_awaited()
 
 
+async def test_confirm_appointment_guard0_encaixe_routes_reschedule_without_grid_lookup():
+    """Quando a atendente pede um ENCAIXE (force_encaixe=True) para um paciente que já
+    tem consulta, o Guard 0 continua bloqueando a criação de uma 2ª consulta — mas NÃO
+    pode mandar a Eva passar por get_available_slots (a grade padrão derruba o horário
+    fora dela, e o encaixe some — caso Leticia Pimentel, 5581996332827, 24/08/2026).
+    A instrução deve mandar remarcar DIRETO para o horário do encaixe, com force_encaixe."""
+    from datetime import timezone as _tz
+    from app.graph.tools import confirm_appointment
+    client, table, execute = _make_supabase_client()
+    _future = (datetime.now(_tz.utc) + timedelta(days=30)).strftime("%Y-%m-%dT%H:%M:%S+00:00")
+    execute.side_effect = [
+        MagicMock(data=[{"appointment_id": "old-evt-1", "start_time": _future,
+                          "status": "scheduled"}]),
+    ]
+    _patient = {"id": "patient-1", "patient_name": "Maria"}
+    with patch("app.graph.tools._get_doctor_calendar_id", new_callable=AsyncMock, return_value="cal123"), \
+         patch("app.graph.tools.get_supabase", new_callable=AsyncMock, return_value=client), \
+         patch("app.graph.tools.get_users_by_phone", new_callable=AsyncMock, return_value=[_patient]), \
+         patch("app.graph.tools.get_user_by_phone", new_callable=AsyncMock, return_value=_patient), \
+         patch("app.google_calendar.create_event", new_callable=AsyncMock) as mock_create:
+        result = await confirm_appointment.coroutine(
+            slot_datetime="2026-08-26T13:20:00",
+            slot_duration_minutes=60,
+            state=_make_state(silent_mode=True, user_db_id="patient-1"),
+            config=CONFIG,
+            force_encaixe=True,
+        )
+    # Ainda bloqueia a criação de uma 2ª consulta e passa pela remarcação
+    assert "NÃO crie um novo agendamento" in result
+    assert "mark_reschedule_in_progress" in result
+    # ...mas manda remarcar direto para o encaixe, sem consultar a grade
+    assert "reschedule_appointment" in result
+    assert "2026-08-26T13:20:00" in result
+    assert "force_encaixe" in result
+    # A grade padrão NÃO pode ser consultada — ela derruba o horário do encaixe
+    assert "NÃO chame get_available_slots" in result
+    mock_create.assert_not_called()
+
+
+async def test_reschedule_appointment_force_encaixe_skips_busy_check():
+    """force_encaixe pula o busy-check no reschedule: a atendente pediu explicitamente
+    para encaixar sobre um horário fora da grade (que pode até sobrepor)."""
+    from app.graph.tools import reschedule_appointment
+    client, table, execute = _make_supabase_client()
+    execute.return_value = MagicMock(data={
+        "start_time": "2026-08-20T09:00:00-03:00",
+        "patient_id": "user-1",
+        "patients": {"name": "Leticia"},
+    })
+    with patch("app.graph.tools._get_doctor_calendar_id", new_callable=AsyncMock, return_value="cal123"), \
+         patch("app.graph.tools._resolve_doctor", new_callable=AsyncMock, return_value="bruna"), \
+         patch("app.google_calendar.update_event", new_callable=AsyncMock) as mock_update, \
+         patch("app.google_calendar.create_event", new_callable=AsyncMock), \
+         patch("app.graph.tools.get_supabase", new_callable=AsyncMock, return_value=client), \
+         patch("app.graph.tools.get_users_by_phone", new_callable=AsyncMock, return_value=[{"id": "user-1"}]), \
+         patch("app.graph.tools.log_event", new_callable=AsyncMock), \
+         patch("app.graph.tools._notify_clinic", new_callable=AsyncMock), \
+         patch("app.google_calendar._credentials", return_value=MagicMock()), \
+         patch("googleapiclient.discovery.build", return_value=MagicMock()), \
+         patch("app.google_calendar._get_busy", return_value=[
+             {"start": "2026-08-26T14:00:00-03:00", "end": "2026-08-26T15:00:00-03:00"}
+         ]):
+        result = await reschedule_appointment.coroutine(
+            appointment_id="evt-abc",
+            new_slot_datetime="2026-08-26T13:20:00",
+            slot_duration_minutes=60,
+            state=_make_state(silent_mode=True),
+            config=CONFIG,
+            modality="presencial",
+            force_encaixe=True,
+        )
+    assert "ocupado" not in result.lower()
+    mock_update.assert_awaited_once()
+
+
+async def test_reschedule_appointment_force_encaixe_bruna_20min_becomes_40():
+    """Encaixe da Dra. Bruna começando a :20 dura 40min também no reschedule, para não
+    bloquear o slot regular da hora seguinte (espelha confirm_appointment)."""
+    from app.graph.tools import reschedule_appointment
+    client, table, execute = _make_supabase_client()
+    execute.return_value = MagicMock(data={
+        "start_time": "2026-08-20T09:00:00-03:00",
+        "patient_id": "user-1",
+        "patients": {"name": "Leticia"},
+    })
+    with patch("app.graph.tools._get_doctor_calendar_id", new_callable=AsyncMock, return_value="cal123"), \
+         patch("app.graph.tools._resolve_doctor", new_callable=AsyncMock, return_value="bruna"), \
+         patch("app.google_calendar.update_event", new_callable=AsyncMock) as mock_update, \
+         patch("app.google_calendar.create_event", new_callable=AsyncMock), \
+         patch("app.graph.tools.get_supabase", new_callable=AsyncMock, return_value=client), \
+         patch("app.graph.tools.get_users_by_phone", new_callable=AsyncMock, return_value=[{"id": "user-1"}]), \
+         patch("app.graph.tools.log_event", new_callable=AsyncMock), \
+         patch("app.graph.tools._notify_clinic", new_callable=AsyncMock):
+        await reschedule_appointment.coroutine(
+            appointment_id="evt-abc",
+            new_slot_datetime="2026-08-26T13:20:00",
+            slot_duration_minutes=60,
+            state=_make_state(silent_mode=True),
+            config=CONFIG,
+            modality="presencial",
+            force_encaixe=True,
+        )
+    assert mock_update.await_args.kwargs.get("slot_minutes") == 40
+
+
 async def test_reschedule_appointment_resets_reminder_fields():
     """Reagendar deve zerar reminder_day_before_sent_at e reminder_day_of_sent_at."""
     from app.graph.tools import reschedule_appointment
