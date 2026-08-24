@@ -1215,6 +1215,36 @@ async def confirm_appointment(
                             "chame confirm_appointment de novo com "
                             'session_note="2ª hora — paciente". '
                         )
+                    # Encaixe (force_encaixe): a atendente já definiu o horário exato,
+                    # inclusive fora da grade padrão. NÃO mande passar por
+                    # get_available_slots — ele só conhece a grade e derruba o horário do
+                    # encaixe, fazendo a Eva dizer "não há horários" e travar (caso Leticia
+                    # Pimentel, 5581996332827, 24/08/2026). Manda remarcar DIRETO para o
+                    # slot_datetime do encaixe, preservando force_encaixe no reschedule.
+                    if force_encaixe:
+                        _one_id = (
+                            _other_appts[0]["appointment_id"] if len(_other_appts) == 1 else None
+                        )
+                        _id_hint = (
+                            f"appointment_id='{_one_id}'" if _one_id
+                            else "o appointment_id da consulta existente"
+                        )
+                        _mod_hint = (
+                            f", modality='{modality}'" if modality in ("online", "presencial") else ""
+                        )
+                        return (
+                            f"[INSTRUÇÃO INTERNA — NÃO ENVIE AO PACIENTE] "
+                            f"O paciente já tem consulta(s) agendada(s): {_existing_dates}. "
+                            f"{_split_hint}"
+                            "NÃO crie um novo agendamento — o encaixe pedido pela atendente "
+                            "significa REMARCAR a consulta existente para o novo horário, não criar "
+                            "uma segunda. Este horário é um ENCAIXE fora da grade: NÃO chame "
+                            "get_available_slots (ele não lista horários de encaixe). OBRIGATÓRIO: "
+                            f"chame mark_reschedule_in_progress com {_id_hint} e, em seguida, "
+                            f"reschedule_appointment com new_slot_datetime='{slot_datetime}'"
+                            f"{_mod_hint}, force_encaixe=True. Nunca retorne erro ao paciente por "
+                            "causa disso."
+                        )
                     return (
                         f"[INSTRUÇÃO INTERNA — NÃO ENVIE AO PACIENTE] "
                         f"O paciente já tem consulta(s) agendada(s): {_existing_dates}. "
@@ -2162,10 +2192,15 @@ async def reschedule_appointment(
     config: RunnableConfig,
     modality: str = "",
     confirmed_by_patient: bool = True,
+    force_encaixe: bool = False,
 ) -> str:
     """
     Remarca uma consulta existente para um novo horário.
     appointment_id é o Google Calendar event ID.
+    force_encaixe: apenas com solicitação explícita da atendente (silent_mode). Use quando
+      o encaixe pedido cai sobre um paciente que já tem consulta — a instrução interna do
+      confirm_appointment manda remarcar direto para o horário do encaixe. Pula o busy-check
+      (encaixe pode sobrepor de propósito) e aplica a regra de duração do encaixe da Bruna.
     new_slot_datetime deve estar no formato ISO 8601 em HORÁRIO LOCAL DE RECIFE (UTC-3),
     exatamente como exibido ao paciente — NUNCA converta para UTC antes de passar.
     modality: modalidade do novo horário — "online" ou "presencial" (se aplicável).
@@ -2189,6 +2224,17 @@ async def reschedule_appointment(
         new_start = datetime.fromisoformat(new_slot_datetime).replace(tzinfo=TZ)
     except ValueError:
         return f"Formato de data inválido: {new_slot_datetime}. Use ISO 8601 (ex: 2026-03-19T09:00:00)."
+
+    # force_encaixe só vale por instrução da atendente (silent_mode). Fora dele, ignora —
+    # o paciente não pode se auto-encaixar num horário fora da grade (espelha confirm_appointment).
+    if force_encaixe and not state.get("silent_mode"):
+        force_encaixe = False
+        logger.warning("reschedule_appointment: force_encaixe=True rejeitado — fora do silent_mode")
+
+    # Encaixe da Dra. Bruna começando a :20 termina no topo da hora (40min), pra não
+    # bloquear o slot regular da hora seguinte (mesma regra do confirm_appointment).
+    if force_encaixe and doctor == "bruna" and new_start.minute == 20:
+        slot_duration_minutes = 40
 
     # Reject slots on exception days (e.g. doctor on leave)
     from app.google_calendar import SCHEDULE_EXCEPTIONS
@@ -2281,7 +2327,9 @@ async def reschedule_appointment(
     # and double-booked the doctor (caso Raynner/Bernardo, 23/07/2026 19h, Dr. Júlio).
     # Skipped when old_dt == new_start (pure modality change, no time actually moves —
     # the appointment's own event already occupies that slot).
-    if confirmed_by_patient and old_dt != new_start:
+    # Skipped também no encaixe (force_encaixe): a atendente pediu explicitamente para
+    # encaixar sobre um horário fora da grade, que pode sobrepor de propósito.
+    if confirmed_by_patient and old_dt != new_start and not force_encaixe:
         from app.google_calendar import _get_busy, _credentials
         from googleapiclient.discovery import build as _build
         new_end_check = new_start + timedelta(minutes=slot_duration_minutes)
