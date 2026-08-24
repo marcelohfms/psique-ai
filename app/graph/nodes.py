@@ -193,6 +193,70 @@ def _get_agent_llm():
     return _agent_llm
 
 
+# Verbos/expressões de COMPROMISSO de emitir/solicitar um documento. A Eva usa
+# essas fórmulas quando entendeu o pedido e "prometeu" o documento — é exatamente
+# nesse momento que ela deveria ter chamado request_document.
+_DOC_COMMIT_MARKERS = (
+    "vou solicitar", "vou emitir", "vou providenciar", "vou pedir",
+    "vou encaminhar o pedido", "estou solicitando", "já solicitei",
+    "solicitei a emissão", "encaminhei o pedido",
+    "será enviad", "será emitid", "será providenciad", "vou gerar",
+)
+
+# Deferimento LEGÍTIMO: recibo/nota fiscal de consulta que ainda vai acontecer
+# (prompt, linhas 1154-1158). Aqui a Eva corretamente NÃO chama request_document —
+# o guard não pode interpretar isso como promessa quebrada.
+_DOC_DEFER_MARKERS = (
+    "depois que a consulta", "após a consulta", "depois da consulta",
+    "quando a consulta acontecer", "quando a consulta ocorrer",
+    "assim que a consulta", "só pode ser providenciad", "só posso emitir depois",
+    "só pode ser emitid", "após a realização",
+)
+
+
+def _detect_document_promise(text: str) -> str | None:
+    """Se a resposta da Eva se COMPROMETE a emitir/solicitar um documento, retorna
+    o document_type inferido (mesmo enum de request_document); senão None.
+
+    Espelha, no lado do texto, o GUARD_RECEIPT_REGISTER: a Eva já violou o prompt
+    prometendo "vou solicitar a nota fiscal... tudo bem?" sem chamar a ferramenta
+    (caso Carlos Henrique, 5581995163026, 24/08/2026), deixando o pedido sem
+    nenhum registro. Retornar o tipo aqui permite ao nó injetar request_document.
+    """
+    if not text:
+        return None
+    low = text.lower()
+    # Deferimento legítimo (consulta futura) não é promessa de emissão agora.
+    if any(m in low for m in _DOC_DEFER_MARKERS):
+        return None
+    # Precisa haver um verbo de compromisso — só mencionar o documento (oferta,
+    # pergunta "qual você prefere?") não conta.
+    if not any(m in low for m in _DOC_COMMIT_MARKERS):
+        return None
+    # Mapeia o tipo — do mais específico para o mais genérico.
+    if "nota fiscal" in low or "nota-fiscal" in low:
+        return "nota_fiscal"
+    if "recibo" in low and ("plano de saúde" in low or "plano de saude" in low or "recibo saúde" in low or "recibo saude" in low):
+        return "nota_fiscal"
+    if "recibo" in low:
+        return "recibo"
+    if "laudo" in low:
+        return "laudo"
+    if "exame" in low:
+        return "exame"
+    if "relatório" in low or "relatorio" in low:
+        return "relatorio"
+    if "receita" in low:
+        return "receita"
+    if "declaração" in low or "declaracao" in low:
+        return "declaracao"
+    if "atestado" in low:
+        return "atestado"
+    if "requisição" in low or "requisicao" in low or "encaminhamento" in low:
+        return "requisicao"
+    return None
+
+
 def _detect_debora_insistence(messages: list) -> bool:
     """Detecta se o paciente está insistindo em falar com Débora sem responder às mensagens de Eva.
 
@@ -2528,6 +2592,61 @@ async def patient_agent_node(state: ConversationState, config: RunnableConfig) -
             content=response.content if _kept_tcs else "",
             tool_calls=_kept_tcs + [_forced_rp],
         )
+
+    # ── Guard: promessa de documento no turno exige request_document ───────────
+    # A Eva entende o pedido, diz "vou solicitar a emissão da nota fiscal... tudo
+    # bem?" e NÃO chama request_document — o pedido não é registrado em lugar
+    # nenhum (nem documents, nem evento, nem planilha) e a clínica fica sem sinal
+    # de que o documento é necessário (caso Carlos Henrique de Almeida,
+    # 5581995163026, 24/08/2026; mesma classe do caso atestado Bento/Sandro). O
+    # prompt já proíbe o "vou solicitar, tudo bem?" (linha 1153); a garantia real
+    # é código, espelhando o GUARD_RECEIPT_REGISTER acima: se a resposta promete
+    # um documento e não chama a ferramenta, injeta request_document com o tipo
+    # inferido da narração e o e-mail já registrado. O ToolNode executa e a LLM
+    # volta para redigir a resposta com o resultado real. Pula em silent_mode
+    # (registro guiado pela atendente), como os demais guards.
+    _doc_acted = any(
+        tc.get("name") in ("request_document", "nudge_doctor_document")
+        for tc in (response.tool_calls or [])
+    )
+    if _last_h_idx is not None and not state.get("silent_mode") and not _doc_acted:
+        # Já rodou request_document/nudge neste turno (volta do ToolNode)? Não
+        # reinjeta — a resposta final pode conter "será enviada" no passado.
+        _doc_ran = any(
+            (getattr(m, "type", "") == "tool"
+             and getattr(m, "name", "") in ("request_document", "nudge_doctor_document"))
+            or any(
+                tc.get("name") in ("request_document", "nudge_doctor_document")
+                for tc in (getattr(m, "tool_calls", None) or [])
+            )
+            for m in clean_messages[_last_h_idx + 1:]
+        )
+        _promised_type = None if _doc_ran else _detect_document_promise(str(response.content or ""))
+        _doc_email = (state.get("patient_email") or "").strip()
+        # Sem e-mail, injetar gravaria um pedido que não chega ao paciente —
+        # pedir o e-mail antes é responsabilidade do prompt. Não injeta.
+        if _promised_type and _doc_email:
+            import uuid as _uuid_doc
+            _forced_doc = {
+                "name": "request_document",
+                "args": {"document_type": _promised_type, "patient_email": _doc_email},
+                "id": str(_uuid_doc.uuid4()),
+                "type": "tool_call",
+            }
+            _logger.warning(
+                "GUARD_DOC_PROMISE: promessa de %s na resposta sem request_document "
+                "(tool_calls=%s) — injetando request_document. phone=%s",
+                _promised_type,
+                [tc.get("name") for tc in (response.tool_calls or [])], state.get("phone"),
+            )
+            _kept_doc_tcs = list(response.tool_calls or [])
+            response = AIMessage(
+                # Sem tool calls, o texto é a promessa solta ("vou solicitar...
+                # tudo bem?") sobre um documento não registrado — descarta para a
+                # LLM redigir a resposta a partir do resultado real da tool.
+                content=response.content if _kept_doc_tcs else "",
+                tool_calls=_kept_doc_tcs + [_forced_doc],
+            )
 
     # ── Guard: block premature confirm_appointment ────────────────────────────
     # If the LLM is trying to call confirm_appointment but the patient has NOT
