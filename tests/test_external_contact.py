@@ -414,3 +414,104 @@ async def test_nudge_external_contact_no_pending_request():
 
     # Verify event was NOT logged (no action taken)
     mock_log.assert_not_called()
+
+
+# ── graceful failure (DB indisponível / tabela ausente) ────────────────────────
+
+@pytest.mark.asyncio
+async def test_request_external_contact_db_failure_returns_friendly_message():
+    """Se a query ao banco falhar (ex.: tabela `requests` ausente), a tool NÃO pode
+    subir exceção — isso vira 'Erro interno' e a Eva fica muda. Deve responder de
+    forma amigável, logar a falha e sinalizar a clínica pra não perder o pedido."""
+    from app.graph.tools import request_external_contact
+
+    state = _make_state()
+    config = {"configurable": {"phone": PHONE}}
+
+    mock_client = MagicMock()
+
+    mock_doctors = MagicMock()
+    mock_doctors.select.return_value = mock_doctors
+    mock_doctors.eq.return_value = mock_doctors
+    mock_doctors.single.return_value = mock_doctors
+    mock_doctors.execute = AsyncMock(return_value=MagicMock(data={"agenda_id": "dr.juliogouveia@gmail.com"}))
+
+    # requests.insert().execute() explode (ex.: PGRST205 tabela ausente)
+    mock_requests = MagicMock()
+    mock_requests.insert.return_value = mock_requests
+    mock_requests.execute = AsyncMock(side_effect=Exception('relation "requests" does not exist'))
+
+    def from_side_effect(name):
+        return {"doctors": mock_doctors, "requests": mock_requests}.get(name, MagicMock())
+
+    mock_client.from_ = MagicMock(side_effect=from_side_effect)
+
+    with patch("app.graph.tools.get_supabase", new_callable=AsyncMock, return_value=mock_client), \
+         patch("app.email_sender.send_external_contact_request_email", new_callable=AsyncMock), \
+         patch("app.graph.tools.log_event", new_callable=AsyncMock) as mock_log, \
+         patch("app.graph.tools._notify_clinic", new_callable=AsyncMock) as mock_notify:
+
+        result = await request_external_contact.coroutine(
+            third_party_role="psicóloga",
+            third_party_name="Bruna Psicóloga",
+            reason="acompanhamento",
+            state=state,
+            config=config,
+        )
+
+    # Não levantou exceção e respondeu algo amigável
+    assert isinstance(result, str) and result.strip()
+    assert "erro interno" not in result.lower()
+    assert "equipe" in result.lower() or "recebi" in result.lower()
+
+    # Logou a falha e NÃO logou sucesso
+    event_types = [c.args[0] for c in mock_log.call_args_list if c.args]
+    assert "external_contact_request_failed" in event_types
+    assert "external_contact_requested" not in event_types
+
+    # Sinalizou a clínica com aviso de falha (pedido não some silenciosamente)
+    mock_notify.assert_called()
+    assert "Falha" in mock_notify.call_args[0][0]
+
+
+@pytest.mark.asyncio
+async def test_nudge_external_contact_db_failure_returns_friendly_message():
+    """Se a query ao banco falhar, o nudge deve responder amigável em vez de
+    subir 'Erro interno' e deixar a Eva muda."""
+    from app.graph.tools import nudge_external_contact
+
+    state = _make_state()
+    config = {"configurable": {"phone": PHONE}}
+
+    mock_client = MagicMock()
+    mock_requests = MagicMock()
+    mock_requests.select.return_value = mock_requests
+    mock_requests.eq.return_value = mock_requests
+    mock_requests.order.return_value = mock_requests
+    mock_requests.limit.return_value = mock_requests
+    mock_requests.execute = AsyncMock(side_effect=Exception('relation "requests" does not exist'))
+
+    def from_side_effect(name):
+        return {"requests": mock_requests}.get(name, MagicMock())
+
+    mock_client.from_ = MagicMock(side_effect=from_side_effect)
+
+    with patch("app.graph.tools.get_supabase", new_callable=AsyncMock, return_value=mock_client), \
+         patch("app.email_sender.send_external_contact_nudge_email", new_callable=AsyncMock) as mock_email, \
+         patch("app.graph.tools.log_event", new_callable=AsyncMock) as mock_log:
+
+        result = await nudge_external_contact.coroutine(
+            patient_message="E o psicólogo que foi pedido?",
+            state=state,
+            config=config,
+        )
+
+    assert isinstance(result, str) and result.strip()
+    assert "erro interno" not in result.lower()
+    assert "equipe" in result.lower() or "recebi" in result.lower()
+
+    # Não tentou enviar e-mail (falhou antes) e logou a falha
+    mock_email.assert_not_called()
+    event_types = [c.args[0] for c in mock_log.call_args_list if c.args]
+    assert "external_contact_nudge_failed" in event_types
+    assert "external_contact_nudge_sent" not in event_types
