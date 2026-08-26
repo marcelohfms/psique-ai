@@ -16,6 +16,26 @@ def clear_dedup_caches():
     _main._seen_phone_text.clear()
 
 
+# ── OPENAI_CHAT_MODEL configurável ────────────────────────────────────────────
+
+def test_chat_model_defaults_to_gpt_41(monkeypatch):
+    from app.graph import nodes
+    monkeypatch.delenv("OPENAI_CHAT_MODEL", raising=False)
+    assert nodes._chat_model() == "gpt-4.1"
+
+
+def test_chat_model_reads_env_override(monkeypatch):
+    from app.graph import nodes
+    monkeypatch.setenv("OPENAI_CHAT_MODEL", "gpt-5")
+    assert nodes._chat_model() == "gpt-5"
+
+
+def test_chat_model_blank_env_falls_back_to_default(monkeypatch):
+    from app.graph import nodes
+    monkeypatch.setenv("OPENAI_CHAT_MODEL", "   ")
+    assert nodes._chat_model() == "gpt-4.1"
+
+
 # ── CollectInfoOutput schema validation ───────────────────────────────────────
 
 def test_collect_info_output_accepts_valid_birth_date():

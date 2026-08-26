@@ -175,11 +175,21 @@ def _with_transient_retry(runnable):
     )
 
 
+# Modelo da OpenAI usado no cérebro da conversa (coleta de dados + agente com
+# ferramentas). Configurável por variável de ambiente para testar modelos novos
+# (ex.: um GPT-5) sem mexer no código. Sem a variável, mantém o gpt-4.1 de hoje.
+_DEFAULT_CHAT_MODEL = "gpt-4.1"
+
+
+def _chat_model() -> str:
+    return os.getenv("OPENAI_CHAT_MODEL", _DEFAULT_CHAT_MODEL).strip() or _DEFAULT_CHAT_MODEL
+
+
 def _get_collect_llm():
     global _collect_llm
     if _collect_llm is None:
         _collect_llm = _with_transient_retry(
-            ChatOpenAI(model="gpt-4.1", temperature=0).with_structured_output(CollectInfoOutput)
+            ChatOpenAI(model=_chat_model(), temperature=0).with_structured_output(CollectInfoOutput)
         )
     return _collect_llm
 
@@ -188,7 +198,7 @@ def _get_agent_llm():
     global _agent_llm
     if _agent_llm is None:
         _agent_llm = _with_transient_retry(
-            ChatOpenAI(model="gpt-4.1", temperature=0).bind_tools(TOOLS)
+            ChatOpenAI(model=_chat_model(), temperature=0).bind_tools(TOOLS)
         )
     return _agent_llm
 
