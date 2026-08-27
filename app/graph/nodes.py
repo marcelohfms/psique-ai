@@ -179,7 +179,7 @@ def _get_collect_llm():
     global _collect_llm
     if _collect_llm is None:
         _collect_llm = _with_transient_retry(
-            ChatOpenAI(model="gpt-4.1", temperature=0).with_structured_output(CollectInfoOutput)
+            ChatOpenAI(model="gpt-5.6-luna", reasoning_effort="none").with_structured_output(CollectInfoOutput)
         )
     return _collect_llm
 
@@ -188,7 +188,8 @@ def _get_agent_llm():
     global _agent_llm
     if _agent_llm is None:
         _agent_llm = _with_transient_retry(
-            ChatOpenAI(model="gpt-4.1", temperature=0).bind_tools(TOOLS)
+            # gpt-5.6-luna: temperature fixa em 1 e tools na chat API exigem reasoning_effort="none"
+            ChatOpenAI(model="gpt-5.6-luna", reasoning_effort="none").bind_tools(TOOLS)
         )
     return _agent_llm
 
