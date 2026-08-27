@@ -4861,6 +4861,170 @@ def test_detect_document_promise_pure_logic():
     assert _detect_document_promise("Perfeito, Carlos! Qualquer coisa é só chamar.") is None
 
 
+# ── Guard: handoff engole pedido de EMISSÃO de documento ──────────────────────
+# Casos Davi/Daniel (5582993088617, verbo "buscar", 14/08/2026) e Eduardo Lyra /
+# mãe Camila (5581997828165, urgência + fora do horário, 27/08/2026): o paciente
+# pede a EMISSÃO de um documento (providenciar receita, receita veio incompleta)
+# e a conversa cai num caminho de handoff (transfer_to_human — que fora do
+# expediente devolve a mensagem de "fora do horário"). A Eva chama só
+# transfer_to_human e NÃO chama request_document, então nada fica registrado. O
+# GUARD_DOC_PROMISE existente só olha o TEXTO da Eva (a promessa "vou solicitar"),
+# que não existe no caminho de handoff — o sinal precisa vir da MENSAGEM DO
+# PACIENTE. Ver memória receita-providenciar-vs-buscar.md.
+
+def _transfer_calls(result: dict) -> list[dict]:
+    calls = []
+    for m in result.get("messages", []):
+        for tc in (getattr(m, "tool_calls", None) or []):
+            if tc.get("name") == "transfer_to_human":
+                calls.append(tc)
+    return calls
+
+
+async def test_transfer_swallowing_receita_emission_forces_request_document():
+    """Caso Davi: o pai pede 'providenciar uma receita para irmos buscar segunda'.
+    A Eva segue o fluxo de RETIRADA e chama só transfer_to_human. O guard detecta
+    o pedido de emissão na mensagem do paciente e injeta request_document, sem
+    descartar a transferência."""
+    state = _make_patient_agent_state(
+        patient_email="daniel@email.com",
+        messages=[HumanMessage(content=(
+            "Bom dia! Preciso que a clínica providencie uma receita do Davi para "
+            "irmos buscar na segunda, ele só tem 3 comprimidos."
+        ))],
+    )
+    ai_response = AIMessage(content=(
+        "Entendido! Vou transferir para a atendente verificar se a receita já está "
+        "disponível para retirada. Um momento! 😊"
+    ), tool_calls=[{
+        "name": "transfer_to_human",
+        "args": {"reason": "Paciente veio buscar receita/medicação na clínica."},
+        "id": "call_transfer", "type": "tool_call",
+    }])
+
+    result, _ = await _run_agent_with_response(state, ai_response)
+
+    calls = _request_document_calls(result)
+    assert len(calls) == 1, "guard não injetou request_document no caminho de handoff"
+    assert calls[0]["args"]["document_type"] == "receita"
+    assert calls[0]["args"]["patient_email"] == "daniel@email.com"
+    # A transferência continua acontecendo — não descartamos o handoff.
+    assert len(_transfer_calls(result)) == 1
+
+
+async def test_out_of_hours_transfer_registers_incomplete_receita():
+    """Caso Eduardo Lyra: a mãe avisa fora do expediente que a receita emitida veio
+    sem o ARISTAB e precisa urgente. A Eva chama transfer_to_human (que devolve a
+    mensagem de fora do horário) sem registrar. O guard injeta request_document."""
+    state = _make_patient_agent_state(
+        patient_email="camila@email.com",
+        messages=[HumanMessage(content=(
+            "A receita do Eduardo não veio com o ARISTAB, preciso urgente porque "
+            "viajamos amanhã cedo!"
+        ))],
+    )
+    ai_response = AIMessage(content=(
+        "👤 Vou encaminhar você para um de nossos atendentes, mas no momento "
+        "estamos fora do horário de atendimento."
+    ), tool_calls=[{
+        "name": "transfer_to_human",
+        "args": {"reason": "Receita urgente sem o ARISTAB. Paciente viaja amanhã."},
+        "id": "call_transfer", "type": "tool_call",
+    }])
+
+    result, _ = await _run_agent_with_response(state, ai_response)
+
+    calls = _request_document_calls(result)
+    assert len(calls) == 1, "guard não registrou a receita no handoff fora do horário"
+    assert calls[0]["args"]["document_type"] == "receita"
+
+
+async def test_transfer_for_pure_receita_retrieval_does_not_fire():
+    """Retirada legítima: o paciente vem só buscar uma receita JÁ pronta, sem verbo
+    de emissão. Registrar aqui geraria um pedido espúrio — o guard NÃO injeta."""
+    state = _make_patient_agent_state(
+        patient_email="carlos@email.com",
+        messages=[HumanMessage(content="Oi, vim buscar minha receita que ficou pronta.")],
+    )
+    ai_response = AIMessage(content=(
+        "Entendido! Vou transferir para a atendente verificar a retirada. 😊"
+    ), tool_calls=[{
+        "name": "transfer_to_human",
+        "args": {"reason": "Paciente veio buscar receita pronta."},
+        "id": "call_transfer", "type": "tool_call",
+    }])
+
+    result, _ = await _run_agent_with_response(state, ai_response)
+
+    assert not _request_document_calls(result), "guard disparou numa retirada legítima"
+
+
+async def test_transfer_unrelated_to_document_does_not_fire():
+    """Handoff por assunto que não é documento (ex.: dúvida médica): sem menção de
+    documento na mensagem do paciente, o guard não injeta nada."""
+    state = _make_patient_agent_state(
+        patient_email="carlos@email.com",
+        messages=[HumanMessage(content="Estou passando muito mal, preciso falar com o médico urgente.")],
+    )
+    ai_response = AIMessage(content="Vou transferir você para a atendente. Um momento!",
+        tool_calls=[{
+            "name": "transfer_to_human",
+            "args": {"reason": "Paciente relata mal-estar e quer falar com o médico."},
+            "id": "call_transfer", "type": "tool_call",
+        }])
+
+    result, _ = await _run_agent_with_response(state, ai_response)
+
+    assert not _request_document_calls(result)
+
+
+async def test_transfer_document_emission_skipped_without_email():
+    """Sem e-mail cadastrado, injetar registraria um pedido que não chega ao
+    paciente — o guard não injeta (igual ao GUARD_DOC_PROMISE de texto)."""
+    state = _make_patient_agent_state(
+        patient_email=None,
+        messages=[HumanMessage(content="Preciso que emitam a nota fiscal da consulta, pode transferir?")],
+    )
+    ai_response = AIMessage(content="Vou transferir você para a atendente.",
+        tool_calls=[{
+            "name": "transfer_to_human",
+            "args": {"reason": "Paciente quer nota fiscal."},
+            "id": "call_transfer", "type": "tool_call",
+        }])
+
+    result, _ = await _run_agent_with_response(state, ai_response)
+
+    assert not _request_document_calls(result)
+
+
+def test_detect_document_emission_request_pure_logic():
+    """Detector puro do pedido de EMISSÃO na mensagem do paciente: reconhece verbo
+    de emissão + tipo, ignora retirada pura e mensagens sem documento."""
+    from app.graph.nodes import _detect_document_emission_request
+
+    # emissão explícita → tipo inferido (mesmo enum de request_document)
+    assert _detect_document_emission_request(
+        "Preciso que providenciem uma receita para irmos buscar segunda."
+    ) == "receita"
+    assert _detect_document_emission_request(
+        "A receita não veio com o ARISTAB, preciso urgente."
+    ) == "receita"
+    assert _detect_document_emission_request(
+        "Vocês podem emitir a nota fiscal da consulta?"
+    ) == "nota_fiscal"
+
+    # retirada pura (sem verbo de emissão) → None
+    assert _detect_document_emission_request(
+        "Vim buscar minha receita que ficou pronta."
+    ) is None
+    # sem documento → None
+    assert _detect_document_emission_request(
+        "Estou passando mal, preciso falar com o médico."
+    ) is None
+    # texto vazio → None
+    assert _detect_document_emission_request("") is None
+
+
 # ── Retry de falha transitória na chamada do LLM ──────────────────────────────
 # Caso Norma/Ian (5581988007007, 01/08/2026): um ConnectError de DNS durante a
 # chamada do LLM matou o run e a resposta dela ao lembrete de retorno ficou sem
