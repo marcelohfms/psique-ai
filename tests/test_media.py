@@ -91,6 +91,37 @@ async def test_document_upload_notifies_clinic_with_full_patient_name():
     assert "Ana Beatriz Souza" in body
 
 
+async def test_vision_call_uses_luna_params():
+    """O classificador de visão usa gpt-5.6-luna, que rejeita max_tokens (exige
+    max_completion_tokens) e precisa de reasoning_effort="none" — regressão aqui
+    quebraria TODO processamento de comprovante/documento em produção."""
+    from app.media import describe_image_bytes
+    fake_openai = AsyncMock()
+    fake_openai.chat.completions.create = AsyncMock(
+        return_value=_mock_openai_response("IGNORAR")
+    )
+    with patch("app.media._get_openai", return_value=fake_openai):
+        result = await describe_image_bytes(b"fake-bytes", phone="5511999999999@s.whatsapp.net")
+
+    assert result is None  # IGNORAR é descartado silenciosamente
+    kwargs = fake_openai.chat.completions.create.call_args.kwargs
+    assert kwargs["model"] == "gpt-5.6-luna"
+    assert kwargs["reasoning_effort"] == "none"
+    assert "max_tokens" not in kwargs
+    assert kwargs["max_completion_tokens"] == 300
+    assert "temperature" not in kwargs
+
+
+async def test_process_media_audio_returns_none_without_api_call():
+    """Áudio nunca é transcrito (a clínica não ouve áudio; o paciente recebe um
+    aviso pelos webhooks). process_media não pode gastar API com áudio."""
+    from app.media import process_media
+    with patch("app.whatsapp.download_media", new_callable=AsyncMock) as mock_download:
+        result = await process_media("media-123", "audio", phone="5511999999999@s.whatsapp.net")
+    assert result is None
+    mock_download.assert_not_awaited()
+
+
 # ── is_payment_receipt_message ────────────────────────────────────────────────
 # Usado pelo _route_entry para levar um comprovante ao patient_agent mesmo com o
 # cadastro incompleto. Precisa ser ESTRITO: só o que o classificador de visão
