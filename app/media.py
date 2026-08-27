@@ -5,8 +5,8 @@ Flow:
   1. Receive media_id from webhook payload
   2. Resolve media URL via GET graph.facebook.com/v19.0/{media_id}
   3. Download bytes using Authorization header
-  4. AudioMessage → OpenAI Whisper transcription
-  5. ImageMessage → upload to Drive (if configured) + GPT-4o vision description
+  4. ImageMessage → upload to Drive (if configured) + vision classification/description
+     (áudio nunca é transcrito — o paciente recebe aviso de que áudio não é processado)
 """
 import base64
 import logging
@@ -52,22 +52,6 @@ async def _get_patient_name(phone: str) -> str:
     except Exception:
         pass
     return "paciente"
-
-
-async def transcribe_audio_bytes(audio_bytes: bytes) -> str:
-    """Transcribe raw audio bytes with Whisper."""
-    result = await _get_openai().audio.transcriptions.create(
-        model="whisper-1",
-        file=("audio.ogg", audio_bytes, "audio/ogg"),
-        language="pt",
-    )
-    return f"[áudio transcrito]: {result.text}"
-
-
-async def transcribe_audio(media_id: str) -> str:
-    """Download audio from Meta and transcribe with Whisper."""
-    audio_bytes = await download_media(media_id)
-    return await transcribe_audio_bytes(audio_bytes)
 
 
 _DOC_TYPE_PREFIXES: list[tuple[str, str]] = [
@@ -213,8 +197,11 @@ async def describe_image_bytes(
     source_ext: file extension for the uploaded file ('jpg' or 'pdf').
     """
     b64 = base64.b64encode(image_bytes).decode()
+    # gpt-5.6-luna: sem temperature custom; reasoning_effort="none" (classificação
+    # não precisa de raciocínio) e max_completion_tokens (a família gpt-5 rejeita max_tokens)
     resp = await _get_openai().chat.completions.create(
-        model="gpt-4o",
+        model="gpt-5.6-luna",
+        reasoning_effort="none",
         messages=[{
             "role": "user",
             "content": [
@@ -251,7 +238,7 @@ async def describe_image_bytes(
                 },
             ],
         }],
-        max_tokens=300,
+        max_completion_tokens=300,
     )
     raw_description = resp.choices[0].message.content or ""
     # A resposta crua fica sempre no log: no caso Igor (27/08/2026) ela só existia
@@ -376,13 +363,12 @@ async def describe_image(media_id: str, phone: str = "") -> str:
 
 async def process_media(media_id: str, media_type: str, phone: str = "") -> str | None:
     """
-    Returns transcribed/described text for audio or image messages.
-    media_type: 'audio' or 'image' (Meta Cloud API types).
+    Returns described text for image messages.
+    media_type: Meta Cloud API type. Only 'image' is supported — audio is never
+    transcribed (patients get an auto-reply that audio isn't processed).
     Returns None for unsupported types.
     """
     try:
-        if media_type == "audio":
-            return await transcribe_audio(media_id)
         if media_type == "image":
             return await describe_image(media_id, phone)
     except Exception:

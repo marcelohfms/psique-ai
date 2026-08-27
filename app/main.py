@@ -858,7 +858,7 @@ def _attachment_is_pdf(att: dict) -> bool:
 async def _process_chatwoot_attachments(attachments: list, phone: str = "") -> str | None:
     """Download and process the first recognisable attachment (audio or image)."""
     import httpx
-    from app.media import transcribe_audio_bytes, describe_image_bytes, describe_pdf_bytes
+    from app.media import describe_image_bytes, describe_pdf_bytes
 
     for att in attachments:
         file_type = (att.get("file_type") or "").lower()
