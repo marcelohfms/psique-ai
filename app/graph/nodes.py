@@ -234,7 +234,13 @@ def _detect_document_promise(text: str) -> str | None:
     # pergunta "qual você prefere?") não conta.
     if not any(m in low for m in _DOC_COMMIT_MARKERS):
         return None
-    # Mapeia o tipo — do mais específico para o mais genérico.
+    return _document_type_from_text(low)
+
+
+def _document_type_from_text(low: str) -> str | None:
+    """Mapeia o tipo de documento (mesmo enum de request_document) a partir de um
+    texto já em minúsculas — do mais específico para o mais genérico. None se
+    nenhum tipo aparece."""
     if "nota fiscal" in low or "nota-fiscal" in low:
         return "nota_fiscal"
     if "recibo" in low and ("plano de saúde" in low or "plano de saude" in low or "recibo saúde" in low or "recibo saude" in low):
@@ -255,6 +261,59 @@ def _detect_document_promise(text: str) -> str | None:
         return "atestado"
     if "requisição" in low or "requisicao" in low or "encaminhamento" in low:
         return "requisicao"
+    return None
+
+
+# Verbos FORTES de emissão na fala do PACIENTE: pedem um documento NOVO ser
+# emitido. Presentes, disparam mesmo que o paciente também diga que vai "buscar"
+# depois (caso Davi: "providencie uma receita para irmos buscar segunda").
+_EMISSION_STRONG_MARKERS = (
+    "providenci", "emitir", "emita", "emite", "renov", "gerar", "gere",
+    "solicit", "fazer a receita", "fazer uma receita", "faça a receita",
+    "faz a receita", "acaband", "acabou", "acabaram", "faltando", "faltou",
+    "não veio", "nao veio", "não saiu", "nao saiu", "sem a receita", "vencid",
+    "vencend", "nova via", "segunda via", "2ª via", "2a via",
+)
+
+# Marcadores FRACOS de necessidade: sozinhos indicam pedido, mas viram retirada
+# quando acompanhados de um marcador de retirada abaixo.
+_EMISSION_WEAK_MARKERS = (
+    "preciso", "precisa", "queria", "gostaria", "pode fazer", "podem fazer",
+    "pode emitir", "podem emitir",
+)
+
+# Retirada de documento JÁ pronto — sem verbo forte de emissão, isto NÃO é pedido
+# de emissão (o registro seria espúrio). Ex.: "vim buscar minha receita pronta".
+_EMISSION_RETRIEVAL_MARKERS = (
+    "buscar", "pegar", "retirar", "retirada", "pronta", "pronto",
+    "já está", "ja esta", "já ficou", "ja ficou", "disponível", "disponivel",
+)
+
+
+def _detect_document_emission_request(text: str) -> str | None:
+    """Se a MENSAGEM DO PACIENTE pede a EMISSÃO de um documento, retorna o
+    document_type inferido (mesmo enum de request_document); senão None.
+
+    Espelha, no lado do pedido do paciente, o que _detect_document_promise faz no
+    lado da resposta da Eva. Serve ao guard do caminho de handoff: quando a Eva
+    roteia para transfer_to_human (verbo "buscar", urgência, fora do horário) num
+    turno em que o paciente pediu emissão, o pedido não é registrado por lugar
+    nenhum (casos Davi/Daniel e Eduardo Lyra — receita-providenciar-vs-buscar.md).
+
+    Conservador para não gravar pedido espúrio: exige um TIPO de documento e um
+    verbo forte de emissão — OU um marcador fraco de necessidade sem nenhum
+    marcador de retirada (que indicaria documento já pronto)."""
+    if not text:
+        return None
+    low = text.lower()
+    doc_type = _document_type_from_text(low)
+    if not doc_type:
+        return None
+    has_strong = any(m in low for m in _EMISSION_STRONG_MARKERS)
+    has_weak = any(m in low for m in _EMISSION_WEAK_MARKERS)
+    has_retrieval = any(m in low for m in _EMISSION_RETRIEVAL_MARKERS)
+    if has_strong or (has_weak and not has_retrieval):
+        return doc_type
     return None
 
 
@@ -2623,14 +2682,36 @@ async def patient_agent_node(state: ConversationState, config: RunnableConfig) -
             for m in clean_messages[_last_h_idx + 1:]
         )
         _promised_type = None if _doc_ran else _detect_document_promise(str(response.content or ""))
+        # Caminho de HANDOFF engole o pedido de emissão: quando a Eva roteia para
+        # transfer_to_human (verbo "buscar", urgência, ou fora do horário — que é o
+        # próprio retorno da tool) num turno em que o paciente pediu EMISSÃO de
+        # documento, sua resposta é sobre a transferência, não uma promessa de
+        # documento, então _detect_document_promise (que olha o texto da Eva) não
+        # dispara. Aqui o sinal vem da MENSAGEM DO PACIENTE. Casos Davi/Daniel
+        # (verbo "buscar") e Eduardo Lyra (urgência + fora do horário). Ver
+        # receita-providenciar-vs-buscar.md.
+        _handoff_this_turn = any(
+            tc.get("name") == "transfer_to_human" for tc in (response.tool_calls or [])
+        )
+        _patient_msg = str(getattr(clean_messages[_last_h_idx], "content", "") or "")
+        if not _promised_type and not _doc_ran and _handoff_this_turn:
+            _promised_type = _detect_document_emission_request(_patient_msg)
         _doc_email = (state.get("patient_email") or "").strip()
         # Sem e-mail, injetar gravaria um pedido que não chega ao paciente —
         # pedir o e-mail antes é responsabilidade do prompt. Não injeta.
         if _promised_type and _doc_email:
             import uuid as _uuid_doc
+            _forced_doc_args = {"document_type": _promised_type, "patient_email": _doc_email}
+            # receita sem medication_note faz a tool só re-perguntar "qual
+            # medicação?" (não registra). No caminho de handoff o bot fica inativo
+            # e não veria a resposta — então passa a própria mensagem do paciente
+            # como nota da medicação, garantindo o registro (e a detecção de
+            # medicação controlada, que faz substring na nota).
+            if _promised_type == "receita" and _handoff_this_turn:
+                _forced_doc_args["medication_note"] = _patient_msg.strip()
             _forced_doc = {
                 "name": "request_document",
-                "args": {"document_type": _promised_type, "patient_email": _doc_email},
+                "args": _forced_doc_args,
                 "id": str(_uuid_doc.uuid4()),
                 "type": "tool_call",
             }
