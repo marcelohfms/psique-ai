@@ -167,3 +167,161 @@ async def test_receipt_detector_still_requires_the_image_tag():
         "Acabo de enviar acima o comprovante de pagamento via pix no valor de R$450,00"
     )
     assert not is_payment_receipt_message("[imagem]: EXAME: pedido de comprovante de pagamento antigo")
+
+
+# ── classify_media_description ────────────────────────────────────────────────
+# Caso Igor Lapsky (27/08/2026): um comprovante Pix perfeitamente legível foi
+# roteado para o ramo de documento porque a resposta do classificador não começava
+# EXATAMENTE com "COMPROVANTE DE PAGAMENTO:". O startswith ancorado derruba
+# qualquer enfeite (markdown, rótulo "CATEGORIA 1", aspas) no fallback "documento",
+# em silêncio. Esta função interpreta a resposta crua com tolerância a decoração e
+# resgata comprovantes descritos sob prefixo errado.
+
+def test_classify_canonical_receipt_is_payment():
+    from app.media import classify_media_description
+    kind, canonical = classify_media_description(
+        "COMPROVANTE DE PAGAMENTO: valor transferido R$ 550,00, PIX 42.006.848/0001-78"
+    )
+    assert kind == "payment"
+    assert canonical.upper().startswith("COMPROVANTE DE PAGAMENTO")
+
+
+@pytest.mark.parametrize("decorated", [
+    "**COMPROVANTE DE PAGAMENTO:** valor transferido R$ 550,00",
+    "'COMPROVANTE DE PAGAMENTO:' valor transferido R$ 550,00",
+    "CATEGORIA 1 — COMPROVANTE DE PAGAMENTO: valor transferido R$ 550,00",
+    "Categoria 1: COMPROVANTE DE PAGAMENTO: valor transferido R$ 550,00",
+    "  \nCOMPROVANTE DE PAGAMENTO: valor transferido R$ 550,00",
+])
+def test_classify_decorated_receipt_still_payment(decorated):
+    """Enfeite cosmético na resposta do modelo não pode mudar a rota."""
+    from app.media import classify_media_description, is_payment_receipt_message
+    kind, canonical = classify_media_description(decorated)
+    assert kind == "payment"
+    # o texto canônico precisa continuar reconhecível pelo detector downstream
+    assert is_payment_receipt_message(f"[imagem]: {canonical}")
+
+
+def test_classify_receipt_misfiled_as_documento_is_rescued():
+    """O provável formato do caso Igor: prefixo de documento, corpo de comprovante."""
+    from app.media import classify_media_description, is_payment_receipt_message
+    kind, canonical = classify_media_description(
+        "DOCUMENTO: comprovante de transferência Pix do Bradesco no valor de "
+        "R$ 550,00 para PSIQUE, CNPJ 42.006.848/0001-78"
+    )
+    assert kind == "payment"
+    assert is_payment_receipt_message(f"[imagem]: {canonical}")
+    # o corpo original é preservado para o register_payment extrair valor/data
+    assert "550,00" in canonical
+
+
+def test_classify_no_known_prefix_but_receipt_content_is_rescued():
+    from app.media import classify_media_description
+    kind, _ = classify_media_description(
+        "A imagem mostra um comprovante de pagamento via PIX de R$ 100,00."
+    )
+    assert kind == "payment"
+
+
+def test_classify_medical_document_stays_document():
+    from app.media import classify_media_description
+    for desc in [
+        "EXAME: hemograma completo",
+        "LAUDO: laudo psiquiátrico de 3 páginas",
+        "DOCUMENTO: carteira de identidade do paciente",
+    ]:
+        kind, canonical = classify_media_description(desc)
+        assert kind == "document", desc
+        assert canonical == desc
+
+
+def test_classify_ignorar_with_decoration_is_ignored():
+    from app.media import classify_media_description
+    assert classify_media_description("IGNORAR")[0] == "ignore"
+    assert classify_media_description("**IGNORAR**")[0] == "ignore"
+
+
+def test_classify_unrecognized_output_falls_back_to_document():
+    from app.media import classify_media_description
+    kind, _ = classify_media_description("Não consegui identificar esta imagem.")
+    assert kind == "document"
+
+
+# ── describe_image_bytes usa o classificador tolerante ────────────────────────
+
+async def test_decorated_receipt_reply_routes_to_payment_branch(caplog):
+    """Resposta com markdown não pode cair no ramo de documento (caso Igor)."""
+    import logging
+    from app.media import describe_image_bytes, is_payment_receipt_message
+    fake_openai = AsyncMock()
+    fake_openai.chat.completions.create = AsyncMock(
+        return_value=_mock_openai_response("**COMPROVANTE DE PAGAMENTO:** Pix R$ 550,00")
+    )
+    with patch("app.media._get_openai", return_value=fake_openai), \
+         patch.dict("os.environ", {"GOOGLE_DRIVE_PAYMENTS_FOLDER_ID": ""}), \
+         caplog.at_level(logging.INFO, logger="app.media"):
+        result = await describe_image_bytes(b"fake-bytes", phone="5511999999999@s.whatsapp.net")
+
+    assert result is not None
+    assert is_payment_receipt_message(result)
+
+
+async def test_documento_prefixed_receipt_is_rescued_and_logged(caplog):
+    import logging
+    from app.media import describe_image_bytes, is_payment_receipt_message
+    fake_openai = AsyncMock()
+    fake_openai.chat.completions.create = AsyncMock(
+        return_value=_mock_openai_response(
+            "DOCUMENTO: comprovante de transferência Pix de R$ 550,00 para PSIQUE"
+        )
+    )
+    with patch("app.media._get_openai", return_value=fake_openai), \
+         patch.dict("os.environ", {"GOOGLE_DRIVE_PAYMENTS_FOLDER_ID": ""}), \
+         caplog.at_level(logging.INFO, logger="app.media"):
+        result = await describe_image_bytes(b"fake-bytes", phone="5511999999999@s.whatsapp.net")
+
+    assert result is not None
+    assert is_payment_receipt_message(result)
+    assert any("IMAGE_CLASSIFIER_RESCUED_AS_PAYMENT" in r.message for r in caplog.records)
+
+
+async def test_classifier_raw_output_is_always_logged(caplog):
+    """A resposta crua do modelo tem que ficar no log — no caso Igor ela só
+    existia no e-mail da clínica, impossível de auditar depois."""
+    import logging
+    from app.media import describe_image_bytes
+    fake_openai = AsyncMock()
+    fake_openai.chat.completions.create = AsyncMock(
+        return_value=_mock_openai_response("IGNORAR")
+    )
+    with patch("app.media._get_openai", return_value=fake_openai), \
+         caplog.at_level(logging.INFO, logger="app.media"):
+        result = await describe_image_bytes(b"fake-bytes", phone="5511999999999@s.whatsapp.net")
+
+    assert result is None
+    assert any("IMAGE_CLASSIFIER_RAW" in r.message for r in caplog.records)
+
+
+async def test_unrecognized_reply_still_documents_but_warns(caplog):
+    import logging
+    from app.media import describe_image_bytes
+    fake_openai = AsyncMock()
+    fake_openai.chat.completions.create = AsyncMock(
+        return_value=_mock_openai_response("Um papel impresso com texto ilegível.")
+    )
+    with patch("app.media._get_openai", return_value=fake_openai), \
+         patch("app.database.get_user_by_phone", new_callable=AsyncMock,
+               return_value={"patient_name": "Fulano De Tal"}), \
+         patch.dict("os.environ", {"GOOGLE_DRIVE_DOCUMENTS_FOLDER_ID": "folder-123"}), \
+         patch("app.google_drive.upload_document", new_callable=AsyncMock,
+               return_value="https://drive.google.com/file/d/doc9/view") as mock_upload, \
+         patch("app.whatsapp.send_text", new_callable=AsyncMock), \
+         patch("app.database.save_message", new_callable=AsyncMock), \
+         patch("app.email_sender.send_clinic_notification_email", new_callable=AsyncMock), \
+         caplog.at_level(logging.INFO, logger="app.media"):
+        result = await describe_image_bytes(b"fake-bytes", phone="5511999999999@s.whatsapp.net")
+
+    assert result is None  # segue o fluxo de documento (não some com o arquivo)
+    filename = mock_upload.call_args[0][1]
+    assert filename.startswith("documento_")
+    assert any("IMAGE_CLASSIFIER_UNRECOGNIZED" in r.message for r in caplog.records)

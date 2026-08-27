@@ -128,6 +128,73 @@ def _extract_doc_type(description: str) -> str:
     return "documento"
 
 
+_DECORATION_CHARS = "*_#>`'\"“”‘’ \t\r\n"
+_CATEGORY_LABEL_RE = re.compile(r"(?i)^categoria\s*\d+\s*[—–:\-]*\s*")
+
+# Frases que só aparecem quando o conteúdo da imagem é um comprovante — cobrem o
+# vocabulário do próprio prompt (CATEGORIA 1) e o texto típico de um Pix. Usadas
+# para resgatar um comprovante que o modelo descreveu sob o prefixo errado.
+_RECEIPT_RESCUE_MARKERS = (
+    "COMPROVANTE DE PAGAMENTO",
+    "COMPROVANTE DE TRANSFER",  # transferência / transferencia
+    "COMPROVANTE PIX",
+    "COMPROVANTE DO PIX",
+    "COMPROVANTE DE PIX",
+    "TRANSFERÊNCIA PIX",
+    "TRANSFERENCIA PIX",
+    "RECIBO DE PAGAMENTO",
+)
+
+
+def _strip_decoration(text: str) -> str:
+    """Remove enfeite cosmético do início da resposta do classificador: markdown
+    (**, `, #), aspas, espaço e um eventual rótulo "CATEGORIA n —"."""
+    cleaned = (text or "").strip().lstrip(_DECORATION_CHARS)
+    cleaned = _CATEGORY_LABEL_RE.sub("", cleaned)
+    return cleaned.lstrip(_DECORATION_CHARS)
+
+
+def _has_known_doc_prefix(description: str) -> bool:
+    upper = description.upper()
+    return any(
+        upper.startswith(prefix + ":") or upper.startswith(prefix + " ")
+        for prefix, _slug in _DOC_TYPE_PREFIXES
+    )
+
+
+def classify_media_description(description: str) -> tuple[str, str]:
+    """Interpreta a resposta crua do classificador de visão.
+
+    Devolve (kind, canonical): kind ∈ {"payment", "document", "ignore"}; canonical
+    é o texto a usar dali em diante. Para "payment", canonical SEMPRE começa com
+    "COMPROVANTE DE PAGAMENTO" — é isso que is_payment_receipt_message() e o
+    _route_entry reconhecem depois.
+
+    O caso Igor Lapsky (27/08/2026) mostrou que ancorar a decisão num
+    startswith() da resposta crua é frágil: um comprovante Pix legível caiu no
+    ramo de documento porque a resposta do modelo não começava exatamente com o
+    prefixo. Aqui a decoração é tolerada e um comprovante descrito sob prefixo de
+    documento (ou sem prefixo nenhum) é resgatado pelo conteúdo.
+    """
+    cleaned = _strip_decoration(description)
+    upper = cleaned.upper()
+
+    if upper.startswith("IGNORAR"):
+        return "ignore", cleaned
+    if upper.startswith(RECEIPT_PREFIX):
+        return "payment", cleaned
+
+    if any(marker in upper for marker in _RECEIPT_RESCUE_MARKERS):
+        body = cleaned
+        for prefix, _slug in _DOC_TYPE_PREFIXES:
+            if upper.startswith(prefix + ":") or upper.startswith(prefix + " "):
+                body = cleaned[len(prefix) + 1:].strip()
+                break
+        return "payment", f"{RECEIPT_PREFIX}: {body}"
+
+    return "document", cleaned
+
+
 async def describe_image_bytes(
     image_bytes: bytes,
     phone: str = "",
@@ -186,14 +253,27 @@ async def describe_image_bytes(
         }],
         max_tokens=300,
     )
-    description = resp.choices[0].message.content or ""
+    raw_description = resp.choices[0].message.content or ""
+    # A resposta crua fica sempre no log: no caso Igor (27/08/2026) ela só existia
+    # no e-mail da clínica e a rota errada ficou impossível de auditar depois.
+    logger.info("IMAGE_CLASSIFIER_RAW phone=%s output=%r", phone, raw_description[:300])
+
+    kind, description = classify_media_description(raw_description)
 
     # Imagens irrelevantes (bom dia, motivacionais, etc.) — descartar silenciosamente
-    if description.strip().upper().startswith("IGNORAR"):
+    if kind == "ignore":
         logger.info("IMAGE_IGNORED phone=%s (bom dia / imagem irrelevante)", phone)
         return None
 
-    is_payment = description.upper().startswith("COMPROVANTE DE PAGAMENTO")
+    is_payment = kind == "payment"
+    if is_payment and not _strip_decoration(raw_description).upper().startswith(RECEIPT_PREFIX):
+        logger.warning(
+            "IMAGE_CLASSIFIER_RESCUED_AS_PAYMENT phone=%s output=%r",
+            phone, raw_description[:300])
+    if not is_payment and not _has_known_doc_prefix(description):
+        logger.warning(
+            "IMAGE_CLASSIFIER_UNRECOGNIZED phone=%s output=%r — caindo no fluxo de documento",
+            phone, raw_description[:300])
     doc_type = _extract_doc_type(description)
     now = datetime.now(TZ)
     now_str = now.strftime("%Y%m%d_%H%M%S")
