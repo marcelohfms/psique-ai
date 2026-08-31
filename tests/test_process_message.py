@@ -2469,6 +2469,77 @@ async def test_patient_agent_prompt_flags_recent_cancellation_for_nonpayment():
     assert "NUNCA" in system_prompt and "confirm_appointment" in system_prompt
 
 
+async def test_patient_agent_prompt_canceled_block_covers_confirm_time_or_presence():
+    """Quando a única consulta é canceled_unpaid e o contato pergunta o horário ou
+    tenta confirmar presença, o bloco precisa mandar a Eva dizer que a consulta foi
+    cancelada por falta de pagamento e NÃO repetir horário de mensagens antigas do
+    histórico — sem isso ela repete o horário velho do thread como se a consulta
+    estivesse de pé (caso Glória/Paula, 5581991270824 vs 5581985580824, 2026-08-31:
+    consulta remarcada e cancelada no thread da paciente; no thread da mãe a Eva
+    confirmou '10:00' vindo de lembretes antigos, sendo que o registro dizia 09:00
+    e cancelada)."""
+    import datetime as _dt
+    from zoneinfo import ZoneInfo
+    from unittest.mock import AsyncMock, patch
+    from langchain_core.messages import HumanMessage, AIMessage
+    from tests.conftest import CONFIG
+    from app.graph.nodes import patient_agent_node
+    from app.database import DOCTOR_IDS
+
+    TZ = ZoneInfo("America/Recife")
+    now = _dt.datetime.now(TZ)
+    slot = (now + _dt.timedelta(days=2)).replace(hour=9, minute=0, second=0, microsecond=0)
+
+    appt = {
+        "appointment_id": "a-canceled",
+        "start_time": slot.isoformat(),
+        "status": "canceled",
+        "modality": "presencial",
+        "doctor_id": DOCTOR_IDS["julio"],
+        "canceled_unpaid": True,
+    }
+
+    captured = {}
+
+    class _FakeLLM:
+        async def ainvoke(self, messages):
+            captured["messages"] = messages
+            return AIMessage(content="ok")
+
+    state = {
+        "phone": "5581991270824@s.whatsapp.net",
+        "stage": "patient_agent",
+        "user_db_id": "paula-db-id",
+        "user_name": "Glória",
+        "patient_name": "Paula",
+        "patient_age": 36,
+        "is_patient": False,
+        "is_returning_patient": True,
+        "preferred_doctor": "julio",
+        "messages": [HumanMessage(content="quero confirmar o horário da consulta de hoje às 9h?")],
+    }
+
+    with patch("app.graph.nodes.get_user_by_phone", new_callable=AsyncMock, return_value=None), \
+         patch("app.graph.nodes.get_upcoming_appointments", new_callable=AsyncMock, return_value=[appt]), \
+         patch("app.google_calendar.format_doctor_schedules", return_value=""), \
+         patch("app.graph.nodes._get_agent_llm", return_value=_FakeLLM()), \
+         patch("app.graph.nodes.send_text", new_callable=AsyncMock), \
+         patch("app.graph.nodes.save_message", new_callable=AsyncMock), \
+         patch("app.graph.nodes.get_users_by_phone", new_callable=AsyncMock, return_value=[]), \
+         patch("app.graph.nodes.get_last_assistant_message_time", new_callable=AsyncMock, return_value=None), \
+         patch("app.graph.nodes.is_registration_complete", return_value=True), \
+         patch("app.graph.nodes.upsert_user", new_callable=AsyncMock, return_value=None):
+        await patient_agent_node(state, CONFIG)
+
+    system_prompt = captured["messages"][0].content
+    # The block must explicitly cover the "confirm time / confirm presence" case.
+    assert "confirmar presença" in system_prompt
+    assert "NÃO está mais ativa" in system_prompt
+    # And must forbid repeating a time from old messages in the thread history.
+    assert "NUNCA repita" in system_prompt
+    assert "mensagens antigas" in system_prompt
+
+
 def test_cancellation_rules_proactively_directs_stale_reschedule_flow():
     """A regra deve orientar a Eva a tratar QUALQUER menção a marcar/agendar como
     continuação de uma remarcação pendente quando a tag 🔄 REMARCAÇÃO PENDENTE
