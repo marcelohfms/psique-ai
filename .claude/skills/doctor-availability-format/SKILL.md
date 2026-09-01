@@ -76,7 +76,24 @@ Regras:
 - Datas sem vaga não entram na lista (mesmo critério do Passo 2).
 - Sem saudação, sem markdown de negrito, sem emoji, sem aviso de disponibilidade — é só a lista compacta.
 
-Se o pedido for a **mensagem completa** mas com os horários resumidos, mantenha a saudação, a nota de duração, o aviso ⚠️ e a pergunta final do Passo 2, só trocando o bloco de datas/bullets pelo formato compacto acima.
+## Mensagem completa com horários em linha
+
+Se o pedido for a **mensagem completa** mas com os horários numa linha só por data (sem bullets), mantenha a saudação, a nota de duração, o aviso ⚠️ e a pergunta final do Passo 2. Troque só o bloco de datas: uma linha `📅 **<Dia>, DD/MM**: hora1, hora2, ...` por data.
+
+```
+Olá! 😊 Seguem os horários disponíveis com a **Dra. Bruna**:
+
+📅 **Terça, 02/09**: 9h, 10h, 11h, 14h, 15h, 16h
+📅 **Quinta, 04/09**: 8h, 9h, 10h, 11h, 13h (online), 14h (online), 15h (online)
+
+Cada consulta tem duração de 1 hora.
+
+⚠️ Lembrando que nossos agendamentos acontecem simultaneamente, então não conseguimos garantir a disponibilidade por muito tempo — só teremos certeza quando o horário for efetivamente agendado.
+
+Qual horário fica melhor para você? 💙
+```
+
+Quando um horário sai marcado como `[online]` no `fetch_slots.py`, anote `(online)` ao lado dele na mensagem (vale para qualquer formato). Horários sem marca são presenciais e não precisam de nota.
 
 ## IDs / nomes dos médicos
 
