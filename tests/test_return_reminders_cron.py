@@ -283,6 +283,26 @@ async def test_send_for_row_sem_contato_nao_envia_nem_marca():
     table.update.assert_not_called()
 
 
+async def test_send_for_row_aborta_se_paciente_agendou_durante_a_fila():
+    # Race: o guard de classificação é avaliado uma vez na montagem da fila,
+    # mas o envio real acontece muito depois (throttle de 60s por mensagem).
+    # Se o paciente agendou o retorno nesse meio-tempo, a consulta mais
+    # recente passa a divergir de last_classified_appointment_id e o lembrete
+    # tem que ser abortado no momento do envio: não manda, não marca a flag —
+    # a linha volta a ser filtrada pelo guard na run de amanhã.
+    client, table = _client_returning([{"appointment_id": "appt-novo"}])
+    contacts = [{"phone": "5581111", "name": "João"}]
+    with patch("scripts.send_return_reminders.get_reminder_contacts",
+               new_callable=AsyncMock, return_value=contacts), \
+         patch("scripts.send_return_reminders.send_return_reminder_template",
+               new_callable=AsyncMock) as mock_send:
+        await srr._send_for_row(
+            client, _row(last_classified_appointment_id="appt-antigo"),
+            "retorno_no_mes", "month_of_sent_at", None)
+    mock_send.assert_not_awaited()
+    table.update.assert_not_called()
+
+
 async def test_send_for_row_marca_flag_mesmo_se_um_contato_falhar():
     client, table = _client_returning([])
     contacts = [{"phone": "5581111", "name": "João"}, {"phone": "5581222", "name": "Mãe"}]
@@ -344,8 +364,9 @@ async def test_return_reminder_adult_with_self_only_self():
     }
     client = MagicMock()
     table = MagicMock()
-    for m in ("update", "eq"):
+    for m in ("select", "update", "eq", "in_", "order", "limit"):
         getattr(table, m).return_value = table
+    # appointments vazio -> _is_stale_classification False -> não aborta o envio
     table.execute = AsyncMock(return_value=MagicMock(data=[]))
     client.from_.return_value = table
     with patch("scripts.send_return_reminders.get_reminder_contacts",

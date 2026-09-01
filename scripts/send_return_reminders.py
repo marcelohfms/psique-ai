@@ -278,8 +278,24 @@ async def _send_for_row(client, row: dict, template_name: str, sent_col: str, gr
     patient = row.get("patients") or {}
     patient_name = patient.get("name") or "paciente"
     from app.utils import display_name as _dn
-    doctor_label = DOCTOR_LABELS.get(row.get("doctor_id", ""), "médico(a)")
-    doctor_key = DOCTOR_KEYS.get(row.get("doctor_id", ""), "")
+    doctor_id = row.get("doctor_id")
+    doctor_label = DOCTOR_LABELS.get(doctor_id or "", "médico(a)")
+    doctor_key = DOCTOR_KEYS.get(doctor_id or "", "")
+
+    # Reavalia o guard de classificação AGORA, imediatamente antes de enviar.
+    # O `main` já filtra na montagem da fila, mas o envio é serializado com
+    # pausa de 60s por mensagem (BATCH_PAUSE_SECONDS), então no começo do mês
+    # a fila leva horas pra esvaziar. Se o paciente agendou o retorno nessa
+    # janela, a checagem inicial ficou obsoleta e o lembrete "gostaria de
+    # agendar?" sairia depois da consulta já marcada (caso Benjamim/Kédma,
+    # 01/09: agendou 16h45, lembrete às 17h10). Reconferir aqui aborta o
+    # disparo; a linha volta a ser candidata amanhã, quando o guard do `main`
+    # a filtra de novo.
+    if patient_id and doctor_id and await _is_stale_classification(
+        client, patient_id, doctor_id, row.get("last_classified_appointment_id")
+    ):
+        print(f"  [SKIP] return_reminder {row.get('id')} — paciente agendou durante a fila; classificação desatualizada.")
+        return
 
     contacts = await get_reminder_contacts(patient_id, "consulta", include_inactive=True) if patient_id else []
     if not contacts:
