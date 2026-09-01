@@ -91,10 +91,11 @@ async def test_document_upload_notifies_clinic_with_full_patient_name():
     assert "Ana Beatriz Souza" in body
 
 
-async def test_vision_call_uses_luna_params():
-    """O classificador de visão usa gpt-5.6-luna, que rejeita max_tokens (exige
-    max_completion_tokens) e precisa de reasoning_effort="none" — regressão aqui
-    quebraria TODO processamento de comprovante/documento em produção."""
+async def test_vision_call_uses_gpt52_params():
+    """O classificador de visão usa gpt-5.2 com temperature=0 (classificação
+    determinística), que rejeita max_tokens (exige max_completion_tokens) e usa
+    reasoning_effort="none" — regressão aqui quebraria TODO processamento de
+    comprovante/documento em produção."""
     from app.media import describe_image_bytes
     fake_openai = AsyncMock()
     fake_openai.chat.completions.create = AsyncMock(
@@ -105,11 +106,11 @@ async def test_vision_call_uses_luna_params():
 
     assert result is None  # IGNORAR é descartado silenciosamente
     kwargs = fake_openai.chat.completions.create.call_args.kwargs
-    assert kwargs["model"] == "gpt-5.6-luna"
+    assert kwargs["model"] == "gpt-5.2"
     assert kwargs["reasoning_effort"] == "none"
+    assert kwargs["temperature"] == 0
     assert "max_tokens" not in kwargs
     assert kwargs["max_completion_tokens"] == 300
-    assert "temperature" not in kwargs
 
 
 async def test_process_media_audio_returns_none_without_api_call():
