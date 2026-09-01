@@ -609,6 +609,7 @@ async def test_get_available_slots_ultima_semana_de_agosto_routes_to_month_scan(
         return []
 
     with patch("app.graph.tools.datetime", _FrozenDTTuesday), \
+         patch("app.google_calendar.datetime", _FrozenDTTuesday), \
          patch("app.graph.tools._get_doctor_calendar_id", new_callable=AsyncMock, return_value="cal123"), \
          patch("app.google_calendar.get_available_slots", new_callable=AsyncMock, side_effect=_fake_slots) as mock_slots:
         result = await get_available_slots.coroutine(
@@ -3061,7 +3062,8 @@ async def test_keep_original_appointment_recreates_event_and_restores_status():
         MagicMock(data=_keep_original_appt_data()),  # appointment select
         MagicMock(data=[]),                          # update
     ]
-    with patch("app.graph.tools.get_supabase", new_callable=AsyncMock, return_value=client), \
+    with patch("app.graph.tools.datetime", _FrozenDTTuesday), \
+         patch("app.graph.tools.get_supabase", new_callable=AsyncMock, return_value=client), \
          patch("app.graph.tools.get_users_by_phone", new_callable=AsyncMock, return_value=[{"id": "user-1"}]), \
          patch("app.graph.tools._resolve_doctor", new_callable=AsyncMock, return_value="julio"), \
          patch("app.graph.tools._get_doctor_calendar_id", new_callable=AsyncMock, return_value="cal123"), \
@@ -3101,7 +3103,8 @@ async def test_keep_original_appointment_slot_taken_offers_alternatives():
     from app.graph.tools import keep_original_appointment
     client, table, execute = _make_supabase_client()
     execute.return_value = MagicMock(data=_keep_original_appt_data())
-    with patch("app.graph.tools.get_supabase", new_callable=AsyncMock, return_value=client), \
+    with patch("app.graph.tools.datetime", _FrozenDTTuesday), \
+         patch("app.graph.tools.get_supabase", new_callable=AsyncMock, return_value=client), \
          patch("app.graph.tools.get_users_by_phone", new_callable=AsyncMock, return_value=[{"id": "user-1"}]), \
          patch("app.graph.tools._resolve_doctor", new_callable=AsyncMock, return_value="julio"), \
          patch("app.graph.tools._get_doctor_calendar_id", new_callable=AsyncMock, return_value="cal123"), \
@@ -3206,7 +3209,8 @@ async def test_keep_original_appointment_calendar_failure_keeps_pending_status()
     from app.graph.tools import keep_original_appointment
     client, table, execute = _make_supabase_client()
     execute.return_value = MagicMock(data=_keep_original_appt_data())
-    with patch("app.graph.tools.get_supabase", new_callable=AsyncMock, return_value=client), \
+    with patch("app.graph.tools.datetime", _FrozenDTTuesday), \
+         patch("app.graph.tools.get_supabase", new_callable=AsyncMock, return_value=client), \
          patch("app.graph.tools.get_users_by_phone", new_callable=AsyncMock, return_value=[{"id": "user-1"}]), \
          patch("app.graph.tools._resolve_doctor", new_callable=AsyncMock, return_value="julio"), \
          patch("app.graph.tools._get_doctor_calendar_id", new_callable=AsyncMock, return_value="cal123"), \
