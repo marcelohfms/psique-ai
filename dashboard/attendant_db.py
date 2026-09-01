@@ -107,6 +107,49 @@ async def get_return_reminder(patient_id: str) -> dict | None:
     return rows[0] if rows else None
 
 
+# ── Escopo por telefone (anti-IDOR) ───────────────────────────────────────────
+
+
+async def scope_for_phone(phone: str) -> tuple[str | None, set[str]]:
+    """Resolve o telefone da requisição para (contact_id, {patient_ids}).
+
+    É o conjunto de objetos que o painel pode legitimamente tocar naquela
+    conversa. As rotas de escrita comparam o ID alvo contra isto antes de mexer
+    no banco, para o token do painel não virar chave-mestra sobre qualquer ficha.
+    """
+    resolved = await resolve_contact_and_patients(phone)
+    contact = resolved.get("contact")
+    contact_id = contact["id"] if contact else None
+    patient_ids = {p["id"] for p in resolved.get("patients", [])}
+    return contact_id, patient_ids
+
+
+async def get_link_by_id(pc_id: str) -> dict | None:
+    """Linha de patient_contacts pelo id (id, patient_id, contact_id) ou None."""
+    client = await get_client()
+    res = (
+        await client.from_("patient_contacts")
+        .select("id, patient_id, contact_id")
+        .eq("id", pc_id)
+        .execute()
+    )
+    rows = res.data or []
+    return rows[0] if rows else None
+
+
+async def get_appointment_patient_id(appointment_id: str) -> str | None:
+    """patient_id da consulta, ou None se a consulta não existe/está sem vínculo."""
+    client = await get_client()
+    res = (
+        await client.from_("appointments")
+        .select("patient_id")
+        .eq("id", appointment_id)
+        .execute()
+    )
+    rows = res.data or []
+    return rows[0]["patient_id"] if rows else None
+
+
 # ── Updates com whitelist de campos ───────────────────────────────────────────
 
 _CONTACT_FIELDS = {"name", "cpf", "phone", "active", "manual_hold"}

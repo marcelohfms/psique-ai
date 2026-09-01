@@ -29,11 +29,47 @@ def _credentials() -> Credentials:
     )
 
 
-def _upload_and_share(service, folder_id: str, filename: str, image_bytes: bytes, mimetype: str = "image/jpeg") -> str:
-    """Upload file bytes to Drive, attempt to make public, return web view link.
+def _clinic_share_emails() -> list[str]:
+    """Contas Google da clínica que podem ler os arquivos (DRIVE_SHARE_EMAILS)."""
+    raw = os.getenv("DRIVE_SHARE_EMAILS", "")
+    return [e.strip() for e in raw.split(",") if e.strip()]
 
-    The permission step is best-effort: if it fails (e.g. Workspace admin disabled
-    public sharing), the file is still uploaded and a link is still returned.
+
+def _share_with_clinic(service, file_id: str) -> None:
+    """Compartilha o arquivo só com as contas Google da clínica (leitura).
+
+    Substitui o antigo `type: anyone` (link público). Comprovantes trazem CPF e
+    documentos trazem dado de saúde, então o link não pode valer para qualquer um.
+    Falha fechado: sem DRIVE_SHARE_EMAILS o arquivo fica só com a conta dona e
+    NUNCA volta a ser público. Best-effort por e-mail: uma falha num e-mail não
+    impede os outros nem o upload.
+    """
+    import logging as _log
+    _logger = _log.getLogger(__name__)
+
+    emails = _clinic_share_emails()
+    if not emails:
+        _logger.warning(
+            "DRIVE_SHARE_EMAILS vazio — arquivo %s fica só com a conta dona (não público)",
+            file_id,
+        )
+        return
+    for email in emails:
+        try:
+            service.permissions().create(
+                fileId=file_id,
+                body={"role": "reader", "type": "user", "emailAddress": email},
+                sendNotificationEmail=False,
+            ).execute()
+        except Exception:
+            _logger.warning("DRIVE_SHARE FAILED file_id=%s email=%s", file_id, email)
+
+
+def _upload_and_share(service, folder_id: str, filename: str, image_bytes: bytes, mimetype: str = "image/jpeg") -> str:
+    """Upload file bytes to Drive, share only with the clinic accounts, return web view link.
+
+    The permission step is best-effort: if it fails, the file is still uploaded and
+    a link is still returned (only the clinic accounts, or just the owner, can open it).
     """
     import logging as _log
     _logger = _log.getLogger(__name__)
@@ -47,13 +83,7 @@ def _upload_and_share(service, folder_id: str, filename: str, image_bytes: bytes
     file_id = file["id"]
     _logger.info("DRIVE_CREATE OK file_id=%s", file_id)
 
-    try:
-        service.permissions().create(
-            fileId=file_id,
-            body={"role": "reader", "type": "anyone"},
-        ).execute()
-    except Exception:
-        _logger.warning("DRIVE_SHARE FAILED (file created but not public) file_id=%s", file_id)
+    _share_with_clinic(service, file_id)
 
     return file.get("webViewLink", f"https://drive.google.com/file/d/{file_id}/view")
 

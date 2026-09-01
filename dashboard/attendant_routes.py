@@ -28,6 +28,35 @@ def verify_token(token: str = Query(default="")) -> None:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="token inválido")
 
 
+_FORA_DO_ESCOPO = "objeto não pertence ao contato desta conversa"
+
+
+async def _assert_contact_scope(phone: str, contact_id: str) -> None:
+    scope_contact_id, _ = await attendant_db.scope_for_phone(phone)
+    if scope_contact_id is None or scope_contact_id != contact_id:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=_FORA_DO_ESCOPO)
+
+
+async def _assert_patient_scope(phone: str, patient_id: str) -> None:
+    _, patient_ids = await attendant_db.scope_for_phone(phone)
+    if patient_id not in patient_ids:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=_FORA_DO_ESCOPO)
+
+
+async def _assert_link_scope(phone: str, pc_id: str) -> None:
+    contact_id, patient_ids = await attendant_db.scope_for_phone(phone)
+    link = await attendant_db.get_link_by_id(pc_id)
+    if link is None or (link["contact_id"] != contact_id and link["patient_id"] not in patient_ids):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=_FORA_DO_ESCOPO)
+
+
+async def _assert_appointment_scope(phone: str, appointment_id: str) -> None:
+    _, patient_ids = await attendant_db.scope_for_phone(phone)
+    pid = await attendant_db.get_appointment_patient_id(appointment_id)
+    if pid is None or pid not in patient_ids:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=_FORA_DO_ESCOPO)
+
+
 class UpdateBody(BaseModel):
     phone: str
     data: dict
@@ -51,6 +80,10 @@ async def paciente(patient_id: str, contact_id: str, _: None = Depends(verify_to
     if patient is None:
         raise HTTPException(status_code=404, detail="paciente não encontrado")
     link = await attendant_db.get_link(patient_id, contact_id)
+    # Sem vínculo, o par (paciente, contato) não é desta conversa: não devolve a
+    # ficha, para o token não permitir ler qualquer paciente por ID.
+    if link is None:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=_FORA_DO_ESCOPO)
     return_reminder = await attendant_db.get_return_reminder(patient_id)
     return {"patient": patient, "link": link, "return_reminder": return_reminder}
 
@@ -60,6 +93,7 @@ async def paciente(patient_id: str, contact_id: str, _: None = Depends(verify_to
 
 @router.post("/contato/{contact_id}")
 async def update_contato(contact_id: str, body: UpdateBody, _: None = Depends(verify_token)):
+    await _assert_contact_scope(body.phone, contact_id)
     await attendant_db.update_contact(contact_id, body.data)
     await attendant_db.log_event("attendant_edit_contact", body.phone,
                                  {"contact_id": contact_id, "fields": list(body.data.keys())})
@@ -68,6 +102,7 @@ async def update_contato(contact_id: str, body: UpdateBody, _: None = Depends(ve
 
 @router.post("/paciente/{patient_id}")
 async def update_paciente(patient_id: str, body: UpdateBody, _: None = Depends(verify_token)):
+    await _assert_patient_scope(body.phone, patient_id)
     await attendant_db.update_patient(patient_id, body.data)
     await attendant_db.log_event("attendant_edit_patient", body.phone,
                                  {"patient_id": patient_id, "fields": list(body.data.keys())})
@@ -80,6 +115,7 @@ async def update_return_date(patient_id: str, body: UpdateBody, _: None = Depend
 
     Só edita retorno já classificado pela médica; realinha os lembretes.
     """
+    await _assert_patient_scope(body.phone, patient_id)
     raw = body.data.get("next_return_date")
     if not raw:
         raise HTTPException(status_code=400, detail="next_return_date obrigatório")
@@ -95,6 +131,7 @@ async def update_return_date(patient_id: str, body: UpdateBody, _: None = Depend
 
 @router.post("/vinculo/{pc_id}")
 async def update_vinculo(pc_id: str, body: UpdateBody, _: None = Depends(verify_token)):
+    await _assert_link_scope(body.phone, pc_id)
     await attendant_db.update_link(pc_id, body.data)
     await attendant_db.log_event("attendant_edit_link", body.phone,
                                  {"pc_id": pc_id, "fields": list(body.data.keys())})
@@ -166,6 +203,7 @@ async def pagar(appointment_id: str, body: AtendentePagarBody, _: None = Depends
     if body.tipo not in ("taxa", "consulta"):
         raise HTTPException(status_code=400, detail="tipo deve ser 'taxa' ou 'consulta'")
 
+    await _assert_appointment_scope(body.phone, appointment_id)
     client = await get_client()
     await payments.mark_paid(
         client, appointment_id, body.tipo, body.valor, body.forma_pagamento,
@@ -189,12 +227,15 @@ async def pagar(appointment_id: str, body: AtendentePagarBody, _: None = Depends
 
 
 @router.post("/pagamentos/{appointment_id}/no-show")
-async def pagamentos_no_show(appointment_id: str, _: None = Depends(verify_token)):
+async def pagamentos_no_show(appointment_id: str, phone: str = Query(...), _: None = Depends(verify_token)):
     """Marca a consulta como falta (no_show) a partir do painel embutido no Chatwoot.
 
     Espelha a rota HTTP-Basic `/api/pagamentos/{id}/no-show` do painel completo,
     mas com auth por token (o iframe do Chatwoot não tem as credenciais Basic).
-    Fonte única da verdade: `return_reminders.mark_no_show`."""
+    Fonte única da verdade: `return_reminders.mark_no_show`.
+
+    `phone` (query) escopa a consulta ao contato da conversa, como as demais rotas."""
+    await _assert_appointment_scope(phone, appointment_id)
     client = await get_client()
     await return_reminders.mark_no_show(client, appointment_id)
     return {"ok": True}
@@ -212,6 +253,7 @@ class AtendenteIsentarBody(BaseModel):
 async def isentar(appointment_id: str, body: AtendenteIsentarBody, _: None = Depends(verify_token)):
     """Isenta a taxa de reserva pendente — evita o cancelamento automático por falta de
     pagamento quando a atendente decide dispensar a taxa (ex: cortesia, acordo com o paciente)."""
+    await _assert_appointment_scope(body.phone, appointment_id)
     client = await get_client()
     await payments.mark_fee_waived(client, appointment_id, body.paciente, body.medico, body.data_hora)
 

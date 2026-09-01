@@ -2,7 +2,16 @@
 from datetime import datetime
 from unittest.mock import MagicMock, patch
 
-from app.google_drive import TZ, _rename_file, build_receipt_filename, rename_file
+import pytest
+
+from app.google_drive import (
+    TZ,
+    _rename_file,
+    _share_with_clinic,
+    _upload_and_share,
+    build_receipt_filename,
+    rename_file,
+)
 
 
 def _mock_service(current_name: str):
@@ -79,3 +88,47 @@ def test_build_receipt_filename_falls_back_to_today_without_appointment():
     today = datetime.now(TZ).strftime("%d-%m-%Y")
     assert build_receipt_filename("Maria Silva", "—", "600,00") == f"Maria_Silva_{today}_R$600-00"
     assert build_receipt_filename("Maria Silva", "", "600,00") == f"Maria_Silva_{today}_R$600-00"
+
+
+# ── Compartilhamento restrito (fecha o link público "anyone") ─────────────────
+
+def _upload_service():
+    service = MagicMock()
+    service.files.return_value.create.return_value.execute.return_value = {
+        "id": "file-xyz", "webViewLink": "https://drive.google.com/file/d/file-xyz/view",
+    }
+    return service
+
+
+def test_share_with_clinic_usa_por_usuario_e_nunca_publico(monkeypatch):
+    monkeypatch.setenv("DRIVE_SHARE_EMAILS", "a@clinica.com, b@clinica.com")
+    service = MagicMock()
+    _share_with_clinic(service, "file-xyz")
+
+    calls = service.permissions.return_value.create.call_args_list
+    assert len(calls) == 2
+    emails = {c.kwargs["body"]["emailAddress"] for c in calls}
+    assert emails == {"a@clinica.com", "b@clinica.com"}
+    for c in calls:
+        assert c.kwargs["body"]["type"] == "user"
+        assert c.kwargs["body"]["role"] == "reader"
+        assert c.kwargs["body"].get("type") != "anyone"
+        assert c.kwargs["sendNotificationEmail"] is False
+
+
+def test_share_with_clinic_sem_emails_nao_compartilha(monkeypatch):
+    """Falha fechado: sem a lista, o arquivo fica só com a conta dona, nunca público."""
+    monkeypatch.delenv("DRIVE_SHARE_EMAILS", raising=False)
+    service = MagicMock()
+    _share_with_clinic(service, "file-xyz")
+    service.permissions.return_value.create.assert_not_called()
+
+
+def test_upload_and_share_nunca_torna_publico(monkeypatch):
+    monkeypatch.setenv("DRIVE_SHARE_EMAILS", "clinica@exemplo.com")
+    service = _upload_service()
+    link = _upload_and_share(service, "folder-1", "arquivo.pdf", b"bytes", "application/pdf")
+    assert link == "https://drive.google.com/file/d/file-xyz/view"
+    calls = service.permissions.return_value.create.call_args_list
+    assert all(c.kwargs["body"]["type"] != "anyone" for c in calls)
+    assert calls[0].kwargs["body"]["emailAddress"] == "clinica@exemplo.com"
