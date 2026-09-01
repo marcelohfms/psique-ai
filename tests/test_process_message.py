@@ -5546,3 +5546,81 @@ async def test_patient_agent_confirm_guard_fixes_sent_summary_and_pending():
     pend = result.get("pending_appointment")
     assert pend is not None
     assert pend["slot_datetime"].endswith("T11:00:00")
+
+
+# ── _duration_rule_for: menor retornante com consulta já concluída ────────────
+# Caso Enrico/Patrícia (5581988522467, 01/09/2026): menor do Dr. Júlio cadastrado
+# como novo (is_returning_patient=False) que já fez a 1ª consulta e voltou para o
+# acompanhamento. Sem o sinal de consulta concluída, a Eva reoferecia a primeira
+# consulta (2h em duas partes). Espelha o prior_completed de book_appointment.
+def test_duration_rule_minor_prior_completed_is_followup():
+    from app.graph.nodes import _duration_rule_for, MINOR_RETURNING_RULE
+
+    state = {"is_returning_patient": False, "preferred_doctor": "julio"}
+    rule = _duration_rule_for(state, patient_age=10, first_name="Enrico",
+                              has_prior_completed=True)
+    assert rule == MINOR_RETURNING_RULE.format(patient_age=10)
+
+
+def test_duration_rule_minor_no_prior_is_first_consult():
+    from app.graph.nodes import _duration_rule_for, MINOR_RULE
+
+    state = {"is_returning_patient": False, "preferred_doctor": "julio"}
+    rule = _duration_rule_for(state, patient_age=10, first_name="Enrico",
+                              has_prior_completed=False)
+    assert rule == MINOR_RULE.format(patient_name="Enrico", patient_age=10)
+
+
+def test_duration_rule_returning_flag_still_wins_without_db():
+    # is_returning_patient=True já basta, independente do sinal do banco.
+    from app.graph.nodes import _duration_rule_for, MINOR_RETURNING_RULE
+
+    state = {"is_returning_patient": True, "preferred_doctor": "julio"}
+    rule = _duration_rule_for(state, patient_age=10, first_name="Enrico",
+                              has_prior_completed=False)
+    assert rule == MINOR_RETURNING_RULE.format(patient_age=10)
+
+
+@pytest.mark.asyncio
+async def test_patient_has_prior_completed_true():
+    from app.graph import nodes
+
+    client, table, execute = make_supabase_client()
+    execute.return_value = MagicMock(data=[{"id": "appt-1"}])
+
+    with patch("app.graph.tools._resolve_patient_for_booking",
+               new_callable=AsyncMock, return_value={"id": "pat-1"}), \
+         patch("app.database.get_supabase", new_callable=AsyncMock,
+               return_value=client):
+        got = await nodes._patient_has_prior_completed("5581988522467", {})
+
+    assert got is True
+    table.eq.assert_any_call("status", "completed")
+    table.eq.assert_any_call("patient_id", "pat-1")
+
+
+@pytest.mark.asyncio
+async def test_patient_has_prior_completed_false_when_no_appt():
+    from app.graph import nodes
+
+    client, table, execute = make_supabase_client()
+    execute.return_value = MagicMock(data=[])
+
+    with patch("app.graph.tools._resolve_patient_for_booking",
+               new_callable=AsyncMock, return_value={"id": "pat-1"}), \
+         patch("app.database.get_supabase", new_callable=AsyncMock,
+               return_value=client):
+        got = await nodes._patient_has_prior_completed("5581988522467", {})
+
+    assert got is False
+
+
+@pytest.mark.asyncio
+async def test_patient_has_prior_completed_false_when_no_patient():
+    from app.graph import nodes
+
+    with patch("app.graph.tools._resolve_patient_for_booking",
+               new_callable=AsyncMock, return_value=None):
+        got = await nodes._patient_has_prior_completed("5581988522467", {})
+
+    assert got is False
