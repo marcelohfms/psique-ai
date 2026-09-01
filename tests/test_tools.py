@@ -4085,6 +4085,40 @@ async def test_register_payment_rename_unknown_amount_uses_placeholder():
     assert "?" not in new_filename
 
 
+async def test_register_payment_unreadable_amount_asks_value_instead_of_confirming():
+    """amount='?' (valor ilegível): a Eva NÃO pode 'confirmar' o pagamento.
+
+    Antes, o ramo '?' gravava a planilha com '?' e devolvia uma mensagem que a Eva
+    lia como sucesso, sem marcar a taxa — a vaga ficava desprotegida e o cron
+    cancelava (caso Fernanda 5587996373892). Agora register_payment devolve uma
+    instrução interna para captar o valor com o paciente e RE-CHAMAR a tool. NÃO
+    grava planilha e NÃO lança exceção (o pior caso é perguntar o valor de novo)."""
+    from app.graph.tools import register_payment
+    client, _, _ = _make_supabase_client_with_appointment()
+    with patch("app.graph.tools.get_supabase", new_callable=AsyncMock, return_value=client), \
+         patch("app.graph.tools.get_users_by_phone", new_callable=AsyncMock, return_value=[{"id": "user-123", "patient_name": "Maria"}]), \
+         patch("app.graph.tools.log_event", new_callable=AsyncMock), \
+         patch("app.graph.tools._notify_clinic", new_callable=AsyncMock) as mock_notify, \
+         patch("app.google_drive.rename_file", new_callable=AsyncMock), \
+         patch("app.google_sheets.append_payment_receipt", new_callable=AsyncMock) as mock_sheets, \
+         patch("app.graph.tools.send_text", new_callable=AsyncMock) as mock_send:
+        result = await register_payment.coroutine(
+            amount="?",
+            drive_link="https://drive.google.com/file/d/abc/view",
+            state=_make_state(),
+            config=CONFIG,
+        )
+
+    # Instrução interna, não uma confirmação
+    assert "[INSTRUÇÃO INTERNA" in result
+    assert "register_payment" in result       # manda re-chamar a tool
+    assert "✅" not in result                  # nunca "confirma"
+    # Não gravou planilha (linha com '?') nem notificou como recebido
+    mock_sheets.assert_not_awaited()
+    # E não travou o fluxo: retornou uma string normal, sem exceção
+    assert isinstance(result, str) and result
+
+
 def _make_supabase_client_for_override(candidates: list[dict]):
     """Supabase client for patient_name_override tests: call 1 is the `patients`
     ilike search (returns `candidates`), call 2 is the scheduled-appointment lookup

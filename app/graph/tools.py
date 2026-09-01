@@ -3213,6 +3213,34 @@ def _payment_need_fullname_prompt(context: str) -> str:
     )
 
 
+def _payment_unreadable_amount_prompt(context: str) -> str:
+    """Retorno de register_payment quando o comprovante foi recebido mas o sistema
+    NÃO conseguiu ler o valor pago (amount='?').
+
+    Antes, o ramo do valor ilegível gravava a planilha com '?' e devolvia uma
+    mensagem que a Eva lia como "registrado com sucesso", sem marcar a taxa — a
+    vaga ficava desprotegida e o cron cancelava (caso Fernanda Danielle
+    5587996373892, 01/09/2026). E quando a paciente esclarecia "foram os 100", a
+    Eva dizia "já ficou registrada" sem re-chamar a tool.
+
+    Mesmo padrão de _payment_disambiguation_prompt: em vez de perguntar e confiar
+    na LLM, DIZ o que precisa acontecer na próxima chamada. Não lança exceção; o
+    pior caso é a Eva perguntar o valor de novo, nunca travar o fluxo."""
+    return (
+        f"[INSTRUÇÃO INTERNA — NÃO ENVIE AO PACIENTE] {context} "
+        "NADA foi registrado como pago: a taxa de reserva NÃO foi marcada e a vaga "
+        "NÃO está garantida. "
+        "NUNCA diga ao paciente que o pagamento foi recebido/registrado, que a taxa "
+        "foi confirmada ou que a vaga está garantida. "
+        "Peça ao paciente, de forma simpática, qual foi o valor exato que ele pagou "
+        "(ex: 'só pra confirmar, qual foi o valor que você pagou?'). Assim que ele "
+        "responder o valor, chame register_payment DE NOVO com amount=[valor "
+        "informado pelo paciente], mantendo drive_link e image_description da "
+        "mensagem original. Só confirme o pagamento depois que uma chamada de "
+        "register_payment retornar sucesso."
+    )
+
+
 _CLINIC_PIX_DIGITS = re.sub(r"\D", "", CORRECT_PIX_KEY)  # "42006848000178"
 
 
@@ -3868,8 +3896,22 @@ async def register_payment(
         if appt_id_to_pay:
             await _update_appts({"paid_at": now_dt.isoformat(), "booking_fee_paid_at": now_dt.isoformat()})
     elif amount_float <= 0:
-        payment_type = "?"
-        payment_note = "Valor não identificado no comprovante."
+        # Valor ilegível no comprovante. NÃO grava planilha nem marca taxa: fazer
+        # isso com "?" dava falsa impressão de pago, deixava a vaga desprotegida e o
+        # cron cancelava. Em vez de "confirmar", devolve instrução interna para a Eva
+        # captar o valor com o paciente e RE-CHAMAR register_payment. Retorno
+        # antecipado (o rename do Drive já rodou acima); sem exceção, não trava o fluxo.
+        try:
+            await log_event("payment_receipt_unreadable", phone, {
+                "patient_name": patient_name,
+                "drive_link": drive_link,
+                "appointment_dt": appointment_dt,
+            })
+        except Exception:
+            _logger.exception("LOG_EVENT_FAILED (unreadable amount) patient=%s", patient_name)
+        return _payment_unreadable_amount_prompt(
+            "O comprovante foi recebido, mas o sistema NÃO conseguiu ler o valor pago."
+        )
     elif abs(amount_float - 100) < 1 and not booking_fee_already_paid:
         # Taxa de reserva (only when not yet paid)
         payment_type = "Taxa de Reserva"
