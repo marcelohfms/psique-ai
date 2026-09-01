@@ -179,7 +179,7 @@ def _get_collect_llm():
     global _collect_llm
     if _collect_llm is None:
         _collect_llm = _with_transient_retry(
-            ChatOpenAI(model="gpt-5.6-luna", reasoning_effort="none").with_structured_output(CollectInfoOutput)
+            ChatOpenAI(model="gpt-5.2", temperature=0, reasoning_effort="none").with_structured_output(CollectInfoOutput)
         )
     return _collect_llm
 
@@ -188,8 +188,9 @@ def _get_agent_llm():
     global _agent_llm
     if _agent_llm is None:
         _agent_llm = _with_transient_retry(
-            # gpt-5.6-luna: temperature fixa em 1 e tools na chat API exigem reasoning_effort="none"
-            ChatOpenAI(model="gpt-5.6-luna", reasoning_effort="none").bind_tools(TOOLS)
+            # gpt-5.2: aceita temperature=0 (diferente do luna, que travava em 1 e fazia a Eva
+            # chutar horário na confirmação); reasoning_effort="none" evita gastar com raciocínio
+            ChatOpenAI(model="gpt-5.2", temperature=0, reasoning_effort="none").bind_tools(TOOLS)
         )
     return _agent_llm
 
