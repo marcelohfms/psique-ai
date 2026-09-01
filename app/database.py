@@ -542,6 +542,31 @@ async def save_message(phone: str, role: str, content: str) -> None:
         pass  # never let persistence break the main flow
 
 
+async def get_last_user_message(phone: str) -> str | None:
+    """Return the content of the most recent 'user' message for this phone, or None.
+
+    Used by the eva-ativa replay path to decide whether a comprovante it is about to
+    reprocess is already persisted in `messages` (the replay re-runs Vision and mints a
+    fresh drive_link each time, so exact-text comparison is useless — the robust signal
+    is "the last saved user message is itself a receipt")."""
+    try:
+        client = await get_supabase()
+        result = (
+            await client.from_("messages")
+            .select("content")
+            .eq("phone", _strip_phone(phone))
+            .eq("role", "user")
+            .order("created_at", desc=True)
+            .limit(1)
+            .execute()
+        )
+        if result.data:
+            return result.data[0].get("content")
+    except Exception:
+        pass
+    return None
+
+
 async def get_last_assistant_message_time(phone: str):
     """Return the created_at datetime of the most recent assistant message, or None."""
     try:
