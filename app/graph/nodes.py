@@ -1738,6 +1738,112 @@ def _extract_pending_appointment(text: str, state: dict) -> dict | None:
     }
 
 
+def _offered_hms_from_messages(messages: list) -> set[str]:
+    """Horários (HH:MM) da oferta mais recente do get_available_slots no histórico.
+
+    Procura a ToolMessage mais recente do get_available_slots; se o nome não estiver
+    preenchido, cai para a ToolMessage mais recente cujo conteúdo tenha horários.
+    Set vazio quando não há oferta rastreável (encaixe, instrução da atendente)."""
+    import re as _re
+    _time = _re.compile(r'\b(\d{1,2}):(\d{2})\b')
+
+    def _hms(text: str) -> set[str]:
+        out = set()
+        for _m in _time.finditer(text or ""):
+            h, mi = int(_m.group(1)), int(_m.group(2))
+            if 6 <= h <= 21:
+                out.add(f"{h:02d}:{mi:02d}")
+        return out
+
+    named = None
+    any_tool = None
+    for _m in reversed(list(messages)):
+        if getattr(_m, "type", "") != "tool":
+            continue
+        _content = str(getattr(_m, "content", "") or "")
+        if getattr(_m, "name", None) == "get_available_slots":
+            named = _content
+            break
+        if any_tool is None and _time.search(_content):
+            any_tool = _content
+    source = named if named is not None else any_tool
+    return _hms(source) if source else set()
+
+
+def _requested_hms_from_messages(messages: list, limit: int = 3) -> set[str]:
+    """Horários que o paciente pediu explicitamente nas últimas mensagens humanas.
+
+    Reconhece "11h", "11 h", "11hs", "11:30", "às 11". Ignora datas (dd/mm) porque
+    o padrão de hora exige o marcador de hora (h/:/às)."""
+    import re as _re
+    _hm = _re.compile(r'\b(\d{1,2}):(\d{2})\b')
+    _hs = _re.compile(r'\b(\d{1,2})\s*h(?:oras|s)?\b', _re.IGNORECASE)
+    _as = _re.compile(r'\b[àa]s\s+(\d{1,2})\b', _re.IGNORECASE)
+    out: set[str] = set()
+    seen = 0
+    for _m in reversed(list(messages)):
+        if getattr(_m, "type", "") != "human":
+            continue
+        seen += 1
+        text = str(getattr(_m, "content", "") or "")
+        for mt in _hm.finditer(text):
+            h, mi = int(mt.group(1)), int(mt.group(2))
+            if 6 <= h <= 21:
+                out.add(f"{h:02d}:{mi:02d}")
+        for rgx in (_hs, _as):
+            for mt in rgx.finditer(text):
+                h = int(mt.group(1))
+                if 6 <= h <= 21:
+                    out.add(f"{h:02d}:00")
+        if seen >= limit:
+            break
+    return out
+
+
+def _correct_confirmation_summary_time(content: str, state: dict) -> str | None:
+    """Corrige o horário do resumo "Só confirmar antes de registrar" quando o modelo
+    escreve um horário que não foi oferecido e diverge do que o paciente pediu.
+
+    O gpt-5.6-luna (reasoning_effort="none") passou a chutar 08:00 (primeiro slot da
+    grade) no texto do resumo, mesmo com o paciente tendo escolhido outro horário.
+    Só corrige com evidência confiável: o horário-alvo é a interseção ÚNICA entre o
+    que o paciente pediu e o que foi realmente ofertado. Sem isso, não altera nada.
+
+    Retorna o texto corrigido, ou None quando não há o que corrigir. Casos reais em
+    31/08/2026 (João Pedro 5581991542212, Paula/Glória 5581991270824) — ver
+    docs/incidentes/2026-08-31-horario-errado-na-confirmacao-luna.md."""
+    import re as _re
+    if not _re.search(r'Só\s+(?:para\s+)?confirmar\s+antes\s+de\s+registrar', content or ""):
+        return None
+    _m = _re.search(r'[àa]s\s+(\d{1,2}):(\d{2})', content)
+    if not _m:
+        return None
+    summary_hm = f"{int(_m.group(1)):02d}:{int(_m.group(2)):02d}"
+
+    messages = state.get("messages") or []
+    offered = _offered_hms_from_messages(messages)
+    if not offered:
+        return None  # sem oferta rastreável — não mexe (encaixe, atendente)
+
+    requested = _requested_hms_from_messages(messages)
+
+    # Já consistente: horário do resumo foi ofertado e não contradiz o pedido.
+    if summary_hm in offered and (not requested or summary_hm in requested):
+        return None
+
+    intended = sorted(hm for hm in requested if hm in offered)
+    if len(intended) != 1:
+        return None  # sem alvo único e confiável
+    target = intended[0]
+    if target == summary_hm:
+        return None
+
+    corrected = _re.sub(
+        r'([àa]s\s+)\d{1,2}:\d{2}', rf'\g<1>{target}', content, count=1
+    )
+    return corrected if corrected != content else None
+
+
 def _duration_rule_for(state: dict, patient_age: int, first_name: str) -> str:
     """Escolhe a regra de duração/perfil injetada no prompt do patient_agent.
 
@@ -2849,6 +2955,25 @@ async def patient_agent_node(state: ConversationState, config: RunnableConfig) -
             )
             _tool_msg = _TMsg3(content=str(_transfer_result), tool_call_id=_tc_id)
             return {"messages": [_forced_ai, _tool_msg]}
+
+    # ── Guarda: horário errado no resumo de confirmação (modelo barato) ──────
+    # O gpt-5.6-luna às vezes escreve, no resumo "Só confirmar antes de registrar",
+    # um horário que o paciente não escolheu (tipicamente 08:00, o 1º da grade).
+    # Corrige o texto ANTES de enviar e ANTES de virar pending_appointment — assim
+    # o que o paciente lê bate com o que será agendado. Só age com evidência
+    # confiável (interseção única entre o pedido do paciente e a oferta real).
+    if not response.tool_calls and response.content:
+        try:
+            _corrected_summary = _correct_confirmation_summary_time(response.content, state)
+        except Exception:
+            _corrected_summary = None
+            _pa_logger.exception("CONFIRM_TIME_GUARD failed phone=%s", state.get("phone"))
+        if _corrected_summary and _corrected_summary != response.content:
+            _pa_logger.info(
+                "CONFIRM_TIME_GUARD corrected confirmation summary time phone=%s",
+                state.get("phone"),
+            )
+            response.content = _corrected_summary
 
     # Only send to WhatsApp when the LLM produces a final text (no tool calls)
     if not response.tool_calls and response.content:
