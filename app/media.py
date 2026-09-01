@@ -179,6 +179,86 @@ def classify_media_description(description: str) -> tuple[str, str]:
     return "document", cleaned
 
 
+# Valor monetário brasileiro dentro de um texto de comprovante: "R$ 1.234,56",
+# "R$ 100,00" ou "R$ 100". Exige dígito logo após o R$ para não casar com
+# "R$ [ilegível]" ou "R$ ?".
+_BRL_AMOUNT_RE = re.compile(r"R\$\s*([0-9][0-9.\s]*,[0-9]{2}|[0-9]{1,7})")
+
+
+def _find_brl_amount(text: str) -> str | None:
+    """Primeiro valor em reais legível no texto (ex: '100,00'), ou None."""
+    if not text:
+        return None
+    m = _BRL_AMOUNT_RE.search(text)
+    if not m:
+        return None
+    return m.group(1).replace(" ", "") or None
+
+
+def _description_has_amount(description: str) -> bool:
+    """True quando a descrição do comprovante já traz um valor legível."""
+    return _find_brl_amount(description) is not None
+
+
+async def _reread_amount(
+    image_bytes: bytes,
+    source_bytes: bytes | None,
+    source_ext: str,
+    phone: str = "",
+) -> str | None:
+    """Segunda leitura, mais forte, focada SÓ no valor pago. Retorna o valor
+    (ex: '100,00') ou None se ainda ilegível.
+
+    Por que uma segunda passada e não a mesma: a 1ª leitura classifica com
+    temperature=0 e reasoning_effort='none' — reprocessar igual daria o mesmo
+    resultado. Aqui a leitura é DIFERENTE: prompt focado só no valor, raciocínio
+    ligado e, para PDF, o texto embutido do comprovante (onde o valor costuma vir
+    selecionável) mais um render em DPI maior. Nunca lança: erro vira None."""
+    pdf_text = ""
+    img_for_read = image_bytes
+    if source_ext == "pdf" and source_bytes:
+        try:
+            import fitz  # pymupdf
+            doc = fitz.open(stream=source_bytes, filetype="pdf")
+            page = doc[0]
+            pdf_text = page.get_text() or ""
+            pix = page.get_pixmap(dpi=300)  # 1ª passada usa 150; aqui reforça
+            img_for_read = pix.tobytes("jpeg")
+            doc.close()
+        except Exception:
+            logger.exception("REREAD_PDF_EXTRACT FAILED phone=%s", phone)
+
+    b64 = base64.b64encode(img_for_read).decode()
+    content = [
+        {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{b64}"}},
+        {"type": "text", "text": (
+            "Este é um comprovante de pagamento. Extraia APENAS o valor pago/transferido.\n"
+            "Responda somente o número em reais, no formato brasileiro (ex: 100,00 ou 1.234,56).\n"
+            "Se não conseguir ler o valor com certeza, responda exatamente: ILEGIVEL"
+        )},
+    ]
+    if pdf_text.strip():
+        content.append({"type": "text", "text": f"Texto extraído do PDF do comprovante:\n{pdf_text[:2000]}"})
+
+    try:
+        resp = await _get_openai().chat.completions.create(
+            model="gpt-5.2",
+            temperature=0,
+            reasoning_effort="low",  # diferente da 1ª passada ('none'): aqui vale raciocinar
+            messages=[{"role": "user", "content": content}],
+            max_completion_tokens=200,  # folga p/ não truncar a resposta com raciocínio ligado
+        )
+        out = (resp.choices[0].message.content or "").strip()
+    except Exception:
+        logger.exception("REREAD_AMOUNT call failed phone=%s", phone)
+        return None
+
+    logger.info("REREAD_AMOUNT phone=%s output=%r", phone, out[:60])
+    if "ILEGIVEL" in out.upper():
+        return None
+    return _find_brl_amount(out) or _find_brl_amount("R$ " + out)
+
+
 async def describe_image_bytes(
     image_bytes: bytes,
     phone: str = "",
@@ -269,6 +349,16 @@ async def describe_image_bytes(
     patient = await _get_patient_name(phone) if phone else "paciente"
 
     if is_payment:
+        # Se a 1ª leitura não trouxe o valor, faz uma releitura reforçada (só do
+        # valor) ANTES de repassar à Eva — evita o "?" que fazia a Eva não gravar a
+        # taxa. Só recorre à clínica (em register_payment) se isto também falhar.
+        if not _description_has_amount(description):
+            recovered = await _reread_amount(image_bytes, source_bytes, source_ext, phone)
+            if recovered:
+                description = f"{description} — valor transferido R$ {recovered}"
+                logger.info("REREAD_AMOUNT_RECOVERED phone=%s value=%s", phone, recovered)
+            else:
+                logger.warning("REREAD_AMOUNT_STILL_UNREADABLE phone=%s", phone)
         # ── Payment receipt: upload and hand off to Eva's register_payment tool ──
         folder_id = os.getenv("GOOGLE_DRIVE_PAYMENTS_FOLDER_ID")
         if not folder_id:

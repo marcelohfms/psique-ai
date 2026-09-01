@@ -3213,31 +3213,24 @@ def _payment_need_fullname_prompt(context: str) -> str:
     )
 
 
-def _payment_unreadable_amount_prompt(context: str) -> str:
-    """Retorno de register_payment quando o comprovante foi recebido mas o sistema
-    NÃO conseguiu ler o valor pago (amount='?').
+def _payment_unreadable_amount_prompt() -> str:
+    """Retorno de register_payment quando o comprovante chegou mas o valor ficou
+    ilegível MESMO após a releitura reforçada (app.media._reread_amount).
 
-    Antes, o ramo do valor ilegível gravava a planilha com '?' e devolvia uma
-    mensagem que a Eva lia como "registrado com sucesso", sem marcar a taxa — a
-    vaga ficava desprotegida e o cron cancelava (caso Fernanda Danielle
-    5587996373892, 01/09/2026). E quando a paciente esclarecia "foram os 100", a
-    Eva dizia "já ficou registrada" sem re-chamar a tool.
-
-    Mesmo padrão de _payment_disambiguation_prompt: em vez de perguntar e confiar
-    na LLM, DIZ o que precisa acontecer na próxima chamada. Não lança exceção; o
-    pior caso é a Eva perguntar o valor de novo, nunca travar o fluxo."""
+    Decisão do produto: NÃO pedir o valor ao paciente. A clínica é avisada (no
+    ramo que chama esta função) para ler manualmente e lançar no painel, e a Eva
+    só agradece o envio, de forma neutra, sem dizer que registrou nem que a vaga
+    está garantida. Não lança exceção; o pior caso é uma resposta neutra."""
     return (
-        f"[INSTRUÇÃO INTERNA — NÃO ENVIE AO PACIENTE] {context} "
-        "NADA foi registrado como pago: a taxa de reserva NÃO foi marcada e a vaga "
-        "NÃO está garantida. "
-        "NUNCA diga ao paciente que o pagamento foi recebido/registrado, que a taxa "
-        "foi confirmada ou que a vaga está garantida. "
-        "Peça ao paciente, de forma simpática, qual foi o valor exato que ele pagou "
-        "(ex: 'só pra confirmar, qual foi o valor que você pagou?'). Assim que ele "
-        "responder o valor, chame register_payment DE NOVO com amount=[valor "
-        "informado pelo paciente], mantendo drive_link e image_description da "
-        "mensagem original. Só confirme o pagamento depois que uma chamada de "
-        "register_payment retornar sucesso."
+        "[INSTRUÇÃO INTERNA — NÃO ENVIE AO PACIENTE] O comprovante foi recebido, mas "
+        "o sistema não conseguiu ler o valor automaticamente, nem na releitura. "
+        "A CLÍNICA JÁ FOI AVISADA para conferir o valor manualmente. "
+        "NADA foi registrado como pago: a taxa NÃO foi marcada e a vaga NÃO está "
+        "garantida ainda. "
+        "NUNCA diga que o pagamento foi registrado/confirmado nem que a vaga está "
+        "garantida. NÃO peça o valor ao paciente. "
+        "Responda de forma simpática e neutra: agradeça o envio do comprovante e diga "
+        "que vamos confirmar o pagamento e retornamos em seguida."
     )
 
 
@@ -3896,11 +3889,21 @@ async def register_payment(
         if appt_id_to_pay:
             await _update_appts({"paid_at": now_dt.isoformat(), "booking_fee_paid_at": now_dt.isoformat()})
     elif amount_float <= 0:
-        # Valor ilegível no comprovante. NÃO grava planilha nem marca taxa: fazer
-        # isso com "?" dava falsa impressão de pago, deixava a vaga desprotegida e o
-        # cron cancelava. Em vez de "confirmar", devolve instrução interna para a Eva
-        # captar o valor com o paciente e RE-CHAMAR register_payment. Retorno
-        # antecipado (o rename do Drive já rodou acima); sem exceção, não trava o fluxo.
+        # Valor ilegível mesmo após a releitura reforçada (app.media._reread_amount).
+        # NÃO grava planilha nem marca taxa (fazer isso com "?" dava falsa impressão
+        # de pago e o cron cancelava) e NÃO pergunta o valor ao paciente. Avisa a
+        # clínica para ler manualmente e lançar no painel, e devolve instrução interna
+        # para a Eva só agradecer, de forma neutra. Retorno antecipado (o rename do
+        # Drive já rodou acima); tudo em try/except, sem exceção que trave o fluxo.
+        try:
+            await _notify_clinic(
+                f"⚠️ Comprovante recebido, mas o VALOR ficou ILEGÍVEL — confira e lance "
+                f"manualmente no painel.\nPaciente: {patient_name}\nConsulta: {appointment_dt}"
+                f"\nLink: {drive_link}",
+                subject=f"Comprovante ilegível — {patient_name}",
+            )
+        except Exception:
+            _logger.exception("NOTIFY_CLINIC FAILED (unreadable amount) patient=%s", patient_name)
         try:
             await log_event("payment_receipt_unreadable", phone, {
                 "patient_name": patient_name,
@@ -3909,9 +3912,7 @@ async def register_payment(
             })
         except Exception:
             _logger.exception("LOG_EVENT_FAILED (unreadable amount) patient=%s", patient_name)
-        return _payment_unreadable_amount_prompt(
-            "O comprovante foi recebido, mas o sistema NÃO conseguiu ler o valor pago."
-        )
+        return _payment_unreadable_amount_prompt()
     elif abs(amount_float - 100) < 1 and not booking_fee_already_paid:
         # Taxa de reserva (only when not yet paid)
         payment_type = "Taxa de Reserva"
