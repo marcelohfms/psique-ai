@@ -1602,3 +1602,12 @@ async def test_message_created_seeds_the_label_tracker():
     await _handle_chatwoot_payload(payload)
 
     assert _conv_labels["42"] == frozenset({"eva-inativa"})
+
+
+def test_security_headers_present(http_client):
+    """A API expõe nosniff, Referrer-Policy e HSTS em toda resposta."""
+    r = http_client.get("/health")
+    assert r.status_code == 200
+    assert r.headers["X-Content-Type-Options"] == "nosniff"
+    assert r.headers["Referrer-Policy"] == "no-referrer"
+    assert "max-age=" in r.headers["Strict-Transport-Security"]

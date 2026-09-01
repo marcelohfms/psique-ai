@@ -5,12 +5,20 @@ import base64
 import sys
 import os
 
+# Senha real: o painel agora recusa "" e "changeme" (fail closed). Setar antes do
+# import garante que o global do módulo nasça com uma senha válida.
+os.environ["DASHBOARD_PASSWORD"] = "s3nha-teste"
+
 # Patch Jinja2Templates before importing the dashboard app
 with patch("fastapi.templating.Jinja2Templates"):
     sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "dashboard"))
     from main import app
+    import main as _dash_main
 
-AUTH = base64.b64encode(b"admin:changeme").decode()
+# Reforça mesmo se o módulo já tiver sido importado por outro teste.
+_dash_main.DASHBOARD_PASSWORD = "s3nha-teste"
+
+AUTH = base64.b64encode(b"admin:s3nha-teste").decode()
 HEADERS = {"Authorization": f"Basic {AUTH}"}
 
 

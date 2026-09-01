@@ -3,7 +3,7 @@ from starlette.testclient import TestClient
 import main as dashboard_main
 import return_reminders
 
-AUTH = ("user", "changeme")
+AUTH = ("user", "s3nha-teste")  # DASHBOARD_PASSWORD do conftest
 JULIO_ID = "d5baa58b-a788-4f40-b8c0-512c189150be"
 
 

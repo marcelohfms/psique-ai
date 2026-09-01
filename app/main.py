@@ -184,6 +184,20 @@ app = FastAPI(title="Psique Chatbot", lifespan=lifespan)
 app.include_router(auth_router)
 
 
+@app.middleware("http")
+async def _security_headers(request: Request, call_next):
+    """Cabeçalhos de segurança básicos em toda resposta do webhook.
+
+    A API só serve webhooks e /health, mas nosniff e HSTS são higiene barata:
+    impedem o navegador de adivinhar content-type e forçam HTTPS.
+    """
+    response = await call_next(request)
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["Referrer-Policy"] = "no-referrer"
+    response.headers["Strict-Transport-Security"] = "max-age=63072000; includeSubDomains"
+    return response
+
+
 # ── Webhook verification (Meta requires GET on the webhook URL) ───────────────
 
 @app.get("/webhook")
