@@ -754,6 +754,84 @@ async def test_get_available_slots_mes_sem_turno_sem_vaga_fala_do_mes():
     assert "terça" not in result.lower()
 
 
+# ── get_available_slots — turno combinado "tarde e noite" ────────────────────
+# Regressão Havana/Luíza (5581997763235, 2026-09-01): pediu "tarde e noite" e a
+# Eva caía no "qualquer", que mostrava só os primeiros horários (de manhã) e
+# escondia a tarde/noite que existia. Agora "tarde_noite" é um turno de primeira
+# classe: varre a união dos dois turnos e rotula "tarde ou noite" na resposta.
+
+async def test_get_available_slots_mes_turno_combinado_tarde_noite():
+    """'setembro' + 'tarde_noite' → repassa o turno combinado ao calendário e
+    rotula a resposta como 'tarde ou noite' (nunca 'tarde_noite' cru)."""
+    from datetime import date as _date
+    from app.graph.tools import get_available_slots
+
+    async def _fake_slots(*, calendar_id, preferred_day, preferred_shift, slot_minutes, doctor_key, **_kw):
+        d = _date.fromisoformat(preferred_day)
+        if preferred_shift == "tarde_noite" and d.weekday() == 3:  # quinta
+            return [
+                (datetime(d.year, d.month, d.day, 14, 0, tzinfo=TZ), "escolha"),
+                (datetime(d.year, d.month, d.day, 19, 0, tzinfo=TZ), "escolha"),
+            ]
+        return []
+
+    with patch("app.graph.tools.datetime", _FrozenDTAugustSunday), \
+         patch("app.google_calendar.datetime", _FrozenDTAugustSunday), \
+         patch("app.graph.tools._get_doctor_calendar_id", new_callable=AsyncMock, return_value="cal123"), \
+         patch("app.google_calendar.get_available_slots", new_callable=AsyncMock, side_effect=_fake_slots) as mock_slots:
+        result = await get_available_slots.coroutine(
+            preferred_day="setembro",
+            preferred_shift="tarde_noite",
+            slot_duration_minutes=60,
+            state=_make_state(),
+            config=CONFIG,
+        )
+
+    # Repassou o turno combinado ao calendário (não quebrou em duas chamadas soltas)
+    shifts_asked = {c.kwargs["preferred_shift"] for c in mock_slots.call_args_list}
+    assert shifts_asked == {"tarde_noite"}, shifts_asked
+    # Rótulo legível, nunca o valor cru com underscore
+    assert "tarde ou noite" in result.lower()
+    assert "tarde_noite" not in result
+    assert "14:00" in result and "19:00" in result
+
+
+async def test_get_available_slots_mes_qualquer_mostra_tarde_e_noite_nao_so_manha():
+    """Fix #2: no modo 'qualquer' por mês, um dia com manhã+tarde+noite deve
+    mostrar também tarde e noite, não só os 3 primeiros horários (de manhã)."""
+    from datetime import date as _date
+    from app.graph.tools import get_available_slots
+
+    async def _fake_slots(*, calendar_id, preferred_day, preferred_shift, slot_minutes, doctor_key, **_kw):
+        d = _date.fromisoformat(preferred_day)
+        if preferred_shift == "qualquer" and d.weekday() == 3:  # quinta cheia
+            return [
+                (datetime(d.year, d.month, d.day, 9, 0, tzinfo=TZ), "escolha"),
+                (datetime(d.year, d.month, d.day, 10, 0, tzinfo=TZ), "escolha"),
+                (datetime(d.year, d.month, d.day, 11, 0, tzinfo=TZ), "escolha"),
+                (datetime(d.year, d.month, d.day, 15, 0, tzinfo=TZ), "escolha"),
+                (datetime(d.year, d.month, d.day, 19, 0, tzinfo=TZ), "escolha"),
+            ]
+        return []
+
+    with patch("app.graph.tools.datetime", _FrozenDTAugustSunday), \
+         patch("app.google_calendar.datetime", _FrozenDTAugustSunday), \
+         patch("app.graph.tools._get_doctor_calendar_id", new_callable=AsyncMock, return_value="cal123"), \
+         patch("app.google_calendar.get_available_slots", new_callable=AsyncMock, side_effect=_fake_slots):
+        result = await get_available_slots.coroutine(
+            preferred_day="setembro",
+            preferred_shift="qualquer",
+            slot_duration_minutes=60,
+            state=_make_state(),
+            config=CONFIG,
+        )
+
+    # A amostra do dia precisa representar tarde (15:00) e noite (19:00),
+    # não só a manhã (que antes tomava as 3 vagas mostradas).
+    assert "15:00" in result, result
+    assert "19:00" in result, result
+
+
 async def test_get_available_slots_dia_com_nome_do_mes_vai_para_a_data():
     """'15 de setembro' é uma data, não um mês: consulta só esse dia."""
     from app.graph.tools import get_available_slots

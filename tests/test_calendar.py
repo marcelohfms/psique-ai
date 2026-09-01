@@ -475,6 +475,57 @@ async def test_bruna_monday_default_shift_includes_half_hour_window(freeze_calen
     assert (datetime(2026, 3, 23, 7, 30, tzinfo=TZ), "online") in slots
 
 
+# ── turno combinado "tarde e noite" ──────────────────────────────────────────
+# Regressão Havana/Luíza (5581997763235, 2026-09-01): a responsável pediu
+# "tarde e noite" e a Eva não tinha como expressar dois turnos numa chamada só.
+# SHIFT_HOURS agora aceita combinações e get_available_slots devolve a união dos
+# dois turnos (13h-21h) numa varredura só.
+
+def test_shift_hours_has_combined_shifts():
+    from app.google_calendar import SHIFT_HOURS
+    assert SHIFT_HOURS["tarde_noite"] == (13, 21)
+    assert SHIFT_HOURS["manha_tarde"] == (7, 18)
+
+
+async def test_slots_tarde_noite_julio_thursday_spans_afternoon_and_evening(freeze_calendar_now):
+    """Dr. Júlio, quinta: 9-12, 14-18, 18-20. 'tarde_noite' deve varrer 13h-21h e
+    trazer tarde (14-17) E noite (18-19) numa chamada só."""
+    from app.google_calendar import get_available_slots
+
+    service = _make_service([])  # agenda livre
+    with patch("app.google_calendar._credentials", return_value=MagicMock()), \
+         patch("app.google_calendar.build", return_value=service):
+        slots = await get_available_slots(
+            calendar_id="cal-test",
+            preferred_day="2026-03-26",  # quinta-feira
+            preferred_shift="tarde_noite",
+            slot_minutes=60,
+            doctor_key="julio",
+        )
+    hours = sorted(dt.hour for dt, _ in slots)
+    # tarde (14,15,16,17) e noite (18,19); nada de manhã
+    assert 9 not in hours and 10 not in hours and 11 not in hours
+    assert 14 in hours  # tarde
+    assert 18 in hours and 19 in hours  # noite
+
+
+async def test_slots_tarde_noite_excludes_morning_window(freeze_calendar_now):
+    """'tarde_noite' começa às 13h — nenhum slot de manhã pode aparecer."""
+    from app.google_calendar import get_available_slots
+
+    service = _make_service([])
+    with patch("app.google_calendar._credentials", return_value=MagicMock()), \
+         patch("app.google_calendar.build", return_value=service):
+        slots = await get_available_slots(
+            calendar_id="cal-test",
+            preferred_day="2026-03-26",  # quinta
+            preferred_shift="tarde_noite",
+            slot_minutes=60,
+            doctor_key="julio",
+        )
+    assert all(dt.hour >= 13 for dt, _ in slots)
+
+
 async def test_timezone_america_recife(freeze_calendar_now):
     """Returned slots must carry America/Recife tzinfo."""
     from app.google_calendar import get_available_slots

@@ -242,6 +242,56 @@ def _times_with_modality(slots: list[tuple[datetime, str]]) -> str:
     )
 
 
+# Rótulo legível de cada turno para a fala da Eva. Os combinados NUNCA podem
+# aparecer com o underscore cru ("tarde_noite") numa mensagem ao paciente.
+_SHIFT_LABELS = {
+    "manha": "manhã",
+    "tarde": "tarde",
+    "noite": "noite",
+    "manha_tarde": "manhã ou tarde",
+    "tarde_noite": "tarde ou noite",
+}
+
+
+def _shift_of_hour(hour: int) -> str:
+    """Turno canônico (manha/tarde/noite) a que um horário pertence, pela hora de
+    início. Usado para distribuir a amostra do dia entre os turnos."""
+    if hour < 12:
+        return "manha"
+    if hour < 18:
+        return "tarde"
+    return "noite"
+
+
+def _spread_across_shifts(
+    slots: list[tuple[datetime, str]], max_n: int
+) -> list[tuple[datetime, str]]:
+    """Escolhe até `max_n` slots do dia garantindo que cada turno presente
+    (manhã/tarde/noite) apareça ao menos uma vez, antes de completar com os mais
+    cedo. Sem isso, mostrar "os N primeiros" enterra tarde/noite atrás da manhã —
+    quem quer tarde/noite via só manhã (caso Havana/Luíza, 5581997763235)."""
+    if len(slots) <= max_n:
+        return list(slots)
+    ordered = sorted(slots, key=lambda s: s[0])
+    picked: list[tuple[datetime, str]] = []
+    seen_shifts: set[str] = set()
+    # 1ª passada: o primeiro slot de cada turno presente, em ordem cronológica.
+    for slot in ordered:
+        shift = _shift_of_hour(slot[0].hour)
+        if shift not in seen_shifts:
+            seen_shifts.add(shift)
+            picked.append(slot)
+            if len(picked) == max_n:
+                return sorted(picked, key=lambda s: s[0])
+    # 2ª passada: completa com os horários mais cedo ainda não escolhidos.
+    for slot in ordered:
+        if slot not in picked:
+            picked.append(slot)
+            if len(picked) == max_n:
+                break
+    return sorted(picked, key=lambda s: s[0])
+
+
 _ANY_DAY_MAX_DAYS_CURRENT_WEEK = 3
 _ANY_DAY_MIN_DISTINCT_DAYS = 2
 _ANY_DAY_MAX_WEEKS = 8
@@ -404,8 +454,11 @@ async def _search_month_shift(
 
     # Sem turno definido a pergunta é "quais DIAS tem no mês" → vale a pena
     # mostrar mais dias (e menos horários por dia) do que numa busca por turno.
+    # Turno combinado (tarde_noite/manha_tarde) precisa de mais vagas por dia e de
+    # spread, senão só um dos dois turnos apareceria.
+    is_combined = preferred_shift in ("manha_tarde", "tarde_noite")
     max_days = _MONTH_MAX_DAYS_ANY_SHIFT if any_shift else 3
-    max_slots_per_day = 3 if any_shift else 2
+    max_slots_per_day = 3 if (any_shift or is_combined) else 2
 
     _sb_busy = await _prefetch_supabase_busy(
         doctor, date(year, month_num, start_day), date(year, month_num, days_in_month)
@@ -434,7 +487,8 @@ async def _search_month_shift(
 
     month_name_pt = ["", "Janeiro", "Fevereiro", "Março", "Abril", "Maio", "Junho",
                      "Julho", "Agosto", "Setembro", "Outubro", "Novembro", "Dezembro"][month_num]
-    shift_suffix = "" if any_shift else f" para o turno da {preferred_shift}"
+    shift_label = _SHIFT_LABELS.get(preferred_shift, preferred_shift)
+    shift_suffix = "" if any_shift else f" para o turno da {shift_label}"
 
     if not slots_by_day:
         if month_end_only:
@@ -455,18 +509,20 @@ async def _search_month_shift(
     elif any_shift:
         header_line = f"Dias com horários disponíveis em {month_name_pt}:"
     else:
-        header_line = f"Primeiros horários disponíveis em {preferred_shift}:"
+        header_line = f"Primeiros horários disponíveis em {shift_label}:"
     lines = [header_line]
     for day, day_slots in sorted(slots_by_day.items())[:max_days]:
         day_label = _WEEKDAY_LABELS_PT.get(day.weekday(), "")
         date_label = day.strftime("%d/%m")
         header = f"{day_label}, dia {date_label}" if day_label else date_label
         if any_shift:
-            times = _times_with_modality(day_slots[:max_slots_per_day])
-            more = " (e outros)" if len(day_slots) > max_slots_per_day else ""
+            sample = _spread_across_shifts(day_slots, max_slots_per_day)
+            times = _times_with_modality(sample)
+            more = " (e outros)" if len(day_slots) > len(sample) else ""
             lines.append(f"- {header}: {times}{more}")
         else:
-            for slot, modality in day_slots[:max_slots_per_day]:
+            sample = _spread_across_shifts(day_slots, max_slots_per_day) if is_combined else day_slots[:max_slots_per_day]
+            for slot, modality in sample:
                 lines.append(f"  {slot.strftime('%H:%M')} em {header} [{_MOD_LABELS.get(modality, modality)}]")
 
     if any_shift:
@@ -604,7 +660,7 @@ async def _search_week(
 @tool
 async def get_available_slots(
     preferred_day: str,
-    preferred_shift: Literal["manha", "tarde", "noite", "qualquer"],
+    preferred_shift: Literal["manha", "tarde", "noite", "manha_tarde", "tarde_noite", "qualquer"],
     slot_duration_minutes: Literal[60, 120],
     state: Annotated[dict, InjectedState],
     config: RunnableConfig,
@@ -630,7 +686,13 @@ async def get_available_slots(
     outra data.
 
     slot_duration_minutes: 120 para primeira consulta <18 anos, 60 para outros casos.
-    preferred_shift: use "qualquer" para verificar todos os turnos e oferecer opções.
+    preferred_shift: "manha", "tarde" ou "noite" para um turno só. Quando o paciente
+      pedir DOIS turnos, use o valor combinado numa chamada só, nunca duas chamadas
+      nem "qualquer": "tarde e noite"/"tarde ou noite" → "tarde_noite"; "manhã e
+      tarde"/"manhã ou tarde" → "manha_tarde". Use "qualquer" só quando o paciente
+      não tiver preferência de turno (aí a ferramenta lista os DIAS com vaga).
+      NUNCA afirme que não há tarde/noite (ou "só de manhã") sem ter chamado esta
+      ferramenta pedindo exatamente esse turno e recebido "não há horários".
     """
     result = await _get_available_slots_impl(
         preferred_day, preferred_shift, slot_duration_minutes, state, config
@@ -659,7 +721,7 @@ async def get_available_slots(
 
 async def _get_available_slots_impl(
     preferred_day: str,
-    preferred_shift: Literal["manha", "tarde", "noite", "qualquer"],
+    preferred_shift: Literal["manha", "tarde", "noite", "manha_tarde", "tarde_noite", "qualquer"],
     slot_duration_minutes: Literal[60, 120],
     state: Annotated[dict, InjectedState],
     config: RunnableConfig,
