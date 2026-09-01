@@ -3094,6 +3094,29 @@ def _payment_disambiguation_prompt(context: str, names: str) -> str:
     )
 
 
+def _payment_need_fullname_prompt(context: str) -> str:
+    """Retorno de register_payment quando o paciente do comprovante não pôde ser
+    identificado com segurança E não é seguro listar nomes.
+
+    Vale para o remetente que não tem vínculo com nenhum paciente e informou um
+    nome ambíguo/parcial: listar os pacientes que casam com esse nome exporia dados
+    de terceiros a um contato (caso Maria Gabriela, 5581999893449, 01/09/2026 —
+    Eva devolveu cinco nomes de pacientes de outras famílias). Aqui pedimos o nome
+    completo SEM citar ninguém, mantendo a mesma exigência de re-chamar a tool que
+    o _payment_disambiguation_prompt usa (senão Eva 'confirma' sem registrar)."""
+    return (
+        f"[INSTRUÇÃO INTERNA — NÃO ENVIE AO PACIENTE] {context} "
+        "NADA foi registrado: nenhum pagamento foi salvo e nenhuma vaga foi garantida. "
+        "PRIVACIDADE: NÃO cite nem liste nomes de pacientes do sistema — nunca revele a "
+        "um contato o nome de pacientes que não sejam dele. "
+        "Peça ao remetente o NOME COMPLETO do paciente e, assim que ele responder, chame "
+        "register_payment DE NOVO com patient_name_override=[nome completo informado], "
+        "mantendo amount, drive_link e image_description da mensagem original. "
+        "NUNCA diga que o comprovante foi recebido/registrado, nem que a consulta está "
+        "garantida, antes de uma chamada de register_payment retornar sucesso."
+    )
+
+
 _CLINIC_PIX_DIGITS = re.sub(r"\D", "", CORRECT_PIX_KEY)  # "42006848000178"
 
 
@@ -3231,39 +3254,57 @@ async def register_payment(
             "id, name, doctor_id"
         ).ilike("name", f"%{search_name}%").limit(5).execute()
 
-        if not user_result.data:
-            return (
-                f"Não encontrei nenhum paciente com o nome '{search_name}'. "
-                "Pode confirmar o nome completo?"
-            )
-
-        candidates = user_result.data
+        candidates = user_result.data or []
 
         from app.patients import get_contact_by_phone as _gcbp, get_patients_by_contact as _gpbc
         _sender_contact = await _gcbp(phone)
-        _linked_ids = {p["id"] for p in await _gpbc(_sender_contact["id"])} if _sender_contact else set()
+        _linked_patients = await _gpbc(_sender_contact["id"]) if _sender_contact else []
+        _linked_ids = {p["id"] for p in _linked_patients}
 
-        if len(candidates) > 1:
-            # Ambiguous ilike match (e.g. "%Francisco%" matches many unrelated patients).
-            # Prefer an exact case-insensitive full-name match; otherwise prefer the
-            # candidate already linked (via patient_contacts) to the sender's own phone —
-            # never silently pick candidates[0], which can misattribute a payment to a
-            # completely unrelated patient.
-            exact = [c for c in candidates if c.get("name", "").strip().lower() == search_name.lower()]
-            if len(exact) == 1:
-                candidates = exact
+        def _norm_name(s: str) -> str:
+            return " ".join((s or "").strip().lower().split())
+
+        _target = _norm_name(search_name)
+        exact = [c for c in candidates if _norm_name(c.get("name", "")) == _target]
+        # Candidatos que pertencem ao PRÓPRIO remetente (vínculo em patient_contacts).
+        # Só nomes desse conjunto podem ser exibidos de volta — jamais os de terceiros.
+        linked_cands = [c for c in candidates if c["id"] in _linked_ids]
+
+        # PRIVACIDADE (caso Maria Gabriela, 5581999893449, 01/09/2026): a busca
+        # `ilike("%nome%")` varre a tabela inteira e casa com pacientes de outras
+        # famílias. Listar esses nomes de volta expõe dados de terceiros ao contato.
+        # A resolução abaixo prioriza os pacientes do próprio remetente e o match
+        # exato; quando resta ambiguidade entre pacientes NÃO vinculados, pede o
+        # nome completo sem citar ninguém.
+        if len(linked_cands) == 1:
+            matched = linked_cands[0]
+        elif len(linked_cands) > 1:
+            # Vários pacientes DO PRÓPRIO remetente batem com o nome (família no
+            # mesmo telefone). Tente afunilar pelo nome exato; senão, é seguro
+            # listar — são pacientes que o remetente já conhece.
+            _lex = [c for c in linked_cands if _norm_name(c.get("name", "")) == _target]
+            if len(_lex) == 1:
+                matched = _lex[0]
             else:
-                linked = [c for c in candidates if c["id"] in _linked_ids]
-                if len(linked) == 1:
-                    candidates = linked
-            if len(candidates) > 1:
-                names = ", ".join(c.get("name", "Paciente") for c in candidates)
+                names = ", ".join(c.get("name", "Paciente") for c in linked_cands)
                 return _payment_disambiguation_prompt(
-                    f"Encontrei mais de um paciente com nome parecido a '{search_name}': {names}.",
+                    f"Neste contato há mais de um paciente com nome parecido a '{search_name}': {names}.",
                     names,
                 )
+        elif len(exact) == 1:
+            # Terceiro genuíno com nome COMPLETO exato — segue para a confirmação
+            # abaixo (o único nome citado é o que o próprio remetente digitou).
+            matched = exact[0]
+        elif len(_linked_ids) == 1:
+            # Remetente tem um único paciente cadastrado; o comprovante é dele,
+            # mesmo que a busca por nome não o tenha trazido (top-5 entre homônimos).
+            matched = _linked_patients[0]
+        else:
+            # Terceiro com nome ambíguo/parcial: nunca revele candidatos.
+            return _payment_need_fullname_prompt(
+                f"Não consegui identificar com segurança o paciente pelo nome '{search_name}'."
+            )
 
-        matched = candidates[0]
         patient_name = matched.get("name", "Paciente")
         user_id = matched["id"]
 

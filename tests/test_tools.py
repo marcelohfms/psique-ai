@@ -3994,12 +3994,13 @@ def _make_supabase_client_for_override(candidates: list[dict]):
     return client
 
 
-async def test_register_payment_override_ambiguous_name_asks_for_clarification():
-    """Regression: `ilike("%Francisco%")` can match several unrelated patients
-    (e.g. 'Francisco Fonseca Lima' and 'Francisco Domingues Bruno de Faria').
-    Silently taking candidates[0] misattributed a real payment to the wrong
-    patient (case: Francisco Domingues, 2026-07-03). With no way to tell which
-    candidate is right, register_payment must ask instead of guessing."""
+async def test_register_payment_override_ambiguous_name_never_leaks_other_patients():
+    """PRIVACIDADE (caso Maria Gabriela, 5581999893449, 01/09/2026): quando o
+    remetente NÃO tem vínculo (patient_contacts) e o nome informado bate com vários
+    pacientes não relacionados (ex.: '%Francisco%' → 'Francisco Fonseca Lima' e
+    'Francisco Domingues Bruno de Faria'), register_payment NÃO pode listar esses
+    nomes de volta — isso expõe dados de pacientes de terceiros a um contato. Deve
+    pedir o nome completo, sem citar ninguém, e não registrar nada."""
     from app.graph.tools import register_payment
     client = _make_supabase_client_for_override([
         {"id": "wrong-id", "name": "Francisco Fonseca Lima", "doctor_id": "d5baa58b-a788-4f40-b8c0-512c189150be"},
@@ -4018,9 +4019,12 @@ async def test_register_payment_override_ambiguous_name_asks_for_clarification()
             config=CONFIG,
         )
 
-    assert "Francisco Fonseca Lima" in result
-    assert "Francisco Domingues Bruno de Faria" in result
-    mock_sheets.assert_not_awaited()  # must not register the payment against either candidate
+    # Nenhum nome de paciente pode vazar.
+    assert "Francisco Fonseca Lima" not in result
+    assert "Francisco Domingues Bruno de Faria" not in result
+    # E deve pedir o nome completo, sem registrar nada.
+    assert "nome completo" in result.lower()
+    mock_sheets.assert_not_awaited()
 
 
 async def test_register_payment_multiple_patients_on_phone_demands_new_tool_call():
@@ -4420,6 +4424,54 @@ async def test_register_payment_settles_saldo_of_completed_appt_older_than_15_da
     assert mock_sheets.call_args.kwargs["payment_type"] == "Consulta"
     assert "QUITADA" in result
     assert "Pagamento Parcial" not in result
+
+
+async def test_register_payment_single_linked_patient_resolves_without_leaking():
+    """Caso Maria Gabriela (5581999893449, 01/09/2026): o contato tem UM único
+    paciente vinculado (o filho, 'Gabriel Botelho De Oliveira'), mas o nome curto
+    informado ('Gabriel') bate com dezenas de pacientes não relacionados no banco.
+    A busca por nome (limit 5) trouxe cinco 'Gabriel/Gabriela' de OUTRAS famílias e
+    a Eva listou os cinco nomes de volta — vazamento de dados de terceiros.
+
+    Como o remetente tem exatamente um paciente vinculado, register_payment deve
+    resolver silenciosamente para ELE, sem perguntar e sem jamais citar os nomes
+    dos pacientes não relacionados."""
+    from app.graph.tools import register_payment
+    # A busca por "%Gabriel%" devolve cinco pacientes NÃO relacionados (o filho não
+    # aparece no top-5 entre dezenas de homônimos).
+    client = _make_supabase_client_for_override([
+        {"id": "unrelated-1", "name": "Melissa Gabrielle Florentino De Lima", "doctor_id": "18b01f87-eacd-4905-bd4a-a8293991e6fd"},
+        {"id": "unrelated-2", "name": "Gabriela Domingos Freitas", "doctor_id": "18b01f87-eacd-4905-bd4a-a8293991e6fd"},
+        {"id": "unrelated-3", "name": "Antônio Gabriell Barbosa Vilela De Melo", "doctor_id": "18b01f87-eacd-4905-bd4a-a8293991e6fd"},
+        {"id": "unrelated-4", "name": "Gabriela Thayse Alves", "doctor_id": "18b01f87-eacd-4905-bd4a-a8293991e6fd"},
+        {"id": "unrelated-5", "name": "Gabriel Galindo de Souza", "doctor_id": "18b01f87-eacd-4905-bd4a-a8293991e6fd"},
+    ])
+    _linked_son = {"id": "gabriel-botelho-id", "name": "Gabriel Botelho De Oliveira", "doctor_id": "18b01f87-eacd-4905-bd4a-a8293991e6fd"}
+    with patch("app.graph.tools.get_supabase", new_callable=AsyncMock, return_value=client), \
+         patch("app.patients.get_contact_by_phone", new_callable=AsyncMock, return_value={"id": "contact-mg"}), \
+         patch("app.patients.get_patients_by_contact", new_callable=AsyncMock, return_value=[_linked_son]), \
+         patch("app.patients.get_contacts_for_patient", new_callable=AsyncMock, return_value=[{"phone": "5581999893449"}]), \
+         patch("app.graph.tools.log_event", new_callable=AsyncMock), \
+         patch("app.graph.tools.send_text", new_callable=AsyncMock), \
+         patch("app.google_drive.rename_file", new_callable=AsyncMock), \
+         patch("app.google_sheets.append_payment_receipt", new_callable=AsyncMock) as mock_sheets, \
+         patch("app.graph.tools._notify_clinic", new_callable=AsyncMock):
+        result = await register_payment.coroutine(
+            amount="100,00",
+            drive_link="https://drive.google.com/file/d/abc/view",
+            patient_name_override="Gabriel",
+            state=_make_state(preferred_doctor="bruna"),
+            config=CONFIG,
+        )
+
+    # Nenhum nome de paciente não relacionado pode aparecer na resposta.
+    for _name in ("Melissa Gabrielle", "Gabriela Domingos", "Antônio Gabriell",
+                  "Gabriela Thayse", "Gabriel Galindo"):
+        assert _name not in result, f"vazou nome não relacionado: {_name}"
+    # Resolveu para o único paciente vinculado e registrou o pagamento sob o nome dele.
+    assert "✅" in result
+    mock_sheets.assert_awaited_once()
+    assert "Gabriel Botelho De Oliveira" in mock_sheets.call_args[0][0]
 
 
 # ── _parse_brl_amount ──────────────────────────────────────────────────────────
