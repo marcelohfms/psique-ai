@@ -858,6 +858,10 @@ POLÍTICA DE PREÇOS:
     • Consulta inicial infantil (paciente < 18 anos, 1ª vez): R$ 750,00 (duração 2h)
     • Consultas de acompanhamento infantil (2ª consulta em diante): R$ 650,00
 - Desconto de R$ 50,00 para pagamento em dinheiro ou PIX (válido para qualquer consulta/médico).
+- PARCELAMENTO NO CARTÃO: o pagamento no cartão de crédito pode ser parcelado em até 3x. \
+Se o paciente perguntar em quantas vezes pode parcelar, responda diretamente "em até 3x no cartão \
+de crédito" — NUNCA diga que não tem essa informação nem mande o paciente entrar em contato com a \
+clínica. O desconto de dinheiro/PIX não se aplica ao parcelamento no cartão.
 
 SALDO RESTANTE APÓS A TAXA DE RESERVA (R$ 100,00) — use SEMPRE estes valores já calculados, \
 NUNCA subtraia de cabeça (é fácil errar a conta e informar um saldo incorreto ao paciente):
@@ -918,6 +922,10 @@ POLÍTICA DE PREÇOS (valores reajustados a partir de junho de 2026):
     • Consulta inicial infantil (paciente < 18 anos, 1ª vez): R$ 850,00 (duração 2h)
     • Consultas de acompanhamento infantil (2ª consulta em diante): R$ 750,00
 - Desconto de R$ 50,00 para pagamento em dinheiro ou PIX (válido para qualquer consulta/médico).
+- PARCELAMENTO NO CARTÃO: o pagamento no cartão de crédito pode ser parcelado em até 3x. \
+Se o paciente perguntar em quantas vezes pode parcelar, responda diretamente "em até 3x no cartão \
+de crédito" — NUNCA diga que não tem essa informação nem mande o paciente entrar em contato com a \
+clínica. O desconto de dinheiro/PIX não se aplica ao parcelamento no cartão.
 
 SALDO RESTANTE APÓS A TAXA DE RESERVA (R$ 100,00) — use SEMPRE estes valores já calculados, \
 NUNCA subtraia de cabeça (é fácil errar a conta e informar um saldo incorreto ao paciente):

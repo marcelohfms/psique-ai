@@ -1879,6 +1879,24 @@ async def test_price_notice_not_injected_when_already_notified():
     assert "AVISO ÚNICO OBRIGATÓRIO" not in system_msg.content
 
 
+# ── parcelamento no cartão ────────────────────────────────────────────────────
+
+def test_pricing_rules_mention_parcelamento_pre_reajuste():
+    from datetime import date
+    from app.graph.prompts import get_pricing_rules
+    rules = get_pricing_rules(date(2026, 5, 1))
+    assert "em até 3x" in rules
+    assert "PARCELAMENTO NO CARTÃO" in rules
+
+
+def test_pricing_rules_mention_parcelamento_pos_reajuste():
+    from datetime import date
+    from app.graph.prompts import get_pricing_rules
+    rules = get_pricing_rules(date(2026, 9, 1))
+    assert "em até 3x" in rules
+    assert "PARCELAMENTO NO CARTÃO" in rules
+
+
 # ── get_pricing_exception_rule ────────────────────────────────────────────────
 
 def test_pricing_exception_rule_no_exception_returns_empty():
