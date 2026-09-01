@@ -1,4 +1,6 @@
 import asyncio
+import base64
+import binascii
 import logging
 import os
 from contextlib import asynccontextmanager
@@ -163,9 +165,21 @@ async def index(request: Request, username: str = Depends(verify_credentials)):
     return templates.TemplateResponse(request, "index.html", {"username": username})
 
 
+def _valid_panel_token(token: str) -> bool:
+    """Tempo constante; falha fechado quando o token não está configurado."""
+    if not ATTENDANT_PANEL_TOKEN:
+        return False
+    return compare_digest(token.encode(), ATTENDANT_PANEL_TOKEN.encode())
+
+
 @app.get("/atendente")
-async def atendente_page(request: Request):
-    # A auth real é por token nas chamadas /api/atendente; a página injeta o token no JS.
+async def atendente_page(request: Request, token: str = ""):
+    # A página injeta o token no JS pras chamadas /api/atendente. O Chatwoot já
+    # abre o iframe com ?token=... (ver cabeçalho de atendente.html), então
+    # exigir o token aqui não quebra o embed e impede que um visitante anônimo
+    # receba o segredo de graça.
+    if not _valid_panel_token(token):
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="token inválido")
     return templates.TemplateResponse(request, "atendente.html", {"token": ATTENDANT_PANEL_TOKEN})
 
 
@@ -357,8 +371,29 @@ async def api_pagamentos_no_show(appointment_id: str, username: str = Depends(ve
 
 # ── WebSocket ─────────────────────────────────────────────────────────────────
 
+def _ws_authorized(ws: WebSocket) -> bool:
+    """Valida o HTTP Basic no handshake do WebSocket.
+
+    O navegador reenvia a credencial Basic no handshake porque a página / foi
+    aberta autenticada (mesma origem). Sem isso o /ws transmitia as mensagens de
+    todos os pacientes para qualquer cliente anônimo.
+    """
+    header = ws.headers.get("authorization", "")
+    if not header.startswith("Basic "):
+        return False
+    try:
+        decoded = base64.b64decode(header[6:]).decode("utf-8")
+    except (binascii.Error, ValueError):
+        return False
+    _, _, password = decoded.partition(":")
+    return compare_digest(password.encode(), DASHBOARD_PASSWORD.encode())
+
+
 @app.websocket("/ws")
 async def websocket_endpoint(ws: WebSocket):
+    if not _ws_authorized(ws):
+        await ws.close(code=status.WS_1008_POLICY_VIOLATION)
+        return
     await manager.connect(ws)
     try:
         while True:
