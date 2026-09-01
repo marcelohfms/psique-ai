@@ -138,12 +138,17 @@ async def get_link_by_id(pc_id: str) -> dict | None:
 
 
 async def get_appointment_patient_id(appointment_id: str) -> str | None:
-    """patient_id da consulta, ou None se a consulta não existe/está sem vínculo."""
+    """patient_id da consulta, ou None se a consulta não existe/está sem vínculo.
+
+    Filtra por `appointment_id` (id do evento do Google Calendar, texto), a mesma
+    coluna que payments.mark_paid usa. NÃO usar `id` (UUID interno): passar o
+    appointment_id ali estoura com erro de UUID no Postgres.
+    """
     client = await get_client()
     res = (
         await client.from_("appointments")
         .select("patient_id")
-        .eq("id", appointment_id)
+        .eq("appointment_id", appointment_id)
         .execute()
     )
     rows = res.data or []

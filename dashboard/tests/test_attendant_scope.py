@@ -113,3 +113,42 @@ async def _noop(*a, **k):
 
 async def _noop2(*a, **k):
     return None
+
+
+# ── Regressão: coluna certa nas queries de escopo ────────────────────────────
+# get_appointment_patient_id consultava a coluna errada (`id`, um UUID) usando o
+# appointment_id, que é um id de evento do Google Calendar (texto). Em produção
+# isso estourava com erro de UUID no Postgres e derrubava pagar/isentar/no-show
+# do painel. Os testes de rota mockam essa função, então não pegavam. Estes
+# exercitam a query real contra o FakeClient (que casa pelo NOME da coluna).
+
+async def test_get_appointment_patient_id_usa_coluna_appointment_id(monkeypatch, fake_client):
+    fake_client.store["appointments"] = [
+        {"id": "uuid-interno", "appointment_id": "cal-event-123", "patient_id": "p-123"},
+    ]
+    async def fake_get_client():
+        return fake_client
+    monkeypatch.setattr(attendant_db, "get_client", fake_get_client)
+    pid = await attendant_db.get_appointment_patient_id("cal-event-123")
+    assert pid == "p-123"
+
+
+async def test_get_appointment_patient_id_inexistente_retorna_none(monkeypatch, fake_client):
+    fake_client.store["appointments"] = [
+        {"id": "uuid-interno", "appointment_id": "cal-event-123", "patient_id": "p-123"},
+    ]
+    async def fake_get_client():
+        return fake_client
+    monkeypatch.setattr(attendant_db, "get_client", fake_get_client)
+    assert await attendant_db.get_appointment_patient_id("nao-existe") is None
+
+
+async def test_get_link_by_id_usa_coluna_id(monkeypatch, fake_client):
+    fake_client.store["patient_contacts"] = [
+        {"id": "pc-1", "patient_id": "p-1", "contact_id": "c-1"},
+    ]
+    async def fake_get_client():
+        return fake_client
+    monkeypatch.setattr(attendant_db, "get_client", fake_get_client)
+    link = await attendant_db.get_link_by_id("pc-1")
+    assert link and link["patient_id"] == "p-1" and link["contact_id"] == "c-1"
