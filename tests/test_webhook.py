@@ -1270,6 +1270,8 @@ async def test_conv_updated_eva_ativa_added_reprocesses_attachment_only_receipt(
     with patch("app.main._resume_bot_for_patient", new_callable=AsyncMock), \
          patch("app.chatwoot.get_last_patient_message", new_callable=AsyncMock) as mock_last, \
          patch("app.main._process_chatwoot_attachments", new_callable=AsyncMock) as mock_process, \
+         patch("app.main.get_last_user_message", new_callable=AsyncMock, return_value=None), \
+         patch("app.main.save_message", new_callable=AsyncMock), \
          patch("app.main.buffer_push", new_callable=AsyncMock) as mock_push:
         mock_last.return_value = {
             "content": "", "attachments": attachments, "created_at": 100, "last_note_at": None,
@@ -1281,6 +1283,90 @@ async def test_conv_updated_eva_ativa_added_reprocesses_attachment_only_receipt(
     mock_process.assert_awaited_once_with(attachments, phone=_LABEL_PHONE_JID)
     assert mock_push.await_args[0][0] == _LABEL_PHONE_JID
     assert mock_push.await_args[0][1] == "[imagem]: COMPROVANTE DE PAGAMENTO: R$100 [drive_link:https://drive/x]"
+
+
+async def test_conv_updated_eva_ativa_saves_receipt_when_not_yet_persisted():
+    """A brecha de persistência: um comprovante que chegou só pelo Chatwoot enquanto a
+    conversa estava eva-inativa nunca virou linha em `messages` (o handler chatwoot
+    retorna cedo antes do save). Ao reativar a Eva pelo label eva-ativa, o replay
+    re-lê o anexo (evento + Drive) mas antes NÃO gravava a mensagem — cegando
+    find_receipt_in_conversation no cron de cobrança. Agora grava, uma única vez."""
+    from app.main import _handle_label_change
+
+    payload = _conv_updated_payload(previous_labels=[], current_labels=["eva-ativa"], conversation_id=4210)
+    attachments = [{"file_type": "image", "data_url": "https://cw.example/comprovante.jpg"}]
+    receipt = "[imagem]: COMPROVANTE DE PAGAMENTO: R$100 [drive_link:https://drive/x]"
+    with patch("app.main._resume_bot_for_patient", new_callable=AsyncMock), \
+         patch("app.chatwoot.get_last_patient_message", new_callable=AsyncMock) as mock_last, \
+         patch("app.main._process_chatwoot_attachments", new_callable=AsyncMock) as mock_process, \
+         patch("app.main.get_last_user_message", new_callable=AsyncMock) as mock_last_saved, \
+         patch("app.main.save_message", new_callable=AsyncMock) as mock_save, \
+         patch("app.main.buffer_push", new_callable=AsyncMock) as mock_push:
+        mock_last.return_value = {
+            "content": "", "attachments": attachments, "created_at": 100, "last_note_at": None,
+        }
+        mock_process.return_value = receipt
+        # última mensagem "user" gravada NÃO é um comprovante → o comprovante do
+        # replay ainda não está em `messages`.
+        mock_last_saved.return_value = "boa tarde"
+        handled = await _handle_label_change(payload)
+
+    assert handled is True
+    mock_save.assert_awaited_once_with(_LABEL_PHONE_JID, "user", receipt)
+    assert mock_push.await_args[0][1] == receipt
+
+
+async def test_conv_updated_eva_ativa_does_not_resave_receipt_already_persisted():
+    """Caminho comum: o comprovante já foi gravado na primeira entrega (webhook Meta
+    ou chatwoot). O replay re-roda o Vision e gera um novo drive_link a cada vez, então
+    comparar texto exato não serve — o sinal robusto é "a última mensagem 'user' já é
+    um comprovante". Nesse caso NÃO gravamos de novo, senão criaríamos uma segunda
+    linha [imagem] duplicada."""
+    from app.main import _handle_label_change
+
+    payload = _conv_updated_payload(previous_labels=[], current_labels=["eva-ativa"], conversation_id=4211)
+    attachments = [{"file_type": "image", "data_url": "https://cw.example/comprovante.jpg"}]
+    with patch("app.main._resume_bot_for_patient", new_callable=AsyncMock), \
+         patch("app.chatwoot.get_last_patient_message", new_callable=AsyncMock) as mock_last, \
+         patch("app.main._process_chatwoot_attachments", new_callable=AsyncMock) as mock_process, \
+         patch("app.main.get_last_user_message", new_callable=AsyncMock) as mock_last_saved, \
+         patch("app.main.save_message", new_callable=AsyncMock) as mock_save, \
+         patch("app.main.buffer_push", new_callable=AsyncMock) as mock_push:
+        mock_last.return_value = {
+            "content": "", "attachments": attachments, "created_at": 100, "last_note_at": None,
+        }
+        # novo drive_link, texto diferente do que já está salvo...
+        mock_process.return_value = "[imagem]: COMPROVANTE DE PAGAMENTO: R$100 [drive_link:https://drive/NEW]"
+        # ...mas a última mensagem "user" já é um comprovante (drive_link antigo).
+        mock_last_saved.return_value = "[imagem]: COMPROVANTE DE PAGAMENTO: R$100 [drive_link:https://drive/OLD]"
+        handled = await _handle_label_change(payload)
+
+    assert handled is True
+    mock_save.assert_not_awaited()
+    assert mock_push.await_args[0][1].startswith("[imagem]: COMPROVANTE DE PAGAMENTO")
+
+
+async def test_conv_updated_eva_ativa_does_not_save_plain_text_replay():
+    """O save do replay é limitado a comprovantes de propósito: é a única perda que cega
+    o cron de cobrança. Uma mensagem de texto comum reprocessada não deve ser gravada
+    (evita duplicar histórico), só encaminhada ao buffer."""
+    from app.main import _handle_label_change
+
+    payload = _conv_updated_payload(previous_labels=[], current_labels=["eva-ativa"], conversation_id=4212)
+    with patch("app.main._resume_bot_for_patient", new_callable=AsyncMock), \
+         patch("app.chatwoot.get_last_patient_message", new_callable=AsyncMock) as mock_last, \
+         patch("app.main.get_last_user_message", new_callable=AsyncMock) as mock_last_saved, \
+         patch("app.main.save_message", new_callable=AsyncMock) as mock_save, \
+         patch("app.main.buffer_push", new_callable=AsyncMock) as mock_push:
+        mock_last.return_value = {
+            "content": "pode ser amanhã?", "attachments": [], "created_at": 100, "last_note_at": None,
+        }
+        handled = await _handle_label_change(payload)
+
+    assert handled is True
+    mock_save.assert_not_awaited()
+    mock_last_saved.assert_not_awaited()
+    assert mock_push.await_args[0][1] == "pode ser amanhã?"
 
 
 async def test_conv_updated_falls_back_to_cached_label_list():

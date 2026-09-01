@@ -19,7 +19,8 @@ from fastapi import FastAPI, Request, Response, Header, HTTPException
 from langchain_core.messages import HumanMessage
 
 from app.graph import graph as graph_module
-from app.database import get_user_by_phone, get_users_by_phone, log_event, DOCTOR_NAMES, save_message
+from app.database import get_user_by_phone, get_users_by_phone, log_event, DOCTOR_NAMES, save_message, get_last_user_message
+from app.media import is_payment_receipt_message
 from app.patients import get_contact_by_phone
 from app.buffer import (
     push as buffer_push,
@@ -1024,6 +1025,24 @@ async def _apply_eva_label_action(payload: dict, added: set, removed: set) -> bo
                             if attachment_text and attachment_text != "[audio-nao-suportado]":
                                 text = f"{text}\n{attachment_text}" if text else attachment_text
                         if text:
+                            # Diferente do caminho normal (webhook Meta app/main.py:772 e
+                            # chatwoot app/main.py:1472), aqui a mensagem do paciente NUNCA
+                            # foi gravada em `messages` antes do buffer_push. Se a última
+                            # mensagem tiver chegado só pelo Chatwoot enquanto a conversa
+                            # estava eva-inativa (retorno cedo em ~1434, antes do save), um
+                            # comprovante nunca virou linha [imagem] em `messages`: o evento
+                            # payment_receipt_registered e o arquivo no Drive existem, mas
+                            # find_receipt_in_conversation (cron de cobrança) fica cego.
+                            # Fechamos a brecha gravando o comprovante aqui — só quando ele
+                            # ainda não está gravado. O replay re-roda o Vision e gera um
+                            # drive_link novo a cada vez, então comparar texto exato não
+                            # serve; o sinal robusto é "a última mensagem 'user' já é um
+                            # comprovante". Limitado a comprovantes de propósito: é a única
+                            # perda que cega o cron, e evita duplicar texto comum.
+                            if is_payment_receipt_message(text):
+                                last_saved = await get_last_user_message(phone)
+                                if not (last_saved and is_payment_receipt_message(last_saved)):
+                                    await save_message(phone, "user", text)
                             await buffer_push(phone, text, process_message)
             except Exception:
                 logger.exception("Failed to fetch/reprocess last message for %s", phone)
@@ -1431,6 +1450,14 @@ async def _handle_chatwoot_payload(payload: dict) -> None:
 
         # eva-inativa has absolute priority over eva-ativa
         if _EVA_INACTIVE_LABEL in conv_labels:
+            # Não gravamos a mensagem em `messages` aqui de propósito. O recebimento
+            # é feito pelo webhook Meta (app/main.py:772), que grava incondicionalmente
+            # e ANTES já processou o anexo (a descrição [imagem] do comprovante) — logo
+            # o histórico não se perde por esta saída antecipada. Gravar aqui só
+            # duplicaria a linha do Meta e, pior, o anexo ainda nem foi lido neste ponto
+            # (isso só acontece mais abaixo), então nem daria pra capturar o comprovante.
+            # A recuperação do caso "chegou só pelo Chatwoot" fica no replay eva-ativa,
+            # que re-lê o anexo e agora grava o comprovante (_apply_eva_label_action).
             return
         # If eva-ativa label is present, force-reactivate Eva (handles missed activation events)
         elif _EVA_ACTIVE_LABEL in conv_labels:
