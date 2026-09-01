@@ -5302,3 +5302,176 @@ async def test_passo_do_responsavel_nao_sobrescreve_user_name_com_frase():
         result = await collect_info_node(state, {})
 
     assert result.get("user_name") != _FRASE_EDUCADA
+
+
+# ── Guarda: corrige horário errado no resumo de confirmação (pós-luna) ─────────
+# Contexto: gpt-5.6-luna (reasoning_effort="none") passou a escrever, no resumo
+# "Só confirmar antes de registrar", um horário diferente do que o paciente
+# escolheu — tipicamente 08:00, o primeiro slot da grade, que nem foi oferecido.
+# A guarda cruza o horário do resumo com (a) os horários realmente oferecidos pelo
+# get_available_slots e (b) o horário que o paciente pediu, e corrige o texto antes
+# de enviar. Casos reais 31/08/2026: João Pedro 5581991542212, Paula/Glória
+# 5581991270824. Ver docs/incidentes/2026-08-31-horario-errado-na-confirmacao-luna.md
+
+from langchain_core.messages import ToolMessage as _ToolMessage
+
+
+def _slots_toolmsg(text: str) -> _ToolMessage:
+    return _ToolMessage(content=text, tool_call_id="tc1", name="get_available_slots")
+
+
+def _summary(time_str: str, dia: str = "16/09", medico: str = "Dr. Júlio") -> str:
+    return (
+        "Só confirmar antes de registrar: 😊\n"
+        f"📅 Quarta-feira, dia {dia}, às {time_str}\n"
+        f"👨‍⚕️ {medico}\n"
+        "👤 Paciente: João Pedro Ferreira Victor\n"
+        "📍 Modalidade: Presencial\n"
+        "Posso confirmar o agendamento?"
+    )
+
+
+def test_confirm_guard_corrects_wrong_hour_joao_pedro():
+    """Resumo diz 08:00, mas ofertados foram 09:00/11:00 e o paciente pediu 11h."""
+    from app.graph.nodes import _correct_confirmation_summary_time
+    state = {
+        "messages": [
+            _slots_toolmsg("Para quarta-feira, dia 16/09:\n09:00\n11:00"),
+            HumanMessage(content="Quarta-feira 16/09\n11h presencial"),
+        ]
+    }
+    corrected = _correct_confirmation_summary_time(_summary("08:00"), state)
+    assert corrected is not None
+    assert "às 11:00" in corrected
+    assert "08:00" not in corrected
+
+
+def test_confirm_guard_corrects_wrong_hour_paula():
+    """Resumo diz 08:00, ofertados 10:00/11:00, paciente pediu 11h."""
+    from app.graph.nodes import _correct_confirmation_summary_time
+    state = {
+        "messages": [
+            _slots_toolmsg("Quinta-feira, dia 03/09:\n10:00\n11:00"),
+            HumanMessage(content="Dia 3 as 11h"),
+        ]
+    }
+    corrected = _correct_confirmation_summary_time(_summary("08:00", dia="03/09"), state)
+    assert corrected is not None
+    assert "às 11:00" in corrected
+
+
+def test_confirm_guard_no_change_when_summary_matches():
+    """Resumo consistente com oferta e com o pedido do paciente → sem alteração."""
+    from app.graph.nodes import _correct_confirmation_summary_time
+    state = {
+        "messages": [
+            _slots_toolmsg("Para quarta-feira, dia 16/09:\n09:00\n11:00"),
+            HumanMessage(content="11h presencial"),
+        ]
+    }
+    assert _correct_confirmation_summary_time(_summary("11:00"), state) is None
+
+
+def test_confirm_guard_no_change_when_no_unique_intended_hour():
+    """Paciente não deu horário explícito e o do resumo está entre os ofertados."""
+    from app.graph.nodes import _correct_confirmation_summary_time
+    state = {
+        "messages": [
+            _slots_toolmsg("Para quarta-feira, dia 16/09:\n08:00\n11:00"),
+            HumanMessage(content="pode ser presencial"),
+        ]
+    }
+    assert _correct_confirmation_summary_time(_summary("08:00"), state) is None
+
+
+def test_confirm_guard_skips_when_no_offer_in_history():
+    """Sem get_available_slots no histórico (encaixe/atendente) → não mexe."""
+    from app.graph.nodes import _correct_confirmation_summary_time
+    state = {
+        "messages": [
+            HumanMessage(content="encaixa às 12h por favor"),
+        ]
+    }
+    assert _correct_confirmation_summary_time(_summary("08:00"), state) is None
+
+
+def test_confirm_guard_ignores_non_summary_text():
+    """Texto que não é resumo de confirmação → None."""
+    from app.graph.nodes import _correct_confirmation_summary_time
+    state = {
+        "messages": [
+            _slots_toolmsg("09:00\n11:00"),
+            HumanMessage(content="11h"),
+        ]
+    }
+    assert _correct_confirmation_summary_time("Bom dia! Como posso ajudar?", state) is None
+
+
+def test_confirm_guard_no_change_when_intended_hour_not_offered():
+    """Paciente pediu 13h mas não foi ofertado → não inventa correção."""
+    from app.graph.nodes import _correct_confirmation_summary_time
+    state = {
+        "messages": [
+            _slots_toolmsg("Para quarta-feira, dia 16/09:\n09:00\n11:00"),
+            HumanMessage(content="13h"),
+        ]
+    }
+    # 08:00 não bate com oferta, mas o pedido do paciente (13h) também não —
+    # sem horário-alvo único e confiável, a guarda não altera.
+    assert _correct_confirmation_summary_time(_summary("08:00"), state) is None
+
+
+async def test_patient_agent_confirm_guard_fixes_sent_summary_and_pending():
+    """Integração: a LLM devolve um resumo com horário errado (às 08:00), mas os
+    horários ofertados foram 09:00/11:00 e o paciente pediu 11h. A guarda corrige o
+    texto ANTES de enviar e o pending_appointment nasce já com 11:00."""
+    from app.graph.nodes import patient_agent_node
+    from langchain_core.messages import ToolMessage
+
+    wrong_summary = (
+        "Só confirmar antes de registrar: 😊\n"
+        "📅 Quarta-feira, dia 16/09, às 08:00\n"
+        "👨‍⚕️ Dr. Júlio\n"
+        "👤 Paciente: Carlos Silva\n"
+        "📍 Modalidade: Presencial\n"
+        "Posso confirmar o agendamento?"
+    )
+    state = _make_patient_agent_state(
+        messages=[
+            ToolMessage(
+                content="Para quarta-feira, dia 16/09:\n09:00\n11:00",
+                name="get_available_slots",
+                tool_call_id="tc_slots",
+            ),
+            HumanMessage(content="Quarta-feira 16/09\n11h presencial"),
+        ]
+    )
+
+    ai_response = AIMessage(content=wrong_summary)
+    ai_response.tool_calls = []
+    sent = []
+
+    async def fake_send_text(phone, text):
+        sent.append(text)
+
+    async def fake_ainvoke(messages):
+        return ai_response
+
+    with patch("app.graph.nodes._get_agent_llm") as mock_llm_fn, \
+         patch("app.graph.nodes.send_text", side_effect=fake_send_text), \
+         patch("app.graph.nodes.save_message", new_callable=AsyncMock), \
+         patch("app.graph.nodes.get_upcoming_appointments", new_callable=AsyncMock, return_value=[]), \
+         patch("app.graph.nodes.get_user_by_phone", new_callable=AsyncMock, return_value={"price_adjustment_notified_at": "2026-01-01"}), \
+         patch("app.graph.nodes.get_last_assistant_message_time", new_callable=AsyncMock, return_value=None), \
+         patch("app.google_calendar.format_doctor_schedules", return_value="seg-sex"):
+        mock_llm = MagicMock()
+        mock_llm.ainvoke = fake_ainvoke
+        mock_llm_fn.return_value = mock_llm
+        result = await patient_agent_node(state, {})
+
+    assert sent, "nenhuma mensagem enviada"
+    assert "às 11:00" in sent[0]
+    assert "08:00" not in sent[0]
+    pend = result.get("pending_appointment")
+    assert pend is not None
+    assert pend["slot_datetime"].endswith("T11:00:00")
