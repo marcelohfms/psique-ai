@@ -197,10 +197,11 @@ async def describe_image_bytes(
     source_ext: file extension for the uploaded file ('jpg' or 'pdf').
     """
     b64 = base64.b64encode(image_bytes).decode()
-    # gpt-5.6-luna: sem temperature custom; reasoning_effort="none" (classificação
-    # não precisa de raciocínio) e max_completion_tokens (a família gpt-5 rejeita max_tokens)
+    # gpt-5.2: temperature=0 deixa a classificação determinística; reasoning_effort="none"
+    # (classificação não precisa de raciocínio) e max_completion_tokens (a família gpt-5 rejeita max_tokens)
     resp = await _get_openai().chat.completions.create(
-        model="gpt-5.6-luna",
+        model="gpt-5.2",
+        temperature=0,
         reasoning_effort="none",
         messages=[{
             "role": "user",
