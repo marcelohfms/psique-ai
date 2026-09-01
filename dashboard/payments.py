@@ -283,6 +283,33 @@ async def _append_payment_sheet(
             logger.exception("HYPERLINK_FAILED (row was written) range=%r drive_link=%r", updated_range, drive_link)
 
 
+def _clinic_share_emails() -> list[str]:
+    """Contas Google da clínica que podem ler os comprovantes (DRIVE_SHARE_EMAILS)."""
+    raw = os.getenv("DRIVE_SHARE_EMAILS", "")
+    return [e.strip() for e in raw.split(",") if e.strip()]
+
+
+def _share_with_clinic(service, file_id: str) -> None:
+    """Compartilha o comprovante só com as contas da clínica (espelha app/google_drive.py).
+
+    Substitui o antigo `type: anyone`. Comprovante traz CPF, então o link não pode
+    valer para qualquer um. Falha fechado: sem DRIVE_SHARE_EMAILS o arquivo fica só
+    com a conta dona, nunca público. Best-effort por e-mail."""
+    emails = _clinic_share_emails()
+    if not emails:
+        logger.warning("DRIVE_SHARE_EMAILS vazio — arquivo %s fica só com a conta dona (não público)", file_id)
+        return
+    for email in emails:
+        try:
+            service.permissions().create(
+                fileId=file_id,
+                body={"role": "reader", "type": "user", "emailAddress": email},
+                sendNotificationEmail=False,
+            ).execute()
+        except Exception:
+            logger.warning("DRIVE_SHARE_FAILED file_id=%s email=%s", file_id, email)
+
+
 def _upload_comprovante_sync(filename: str, file_bytes: bytes, mimetype: str) -> str:
     folder_id = os.environ.get("GOOGLE_DRIVE_PAYMENTS_FOLDER_ID", "")
     if not folder_id:
@@ -304,10 +331,7 @@ def _upload_comprovante_sync(filename: str, file_bytes: bytes, mimetype: str) ->
         fields="id,webViewLink",
     ).execute()
     file_id = file["id"]
-    try:
-        service.permissions().create(fileId=file_id, body={"role": "reader", "type": "anyone"}).execute()
-    except Exception:
-        logger.warning("DRIVE_SHARE_FAILED (file created but not public) file_id=%s", file_id)
+    _share_with_clinic(service, file_id)
     return file.get("webViewLink", f"https://drive.google.com/file/d/{file_id}/view")
 
 
