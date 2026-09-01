@@ -1832,9 +1832,16 @@ def _correct_confirmation_summary_time(content: str, state: dict) -> str | None:
         return None
 
     intended = sorted(hm for hm in requested if hm in offered)
-    if len(intended) != 1:
+    if len(intended) == 1:
+        target = intended[0]
+    elif not requested and len(offered) == 1 and summary_hm not in offered:
+        # Paciente aceitou a oferta sem digitar horário ("Quero sim") e só havia
+        # um slot ofertado, mas o resumo mostra outro horário (flip -3h). O alvo
+        # certo é o único slot ofertado. Caso real 01/09/2026, Fernanda
+        # 558796373892: ofertado só 07:30, resumo saiu "às 04:30".
+        target = next(iter(offered))
+    else:
         return None  # sem alvo único e confiável
-    target = intended[0]
     if target == summary_hm:
         return None
 
