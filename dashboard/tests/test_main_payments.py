@@ -4,7 +4,7 @@ import main as dashboard_main
 import payments
 import return_reminders
 
-AUTH = ("user", "changeme")
+AUTH = ("user", "s3nha-teste")  # DASHBOARD_PASSWORD do conftest
 
 
 def _client():

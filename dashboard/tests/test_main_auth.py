@@ -17,7 +17,7 @@ from starlette.websockets import WebSocketDisconnect
 import main as dashboard_main
 
 PANEL_TOKEN = "test-token"  # setado em conftest via ATTENDANT_PANEL_TOKEN
-BASIC_PW = "changeme"       # DASHBOARD_PASSWORD default
+BASIC_PW = "s3nha-teste"    # DASHBOARD_PASSWORD do conftest
 
 
 def _client():
@@ -70,3 +70,35 @@ def test_ws_auth_correta_conecta():
     with _client().websocket_connect("/ws", headers=headers) as ws:
         # Conectou sem ser derrubado; a conexão está viva.
         assert ws is not None
+
+
+# ── Senha fail-closed (achado: DASHBOARD_PASSWORD default "changeme") ───────────
+
+@pytest.mark.parametrize("insecure", ["", "changeme"])
+def test_senha_insegura_recusa_index(monkeypatch, insecure):
+    """Com senha vazia ou 'changeme' o painel recusa até a própria senha."""
+    monkeypatch.setattr(dashboard_main, "DASHBOARD_PASSWORD", insecure)
+    r = _client().get("/", auth=("user", insecure))
+    assert r.status_code == 401
+
+
+@pytest.mark.parametrize("insecure", ["", "changeme"])
+def test_senha_insegura_recusa_ws(monkeypatch, insecure):
+    monkeypatch.setattr(dashboard_main, "DASHBOARD_PASSWORD", insecure)
+    headers = {"Authorization": _basic_header("user", insecure)}
+    with pytest.raises(WebSocketDisconnect):
+        with _client().websocket_connect("/ws", headers=headers):
+            pass
+
+
+# ── Cabeçalhos de segurança ────────────────────────────────────────────────────
+
+def test_cabecalhos_de_seguranca_presentes():
+    r = _client().get("/atendente", params={"token": PANEL_TOKEN})
+    assert r.status_code == 200
+    assert r.headers["X-Content-Type-Options"] == "nosniff"
+    assert r.headers["Referrer-Policy"] == "no-referrer"
+    assert "max-age=" in r.headers["Strict-Transport-Security"]
+    # O Chatwoot precisa continuar podendo embutir o painel no iframe.
+    assert "frame-ancestors" in r.headers["Content-Security-Policy"]
+    assert "x-frame-options" not in {k.lower() for k in r.headers}

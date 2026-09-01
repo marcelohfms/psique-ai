@@ -7,6 +7,8 @@ import pytest
 os.environ.setdefault("SUPABASE_URL", "http://fake.local")
 os.environ.setdefault("SUPABASE_KEY", "fake-key")
 os.environ.setdefault("ATTENDANT_PANEL_TOKEN", "test-token")
+# Senha real: o painel agora recusa tudo se a senha for vazia ou "changeme".
+os.environ.setdefault("DASHBOARD_PASSWORD", "s3nha-teste")
 
 
 def _comparable(val):

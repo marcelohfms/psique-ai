@@ -22,11 +22,28 @@ logger = logging.getLogger(__name__)
 # ── Auth ──────────────────────────────────────────────────────────────────────
 
 security = HTTPBasic()
-DASHBOARD_PASSWORD = os.getenv("DASHBOARD_PASSWORD", "changeme")
+DASHBOARD_PASSWORD = os.getenv("DASHBOARD_PASSWORD", "")
+
+# Senhas que NÃO protegem nada: vazio (variável esquecida no deploy) ou o antigo
+# default "changeme". Com qualquer uma delas o painel recusa todo mundo (fail
+# closed) em vez de liberar o acesso com uma senha pública. Melhor ninguém entrar
+# do que qualquer um entrar.
+_INSECURE_PASSWORDS = {"", "changeme"}
+
+
+def _password_configured() -> bool:
+    return DASHBOARD_PASSWORD not in _INSECURE_PASSWORDS
+
+
+if not _password_configured():
+    logger.warning(
+        "DASHBOARD_PASSWORD não configurado (ou ainda no default inseguro) — "
+        "o painel vai recusar TODAS as autenticações até uma senha real ser setada."
+    )
 
 
 def verify_credentials(credentials: HTTPBasicCredentials = Depends(security)) -> str:
-    correct = compare_digest(
+    correct = _password_configured() and compare_digest(
         credentials.password.encode(), DASHBOARD_PASSWORD.encode()
     )
     if not correct:
@@ -149,10 +166,20 @@ _FRAME_ANCESTOR = os.getenv("CHATWOOT_FRAME_ANCESTOR", "'self'")
 
 
 @app.middleware("http")
-async def _frame_headers(request: Request, call_next):
-    """Permite que o Chatwoot embuta o painel num iframe (frame-ancestors)."""
+async def _security_headers(request: Request, call_next):
+    """Cabeçalhos de segurança em toda resposta do painel.
+
+    frame-ancestors: permite que o Chatwoot embuta o painel num iframe.
+    Referrer-Policy no-referrer: o token do painel viaja na URL do iframe; sem
+      isso ele vazaria no header Referer de qualquer requisição saindo da página.
+    nosniff: impede o navegador de adivinhar o content-type (anti-XSS).
+    HSTS: força HTTPS nas próximas visitas.
+    """
     response = await call_next(request)
     response.headers["Content-Security-Policy"] = f"frame-ancestors 'self' {_FRAME_ANCESTOR}"
+    response.headers["Referrer-Policy"] = "no-referrer"
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["Strict-Transport-Security"] = "max-age=63072000; includeSubDomains"
     if "x-frame-options" in response.headers:  # CSP é a fonte da verdade
         del response.headers["x-frame-options"]
     return response
@@ -386,7 +413,9 @@ def _ws_authorized(ws: WebSocket) -> bool:
     except (binascii.Error, ValueError):
         return False
     _, _, password = decoded.partition(":")
-    return compare_digest(password.encode(), DASHBOARD_PASSWORD.encode())
+    return _password_configured() and compare_digest(
+        password.encode(), DASHBOARD_PASSWORD.encode()
+    )
 
 
 @app.websocket("/ws")
