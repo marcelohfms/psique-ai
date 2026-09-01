@@ -184,7 +184,9 @@ def test_main_app_includes_router_and_csp(monkeypatch):
 def test_atendente_page_renders():
     import main as dashboard_main
     c = TestClient(dashboard_main.app)
-    r = c.get("/atendente")
+    # O Chatwoot abre o iframe com ?token=...; sem o token a página é recusada
+    # (senão qualquer visitante anônimo receberia o segredo do painel).
+    r = c.get("/atendente", params={"token": "test-token"})
     assert r.status_code == 200
     assert "Painel da Eva" in r.text
 
