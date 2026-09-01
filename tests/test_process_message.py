@@ -5492,6 +5492,50 @@ def test_confirm_guard_no_change_when_intended_hour_not_offered():
     assert _correct_confirmation_summary_time(_summary("08:00"), state) is None
 
 
+def test_confirm_guard_corrects_when_single_offer_accepted_fernanda():
+    """Paciente aceitou a única oferta sem digitar horário; o resumo mostra um
+    horário que não foi ofertado (flip -3h). Alvo = o único slot ofertado.
+
+    Caso real 01/09/2026, Fernanda 558796373892: ofertado só 07:30 no dia 14/09,
+    ela respondeu "Quero sim!!" e o resumo saiu "às 04:30"."""
+    from app.graph.nodes import _correct_confirmation_summary_time
+    state = {
+        "messages": [
+            _slots_toolmsg("Para segunda-feira, dia 14/09:\n07:30 (apenas online)"),
+            HumanMessage(content="Quero sim!!"),
+        ]
+    }
+    corrected = _correct_confirmation_summary_time(_summary("04:30", dia="14/09"), state)
+    assert corrected is not None
+    assert "às 07:30" in corrected
+    assert "04:30" not in corrected
+
+
+def test_confirm_guard_no_fallback_when_multiple_offers_and_no_request():
+    """Aceite sem horário explícito, mas com vários slots ofertados → sem alvo
+    único, a guarda não adivinha."""
+    from app.graph.nodes import _correct_confirmation_summary_time
+    state = {
+        "messages": [
+            _slots_toolmsg("Para segunda-feira, dia 14/09:\n07:30\n09:30"),
+            HumanMessage(content="Quero sim!!"),
+        ]
+    }
+    assert _correct_confirmation_summary_time(_summary("04:30", dia="14/09"), state) is None
+
+
+def test_confirm_guard_single_offer_no_change_when_summary_matches():
+    """Único slot ofertado e o resumo já mostra ele → nada a corrigir."""
+    from app.graph.nodes import _correct_confirmation_summary_time
+    state = {
+        "messages": [
+            _slots_toolmsg("Para segunda-feira, dia 14/09:\n07:30 (apenas online)"),
+            HumanMessage(content="Quero sim!!"),
+        ]
+    }
+    assert _correct_confirmation_summary_time(_summary("07:30", dia="14/09"), state) is None
+
+
 async def test_patient_agent_confirm_guard_fixes_sent_summary_and_pending():
     """Integração: a LLM devolve um resumo com horário errado (às 08:00), mas os
     horários ofertados foram 09:00/11:00 e o paciente pediu 11h. A guarda corrige o
