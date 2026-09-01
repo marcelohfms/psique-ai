@@ -318,6 +318,64 @@ def _detect_document_emission_request(text: str) -> str | None:
     return None
 
 
+# ── Falso "não há tarde/noite" ───────────────────────────────────────────────
+# Caso Havana/Luíza (5581997763235, 2026-09-01): a responsável pediu tarde e
+# noite, a Eva não conseguiu expressar dois turnos, caiu no "qualquer" (que só
+# mostra os primeiros horários, de manhã) e concluiu, errado, que "não há tarde
+# ou noite em setembro, só pela manhã" — quando a agenda tinha 14h, 17h e 19h.
+# Estes detectores alimentam o GUARD_FALSE_NO_SHIFT em collect/patient_agent.
+
+_MORNING_ONLY_MARKERS = (
+    "só pela manhã", "so pela manha", "somente pela manhã", "somente pela manha",
+    "apenas pela manhã", "apenas pela manha", "só de manhã", "so de manha",
+    "somente de manhã", "somente de manha", "apenas de manhã", "apenas de manha",
+    "só no período da manhã", "so no periodo da manha",
+    "apenas no período da manhã", "somente no período da manhã",
+    "só manhã", "so manha", "apenas manhã", "somente manhã",
+)
+_NO_AVAIL_MARKERS = (
+    "não", "nao", "sem ", "nenhum", "nenhuma", "indisponív", "indisponiv",
+)
+_AVAIL_CONTEXT_MARKERS = ("horário", "horario", "vaga", "disponib", "turno", "período", "periodo")
+
+
+def _shifts_requested_from_text(text: str) -> set[str]:
+    """Turnos de tarde/noite que a mensagem do paciente cita explicitamente.
+    (Só tarde/noite: manhã não sofre do bug e não precisa de recheck.)"""
+    if not text:
+        return set()
+    low = text.lower()
+    out: set[str] = set()
+    if "tarde" in low:
+        out.add("tarde")
+    if "noite" in low:
+        out.add("noite")
+    return out
+
+
+def _eva_denies_shift(text: str) -> bool:
+    """True quando a resposta da Eva NEGA disponibilidade de tarde/noite — seja
+    dizendo "só pela manhã", seja negando (não/sem) tarde/noite num contexto de
+    horário. Conservador de propósito: o guard que consome isso re-verifica na
+    agenda, então um falso positivo apenas dispara uma busca a mais (que confirma
+    a indisponibilidade real e mantém a fala da Eva)."""
+    if not text:
+        return False
+    low = text.lower()
+    if any(m in low for m in _MORNING_ONLY_MARKERS):
+        return True
+    has_context = any(m in low for m in _AVAIL_CONTEXT_MARKERS)
+    # "só/somente/apenas ... manhã" (não necessariamente contíguo) num contexto de
+    # horário = manhã exclusiva → negando tarde/noite por implicação.
+    exclusivity = any(w in low for w in ("só ", "so ", "somente", "apenas", "unicamente"))
+    morning = "manhã" in low or "manha" in low
+    if exclusivity and morning and has_context:
+        return True
+    mentions_shift = "tarde" in low or "noite" in low
+    has_negation = any(m in low for m in _NO_AVAIL_MARKERS)
+    return mentions_shift and has_negation and has_context
+
+
 def _detect_debora_insistence(messages: list) -> bool:
     """Detecta se o paciente está insistindo em falar com Débora sem responder às mensagens de Eva.
 
@@ -3038,6 +3096,65 @@ async def patient_agent_node(state: ConversationState, config: RunnableConfig) -
                 state.get("phone"),
             )
             response.content = _corrected_summary
+
+    # ── Guard: falso "não há tarde/noite" sem verificação real ───────────────
+    # A Eva nega tarde/noite ("só pela manhã") sem ter buscado esse turno na
+    # agenda — porque não conseguia expressar dois turnos e caía no "qualquer",
+    # que esconde a tarde/noite atrás dos primeiros horários (de manhã). Em vez de
+    # deixar a negação falsa passar, reinjeta get_available_slots pedindo o turno
+    # combinado (tarde_noite) na MESMA janela que a Eva acabou de olhar; o ToolNode
+    # roda e a LLM redige de novo com o dado real. Se a agenda estiver mesmo vazia,
+    # a busca volta vazia e a LLM repete a negação — agora verdadeira (auto-cura).
+    # Dispara no máximo uma vez por turno: se já houve busca por esse turno neste
+    # turno, a negação está verificada e não reinjeta (nem entra em loop).
+    if (
+        not response.tool_calls
+        and response.content
+        and not state.get("silent_mode")
+        and _last_h_idx is not None
+    ):
+        _patient_txt = str(getattr(clean_messages[_last_h_idx], "content", "") or "")
+        _requested = _shifts_requested_from_text(_patient_txt)
+        if _requested and _eva_denies_shift(str(response.content)):
+            _turn_msgs = clean_messages[_last_h_idx + 1:]
+            _covered = {"tarde_noite", "manha_tarde"} | _requested
+            _already_checked = any(
+                tc.get("name") == "get_available_slots"
+                and (tc.get("args") or {}).get("preferred_shift") in _covered
+                for m in _turn_msgs
+                for tc in (getattr(m, "tool_calls", None) or [])
+            )
+            _last_call_args = next(
+                (
+                    (tc.get("args") or {})
+                    for m in reversed(_turn_msgs)
+                    for tc in (getattr(m, "tool_calls", None) or [])
+                    if tc.get("name") == "get_available_slots"
+                ),
+                None,
+            )
+            if not _already_checked and _last_call_args and _last_call_args.get("preferred_day"):
+                _combined_shift = (
+                    "tarde_noite" if _requested == {"tarde", "noite"} else next(iter(_requested))
+                )
+                import uuid as _uuid_ns
+                _forced_ns = {
+                    "name": "get_available_slots",
+                    "args": {
+                        "preferred_day": _last_call_args["preferred_day"],
+                        "preferred_shift": _combined_shift,
+                        "slot_duration_minutes": _last_call_args.get("slot_duration_minutes", 60),
+                    },
+                    "id": str(_uuid_ns.uuid4()),
+                    "type": "tool_call",
+                }
+                _logger.warning(
+                    "GUARD_FALSE_NO_SHIFT: Eva negou %s sem buscar o turno "
+                    "(preferred_day=%s) — reinjetando get_available_slots(%s). phone=%s",
+                    _requested, _last_call_args.get("preferred_day"),
+                    _combined_shift, state.get("phone"),
+                )
+                response = AIMessage(content="", tool_calls=[_forced_ns])
 
     # Only send to WhatsApp when the LLM produces a final text (no tool calls)
     if not response.tool_calls and response.content:

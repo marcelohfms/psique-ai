@@ -5668,3 +5668,129 @@ async def test_patient_has_prior_completed_false_when_no_patient():
         got = await nodes._patient_has_prior_completed("5581988522467", {})
 
     assert got is False
+# ── GUARD_FALSE_NO_SHIFT: falso "não há tarde/noite" ─────────────────────────
+# Caso Havana/Luíza (5581997763235, 2026-09-01): pediu "tarde e noite", a Eva caiu
+# no "qualquer" (que mostra só a manhã) e afirmou "não há tarde ou noite em
+# setembro, só pela manhã" — a agenda tinha 14h, 17h, 19h. O guard reinjeta
+# get_available_slots pedindo o turno combinado, na mesma janela.
+
+def test_shifts_requested_from_text_detects_tarde_e_noite():
+    from app.graph.nodes import _shifts_requested_from_text
+    assert _shifts_requested_from_text("Prefiro setembro, horário da tarde e noite") == {"tarde", "noite"}
+    assert _shifts_requested_from_text("pode ser de tarde") == {"tarde"}
+    assert _shifts_requested_from_text("só à noite") == {"noite"}
+    assert _shifts_requested_from_text("de manhã, por favor") == set()
+    assert _shifts_requested_from_text("") == set()
+
+
+def test_eva_denies_shift_detects_morning_only_and_negations():
+    from app.graph.nodes import _eva_denies_shift
+    assert _eva_denies_shift("em setembro só estamos com horários pela manhã")
+    assert _eva_denies_shift("não estamos com horários disponíveis no turno da tarde ou da noite")
+    assert _eva_denies_shift("infelizmente não há vagas à noite nesse mês")
+    # Não é negação de turno: oferta normal
+    assert not _eva_denies_shift("tenho horários à tarde: 14:00 e 15:00")
+    assert not _eva_denies_shift("qual dia você prefere?")
+    assert not _eva_denies_shift("")
+
+
+async def test_guard_false_no_shift_reinjects_combined_search():
+    """Eva nega tarde/noite após só ter buscado 'qualquer' → guard reinjeta
+    get_available_slots(tarde_noite) na mesma janela (setembro), sem enviar a
+    negação falsa ao paciente."""
+    from langchain_core.messages import ToolMessage
+    from app.graph.nodes import patient_agent_node
+
+    prior_call = AIMessage(content="", tool_calls=[{
+        "name": "get_available_slots",
+        "args": {"preferred_day": "setembro", "preferred_shift": "qualquer", "slot_duration_minutes": 60},
+        "id": "call_qualquer",
+        "type": "tool_call",
+    }])
+    tool_msg = ToolMessage(
+        content="Dias com horários disponíveis em Setembro:\n- quinta, dia 03/09: 09:00, 10:00 (e outros)",
+        name="get_available_slots", tool_call_id="call_qualquer",
+    )
+    state = _make_patient_agent_state(
+        messages=[
+            HumanMessage(content="Prefiro setembro, horário da tarde e noite"),
+            prior_call,
+            tool_msg,
+        ],
+    )
+
+    denial = AIMessage(content=(
+        "Havana, conferi aqui e, em setembro, não estamos com horários disponíveis "
+        "no turno da tarde ou da noite para o Dr. Júlio, só pela manhã."
+    ))
+
+    async def fake_ainvoke(messages):
+        return denial
+
+    with patch("app.graph.nodes._get_agent_llm") as mock_llm_fn, \
+         patch("app.graph.nodes.send_text", new_callable=AsyncMock) as mock_send, \
+         patch("app.graph.nodes.save_message", new_callable=AsyncMock), \
+         patch("app.graph.nodes.get_upcoming_appointments", new_callable=AsyncMock, return_value=[]), \
+         patch("app.graph.nodes.get_user_by_phone", new_callable=AsyncMock, return_value={"price_adjustment_notified_at": "2026-01-01"}), \
+         patch("app.graph.nodes.get_last_assistant_message_time", new_callable=AsyncMock, return_value=None), \
+         patch("app.google_calendar.format_doctor_schedules", return_value="seg-sex"):
+        mock_llm = MagicMock()
+        mock_llm.ainvoke = fake_ainvoke
+        mock_llm_fn.return_value = mock_llm
+        result = await patient_agent_node(state, {})
+
+    # A negação falsa NÃO foi enviada ao paciente
+    mock_send.assert_not_awaited()
+    # Em vez disso, reinjetou a busca pelo turno combinado, na mesma janela
+    forced = result["messages"][-1]
+    assert forced.tool_calls, "esperava tool_call reinjetada"
+    tc = forced.tool_calls[0]
+    assert tc["name"] == "get_available_slots"
+    assert tc["args"]["preferred_shift"] == "tarde_noite"
+    assert tc["args"]["preferred_day"] == "setembro"
+
+
+async def test_guard_false_no_shift_does_not_fire_when_already_checked():
+    """Se a Eva JÁ buscou tarde_noite neste turno e voltou vazio, a negação é
+    verdadeira: o guard não reinjeta (nem entra em loop) e a fala vai ao paciente."""
+    from langchain_core.messages import ToolMessage
+    from app.graph.nodes import patient_agent_node
+
+    prior_call = AIMessage(content="", tool_calls=[{
+        "name": "get_available_slots",
+        "args": {"preferred_day": "setembro", "preferred_shift": "tarde_noite", "slot_duration_minutes": 60},
+        "id": "call_tn",
+        "type": "tool_call",
+    }])
+    tool_msg = ToolMessage(
+        content="Não há horários disponíveis em Setembro para o turno da tarde ou noite. Deseja tentar outro turno ou outro mês?",
+        name="get_available_slots", tool_call_id="call_tn",
+    )
+    state = _make_patient_agent_state(
+        messages=[
+            HumanMessage(content="quero tarde e noite em setembro"),
+            prior_call,
+            tool_msg,
+        ],
+    )
+
+    denial = AIMessage(content="Em setembro não há horários à tarde ou à noite. Quer tentar outro mês?")
+
+    async def fake_ainvoke(messages):
+        return denial
+
+    with patch("app.graph.nodes._get_agent_llm") as mock_llm_fn, \
+         patch("app.graph.nodes.send_text", new_callable=AsyncMock) as mock_send, \
+         patch("app.graph.nodes.save_message", new_callable=AsyncMock), \
+         patch("app.graph.nodes.get_upcoming_appointments", new_callable=AsyncMock, return_value=[]), \
+         patch("app.graph.nodes.get_user_by_phone", new_callable=AsyncMock, return_value={"price_adjustment_notified_at": "2026-01-01"}), \
+         patch("app.graph.nodes.get_last_assistant_message_time", new_callable=AsyncMock, return_value=None), \
+         patch("app.google_calendar.format_doctor_schedules", return_value="seg-sex"):
+        mock_llm = MagicMock()
+        mock_llm.ainvoke = fake_ainvoke
+        mock_llm_fn.return_value = mock_llm
+        result = await patient_agent_node(state, {})
+
+    # A negação verdadeira foi enviada; nada foi reinjetado
+    mock_send.assert_awaited_once()
+    assert not (result["messages"][-1].tool_calls or [])

@@ -330,6 +330,15 @@ SHIFT_HOURS: dict[str, tuple[int, int]] = {
     "manha":  (7, 12),
     "tarde":  (13, 18),
     "noite":  (18, 21),
+    # Turnos combinados: o paciente costuma pedir dois turnos juntos ("tarde e
+    # noite", "manhã ou tarde"). Sem eles, a Eva não tinha como expressar o pedido
+    # e caía no "qualquer" (que mostra só os primeiros horários do dia, sempre de
+    # manhã) — escondendo a tarde/noite que existia (caso Havana/Luíza,
+    # 5581997763235). A janela é a união contígua dos dois turnos; o recorte por
+    # grade do médico e a regra "o slot pertence ao turno em que começa" cuidam do
+    # resto, então não há risco de horário duplicado.
+    "manha_tarde": (7, 18),
+    "tarde_noite": (13, 21),
 }
 
 _WEEKDAYS_PT: dict[str, int] = {
