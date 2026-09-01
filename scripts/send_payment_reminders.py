@@ -289,6 +289,40 @@ async def find_receipt_in_conversation(client, phones: list[str], since_iso: str
         for row in result.data or []:
             if is_payment_receipt_message(row.get("content") or ""):
                 return row
+
+    # Sinal alternativo, independente da tabela messages: um evento
+    # payment_receipt_unreadable = comprovante recebido mas com valor ILEGÍVEL,
+    # aguardando a atendente lançar (register_payment o grava em app/graph/tools.py).
+    # A linha "[imagem]:" nem sempre é persistida em messages (caso Fernanda
+    # Danielle 5587996373892, 01/09/2026: o comprovante chegou e virou evento, mas
+    # não ficou em messages) — sem esta checagem o cron cancelaria a consulta de um
+    # paciente que já mandou o comprovante. Bloqueia igual, até a baixa manual.
+    all_variants: list[str] = []
+    for phone in phones:
+        all_variants.extend(_phone_variants(phone))
+    if all_variants:
+        try:
+            ev = await (
+                client.from_("events")
+                .select("phone, created_at")
+                .in_("phone", all_variants)
+                .eq("event_type", "payment_receipt_unreadable")
+                .gte("created_at", since_iso)
+                .order("created_at", desc=True)
+                .limit(1)
+                .execute()
+            )
+        except Exception as e:
+            # Mesma postura da busca em messages: erro nunca vira cancelamento.
+            print(f"  [payment_cancel] Unreadable-event lookup FAILED for {all_variants}: {e}")
+            return {"phone": all_variants[0], "content": "", "created_at": "", "lookup_failed": True}
+        if ev.data:
+            row = ev.data[0]
+            return {
+                "phone": row.get("phone", all_variants[0]),
+                "content": "[comprovante recebido — valor ilegível, aguardando baixa manual]",
+                "created_at": row.get("created_at", ""),
+            }
     return None
 
 
