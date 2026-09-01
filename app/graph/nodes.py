@@ -1844,16 +1844,61 @@ def _correct_confirmation_summary_time(content: str, state: dict) -> str | None:
     return corrected if corrected != content else None
 
 
-def _duration_rule_for(state: dict, patient_age: int, first_name: str) -> str:
+async def _patient_has_prior_completed(phone: str, state: dict) -> bool:
+    """True se o paciente resolvido para esta conversa já tem consulta concluída.
+
+    Espelha o prior_completed de book_appointment (tools.py): resolve o MESMO
+    registro de paciente (mesmo helper) e checa status='completed'. Serve para a
+    camada de conversa classificar primeira vs acompanhamento igual à ferramenta
+    de agendamento. Best-effort: qualquer erro devolve False para nunca quebrar o
+    turno — no pior caso a Eva mantém o comportamento antigo."""
+    try:
+        from app.graph.tools import _resolve_patient_for_booking
+        from app.database import get_supabase as _get_supabase
+        user = await _resolve_patient_for_booking(phone, state)
+        if not user:
+            return False
+        client = await _get_supabase()
+        prior = await client.from_("appointments") \
+            .select("id") \
+            .eq("patient_id", user["id"]) \
+            .eq("status", "completed") \
+            .limit(1) \
+            .execute()
+        return bool(prior.data)
+    except Exception:
+        import logging as _log
+        _log.getLogger(__name__).exception(
+            "PRIOR_COMPLETED_CHECK falhou para %s (ignorado)", phone
+        )
+        return False
+
+
+def _duration_rule_for(
+    state: dict,
+    patient_age: int,
+    first_name: str,
+    has_prior_completed: bool = False,
+) -> str:
     """Escolhe a regra de duração/perfil injetada no prompt do patient_agent.
 
     A idade é o ÚNICO critério para menor de idade. Ter responsável na conversa
     ou ser primeira consulta não torna o paciente menor — ver ADULT_RULE (caso
-    Beatriz, 20 anos, 04/08/2026)."""
+    Beatriz, 20 anos, 04/08/2026).
+
+    has_prior_completed: paciente já tem consulta concluída no banco. É o MESMO
+    sinal que book_appointment combina em tools.py (prior_completed) para escolher
+    consultation_type. Sem ele, um menor do Dr. Júlio cadastrado como novo
+    (is_returning_patient=False) que já fez a primeira consulta e volta para o
+    acompanhamento continua caindo na regra de primeira consulta (2h em duas
+    partes), porque is_returning_patient nunca vira True sozinho. A Eva então
+    reoferece a primeira consulta e o responsável precisa corrigir na mão (caso
+    Enrico/Patrícia 5581988522467, 01/09/2026)."""
     is_minor = patient_age < 18
     is_minor_first = (
         is_minor
         and not state.get("is_returning_patient", False)
+        and not has_prior_completed
         and state.get("preferred_doctor") == "julio"
     )
     if is_minor_first:
@@ -2334,7 +2379,19 @@ async def patient_agent_node(state: ConversationState, config: RunnableConfig) -
     contact_first_name = _dn(_contact_full)
     contact_name = _contact_full
     is_minor = patient_age < 18
-    duration_rule = _duration_rule_for(state, patient_age, first_name)
+    # Só consulta o banco quando o resultado pode virar: menor do Dr. Júlio ainda
+    # marcado como não-retornante. Fora disso a regra já é decidida pelo estado e
+    # a query seria latência à toa em todo turno.
+    _has_prior_completed = False
+    if (
+        is_minor
+        and state.get("preferred_doctor") == "julio"
+        and not state.get("is_returning_patient", False)
+    ):
+        _has_prior_completed = await _patient_has_prior_completed(state["phone"], state)
+    duration_rule = _duration_rule_for(
+        state, patient_age, first_name, _has_prior_completed
+    )
 
     # ── Auto-extract birth_date from recent messages if still missing ─────────
     # Handles the case where the LLM asked for birth_date but the node never
