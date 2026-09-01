@@ -6,6 +6,20 @@ import attendant_routes
 import attendant_db
 
 
+@pytest.fixture(autouse=True)
+def _bypass_scope(monkeypatch):
+    """Neutraliza os guards de escopo por contato/paciente nestes testes.
+
+    A aplicação do escopo (403 fora do contato) é coberta em test_attendant_scope.py.
+    Aqui o foco é o comportamento de mutação/confirmação de cada rota, então os
+    guards são no-op para não precisarem de um telefone que resolva no banco fake."""
+    async def _ok(*a, **k):
+        return None
+    for name in ("_assert_contact_scope", "_assert_patient_scope",
+                 "_assert_link_scope", "_assert_appointment_scope"):
+        monkeypatch.setattr(attendant_routes, name, _ok)
+
+
 @pytest.fixture
 def client():
     app = FastAPI()
@@ -535,7 +549,7 @@ def test_pagamentos_no_show_marca_falta(client, monkeypatch):
     monkeypatch.setattr(return_reminders, "mark_no_show", fake_mark_no_show)
 
     r = client.post("/api/atendente/pagamentos/a1/no-show",
-                    params={"token": "test-token"})
+                    params={"token": "test-token", "phone": "5581999998888"})
     assert r.status_code == 200
     assert r.json() == {"ok": True}
     assert calls["appointment_id"] == "a1"

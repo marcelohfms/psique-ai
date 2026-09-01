@@ -214,7 +214,7 @@ async function marcarNoShowPag(btn) {
   const card = btn.closest("[data-appt]");
   if (!confirm(`Marcar ${card.dataset.paciente} como NÃO COMPARECEU? A pendência sai da lista e a taxa paga fica retida.`)) return;
   btn.disabled = true;
-  const r = await fetch(`/api/atendente/pagamentos/${card.dataset.appt}/no-show?token=${encodeURIComponent(TOKEN)}`, {
+  const r = await fetch(`/api/atendente/pagamentos/${card.dataset.appt}/no-show?token=${encodeURIComponent(TOKEN)}&phone=${encodeURIComponent(PHONE)}`, {
     method: "POST",
   });
   if (!r.ok) { alert("Erro ao marcar não compareceu."); btn.disabled = false; return; }
