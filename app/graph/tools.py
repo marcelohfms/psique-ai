@@ -1618,6 +1618,23 @@ async def confirm_appointment(
         )
 
 
+async def _appt_belongs_to_sender(patient_id: str | None, phone: str) -> bool:
+    """True se `patient_id` (dono de uma consulta) está vinculado ao telefone do
+    remetente.
+
+    Guarda de propriedade para as tools que agem sobre um appointment_id vindo do
+    LLM/estado: sem isso, um ID de outro paciente leria/alteraria a consulta dele
+    (defesa em profundidade contra exposição de dados de terceiros; ver caso Maria
+    Gabriela, 5581999893449). O mesmo padrão já é usado inline por change_modality,
+    reschedule_appointment, mark_reschedule_in_progress, keep_original_appointment e
+    cancel_all_appointments."""
+    if patient_id is None:
+        return False
+    _phone_clean = phone.replace("@s.whatsapp.net", "")
+    _pids = {u["id"] for u in await get_users_by_phone(_phone_clean)}
+    return patient_id in _pids
+
+
 @tool
 async def cancel_appointment(
     appointment_id: str,
@@ -1643,6 +1660,12 @@ async def cancel_appointment(
     old_start_time = (appt_result.data or {}).get("start_time")
     fee_was_paid = bool((appt_result.data or {}).get("booking_fee_paid_at"))
     _this_patient_id = (appt_result.data or {}).get("patient_id")
+
+    # Guarda de propriedade: nunca cancela consulta de um paciente que não pertence
+    # a este contato. Vem ANTES do cancel_event para não liberar a vaga de terceiro.
+    phone = config["configurable"]["phone"]
+    if not await _appt_belongs_to_sender(_this_patient_id, phone):
+        return "Este agendamento não pertence a este paciente."
 
     # Cancel in Google Calendar (frees the slot in both cases)
     await cancel_event(calendar_id, appointment_id)
@@ -2993,7 +3016,7 @@ async def confirm_attendance(
     # loga de novo.
     existing = (
         await client.from_("appointments")
-        .select("confirmed_at, status")
+        .select("confirmed_at, status, patient_id")
         .eq("appointment_id", appointment_id)
         .limit(1)
         .execute()
@@ -3017,6 +3040,17 @@ async def confirm_attendance(
             "no cabeçalho deste prompt — nunca invente um ID nem use o ID de um "
             "horário livre. Se não houver nenhuma consulta agendada listada, diga ao "
             "paciente que não encontrou consulta marcada e pergunte se ele deseja agendar."
+        )
+
+    # Guarda de propriedade: só confirma presença de consulta de um paciente deste
+    # contato. Sem isso, um appointment_id de outro paciente faria a Eva "confirmar"
+    # e enviar o endereço da clínica sobre a consulta de um terceiro.
+    if not await _appt_belongs_to_sender(rows[0].get("patient_id"), config["configurable"]["phone"]):
+        return (
+            "[INSTRUÇÃO INTERNA — NÃO ENVIE AO PACIENTE] Esta consulta não pertence a "
+            "este contato. NÃO confirme presença, NÃO diga \"presença confirmada\" e NÃO "
+            "envie o endereço da clínica. Use APENAS um appointment_id listado em "
+            "\"Consultas agendadas\" no cabeçalho deste prompt."
         )
 
     status = rows[0].get("status")
@@ -4106,7 +4140,12 @@ async def register_refund_request(
     doctor_label = {"julio": "Dr. Júlio", "bruna": "Dra. Bruna"}.get(doctor_key, "médico(a)")
 
     # Fetch appointment date
-    appt_result = await client.from_("appointments").select("start_time").eq("appointment_id", appointment_id).maybe_single().execute()
+    appt_result = await client.from_("appointments").select("start_time, patient_id").eq("appointment_id", appointment_id).maybe_single().execute()
+
+    # Guarda de propriedade: só registra reembolso de consulta deste contato.
+    if not await _appt_belongs_to_sender((appt_result.data or {}).get("patient_id"), phone):
+        return "Este agendamento não pertence a este paciente."
+
     appointment_dt = "—"
     if appt_result.data and appt_result.data.get("start_time"):
         start_dt = datetime.fromisoformat(appt_result.data["start_time"]).astimezone(TZ)
@@ -4168,7 +4207,12 @@ async def confirm_refund_completed(
     doctor_label = {"julio": "Dr. Júlio", "bruna": "Dra. Bruna"}.get(doctor_key, "médico(a)")
 
     # Fetch appointment date
-    appt_result = await client.from_("appointments").select("start_time").eq("appointment_id", appointment_id).maybe_single().execute()
+    appt_result = await client.from_("appointments").select("start_time, patient_id").eq("appointment_id", appointment_id).maybe_single().execute()
+
+    # Guarda de propriedade: só confirma estorno de consulta deste contato.
+    if not await _appt_belongs_to_sender((appt_result.data or {}).get("patient_id"), phone):
+        return "Este agendamento não pertence a este paciente."
+
     appointment_dt = "—"
     if appt_result.data and appt_result.data.get("start_time"):
         start_dt = datetime.fromisoformat(appt_result.data["start_time"]).astimezone(TZ)

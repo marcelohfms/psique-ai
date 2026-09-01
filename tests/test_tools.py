@@ -2184,8 +2184,9 @@ async def test_confirm_attendance_marks_confirmed_when_not_yet_confirmed():
     from app.graph.tools import confirm_attendance
     client, table, execute = _make_supabase_client()
     # select de confirmed_at retorna vazio → ainda não confirmado
-    execute.return_value = MagicMock(data=[{"confirmed_at": None}])
+    execute.return_value = MagicMock(data=[{"confirmed_at": None, "patient_id": "p-1"}])
     with patch("app.graph.tools.get_supabase", new_callable=AsyncMock, return_value=client), \
+         patch("app.graph.tools.get_users_by_phone", new_callable=AsyncMock, return_value=[{"id": "p-1"}]), \
          patch("app.graph.tools.log_event", new_callable=AsyncMock) as mock_log:
         result = await confirm_attendance.coroutine(
             appointment_id="evt-abc",
@@ -2201,8 +2202,9 @@ async def test_confirm_attendance_is_idempotent_when_already_confirmed():
     from app.graph.tools import confirm_attendance
     client, table, execute = _make_supabase_client()
     # já existe confirmed_at → segunda confirmação é no-op (primeiro a confirmar vence)
-    execute.return_value = MagicMock(data=[{"confirmed_at": "2026-06-19T10:00:00+00:00"}])
+    execute.return_value = MagicMock(data=[{"confirmed_at": "2026-06-19T10:00:00+00:00", "patient_id": "p-1"}])
     with patch("app.graph.tools.get_supabase", new_callable=AsyncMock, return_value=client), \
+         patch("app.graph.tools.get_users_by_phone", new_callable=AsyncMock, return_value=[{"id": "p-1"}]), \
          patch("app.graph.tools.log_event", new_callable=AsyncMock) as mock_log:
         result = await confirm_attendance.coroutine(
             appointment_id="evt-abc",
@@ -2245,8 +2247,9 @@ async def test_confirm_attendance_rejects_unknown_appointment_id():
 async def test_confirm_attendance_rejects_canceled_appointment():
     from app.graph.tools import confirm_attendance
     client, table, execute = _make_supabase_client()
-    execute.return_value = MagicMock(data=[{"confirmed_at": None, "status": "canceled"}])
+    execute.return_value = MagicMock(data=[{"confirmed_at": None, "status": "canceled", "patient_id": "p-1"}])
     with patch("app.graph.tools.get_supabase", new_callable=AsyncMock, return_value=client), \
+         patch("app.graph.tools.get_users_by_phone", new_callable=AsyncMock, return_value=[{"id": "p-1"}]), \
          patch("app.graph.tools.log_event", new_callable=AsyncMock) as mock_log:
         result = await confirm_attendance.coroutine(
             appointment_id="evt-cancelada",
@@ -2264,8 +2267,9 @@ async def test_confirm_attendance_rejects_completed_appointment():
     sobre uma consulta passada."""
     from app.graph.tools import confirm_attendance
     client, table, execute = _make_supabase_client()
-    execute.return_value = MagicMock(data=[{"confirmed_at": None, "status": "completed"}])
+    execute.return_value = MagicMock(data=[{"confirmed_at": None, "status": "completed", "patient_id": "p-1"}])
     with patch("app.graph.tools.get_supabase", new_callable=AsyncMock, return_value=client), \
+         patch("app.graph.tools.get_users_by_phone", new_callable=AsyncMock, return_value=[{"id": "p-1"}]), \
          patch("app.graph.tools.log_event", new_callable=AsyncMock) as mock_log:
         result = await confirm_attendance.coroutine(
             appointment_id="evt-passada",
@@ -2281,8 +2285,9 @@ async def test_confirm_attendance_accepts_pending_reschedule():
     """pending_reschedule ainda é uma consulta viva — não pode ser recusada."""
     from app.graph.tools import confirm_attendance
     client, table, execute = _make_supabase_client()
-    execute.return_value = MagicMock(data=[{"confirmed_at": None, "status": "pending_reschedule"}])
+    execute.return_value = MagicMock(data=[{"confirmed_at": None, "status": "pending_reschedule", "patient_id": "p-1"}])
     with patch("app.graph.tools.get_supabase", new_callable=AsyncMock, return_value=client), \
+         patch("app.graph.tools.get_users_by_phone", new_callable=AsyncMock, return_value=[{"id": "p-1"}]), \
          patch("app.graph.tools.log_event", new_callable=AsyncMock) as mock_log:
         result = await confirm_attendance.coroutine(
             appointment_id="evt-remarcar",
@@ -2294,18 +2299,38 @@ async def test_confirm_attendance_accepts_pending_reschedule():
     assert "confirmada" in result.lower()
 
 
+async def test_confirm_attendance_rejects_appointment_of_other_contact():
+    """PRIVACIDADE: appointment_id real, mas de um paciente que não pertence a este
+    contato → NÃO confirma presença nem envia endereço; não grava nada."""
+    from app.graph.tools import confirm_attendance
+    client, table, execute = _make_supabase_client()
+    execute.return_value = MagicMock(data=[{"confirmed_at": None, "status": "scheduled", "patient_id": "estranho-99"}])
+    with patch("app.graph.tools.get_supabase", new_callable=AsyncMock, return_value=client), \
+         patch("app.graph.tools.get_users_by_phone", new_callable=AsyncMock, return_value=[{"id": "p-1"}]), \
+         patch("app.graph.tools.log_event", new_callable=AsyncMock) as mock_log:
+        result = await confirm_attendance.coroutine(
+            appointment_id="evt-de-outro",
+            state=_make_state(),
+            config=CONFIG,
+        )
+    table.update.assert_not_called()
+    mock_log.assert_not_awaited()
+    assert "INSTRUÇÃO INTERNA" in result
+    assert "não pertence" in result.lower()
+
+
 # ── cancel_appointment ────────────────────────────────────────────────────────
 
 async def test_cancel_appointment_cancels_and_notifies():
     from app.graph.tools import cancel_appointment
     client, table, execute = _make_supabase_client()
-    # maybe_single returns appointment data
-    execute.return_value = MagicMock(data={"start_time": "2026-03-23T09:00:00+00:00"})
+    # maybe_single returns appointment data (patient_id casa com o dono do telefone)
+    execute.return_value = MagicMock(data={"start_time": "2026-03-23T09:00:00+00:00", "patient_id": "p-1"})
     with patch("app.graph.tools._get_doctor_calendar_id", new_callable=AsyncMock, return_value="cal123"), \
          patch("app.google_calendar.cancel_event", new_callable=AsyncMock) as mock_cancel, \
          patch("app.graph.tools.get_supabase", new_callable=AsyncMock, return_value=client), \
          patch("app.graph.tools.get_user_by_phone", new_callable=AsyncMock, return_value=None), \
-         patch("app.graph.tools.get_users_by_phone", new_callable=AsyncMock, return_value=[]), \
+         patch("app.graph.tools.get_users_by_phone", new_callable=AsyncMock, return_value=[{"id": "p-1"}]), \
          patch("app.graph.tools.log_event", new_callable=AsyncMock), \
          patch("app.graph.tools._notify_clinic", new_callable=AsyncMock) as mock_notify:
         result = await cancel_appointment.coroutine(
@@ -2352,6 +2377,30 @@ async def test_cancel_appointment_warns_about_remaining_sibling():
     assert "evt-sibling" in result          # aponta a consulta que ainda está ativa
     assert "evt-cancelada" not in result.split("INSTRUÇÃO INTERNA")[1]  # não lista a já cancelada
     assert "24/08/2026" in result
+
+
+async def test_cancel_appointment_rejects_appointment_of_other_contact():
+    """PRIVACIDADE: um appointment_id cujo patient_id NÃO pertence ao contato do
+    remetente não pode ser cancelado — nem liberar a vaga no Calendar, nem tocar no
+    banco. Fecha o risco de agir sobre a consulta de um paciente não relacionado."""
+    from app.graph.tools import cancel_appointment
+    client, table, execute = _make_supabase_client()
+    execute.return_value = MagicMock(data={"start_time": "2026-03-23T09:00:00+00:00", "patient_id": "estranho-99"})
+    with patch("app.graph.tools._get_doctor_calendar_id", new_callable=AsyncMock, return_value="cal123"), \
+         patch("app.google_calendar.cancel_event", new_callable=AsyncMock) as mock_cancel, \
+         patch("app.graph.tools.get_supabase", new_callable=AsyncMock, return_value=client), \
+         patch("app.graph.tools.get_users_by_phone", new_callable=AsyncMock, return_value=[{"id": "p-1"}]), \
+         patch("app.graph.tools.log_event", new_callable=AsyncMock), \
+         patch("app.graph.tools._notify_clinic", new_callable=AsyncMock) as mock_notify:
+        result = await cancel_appointment.coroutine(
+            appointment_id="evt-de-outro",
+            state=_make_state(),
+            config=CONFIG,
+        )
+    assert "não pertence" in result.lower()
+    mock_cancel.assert_not_awaited()   # NÃO liberou a vaga de terceiro
+    table.update.assert_not_called()   # NÃO alterou o banco
+    mock_notify.assert_not_called()
 
 
 # ── cancel_all_appointments ──────────────────────────────────────────────────
@@ -3554,8 +3603,9 @@ async def test_transfer_to_human_sends_only_to_user():
 async def test_confirm_attendance_sets_confirmed_at():
     from app.graph.tools import confirm_attendance
     client, table, execute = _make_supabase_client()
-    execute.return_value = MagicMock(data=[{"confirmed_at": None, "status": "scheduled"}])
+    execute.return_value = MagicMock(data=[{"confirmed_at": None, "status": "scheduled", "patient_id": "p-1"}])
     with patch("app.graph.tools.get_supabase", new_callable=AsyncMock, return_value=client), \
+         patch("app.graph.tools.get_users_by_phone", new_callable=AsyncMock, return_value=[{"id": "p-1"}]), \
          patch("app.graph.tools.log_event", new_callable=AsyncMock):
         result = await confirm_attendance.coroutine(
             appointment_id="evt-abc123",
@@ -4550,6 +4600,73 @@ async def test_register_payment_single_linked_patient_resolves_without_leaking()
     assert "✅" in result
     mock_sheets.assert_awaited_once()
     assert "Gabriel Botelho De Oliveira" in mock_sheets.call_args[0][0]
+
+
+# ── register_refund_request / confirm_refund_completed (guarda de dono) ────────
+
+async def test_register_refund_request_rejects_appointment_of_other_contact():
+    """PRIVACIDADE: não registra reembolso de consulta cujo paciente não pertence a
+    este contato — não toca no banco nem na planilha."""
+    from app.graph.tools import register_refund_request
+    client, table, execute = _make_supabase_client()
+    execute.return_value = MagicMock(data={"start_time": "2026-03-23T09:00:00+00:00", "patient_id": "estranho-99"})
+    with patch("app.graph.tools.get_supabase", new_callable=AsyncMock, return_value=client), \
+         patch("app.graph.tools.get_users_by_phone", new_callable=AsyncMock, return_value=[{"id": "p-1"}]), \
+         patch("app.google_sheets.append_document_request", new_callable=AsyncMock) as mock_sheet, \
+         patch("app.graph.tools.log_event", new_callable=AsyncMock) as mock_log:
+        result = await register_refund_request.coroutine(
+            appointment_id="evt-de-outro",
+            amount="100,00",
+            reason="cancelou com antecedência",
+            state=_make_state(),
+            config=CONFIG,
+        )
+    assert "não pertence" in result.lower()
+    table.update.assert_not_called()
+    mock_sheet.assert_not_awaited()
+    mock_log.assert_not_awaited()
+
+
+async def test_register_refund_request_registers_for_own_appointment():
+    """Caminho feliz: consulta do próprio contato → registra normalmente."""
+    from app.graph.tools import register_refund_request
+    client, table, execute = _make_supabase_client()
+    execute.return_value = MagicMock(data={"start_time": "2026-03-23T09:00:00+00:00", "patient_id": "p-1"})
+    with patch("app.graph.tools.get_supabase", new_callable=AsyncMock, return_value=client), \
+         patch("app.graph.tools.get_users_by_phone", new_callable=AsyncMock, return_value=[{"id": "p-1"}]), \
+         patch("app.google_sheets.append_document_request", new_callable=AsyncMock), \
+         patch("app.graph.tools.log_event", new_callable=AsyncMock) as mock_log:
+        result = await register_refund_request.coroutine(
+            appointment_id="evt-meu",
+            amount="100,00",
+            reason="cancelou com antecedência",
+            state=_make_state(),
+            config=CONFIG,
+        )
+    assert "reembolso" in result.lower()
+    table.update.assert_called()
+    mock_log.assert_awaited()
+
+
+async def test_confirm_refund_completed_rejects_appointment_of_other_contact():
+    """PRIVACIDADE: não confirma estorno de consulta de outro contato."""
+    from app.graph.tools import confirm_refund_completed
+    client, table, execute = _make_supabase_client()
+    execute.return_value = MagicMock(data={"start_time": "2026-03-23T09:00:00+00:00", "patient_id": "estranho-99"})
+    with patch("app.graph.tools.get_supabase", new_callable=AsyncMock, return_value=client), \
+         patch("app.graph.tools.get_users_by_phone", new_callable=AsyncMock, return_value=[{"id": "p-1"}]), \
+         patch("app.google_sheets.append_refund_request", new_callable=AsyncMock) as mock_sheet, \
+         patch("app.graph.tools.log_event", new_callable=AsyncMock) as mock_log:
+        result = await confirm_refund_completed.coroutine(
+            appointment_id="evt-de-outro",
+            amount="100,00",
+            state=_make_state(),
+            config=CONFIG,
+        )
+    assert "não pertence" in result.lower()
+    table.update.assert_not_called()
+    mock_sheet.assert_not_awaited()
+    mock_log.assert_not_awaited()
 
 
 # ── _parse_brl_amount ──────────────────────────────────────────────────────────
