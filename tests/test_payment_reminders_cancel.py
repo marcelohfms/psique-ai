@@ -194,6 +194,57 @@ async def test_receipt_lookup_covers_both_phone_variants():
 
 
 @pytest.mark.asyncio
+async def test_receipt_lookup_falls_back_to_unreadable_event():
+    """Sem a linha "[imagem]:" em messages, o evento payment_receipt_unreadable
+    (comprovante recebido, mas valor ilegível) ainda segura o cancelamento — caso
+    Fernanda Danielle 5587996373892, cujo comprovante virou evento mas não ficou em
+    messages."""
+    client, _ = _client(receipt_rows=[], event_rows=[
+        {"phone": "5587996373892", "created_at": "2026-09-01T18:42:30+00:00"},
+    ])
+    found = await spr.find_receipt_in_conversation(
+        client, ["5587996373892@s.whatsapp.net"], "2026-09-01T16:00:00+00:00",
+    )
+    assert found is not None
+    assert found["created_at"] == "2026-09-01T18:42:30+00:00"
+    assert found.get("lookup_failed") is not True
+
+
+@pytest.mark.asyncio
+async def test_receipt_lookup_none_without_message_or_event():
+    """Sem comprovante em messages e sem evento de ilegível → nada segura o cron."""
+    client, _ = _client(receipt_rows=[], event_rows=[])
+    found = await spr.find_receipt_in_conversation(
+        client, ["5587996373892@s.whatsapp.net"], "2026-09-01T16:00:00+00:00",
+    )
+    assert found is None
+
+
+@pytest.mark.asyncio
+async def test_cancel_blocked_when_unreadable_event_exists():
+    """Comprovante recebido mas ILEGÍVEL (evento), sem linha em messages: o cron NÃO
+    cancela nem mexe no Calendar — segura até a atendente lançar manualmente."""
+    client, table = _client(receipt_rows=[], event_rows=[
+        {"phone": "5587996373892", "created_at": "2026-09-01T18:42:30+00:00"},
+    ])
+    now = datetime(2026, 9, 1, 20, 15, tzinfo=TZ)
+    appt = _appt(created_at="2026-09-01T16:10:00+00:00")
+
+    with patch("scripts.send_payment_reminders.get_financial_contacts",
+               new_callable=AsyncMock,
+               return_value=[{"phone": "5587996373892", "name": "Fernanda"}]), \
+         patch("scripts.send_payment_reminders.send_whatsapp", new_callable=AsyncMock) as mock_wpp, \
+         patch("scripts.send_payment_reminders.cancel_calendar_event", new_callable=AsyncMock) as mock_cal, \
+         patch("app.database.log_event", new_callable=AsyncMock), \
+         patch("app.email_sender.send_clinic_notification_email", new_callable=AsyncMock):
+        await spr._cancel_unpaid_appointment(client, appt, None, now)
+
+    mock_wpp.assert_not_awaited()
+    mock_cal.assert_not_awaited()
+    table.update.assert_not_called()
+
+
+@pytest.mark.asyncio
 async def test_receipt_lookup_skips_typed_claims_without_an_image():
     """O ilike no banco é só um pré-filtro barato: ele casa com quem apenas digitou
     "segue o comprovante de pagamento". Bloquear nesses casos seguraria a vaga para

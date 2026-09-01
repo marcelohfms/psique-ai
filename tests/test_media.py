@@ -357,3 +357,55 @@ async def test_unrecognized_reply_still_documents_but_warns(caplog):
     filename = mock_upload.call_args[0][1]
     assert filename.startswith("documento_")
     assert any("IMAGE_CLASSIFIER_UNRECOGNIZED" in r.message for r in caplog.records)
+
+
+# ── Releitura reforçada do valor do comprovante ───────────────────────────────
+
+def test_find_brl_amount_pega_valor_e_ignora_ilegivel():
+    from app.media import _find_brl_amount, _description_has_amount
+    assert _find_brl_amount("valor transferido R$ 100,00 chave...") == "100,00"
+    assert _find_brl_amount("Total R$ 1.234,56 pago") == "1.234,56"
+    assert _find_brl_amount("R$ 100 via PIX") == "100"
+    assert _find_brl_amount("COMPROVANTE: valor R$ ? não identificado") is None
+    assert _find_brl_amount("sem valor algum") is None
+    assert _description_has_amount("COMPROVANTE DE PAGAMENTO: R$ 100,00") is True
+    assert _description_has_amount("COMPROVANTE DE PAGAMENTO: valor ilegível") is False
+
+
+async def test_describe_image_reread_recovers_amount():
+    """1ª leitura não traz valor → 2ª leitura focada recupera → vai pra descrição."""
+    from app.media import describe_image_bytes
+    fake_openai = AsyncMock()
+    fake_openai.chat.completions.create = AsyncMock(side_effect=[
+        _mock_openai_response("COMPROVANTE DE PAGAMENTO: PIX para PSIQUE, valor não visível"),
+        _mock_openai_response("100,00"),  # releitura focada
+    ])
+    with patch("app.media._get_openai", return_value=fake_openai), \
+         patch("app.database.get_user_by_phone", new_callable=AsyncMock,
+               return_value={"patient_name": "Maria"}), \
+         patch("app.google_drive.upload_image", new_callable=AsyncMock,
+               return_value="https://drive.google.com/file/d/rcpt/view"), \
+         patch.dict("os.environ", {"GOOGLE_DRIVE_PAYMENTS_FOLDER_ID": "folder-1"}):
+        result = await describe_image_bytes(b"fake-bytes", phone="5511999999999@s.whatsapp.net")
+
+    assert fake_openai.chat.completions.create.await_count == 2  # releu
+    assert "R$ 100,00" in result  # valor recuperado entrou na descrição
+
+
+async def test_describe_image_no_reread_when_amount_already_present():
+    """1ª leitura já traz o valor → NÃO faz segunda chamada."""
+    from app.media import describe_image_bytes
+    fake_openai = AsyncMock()
+    fake_openai.chat.completions.create = AsyncMock(
+        return_value=_mock_openai_response("COMPROVANTE DE PAGAMENTO: valor transferido R$ 100,00, PIX PSIQUE")
+    )
+    with patch("app.media._get_openai", return_value=fake_openai), \
+         patch("app.database.get_user_by_phone", new_callable=AsyncMock,
+               return_value={"patient_name": "Maria"}), \
+         patch("app.google_drive.upload_image", new_callable=AsyncMock,
+               return_value="https://drive.google.com/file/d/rcpt/view"), \
+         patch.dict("os.environ", {"GOOGLE_DRIVE_PAYMENTS_FOLDER_ID": "folder-1"}):
+        result = await describe_image_bytes(b"fake-bytes", phone="5511999999999@s.whatsapp.net")
+
+    assert fake_openai.chat.completions.create.await_count == 1  # não releu
+    assert "R$ 100,00" in result

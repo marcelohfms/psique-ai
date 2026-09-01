@@ -4085,6 +4085,39 @@ async def test_register_payment_rename_unknown_amount_uses_placeholder():
     assert "?" not in new_filename
 
 
+async def test_register_payment_unreadable_amount_notifies_clinic_not_patient():
+    """amount='?' (ilegível mesmo após a releitura): a Eva NÃO confirma e NÃO
+    pergunta o valor ao paciente. Avisa a clínica para lançar manualmente e devolve
+    instrução interna para uma resposta neutra. NÃO grava planilha, sem exceção."""
+    from app.graph.tools import register_payment
+    client, _, _ = _make_supabase_client_with_appointment()
+    with patch("app.graph.tools.get_supabase", new_callable=AsyncMock, return_value=client), \
+         patch("app.graph.tools.get_users_by_phone", new_callable=AsyncMock, return_value=[{"id": "user-123", "patient_name": "Maria"}]), \
+         patch("app.graph.tools.log_event", new_callable=AsyncMock), \
+         patch("app.graph.tools._notify_clinic", new_callable=AsyncMock) as mock_notify, \
+         patch("app.google_drive.rename_file", new_callable=AsyncMock), \
+         patch("app.google_sheets.append_payment_receipt", new_callable=AsyncMock) as mock_sheets, \
+         patch("app.graph.tools.send_text", new_callable=AsyncMock):
+        result = await register_payment.coroutine(
+            amount="?",
+            drive_link="https://drive.google.com/file/d/abc/view",
+            state=_make_state(),
+            config=CONFIG,
+        )
+
+    # Instrução interna neutra, nunca uma confirmação
+    assert "[INSTRUÇÃO INTERNA" in result
+    assert "✅" not in result
+    assert "NÃO peça o valor ao paciente" in result  # não transfere ao paciente
+    # Avisou a clínica para lançar manualmente
+    mock_notify.assert_awaited()
+    assert "ILEGÍVEL" in mock_notify.call_args[0][0]
+    # Não gravou a planilha com '?'
+    mock_sheets.assert_not_awaited()
+    # Não travou o fluxo: string normal, sem exceção
+    assert isinstance(result, str) and result
+
+
 def _make_supabase_client_for_override(candidates: list[dict]):
     """Supabase client for patient_name_override tests: call 1 is the `patients`
     ilike search (returns `candidates`), call 2 is the scheduled-appointment lookup
