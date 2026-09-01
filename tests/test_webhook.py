@@ -287,6 +287,26 @@ async def test_text_waits_for_the_receipt_being_read_and_both_land_in_one_turn()
     assert "COMPROVANTE" in turns[0]
 
 
+async def test_received_comprovante_is_persisted_to_messages():
+    """Caso Fernanda 5587996373892 (01/09/2026): o comprovante recebido TEM que ser
+    gravado em `messages`. Essa é a única fonte que as guardas de cancelamento
+    (find_receipt_in_conversation no cron) leem; o evento e o Drive gravavam, mas a
+    linha [imagem] do comprovante nem sempre. A gravação acontece no webhook, antes
+    do buffer_push, e não pode ser removida por refactor."""
+    from app.main import _handle_payload
+    payload = _meta_payload(msg_type="image")
+    receipt = "[imagem]: COMPROVANTE DE PAGAMENTO: R$ 100,00 [drive_link:https://drive/x]"
+    with patch("app.media.process_media", new_callable=AsyncMock, return_value=receipt), \
+         patch("app.main.save_message", new_callable=AsyncMock) as mock_save, \
+         patch("app.main.buffer_push", new_callable=AsyncMock):
+        await _handle_payload(payload)
+
+    mock_save.assert_awaited_once()
+    phone_arg, role_arg, content_arg = mock_save.await_args.args
+    assert role_arg == "user"
+    assert "COMPROVANTE DE PAGAMENTO" in content_arg
+
+
 async def test_duplicate_audio_webhook_sends_notice_only_once():
     """A retried audio webhook (same msg_id) must not send the notice twice."""
     from app.main import _handle_payload

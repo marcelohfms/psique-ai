@@ -1,6 +1,11 @@
+import asyncio
+import logging
+
 # _strip_phone: uso interno (3 chamadas).
 from app.phone import _strip_phone
 from app.supabase_client import get_supabase
+
+logger = logging.getLogger(__name__)
 
 # A API legada de `users` daqui é um adaptador sobre o modelo de
 # patients/contacts. get_patients_by_contact saiu da lista: era re-export puro,
@@ -529,17 +534,45 @@ async def get_upcoming_appointments(phone: str) -> list[dict]:
 
 # ── Message persistence ───────────────────────────────────────────────────────
 
+# Backoff entre tentativas de save_message. Curto de propósito: isto roda dentro
+# do handler do webhook (app/main.py), logo antes de despachar para o grafo, então
+# não pode segurar o fluxo por muito tempo — mas uma falha transitória de rede/DB
+# some com o comprovante para sempre se não houver retry.
+_SAVE_MESSAGE_RETRY_DELAYS = (0.5, 1.5)  # 3 tentativas no total
+
+
 async def save_message(phone: str, role: str, content: str) -> None:
-    """Persist a chat message. Fire-and-forget — errors are swallowed."""
-    try:
-        client = await get_supabase()
-        await client.from_("messages").insert({
-            "phone": _strip_phone(phone),
-            "role": role,
-            "content": content,
-        }).execute()
-    except Exception:
-        pass  # never let persistence break the main flow
+    """Persiste uma mensagem do chat. NUNCA propaga exceção (uma falha de escrita
+    não pode quebrar o fluxo principal) — mas também NÃO é silenciosa: reintenta a
+    falha transitória e loga a falha final.
+
+    Este é o ÚNICO ponto que grava a mensagem do PACIENTE em `messages`: o grafo só
+    grava as respostas da Eva. Quando este insert falhava e a exceção era engolida
+    com `except Exception: pass`, o comprovante recém-enviado sumia da tabela sem
+    deixar rastro — nem retry, nem log — enquanto o upload ao Drive (feito antes, na
+    leitura da imagem) e o evento payment_receipt_registered (gravado depois, no
+    grafo) persistiam normalmente. Daí o comprovante aparecer em `messages` só "às
+    vezes", cegando as guardas que leem essa tabela (find_receipt_in_conversation
+    no cron de cobrança). Caso Fernanda 5587996373892 (01/09/2026)."""
+    row = {
+        "phone": _strip_phone(phone),
+        "role": role,
+        "content": content,
+    }
+    for attempt in range(len(_SAVE_MESSAGE_RETRY_DELAYS) + 1):
+        try:
+            client = await get_supabase()
+            await client.from_("messages").insert(row).execute()
+            return
+        except Exception:
+            if attempt < len(_SAVE_MESSAGE_RETRY_DELAYS):
+                await asyncio.sleep(_SAVE_MESSAGE_RETRY_DELAYS[attempt])
+                continue
+            logger.exception(
+                "SAVE_MESSAGE_FAILED phone=%s role=%s após %d tentativas — "
+                "mensagem NÃO persistida em `messages`: %.80s",
+                row["phone"], role, attempt + 1, content,
+            )
 
 
 async def get_last_assistant_message_time(phone: str):
