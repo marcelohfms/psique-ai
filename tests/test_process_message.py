@@ -5868,3 +5868,18 @@ async def test_guard_false_no_shift_does_not_fire_when_already_checked():
     # A negação verdadeira foi enviada; nada foi reinjetado
     mock_send.assert_awaited_once()
     assert not (result["messages"][-1].tool_calls or [])
+
+
+def test_article_before_patient_name_guard_in_all_prompts():
+    """Regressão: Eva colava artigo de gênero antes do nome do paciente
+    (ex.: "do Taynnar" para uma paciente mulher). A guarda ARTIGO ANTES DO
+    NOME deve estar nos três prompts que se dirigem ao paciente/contato."""
+    from app.graph.prompts import (
+        COLLECT_SYSTEM,
+        EXISTING_PATIENT_SYSTEM,
+        NEW_PATIENT_SYSTEM,
+    )
+
+    for prompt in (COLLECT_SYSTEM, EXISTING_PATIENT_SYSTEM, NEW_PATIENT_SYSTEM):
+        assert "ARTIGO ANTES DO NOME" in prompt
+        assert "NUNCA coloque artigo" in prompt
