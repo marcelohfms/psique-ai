@@ -14,6 +14,11 @@ days:
 see dashboard/return_reminders.py::save_classification). `1_mes` rows never
 fire retorno_mes_anterior for the same reason (that flag is also pre-marked).
 
+Piso de 15 dias: nenhum lembrete sai antes de 15 dias após a consulta (ver
+`_consultation_floor`). Sem isso, uma consulta de fim de mês recebia o aviso
+"você está no período de retorno" já no dia 1º do mês seguinte — às vezes um
+dia depois da consulta.
+
 Cada um dos 3 templates acima tem uma variante `_terceiro` (contato ≠
 paciente, ex: mãe agendando pelo filho) — ver `_plain_message` e
 `_build_body_params` abaixo.
@@ -28,7 +33,8 @@ supabase/migrations/20260714_create_return_reminders.sql).
 """
 import asyncio
 import os
-from datetime import date, datetime
+from calendar import monthrange
+from datetime import date, datetime, timedelta
 from zoneinfo import ZoneInfo
 
 from dotenv import load_dotenv
@@ -56,6 +62,44 @@ def _month_key(d: date) -> int:
     return d.year * 12 + d.month
 
 
+# Meses de cada intervalo de retorno, para reconstruir a data da consulta a
+# partir de next_return_date (que foi calculado como consulta + N meses em
+# dashboard/return_reminders.py::compute_next_return_date). Espelha aquele
+# mapa — mantenha os dois em sincronia se um intervalo novo for adicionado.
+_INTERVAL_MONTHS = {"1_mes": 1, "2_meses": 2, "3_meses": 3, "4_meses": 4, "6_meses": 6}
+
+# Piso: nenhum lembrete de retorno sai antes de 15 dias após a consulta. A
+# comparação por mês-calendário fazia consultas de fim de mês receberem o
+# aviso logo no 1º dia do mês do retorno — às vezes um dia depois da consulta,
+# antes mesmo do "como foi a consulta". 15 dias dão folga sem atrasar quem
+# consultou no começo do mês.
+_MIN_DAYS_AFTER_CONSULTATION = 15
+
+
+def _add_months(d: date, months: int) -> date:
+    """Soma (ou subtrai, com months negativo) meses preservando o dia, com
+    clamp no último dia do mês. Cópia local de
+    dashboard/return_reminders.py::_add_months (o cron não importa dashboard/)."""
+    month_index = d.month - 1 + months
+    year = d.year + month_index // 12
+    month = month_index % 12 + 1
+    day = min(d.day, monthrange(year, month)[1])
+    return date(year, month, day)
+
+
+def _consultation_floor(row: dict, next_return_date: date) -> date | None:
+    """Data mínima para soltar qualquer lembrete desta linha (consulta + 15
+    dias), ou None se o intervalo não permitir reconstruir a consulta. A
+    consulta é next_return_date menos os meses do intervalo. O clamp de fim de
+    mês pode errar em 1-2 dias na reconstrução, o que é irrelevante para um
+    piso de cortesia."""
+    months = _INTERVAL_MONTHS.get(row.get("return_interval"))
+    if not months:
+        return None
+    consultation = _add_months(next_return_date, -months)
+    return consultation + timedelta(days=_MIN_DAYS_AFTER_CONSULTATION)
+
+
 def pending_template(today: date, row: dict) -> tuple[str, str] | None:
     """Retorna (template_name, coluna_de_flag) a disparar hoje para esta linha, ou None."""
     if row.get("return_interval") == "15_dias":
@@ -64,6 +108,14 @@ def pending_template(today: date, row: dict) -> tuple[str, str] | None:
         return None
 
     next_return_date = date.fromisoformat(row["next_return_date"])
+
+    # Piso de 15 dias após a consulta: segura o aviso de consultas recentes
+    # (fim de mês) sem afetar quem consultou mais cedo no ciclo. Nunca bloqueia
+    # o retorno_atrasado, que só ocorre num mês posterior ao do retorno.
+    floor = _consultation_floor(row, next_return_date)
+    if floor is not None and today < floor:
+        return None
+
     current_key = _month_key(today)
     target_key = _month_key(next_return_date)
 
