@@ -2444,16 +2444,19 @@ async def patient_agent_node(state: ConversationState, config: RunnableConfig) -
     contact_first_name = _dn(_contact_full)
     contact_name = _contact_full
     is_minor = patient_age < 18
-    # Só consulta o banco quando o resultado pode virar: menor do Dr. Júlio ainda
-    # marcado como não-retornante. Fora disso a regra já é decidida pelo estado e
-    # a query seria latência à toa em todo turno.
+    # Um paciente que já concluiu uma consulta é retornante, mesmo que a ficha
+    # continue com is_returning_patient=False (cadastrou-se como novo, fez a 1ª
+    # consulta e voltou; o flag nunca vira True sozinho). Sem isso a Eva reoferece
+    # a "primeira consulta" e cobra o valor de primeira vez — caso Rudá/Antonio
+    # (5581999269266, 02/09/2026), adulto do Dr. Júlio com consulta concluída. É o
+    # MESMO sinal (prior_completed) que book_appointment já usa em tools.py.
+    # Generaliza o caso Enrico (5581988522467), que só cobria a regra de duração de
+    # menor do Dr. Júlio. Consultamos o banco só quando o flag ainda é falso — uma
+    # query por turno que some assim que o paciente é reconhecido como retornante.
     _has_prior_completed = False
-    if (
-        is_minor
-        and state.get("preferred_doctor") == "julio"
-        and not state.get("is_returning_patient", False)
-    ):
+    if not state.get("is_returning_patient", False):
         _has_prior_completed = await _patient_has_prior_completed(state["phone"], state)
+    _treat_as_returning = bool(state.get("is_returning_patient")) or _has_prior_completed
     duration_rule = _duration_rule_for(
         state, patient_age, first_name, _has_prior_completed
     )
@@ -2487,7 +2490,7 @@ async def patient_agent_node(state: ConversationState, config: RunnableConfig) -
             break
 
     from app.google_calendar import format_doctor_schedules
-    template = EXISTING_PATIENT_SYSTEM if state.get("is_returning_patient") else NEW_PATIENT_SYSTEM
+    template = EXISTING_PATIENT_SYSTEM if _treat_as_returning else NEW_PATIENT_SYSTEM
     from app.dates import build_date_reference, date_suffix_pt
     _now_recife = datetime.now(ZoneInfo("America/Recife"))
     today = build_date_reference(_now_recife)

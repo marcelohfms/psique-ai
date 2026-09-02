@@ -5686,6 +5686,62 @@ async def test_patient_has_prior_completed_false_when_no_patient():
         got = await nodes._patient_has_prior_completed("5581988522467", {})
 
     assert got is False
+
+
+# ── Template do patient_agent: consulta concluída no banco = retornante ────────
+# Caso Rudá/Antonio (5581999269266, 02/09/2026): adulto do Dr. Júlio com 1 consulta
+# concluída, mas cadastrado como is_returning_patient=False. A Eva ofereceu a
+# "primeira consulta" (roteiro de paciente novo, valor de primeira vez). O flag
+# nunca vira True sozinho; o sinal confiável é a consulta concluída no banco — o
+# MESMO prior_completed que book_appointment já usa. Generaliza o caso Enrico, que
+# só cobria a regra de duração de menor do Dr. Júlio.
+@pytest.mark.asyncio
+async def test_patient_agent_prior_completed_uses_existing_template():
+    state = _make_patient_agent_state(
+        is_returning_patient=False,
+        patient_age=19,
+        patient_name="Rudá Guimarães",
+        messages=[HumanMessage(content="quero agendar")],
+    )
+    with patch("app.graph.nodes._patient_has_prior_completed",
+               new_callable=AsyncMock, return_value=True):
+        system_msg = await _run_patient_agent(state)
+
+    assert system_msg is not None
+    assert "novo paciente" not in system_msg.content
+    assert "paciente do(a)" in system_msg.content
+
+
+@pytest.mark.asyncio
+async def test_patient_agent_no_prior_and_not_returning_uses_new_template():
+    # Sem consulta concluída e sem flag → segue sendo paciente novo (não
+    # sobre-corrige quem realmente está na primeira consulta).
+    state = _make_patient_agent_state(
+        is_returning_patient=False,
+        patient_age=19,
+        messages=[HumanMessage(content="quero agendar")],
+    )
+    with patch("app.graph.nodes._patient_has_prior_completed",
+               new_callable=AsyncMock, return_value=False):
+        system_msg = await _run_patient_agent(state)
+
+    assert system_msg is not None
+    assert "novo paciente" in system_msg.content
+
+
+@pytest.mark.asyncio
+async def test_patient_agent_returning_flag_skips_prior_completed_query():
+    # is_returning_patient=True já basta: EXISTING sem custo de query ao banco.
+    state = _make_patient_agent_state(is_returning_patient=True, patient_age=40)
+    with patch("app.graph.nodes._patient_has_prior_completed",
+               new_callable=AsyncMock, return_value=True) as m:
+        system_msg = await _run_patient_agent(state)
+
+    m.assert_not_awaited()
+    assert system_msg is not None
+    assert "novo paciente" not in system_msg.content
+
+
 # ── GUARD_FALSE_NO_SHIFT: falso "não há tarde/noite" ─────────────────────────
 # Caso Havana/Luíza (5581997763235, 2026-09-01): pediu "tarde e noite", a Eva caiu
 # no "qualquer" (que mostra só a manhã) e afirmou "não há tarde ou noite em
