@@ -892,3 +892,28 @@ async def test_cancel_receipt_guard_still_scans_all_financial_contacts():
          patch("scripts.send_payment_reminders.send_whatsapp", new=AsyncMock()):
         await spr._cancel_unpaid_appointment(client, _pay_appt(), None, datetime.now(TZ))
     assert sorted(frc.await_args.args[1]) == ["5581000", "5581999"]
+
+
+# ── Janela de envio (8h–21h, horário de Recife) ───────────────────────────────
+
+@pytest.mark.parametrize(
+    "hour, expected",
+    [
+        (7, False),   # antes da janela (madrugada/manhã cedo)
+        (8, True),    # abre exatamente às 8h
+        (12, True),   # meio do dia
+        (20, True),   # último horário dentro da janela
+        (21, False),  # fecha às 21h (limite exclusivo)
+        (23, False),  # noite
+        (2, False),   # madrugada
+    ],
+)
+def test_within_send_window_boundaries(hour, expected):
+    now = datetime(2026, 9, 2, hour, 30, tzinfo=TZ)
+    assert spr._within_send_window(now) is expected
+
+
+def test_within_send_window_converts_from_utc():
+    # 23:30 UTC == 20:30 em Recife (UTC-3) → dentro da janela.
+    now_utc = datetime(2026, 9, 2, 23, 30, tzinfo=ZoneInfo("UTC"))
+    assert spr._within_send_window(now_utc) is True

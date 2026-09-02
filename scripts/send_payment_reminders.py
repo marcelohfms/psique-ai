@@ -3,7 +3,7 @@ Payment reminder and auto-cancellation script.
 Runs every 30 minutes via GitHub Actions.
 
 Regras:
-- Só executa entre 7h e 23h (horário de Recife). Fora desse intervalo, encerra sem fazer nada.
+- Só executa entre 8h e 21h (horário de Recife). Fora desse intervalo, encerra sem fazer nada.
 - 2h após o agendamento (se não pago): envia lembrete de pagamento via WhatsApp.
   O lembrete é enviado a TODOS os contatos com role 'financeiro' vinculados ao paciente.
   Se o envio falhar, não marca como enviado (a próxima execução tentará de novo).
@@ -31,6 +31,18 @@ from app.graph.prompts import get_pix_key as _get_pix_key
 from app.patients import get_contact_by_id
 
 TZ = ZoneInfo("America/Recife")
+
+# Janela de envio: lembretes e cancelamentos automáticos só saem entre estas
+# horas (horário de Recife). Fora dela o job encerra sem cobrar nem cancelar,
+# para não acionar ninguém de madrugada.
+WINDOW_START = 8
+WINDOW_END = 21
+
+
+def _within_send_window(now: datetime) -> bool:
+    """True se `now` (timezone-aware, horário de Recife) está na janela de envio."""
+    return WINDOW_START <= now.astimezone(TZ).hour < WINDOW_END
+
 
 DOCTOR_LABELS = {
     "d5baa58b-a788-4f40-b8c0-512c189150be": "Dr. Júlio",
@@ -632,10 +644,8 @@ async def main():
 
     now = datetime.now(TZ)
 
-    # ── Janela de envio: apenas entre 7h e 23h (horário de Recife) ────────────
-    WINDOW_START = 7
-    WINDOW_END = 23
-    if not (WINDOW_START <= now.hour < WINDOW_END):
+    # ── Janela de envio: apenas entre 8h e 21h (horário de Recife) ────────────
+    if not _within_send_window(now):
         print(f"Fora da janela de envio ({WINDOW_START}h–{WINDOW_END}h). Encerrando.")
         return
 
