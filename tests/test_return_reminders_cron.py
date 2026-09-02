@@ -61,9 +61,36 @@ def test_pending_template_alta_nunca_dispara_mesmo_sem_next_return_date():
 
 
 def test_pending_template_intervalo_normal_ainda_dispara():
-    row = _row(return_interval="1_mes", next_return_date="2026-09-11")
-    # agosto é o mês anterior a setembro -> retorno_mes_anterior
-    assert srr.pending_template(date(2026, 8, 11), row) == (
+    # 2_meses, consulta em 15/08 (next_return 15/10). Em 15/09 (mês anterior a
+    # outubro) o mês-antes dispara — e já se passaram bem mais de 15 dias da
+    # consulta, então o piso não interfere.
+    row = _row(return_interval="2_meses", next_return_date="2026-10-15")
+    assert srr.pending_template(date(2026, 9, 15), row) == (
+        "retorno_mes_anterior", "month_before_sent_at",
+    )
+
+
+def test_pending_template_1_mes_fim_de_mes_segura_ate_15_dias():
+    # Caso do incidente: consulta no fim do mês (31/08) classificada como 1 mês
+    # -> next_return 30/09 (mesmo mês de "hoje" logo no dia 1º). Sem o piso, o
+    # retorno_no_mes sairia em 01/09 — um dia depois da consulta. O piso de 15
+    # dias após a consulta segura até 15/09.
+    row = _row(return_interval="1_mes", next_return_date="2026-09-30")
+    assert srr.pending_template(date(2026, 9, 1), row) is None
+    assert srr.pending_template(date(2026, 9, 13), row) is None
+    # dispara a partir do piso (consulta reconstruída 30/08 + 15 dias = 14/09)
+    assert srr.pending_template(date(2026, 9, 14), row) == (
+        "retorno_no_mes", "month_of_sent_at",
+    )
+
+
+def test_pending_template_2_meses_fim_de_mes_piso_segura_mes_anterior():
+    # Consulta 30/08 classificada 2 meses -> next_return 30/10. "Mês anterior"
+    # é setembro, então retorno_mes_anterior tentaria sair em 01/09 (2 dias após
+    # a consulta). O piso de 15 dias segura até 14/09.
+    row = _row(return_interval="2_meses", next_return_date="2026-10-30")
+    assert srr.pending_template(date(2026, 9, 1), row) is None
+    assert srr.pending_template(date(2026, 9, 15), row) == (
         "retorno_mes_anterior", "month_before_sent_at",
     )
 
