@@ -3750,6 +3750,36 @@ async def test_register_payment_appends_sheet_and_notifies():
     assert "https://drive.google.com" in notify_msg
 
 
+async def test_register_payment_unreadable_without_drive_link_tells_clinic_to_fetch():
+    """Comprovante com valor ilegível E sem link do Drive (caso Rayssa, 03/09/2026):
+    a leitura falhou e o arquivo não ficou salvo. O aviso à clínica precisa deixar
+    claro que não há link e mandar buscar o comprovante na conversa do paciente —
+    senão a atendente registra sem ter o comprovante à mão."""
+    from app.graph.tools import register_payment
+    client, _, _ = _make_supabase_client_with_appointment()
+    with patch("app.graph.tools.get_supabase", new_callable=AsyncMock, return_value=client), \
+         patch("app.graph.tools.get_users_by_phone", new_callable=AsyncMock, return_value=[{"id": "user-123", "patient_name": "Maria"}]), \
+         patch("app.graph.tools.log_event", new_callable=AsyncMock), \
+         patch("app.graph.tools._notify_clinic", new_callable=AsyncMock) as mock_notify, \
+         patch("app.google_sheets.append_payment_receipt", new_callable=AsyncMock) as mock_sheets, \
+         patch("app.graph.tools.send_text", new_callable=AsyncMock):
+        result = await register_payment.coroutine(
+            amount="?",
+            drive_link="",
+            state=_make_state(),
+            config=CONFIG,
+        )
+
+    # Nada é registrado como pago quando o valor é ilegível.
+    mock_sheets.assert_not_called()
+    assert "✅" not in result
+    notify_msg = mock_notify.call_args[0][0]
+    assert "ILEGÍVEL" in notify_msg
+    # Sem link: precisa instruir a buscar o arquivo na conversa do paciente.
+    assert "conversa" in notify_msg.lower()
+    assert "Link:" not in notify_msg  # não mostra um "Link:" vazio
+
+
 async def test_register_payment_rename_failure_still_succeeds():
     from app.graph.tools import register_payment
     client, _, _ = _make_supabase_client_with_appointment()

@@ -200,6 +200,34 @@ def _description_has_amount(description: str) -> bool:
     return _find_brl_amount(description) is not None
 
 
+def _enhance_for_reread(image_bytes: bytes) -> bytes:
+    """Realça a imagem antes da releitura do valor: escala de cinza, autocontraste,
+    nitidez e ampliação quando é pequena. É onde mora boa parte das falhas — foto
+    de tela de banco chega pequena e sem contraste.
+
+    Reforço, não gargalo: nunca lança. Entrada que não é imagem (ou qualquer erro)
+    devolve os bytes originais, para a releitura seguir do mesmo jeito."""
+    try:
+        from io import BytesIO
+        from PIL import Image, ImageOps, ImageFilter
+        img = Image.open(BytesIO(image_bytes))
+        img = ImageOps.exif_transpose(img)  # respeita orientação da foto
+        img = img.convert("L")  # escala de cinza — texto de comprovante é monocromático
+        img = ImageOps.autocontrast(img, cutoff=1)
+        # Amplia quando o menor lado é pequeno (texto minúsculo fica ilegível ao modelo).
+        min_side = min(img.size)
+        if min_side < 1000:
+            factor = min(3, max(2, 1000 // max(min_side, 1)))
+            img = img.resize((img.width * factor, img.height * factor), Image.LANCZOS)
+        img = img.filter(ImageFilter.SHARPEN)
+        buf = BytesIO()
+        img.save(buf, format="JPEG", quality=92)
+        return buf.getvalue()
+    except Exception:
+        logger.exception("ENHANCE_FOR_REREAD FAILED — usando imagem original")
+        return image_bytes
+
+
 async def _reread_amount(
     image_bytes: bytes,
     source_bytes: bytes | None,
@@ -209,11 +237,15 @@ async def _reread_amount(
     """Segunda leitura, mais forte, focada SÓ no valor pago. Retorna o valor
     (ex: '100,00') ou None se ainda ilegível.
 
-    Por que uma segunda passada e não a mesma: a 1ª leitura classifica com
-    temperature=0 e reasoning_effort='none' — reprocessar igual daria o mesmo
-    resultado. Aqui a leitura é DIFERENTE: prompt focado só no valor, raciocínio
-    ligado e, para PDF, o texto embutido do comprovante (onde o valor costuma vir
-    selecionável) mais um render em DPI maior. Nunca lança: erro vira None."""
+    Por que uma segunda passada e não a mesma: a 1ª leitura classifica no gpt-5.2
+    com temperature=0 e reasoning_effort='none' — reprocessar igual daria o mesmo
+    resultado. Aqui a leitura é DIFERENTE em três pontos. Primeiro, volta para o
+    gpt-4o: os dois únicos comprovantes ilegíveis (03/09/2026) aconteceram no
+    gpt-5.2, e o gpt-4o tem histórico limpo nessa tarefa (398 leituras, zero
+    ilegíveis). Segundo, a imagem passa por realce (ampliar/contraste). Terceiro,
+    o prompt é focado só no valor e, para PDF, usa o texto embutido do comprovante
+    (onde o valor costuma vir selecionável) mais um render em DPI maior. Nunca
+    lança: erro vira None."""
     pdf_text = ""
     img_for_read = image_bytes
     if source_ext == "pdf" and source_bytes:
@@ -228,6 +260,7 @@ async def _reread_amount(
         except Exception:
             logger.exception("REREAD_PDF_EXTRACT FAILED phone=%s", phone)
 
+    img_for_read = _enhance_for_reread(img_for_read)
     b64 = base64.b64encode(img_for_read).decode()
     content = [
         {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{b64}"}},
@@ -242,11 +275,10 @@ async def _reread_amount(
 
     try:
         resp = await _get_openai().chat.completions.create(
-            model="gpt-5.2",
+            model="gpt-4o",  # releitura do valor volta ao gpt-4o (histórico limpo)
             temperature=0,
-            reasoning_effort="low",  # diferente da 1ª passada ('none'): aqui vale raciocinar
             messages=[{"role": "user", "content": content}],
-            max_completion_tokens=200,  # folga p/ não truncar a resposta com raciocínio ligado
+            max_tokens=200,
         )
         out = (resp.choices[0].message.content or "").strip()
     except Exception:
