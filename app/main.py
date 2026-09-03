@@ -497,6 +497,57 @@ async def admin_patch_state(request: Request, x_admin_secret: str | None = Heade
 
 # ── Core message processing ───────────────────────────────────────────────────
 
+async def _eva_paused_for_phone(phone: str) -> bool:
+    """True quando a Eva deve permanecer em silêncio para este número.
+
+    Espelha o portão de pausa do recebimento: manual_hold (permanente) ou
+    active=False dentro da janela de 24 h. Passada a janela, reativa e devolve
+    False. Fonte única para os dois caminhos que podem fazer a Eva falar com o
+    paciente — a mensagem recebida (process_message) e a nota privada da
+    atendente — para que uma conversa pausada (eva-inativa) não seja disparada
+    nem por uma nota interna (caso Rayssa 558399495410, 03/09/2026).
+    """
+    all_users = await get_users_by_phone(phone)
+    if any(r.get("manual_hold") for r in all_users):
+        return True  # hold permanente — nunca reativa
+
+    # Contato solto (não-paciente, ex.: representante) também é silenciado.
+    try:
+        _contact = await get_contact_by_phone(phone)
+    except Exception:
+        _contact = None  # degradação graciosa — segue o fluxo normal
+    if _contact and _contact.get("manual_hold"):
+        return True
+
+    inactive = [r for r in all_users if r.get("active") is False]
+    if not inactive:
+        return False
+
+    def _deactivated_dt(r: dict):
+        ts = r.get("deactivated_at")
+        if not ts:
+            return None
+        try:
+            dt = datetime.fromisoformat(ts)
+            if not dt.tzinfo:
+                dt = dt.replace(tzinfo=timezone.utc)
+            return dt
+        except ValueError:
+            return None
+
+    deactivated_dts = [d for r in inactive if (d := _deactivated_dt(r)) is not None]
+    if not deactivated_dts:
+        return True  # sem timestamp = hold permanente
+    most_recent = max(deactivated_dts)
+    if datetime.now(timezone.utc) - most_recent < timedelta(hours=_HOLD_HOURS):
+        return True  # ainda dentro do hold de 24 h
+    # 24 h decorridas — reativa todos os registros deste telefone
+    from app.database import upsert_user
+    await upsert_user(phone, {"active": True, "deactivated_at": None})
+    logger.info("Bot auto-reativado para %s após 24 h", phone)
+    return False
+
+
 async def process_message(phone: str, text: str) -> None:
     """Route a (possibly debounced) message through the LangGraph chatbot."""
     if _is_duplicate_phone_text(phone, text):
@@ -507,49 +558,17 @@ async def process_message(phone: str, text: str) -> None:
 
     existing = await get_user_by_phone(phone)
 
-    # Check hold/deactivation across ALL users for this phone.
-    # get_user_by_phone preferentially returns active users, so a phone with one
-    # inactive user (e.g. guardian) and one active user (e.g. child added later)
-    # would bypass the check. We use get_users_by_phone to catch all cases.
-    all_users = await get_users_by_phone(phone)
-
-    if any(r.get("manual_hold") for r in all_users):
-        return  # permanent hold — never reactivates
-
-    # Contato solto (não-paciente, ex.: representante) também é silenciado.
-    # O check acima itera sobre pacientes; um contato sem paciente não apareceria.
-    try:
-        _contact = await get_contact_by_phone(phone)
-    except Exception:
-        _contact = None  # degradação graciosa — segue o fluxo normal
-    if _contact and _contact.get("manual_hold"):
+    # Hold/deactivation: mesma checagem usada pela nota privada da atendente.
+    # (manual_hold permanente, active=False dentro das 24 h, e auto-reativação
+    # após a janela). Ver _eva_paused_for_phone.
+    if await _eva_paused_for_phone(phone):
         return
 
-    inactive = [r for r in all_users if r.get("active") is False]
-    if inactive:
-        # Use the most recently deactivated record to determine hold window
-        def _deactivated_dt(r: dict):
-            ts = r.get("deactivated_at")
-            if not ts:
-                return None
-            try:
-                dt = datetime.fromisoformat(ts)
-                if not dt.tzinfo:
-                    dt = dt.replace(tzinfo=timezone.utc)
-                return dt
-            except ValueError:
-                return None
-
-        deactivated_dts = [d for r in inactive if (d := _deactivated_dt(r)) is not None]
-        if not deactivated_dts:
-            return  # no timestamp = permanent hold
-        most_recent = max(deactivated_dts)
-        if datetime.now(timezone.utc) - most_recent < timedelta(hours=_HOLD_HOURS):
-            return  # still within 24-h hold
-        # 24 h elapsed — reactivate all records for this phone
-        from app.database import upsert_user
-        await upsert_user(phone, {"active": True, "deactivated_at": None})
-        logger.info("Bot auto-reativado para %s após 24 h", phone)
+    # get_users_by_phone preferentially returns active users, so a phone with one
+    # inactive user (e.g. guardian) and one active user (e.g. child added later)
+    # would bypass a naive check. We keep the full list for the per-patient
+    # disambiguation further down.
+    all_users = await get_users_by_phone(phone)
 
     async with get_phone_lock(phone):
         snapshot = await graph_module.chatbot.aget_state(config)
@@ -1239,6 +1258,19 @@ async def _handle_attendant_note(payload: dict) -> None:
         return
 
     conv_id = payload.get("conversation", {}).get("id")
+
+    # Conversa pausada (eva-inativa / active=False): a atendente assumiu o
+    # atendimento e a nota privada é coordenação interna, não instrução para a
+    # Eva falar com o paciente. Registramos para rastreio e saímos sem disparar.
+    # Para steerar a Eva, a atendente reativa antes com a label eva-ativa (que
+    # zera active=False), e então a nota passa por aqui normalmente.
+    if await _eva_paused_for_phone(phone):
+        await log_event("attendant_note_suppressed_paused", phone, {
+            "content": content[:300], "conversation_id": conv_id,
+        })
+        logger.info("ATTENDANT_NOTE suprimida (Eva pausada) phone=%s conv=%s", phone, conv_id)
+        return
+
     if conv_id:
         from app.chatwoot import register_conversation
         register_conversation(phone, conv_id)
