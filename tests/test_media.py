@@ -409,3 +409,79 @@ async def test_describe_image_no_reread_when_amount_already_present():
 
     assert fake_openai.chat.completions.create.await_count == 1  # não releu
     assert "R$ 100,00" in result
+
+
+async def test_reread_amount_uses_gpt4o_not_gpt5():
+    """A releitura do VALOR volta para o gpt-4o: os dois únicos comprovantes
+    ilegíveis (03/09/2026) aconteceram no gpt-5.2, e o gpt-4o tem histórico limpo
+    nessa leitura (398 comprovantes, zero ilegíveis). A 2ª chamada (releitura) usa
+    gpt-4o e NÃO manda reasoning_effort (parâmetro da família gpt-5)."""
+    from app.media import describe_image_bytes
+    fake_openai = AsyncMock()
+    fake_openai.chat.completions.create = AsyncMock(side_effect=[
+        _mock_openai_response("COMPROVANTE DE PAGAMENTO: PIX para PSIQUE, valor não visível"),
+        _mock_openai_response("100,00"),
+    ])
+    with patch("app.media._get_openai", return_value=fake_openai), \
+         patch("app.media._enhance_for_reread", side_effect=lambda b: b), \
+         patch("app.database.get_user_by_phone", new_callable=AsyncMock,
+               return_value={"patient_name": "Maria"}), \
+         patch("app.google_drive.upload_image", new_callable=AsyncMock,
+               return_value="https://drive.google.com/file/d/rcpt/view"), \
+         patch.dict("os.environ", {"GOOGLE_DRIVE_PAYMENTS_FOLDER_ID": "folder-1"}):
+        await describe_image_bytes(b"fake-bytes", phone="5511999999999@s.whatsapp.net")
+
+    reread_kwargs = fake_openai.chat.completions.create.await_args_list[1].kwargs
+    assert reread_kwargs["model"] == "gpt-4o"
+    assert "reasoning_effort" not in reread_kwargs
+
+
+async def test_reread_enhances_the_image_before_reading():
+    """Antes da releitura, a imagem passa por realce (ampliar/contraste) — é aí que
+    mora boa parte das falhas de foto de tela. O realce roda no caminho de foto."""
+    from app.media import describe_image_bytes
+    fake_openai = AsyncMock()
+    fake_openai.chat.completions.create = AsyncMock(side_effect=[
+        _mock_openai_response("COMPROVANTE DE PAGAMENTO: PIX PSIQUE, valor não visível"),
+        _mock_openai_response("100,00"),
+    ])
+    with patch("app.media._get_openai", return_value=fake_openai), \
+         patch("app.media._enhance_for_reread", return_value=b"enhanced-bytes") as mock_enhance, \
+         patch("app.database.get_user_by_phone", new_callable=AsyncMock,
+               return_value={"patient_name": "Maria"}), \
+         patch("app.google_drive.upload_image", new_callable=AsyncMock,
+               return_value="https://drive.google.com/file/d/rcpt/view"), \
+         patch.dict("os.environ", {"GOOGLE_DRIVE_PAYMENTS_FOLDER_ID": "folder-1"}):
+        await describe_image_bytes(b"fake-bytes", phone="5511999999999@s.whatsapp.net")
+
+    mock_enhance.assert_called_once()
+
+
+def _tiny_png(width=40, height=20) -> bytes:
+    """Gera um PNG pequeno de verdade para exercitar o realce."""
+    from io import BytesIO
+    from PIL import Image
+    img = Image.new("RGB", (width, height), (128, 128, 128))
+    buf = BytesIO()
+    img.save(buf, format="PNG")
+    return buf.getvalue()
+
+
+def test_enhance_for_reread_upscales_small_image():
+    """O realce amplia uma imagem pequena (mais pixels ajudam o modelo a ler o
+    valor) e devolve bytes válidos de imagem."""
+    from io import BytesIO
+    from PIL import Image
+    from app.media import _enhance_for_reread
+    original = _tiny_png(40, 20)
+    out = _enhance_for_reread(original)
+    assert isinstance(out, bytes) and out
+    w, h = Image.open(BytesIO(out)).size
+    assert w > 40 and h > 20  # ampliou
+
+
+def test_enhance_for_reread_never_raises_on_garbage():
+    """Nunca lança: entrada inválida devolve os bytes originais (o realce é um
+    reforço, não pode derrubar a leitura)."""
+    from app.media import _enhance_for_reread
+    assert _enhance_for_reread(b"not-an-image") == b"not-an-image"

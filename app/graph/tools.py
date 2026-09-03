@@ -3895,11 +3895,20 @@ async def register_payment(
         # clínica para ler manualmente e lançar no painel, e devolve instrução interna
         # para a Eva só agradecer, de forma neutra. Retorno antecipado (o rename do
         # Drive já rodou acima); tudo em try/except, sem exceção que trave o fluxo.
+        # Sem link do Drive (upload falhou ou não rodou, caso Rayssa 03/09/2026): o
+        # arquivo não ficou salvo em lugar nenhum acessível pela clínica. Manda buscar
+        # o comprovante direto na conversa do paciente, senão a atendente registra às
+        # cegas. Com link, mostra o link normalmente.
+        _arquivo_linha = (
+            f"\nLink: {drive_link}" if drive_link
+            else "\n⚠️ O arquivo do comprovante NÃO ficou salvo no Drive — abra a "
+                 "conversa do paciente no WhatsApp para ver o comprovante enviado."
+        )
         try:
             await _notify_clinic(
                 f"⚠️ Comprovante recebido, mas o VALOR ficou ILEGÍVEL — confira e lance "
                 f"manualmente no painel.\nPaciente: {patient_name}\nConsulta: {appointment_dt}"
-                f"\nLink: {drive_link}",
+                f"{_arquivo_linha}",
                 subject=f"Comprovante ilegível — {patient_name}",
             )
         except Exception:
