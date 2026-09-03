@@ -921,6 +921,49 @@ async def test_chatwoot_private_note_unexpected_sender_is_logged_not_dropped():
     assert args[1] == "5511999999999@s.whatsapp.net"
 
 
+async def test_attendant_note_suppressed_when_eva_paused():
+    """Uma nota privada da atendente NÃO pode disparar a Eva quando a conversa está
+    pausada (eva-inativa / active=False). Nesse estado a atendente assumiu o
+    atendimento e a nota é coordenação interna. A nota é registrada para rastreio,
+    mas a Eva não fala com o paciente. Caso Rayssa 558399495410, 03/09/2026."""
+    from datetime import datetime, timezone
+    from app.main import _handle_attendant_note
+
+    inactive_user = {
+        "id": "u1",
+        "active": False,
+        "deactivated_at": datetime.now(timezone.utc).isoformat(),
+    }
+    payload = _chatwoot_private_note_payload(sender_type="user")
+    with patch("app.main.get_users_by_phone", new_callable=AsyncMock, return_value=[inactive_user]), \
+         patch("app.main.get_contact_by_phone", new_callable=AsyncMock, return_value=None), \
+         patch("app.main.buffer_push", new_callable=AsyncMock) as mock_push, \
+         patch("app.main.log_event", new_callable=AsyncMock) as mock_log:
+        await _handle_attendant_note(payload)
+
+    mock_push.assert_not_called()
+    logged = [c.args[0] for c in mock_log.call_args_list]
+    assert "attendant_note_suppressed_paused" in logged
+    assert "attendant_note_received" not in logged
+
+
+async def test_attendant_note_triggers_eva_when_active():
+    """Regressão: com a conversa ATIVA, a nota privada continua steerando a Eva."""
+    from app.main import _handle_attendant_note
+
+    active_user = {"id": "u1", "active": True}
+    payload = _chatwoot_private_note_payload(sender_type="user")
+    with patch("app.main.get_users_by_phone", new_callable=AsyncMock, return_value=[active_user]), \
+         patch("app.main.get_contact_by_phone", new_callable=AsyncMock, return_value=None), \
+         patch("app.main.buffer_push", new_callable=AsyncMock) as mock_push, \
+         patch("app.main.log_event", new_callable=AsyncMock) as mock_log:
+        await _handle_attendant_note(payload)
+
+    mock_push.assert_called_once()
+    logged = [c.args[0] for c in mock_log.call_args_list]
+    assert "attendant_note_received" in logged
+
+
 def _chatwoot_public_agent_payload(
     message_id: int = 501,
     content: str = "Bom dia! Aqui é a Débora, secretária da clínica.",
@@ -1175,6 +1218,34 @@ async def test_conv_updated_eva_inativa_removed_resumes():
     assert handled is True
     mock_resume.assert_awaited_once_with(_LABEL_PHONE_JID)
     mock_pause.assert_not_awaited()
+
+
+async def test_removing_eva_inativa_reactivates_eva_end_to_end():
+    """Remover a label eva-inativa faz a Eva voltar a reagir à próxima mensagem.
+
+    Roda o resume DE VERDADE (só upsert_user é mockado): a remoção grava
+    active=True + deactivated_at=None, e com isso o portão de pausa
+    (_eva_paused_for_phone) passa a liberar o paciente."""
+    from app.main import _handle_label_change, _eva_paused_for_phone
+
+    payload = _conv_updated_payload(previous_labels=["eva-inativa"], current_labels=[])
+
+    # 1) A remoção da label executa o resume real e grava a reativação.
+    with patch("app.database.upsert_user", new_callable=AsyncMock) as mock_upsert:
+        handled = await _handle_label_change(payload)
+
+    assert handled is True
+    mock_upsert.assert_awaited_once()
+    written_phone = mock_upsert.call_args[0][0]
+    written_data = mock_upsert.call_args[0][1]
+    assert written_phone == _LABEL_PHONE_JID
+    assert written_data == {"active": True, "deactivated_at": None}
+
+    # 2) Com o contato reativado, o portão de pausa libera a próxima mensagem.
+    reactivated_user = {"id": "u1", "active": True, "deactivated_at": None}
+    with patch("app.main.get_users_by_phone", new_callable=AsyncMock, return_value=[reactivated_user]), \
+         patch("app.main.get_contact_by_phone", new_callable=AsyncMock, return_value=None):
+        assert await _eva_paused_for_phone(_LABEL_PHONE_JID) is False
 
 
 async def test_conv_updated_eva_ativa_added_resumes_and_reprocesses():
