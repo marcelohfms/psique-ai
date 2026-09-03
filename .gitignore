@@ -9,3 +9,7 @@ dist/
 .claude/worktrees/
 .DS_Store
 psique.db
+
+# Scripts one-off de diagnóstico/correção (prefixo _), não versionados.
+# Os que já estão no git seguem rastreados; isto só esconde os novos soltos.
+scripts/_*.py
