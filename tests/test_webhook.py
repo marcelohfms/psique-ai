@@ -1220,6 +1220,34 @@ async def test_conv_updated_eva_inativa_removed_resumes():
     mock_pause.assert_not_awaited()
 
 
+async def test_removing_eva_inativa_reactivates_eva_end_to_end():
+    """Remover a label eva-inativa faz a Eva voltar a reagir à próxima mensagem.
+
+    Roda o resume DE VERDADE (só upsert_user é mockado): a remoção grava
+    active=True + deactivated_at=None, e com isso o portão de pausa
+    (_eva_paused_for_phone) passa a liberar o paciente."""
+    from app.main import _handle_label_change, _eva_paused_for_phone
+
+    payload = _conv_updated_payload(previous_labels=["eva-inativa"], current_labels=[])
+
+    # 1) A remoção da label executa o resume real e grava a reativação.
+    with patch("app.database.upsert_user", new_callable=AsyncMock) as mock_upsert:
+        handled = await _handle_label_change(payload)
+
+    assert handled is True
+    mock_upsert.assert_awaited_once()
+    written_phone = mock_upsert.call_args[0][0]
+    written_data = mock_upsert.call_args[0][1]
+    assert written_phone == _LABEL_PHONE_JID
+    assert written_data == {"active": True, "deactivated_at": None}
+
+    # 2) Com o contato reativado, o portão de pausa libera a próxima mensagem.
+    reactivated_user = {"id": "u1", "active": True, "deactivated_at": None}
+    with patch("app.main.get_users_by_phone", new_callable=AsyncMock, return_value=[reactivated_user]), \
+         patch("app.main.get_contact_by_phone", new_callable=AsyncMock, return_value=None):
+        assert await _eva_paused_for_phone(_LABEL_PHONE_JID) is False
+
+
 async def test_conv_updated_eva_ativa_added_resumes_and_reprocesses():
     """Adding eva-ativa resumes Eva and reprocesses the last patient message; the
     conversation id must be read from the top level of the payload."""
