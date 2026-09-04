@@ -1879,6 +1879,24 @@ async def test_price_notice_not_injected_when_already_notified():
     assert "AVISO ÚNICO OBRIGATÓRIO" not in system_msg.content
 
 
+async def test_price_notice_not_injected_from_october():
+    """A partir de outubro/2026 o aviso único de reajuste não é mais injetado,
+    mesmo para paciente que nunca foi notificado (pedido da médica)."""
+    from datetime import datetime as _real_dt
+
+    class _FrozenOctober(_real_dt):
+        @classmethod
+        def now(cls, tz=None):
+            return _real_dt(2026, 10, 5, 10, 0, tzinfo=tz)
+
+    state = _make_patient_agent_state(messages=[HumanMessage(content="quero agendar")])
+    user = {"price_adjustment_notified_at": None}
+    with patch("app.graph.nodes.datetime", _FrozenOctober):
+        system_msg = await _run_patient_agent_with_user(state, user=user)
+    assert system_msg is not None
+    assert "AVISO ÚNICO OBRIGATÓRIO" not in system_msg.content
+
+
 # ── parcelamento no cartão ────────────────────────────────────────────────────
 
 def test_pricing_rules_mention_parcelamento_pre_reajuste():
@@ -1895,6 +1913,22 @@ def test_pricing_rules_mention_parcelamento_pos_reajuste():
     rules = get_pricing_rules(date(2026, 9, 1))
     assert "em até 3x" in rules
     assert "PARCELAMENTO NO CARTÃO" in rules
+
+
+def test_pricing_reminder_present_through_september():
+    from datetime import date
+    from app.graph.prompts import get_pricing_rules
+    # Reajuste anunciado de junho a setembro/2026 (pedido da médica).
+    for month in (6, 7, 8, 9):
+        rules = get_pricing_rules(date(2026, month, 1))
+        assert "Informamos que os valores das consultas foram reajustados" in rules, month
+
+
+def test_pricing_reminder_gone_from_october():
+    from datetime import date
+    from app.graph.prompts import get_pricing_rules
+    rules = get_pricing_rules(date(2026, 10, 1))
+    assert "Informamos que os valores das consultas foram reajustados" not in rules
 
 
 # ── get_pricing_exception_rule ────────────────────────────────────────────────
