@@ -3274,6 +3274,18 @@ def _receipt_destination_is_foreign(image_description: str) -> bool:
     return True
 
 
+# Janela para reconhecer o REENVIO do mesmo comprovante da taxa de reserva.
+# O paciente às vezes manda o comprovante da taxa (R$100) duas vezes seguidas
+# ("já enviei, mandando de novo") — arquivos diferentes no Drive geram duas
+# chamadas de register_payment. Na 2ª, a taxa já consta paga, então o código
+# caía no ramo "Pagamento Parcial" e recalculava o saldo como se R$100 extras
+# tivessem sido pagos, anunciando um valor menor (caso Gabriel Botelho,
+# 5581999893449, 01/09/2026: falou R$450 em vez de R$550). Um pagamento parcial
+# LEGÍTIMO de exatamente R$100 logo após a taxa não acontece na prática (o
+# paciente quita o saldo cheio, não outros R$100), então a janela pode ser folgada.
+_BOOKING_FEE_RESEND_WINDOW_MINUTES = 30
+
+
 @tool
 async def register_payment(
     amount: str,
@@ -3870,6 +3882,45 @@ async def register_payment(
             "payment_type": "Consulta", "drive_link": drive_link,
         })
         return f"{confirmation_msg}\n\nConsulta QUITADA (cortesia). ✅ Nenhum valor adicional será cobrado."
+
+    # ── Reenvio do mesmo comprovante da taxa de reserva ─────────────────────────
+    # Segundo envio de um comprovante de R$100 logo após a taxa já ter sido paga:
+    # é o MESMO pagamento chegando de novo, não um pagamento parcial novo. Sem esta
+    # guarda, o R$100 caía no ramo "Pagamento Parcial" e a Eva anunciava um saldo
+    # menor (expected-200) do que o real (expected-100). Reconfirma o saldo correto
+    # e NÃO grava uma 2ª linha na planilha nem um 2º evento. Só para comprovante de
+    # imagem (não is_link/payment_method) e quando a taxa foi paga há pouco.
+    if (
+        not is_link and not payment_method
+        and booking_fee_already_paid
+        and abs(amount_float - 100) < 1
+    ):
+        _fee_paid_raw = appt_result.data[0].get("booking_fee_paid_at") if appt_result and appt_result.data else None
+        _fee_recent = False
+        if _fee_paid_raw:
+            try:
+                _fee_paid_dt = datetime.fromisoformat(_fee_paid_raw)
+                _fee_recent = (now_dt - _fee_paid_dt) <= timedelta(minutes=_BOOKING_FEE_RESEND_WINDOW_MINUTES)
+            except (ValueError, TypeError):
+                _fee_recent = False
+        if _fee_recent:
+            _logger.warning(
+                "REGISTER_PAYMENT dedup: reenvio da taxa de reserva patient=%s phone=%s",
+                patient_name, phone,
+            )
+            _saldo = expected - 100
+            if appt_already_occurred:
+                _saldo_note = (
+                    f"A taxa de reserva de R$ 100,00 do {patient_name} já estava registrada. ✅ "
+                    f"A consulta já ocorreu — o saldo restante de R$ {_saldo:.0f},00 (com desconto PIX) "
+                    f"já pode ser quitado agora."
+                )
+            else:
+                _saldo_note = (
+                    f"A taxa de reserva de R$ 100,00 do {patient_name} já estava registrada. ✅ "
+                    f"Saldo restante para quitação no dia da consulta: R$ {_saldo:.0f},00 (com desconto PIX)."
+                )
+            return _saldo_note
 
     _sheets_payment_method: str = ""  # populated below, passed to append_payment_receipt
     if is_link or payment_method:
