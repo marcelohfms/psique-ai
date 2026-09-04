@@ -2571,7 +2571,15 @@ async def patient_agent_node(state: ConversationState, config: RunnableConfig) -
     _custom_price = (user or {}).get("custom_price")
     _fee_waived = bool((user or {}).get("booking_fee_waived", False))
     _is_exception_patient = _custom_price is not None or _fee_waived
-    if user and not user.get("price_adjustment_notified_at") and not _is_exception_patient:
+    # O aviso único de reajuste também para em outubro/2026 (pedido da médica):
+    # a partir de outubro Eva não menciona mais o reajuste em nenhum caminho.
+    _price_notice_window = (now_dt.year, now_dt.month) < (2026, 10)
+    if (
+        user
+        and _price_notice_window
+        and not user.get("price_adjustment_notified_at")
+        and not _is_exception_patient
+    ):
         needs_price_notice = True
         if (now_dt.year, now_dt.month) < (2026, 6):
             system_prompt += (
