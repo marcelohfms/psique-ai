@@ -989,7 +989,9 @@ def get_pricing_rules(today) -> str:
     year, month = today.year, today.month
     if (year, month) < (2026, 6):
         return _PRICING_BODY_PRE
-    elif (year, month) <= (2026, 8):
+    elif (year, month) <= (2026, 9):
+        # Lembrete de reajuste fica até setembro/2026 (pedido da médica);
+        # a partir de outubro Eva só informa os valores novos, sem o aviso.
         return _PRICING_BODY_POS + _PRICING_REMINDER
     else:
         return _PRICING_BODY_POS

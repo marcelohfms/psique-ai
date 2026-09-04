@@ -1897,6 +1897,22 @@ def test_pricing_rules_mention_parcelamento_pos_reajuste():
     assert "PARCELAMENTO NO CARTÃO" in rules
 
 
+def test_pricing_reminder_present_through_september():
+    from datetime import date
+    from app.graph.prompts import get_pricing_rules
+    # Reajuste anunciado de junho a setembro/2026 (pedido da médica).
+    for month in (6, 7, 8, 9):
+        rules = get_pricing_rules(date(2026, month, 1))
+        assert "Informamos que os valores das consultas foram reajustados" in rules, month
+
+
+def test_pricing_reminder_gone_from_october():
+    from datetime import date
+    from app.graph.prompts import get_pricing_rules
+    rules = get_pricing_rules(date(2026, 10, 1))
+    assert "Informamos que os valores das consultas foram reajustados" not in rules
+
+
 # ── get_pricing_exception_rule ────────────────────────────────────────────────
 
 def test_pricing_exception_rule_no_exception_returns_empty():
