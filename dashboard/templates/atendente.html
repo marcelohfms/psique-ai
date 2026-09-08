@@ -359,6 +359,7 @@ function renderForms(patient, link, returnReminder) {
       <div class="flex flex-wrap gap-4 mt-1 mb-2">
         ${checkbox("Paciente retornante", "p_returning", patient.is_returning_patient)}
         ${checkbox("Exceção de idade", "p_age_exc", patient.age_exception)}
+        ${checkbox("Taxa de reserva sempre isenta", "p_fee_waived", patient.booking_fee_waived)}
       </div>
       ${returnBlock(patient.id, returnReminder)}
       <button onclick="savePatient('${patient.id}')" class="mt-2 bg-wa-green hover:bg-wa-green-dk text-white text-xs px-3 py-1.5 rounded">Salvar paciente</button>
@@ -407,6 +408,7 @@ async function savePatient(pid) {
     is_returning_patient: chk("p_returning"),
     modality_restriction: val("p_modality") || null,
     age_exception: chk("p_age_exc"), custom_price: numOrNull("p_price"),
+    booking_fee_waived: chk("p_fee_waived"),
   }});
   if (ok) flash("Paciente salvo ✓");
 }
