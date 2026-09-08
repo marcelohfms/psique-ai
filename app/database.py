@@ -306,6 +306,28 @@ async def log_event(event_type: str, phone: str, metadata: dict | None = None) -
         pass  # never let tracking break the main flow
 
 
+async def get_events_by_type(phone: str, event_type: str, limit: int = 50) -> list[dict]:
+    """Read side of log_event: recent events of one type for a phone, newest first.
+
+    Phone is stripped the same way log_event strips it, so the JID form
+    (…@s.whatsapp.net) and the bare-digits form both match the stored rows. Returns
+    [] on any error — leitura best-effort, nunca quebra o fluxo principal."""
+    try:
+        client = await get_supabase()
+        resp = (
+            await client.from_("events")
+            .select("event_type, phone, metadata, created_at")
+            .eq("phone", _strip_phone(phone))
+            .eq("event_type", event_type)
+            .order("created_at", desc=True)
+            .limit(limit)
+            .execute()
+        )
+        return resp.data or []
+    except Exception:
+        return []
+
+
 # ── Registration completeness check ──────────────────────────────────────────
 
 def is_registration_complete(user: dict) -> bool:

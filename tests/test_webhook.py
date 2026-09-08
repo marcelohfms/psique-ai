@@ -1796,3 +1796,36 @@ def test_security_headers_present(http_client):
     assert r.headers["X-Content-Type-Options"] == "nosniff"
     assert r.headers["Referrer-Policy"] == "no-referrer"
     assert "max-age=" in r.headers["Strict-Transport-Security"]
+
+
+async def test_get_events_by_type_queries_stripped_phone():
+    """get_events_by_type é o lado de leitura de log_event: filtra por phone (sem o
+    sufixo @s.whatsapp.net, como é gravado) e por event_type, mais novos primeiro."""
+    from app.database import get_events_by_type
+
+    captured = {}
+
+    class _Resp:
+        data = [{"event_type": "x", "phone": "5581999", "metadata": {"content": "Eva, oi"}}]
+
+    class _Q:
+        def select(self, *a, **k): return self
+        def eq(self, col, val):
+            captured[col] = val
+            return self
+        def order(self, *a, **k): return self
+        def limit(self, *a, **k): return self
+        async def execute(self): return _Resp()
+
+    class _Client:
+        def from_(self, name):
+            captured["table"] = name
+            return _Q()
+
+    with patch("app.database.get_supabase", new_callable=AsyncMock, return_value=_Client()):
+        rows = await get_events_by_type("5581999@s.whatsapp.net", "attendant_note_suppressed_paused")
+
+    assert captured["table"] == "events"
+    assert captured["phone"] == "5581999"
+    assert captured["event_type"] == "attendant_note_suppressed_paused"
+    assert rows == [{"event_type": "x", "phone": "5581999", "metadata": {"content": "Eva, oi"}}]
