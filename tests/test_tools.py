@@ -3829,6 +3829,110 @@ async def test_register_payment_sheets_append_failure_notifies_clinic():
     assert "NÃO" in notify_msg and "planilha" in notify_msg
 
 
+def _make_supabase_client_fee_just_paid(start_time, booking_fee_paid_at):
+    """Client servindo uma consulta AGENDADA cuja taxa de reserva acabou de ser
+    paga (booking_fee_paid_at recente). Reproduz o 2º envio do mesmo comprovante
+    de R$100 (caso Gabriel Botelho, 5581999893449, 01/09/2026)."""
+    appts_with_users = MagicMock(data=[{
+        "appointment_id": "apt-1",
+        "start_time": start_time,
+        "doctor_id": "d5baa58b-a788-4f40-b8c0-512c189150be",
+        "status": "scheduled",
+        "patients": {"id": "user-123", "name": "Gabriel"},
+    }])
+    apt_data = MagicMock(data=[{
+        "appointment_id": "apt-1",
+        "start_time": start_time,
+        "doctor_id": "d5baa58b-a788-4f40-b8c0-512c189150be",
+        "end_time": start_time,
+        "paid_at": None,
+        "booking_fee_paid_at": booking_fee_paid_at,
+        "status": "scheduled",
+        "consultation_type": "retorno",
+    }])
+    empty = MagicMock(data=[])
+
+    def _side_effect(*_a, **_kw):
+        _side_effect.call_count += 1
+        if _side_effect.call_count == 1:
+            return appts_with_users
+        if _side_effect.call_count == 2:
+            return apt_data
+        return empty
+    _side_effect.call_count = 0
+
+    execute = AsyncMock(side_effect=_side_effect)
+    table = MagicMock()
+    for m in ("select", "eq", "in_", "limit", "single", "maybe_single",
+              "gte", "order", "insert", "update", "upsert", "is_"):
+        getattr(table, m).return_value = table
+    table.execute = execute
+    client = MagicMock()
+    client.from_.return_value = table
+    return client, table, execute
+
+
+async def test_register_payment_resent_booking_fee_not_treated_as_partial():
+    """2º envio do MESMO comprovante da taxa de reserva (R$100), segundos após o
+    1º, não pode virar 'Pagamento Parcial'. Antes o código, vendo a taxa já paga,
+    tratava o R$100 como pagamento extra e anunciava saldo R$450 em vez de R$550
+    (caso Gabriel Botelho, 5581999893449, 01/09/2026). Deve reconhecer o reenvio,
+    reconfirmar o saldo correto e NÃO gravar uma 2ª linha na planilha."""
+    from app.graph.tools import register_payment
+    now = datetime.now(TZ)
+    start_time = (now + timedelta(days=30)).isoformat()           # consulta futura
+    fee_paid = (now - timedelta(seconds=30)).isoformat()          # taxa paga há 30s
+    client, _, _ = _make_supabase_client_fee_just_paid(start_time, fee_paid)
+    with patch("app.graph.tools.get_supabase", new_callable=AsyncMock, return_value=client), \
+         patch("app.graph.tools.get_users_by_phone", new_callable=AsyncMock, return_value=[{"id": "user-123", "patient_name": "Gabriel"}]), \
+         patch("app.graph.tools.log_event", new_callable=AsyncMock), \
+         patch("app.graph.tools._notify_clinic", new_callable=AsyncMock), \
+         patch("app.google_drive.rename_file", new_callable=AsyncMock), \
+         patch("app.google_sheets.append_payment_receipt", new_callable=AsyncMock) as mock_sheets, \
+         patch("app.graph.tools.send_text", new_callable=AsyncMock):
+        result = await register_payment.coroutine(
+            amount="100,00",
+            drive_link="https://drive.google.com/file/d/segundo-arquivo/view",
+            state=_make_state(preferred_doctor="bruna", patient_name="Gabriel", user_name="Gabriel"),
+            config=CONFIG,
+        )
+
+    # Saldo correto: 650 (consulta) - 100 (taxa) = 550
+    assert "550" in result
+    assert "450" not in result
+    assert "Pagamento Parcial" not in result
+    # Reenvio não gera 2ª linha na planilha
+    mock_sheets.assert_not_awaited()
+
+
+async def test_register_payment_old_booking_fee_still_records_normally():
+    """Fora da janela de reenvio (taxa paga há horas), um novo R$100 volta ao
+    fluxo normal e é gravado na planilha — a guarda de reenvio não pode engolir
+    um pagamento que chega bem depois da taxa."""
+    from app.graph.tools import register_payment
+    now = datetime.now(TZ)
+    start_time = (now + timedelta(days=30)).isoformat()
+    fee_paid = (now - timedelta(hours=3)).isoformat()             # taxa paga há 3h
+    client, _, _ = _make_supabase_client_fee_just_paid(start_time, fee_paid)
+    with patch("app.graph.tools.get_supabase", new_callable=AsyncMock, return_value=client), \
+         patch("app.graph.tools.get_users_by_phone", new_callable=AsyncMock, return_value=[{"id": "user-123", "patient_name": "Gabriel"}]), \
+         patch("app.graph.tools.log_event", new_callable=AsyncMock), \
+         patch("app.graph.tools._notify_clinic", new_callable=AsyncMock), \
+         patch("app.google_drive.rename_file", new_callable=AsyncMock), \
+         patch("app.google_sheets.append_payment_receipt", new_callable=AsyncMock) as mock_sheets, \
+         patch("app.graph.tools.send_text", new_callable=AsyncMock):
+        result = await register_payment.coroutine(
+            amount="100,00",
+            drive_link="https://drive.google.com/file/d/tardio/view",
+            state=_make_state(preferred_doctor="bruna", patient_name="Gabriel", user_name="Gabriel"),
+            config=CONFIG,
+        )
+
+    # Fora da janela: grava normalmente (não é curto-circuito de reenvio).
+    mock_sheets.assert_awaited_once()
+    assert "já estava registrada" not in result
+
+
 async def test_register_payment_rename_uses_no_extension_and_sanitizes_amount():
     """The filename passed to rename_file must have no extension (rename_file now
     preserves whatever extension the file was actually uploaded with) and the
