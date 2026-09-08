@@ -235,7 +235,7 @@ async def get_last_patient_message(conversation_id: int) -> dict | None:
         m for m in messages
         if m.get("private") and (m.get("sender") or {}).get("type") == "user"
     ]
-    last_note = max(notes, key=lambda m: m.get("created_at", 0)) if notes else None
+    last_note = max(notes, key=lambda m: m.get("created_at") or 0) if notes else None
     return {
         "content": (last.get("content") or "").strip(),
         "attachments": last.get("attachments") or [],
