@@ -47,9 +47,13 @@ No ramo `_EVA_ACTIVE_LABEL in added` de `_apply_eva_label_action`, após
 `_resume_bot_for_patient`, a Eva compara o horário da última mensagem do paciente com o
 horário da última nota privada humana:
 
-- **Nota-comando é a mais recente** (nota ≥ mensagem do paciente, e a nota começa com
-  "Eva") → executa o comando via `_handle_attendant_note`; NÃO reproduz a mensagem do
-  paciente; grava o marcador de execução.
+- **Nota-comando é a mais recente, começa com "Eva" e está pendente** (nota ≥ mensagem do
+  paciente; começa com "Eva"; foi suprimida e ainda não rodou — ver trava abaixo) →
+  executa o comando via `_handle_attendant_note`; NÃO reproduz a mensagem do paciente;
+  grava o marcador `attendant_note_resumed_executed`.
+- **Nota-comando é a mais recente e começa com "Eva", mas NÃO está pendente** (já rodou
+  antes, ou rodou ao vivo e nunca foi suprimida) → não executa, não reproduz o paciente
+  (`eva_ativa_replay_skipped`). Protege o PIX em dobro.
 - **Mensagem do paciente é a mais recente** (paciente falou depois da nota) → reproduz a
   mensagem do paciente (comportamento atual); NÃO executa o comando. A atendente
   reenvia a nota depois se ainda quiser rodar o comando.
@@ -77,14 +81,24 @@ horário da última nota privada humana:
   mensagens do Chatwoot. Hoje ela devolve `last_note_at` mas não o texto da nota — será
   estendida para devolver também `last_note_content` (o conteúdo completo da última nota
   privada escrita por atendente humana, `private=True` e `sender.type == "user"`).
-- **Trava anti-dupla:** após executar, grava-se o evento
-  `attendant_note_resumed_executed` com `data.note_at = last_note_at`. Antes de executar,
-  a Eva consulta o último `attendant_note_resumed_executed` do número; se existir com
-  `note_at >= last_note_at`, a nota já foi executada e a Eva não repete. Isso protege
-  contra remover e adicionar a `eva-ativa` de novo, preservando a proteção contra
-  PIX/confirmação em dobro.
-- A trava é chaveada pelo horário da nota, não pelo texto, então uma nota nova (horário
-  maior) sempre pode ser executada mesmo que uma antiga já tenha rodado.
+- **A nota só é executada se estiver PENDENTE**, ou seja, se foi suprimida enquanto a Eva
+  estava pausada e ainda não rodou. Esse é o ponto-chave que evita reexecução: uma nota
+  que já foi executada ao vivo (Eva ativa) grava `attendant_note_received`, não
+  `attendant_note_suppressed_paused`, então nunca é considerada pendente.
+- **Como saber se está pendente (casado por conteúdo, não por horário):**
+  - Ao suprimir a nota (Eva pausada), o evento `attendant_note_suppressed_paused` passa a
+    guardar o **conteúdo completo** da nota (hoje corta em 300 caracteres; o corte sai
+    para esse evento). Ele é o registro de "essa nota foi suprimida".
+  - Após executar na reativação, grava-se `attendant_note_resumed_executed` com o mesmo
+    conteúdo completo. Ele é o registro de "essa nota já rodou".
+  - `pendente = existe attendant_note_suppressed_paused com esse conteúdo E NÃO existe
+    attendant_note_resumed_executed com esse conteúdo`.
+  - O casamento é por conteúdo exato (não por timestamp) porque o `created_at` do webhook
+    e o `created_at` da API de mensagens do Chatwoot podem estar em formatos diferentes
+    (ISO vs epoch); o texto é estável entre as duas fontes.
+- Isso protege contra remover e adicionar a `eva-ativa` de novo (a segunda vez encontra o
+  `attendant_note_resumed_executed` e não repete) e contra o caso histórico de PIX em
+  dobro (nota executada ao vivo nunca foi suprimida, logo nunca é considerada pendente).
 
 ## Execução da nota
 
@@ -97,10 +111,18 @@ normalmente pelo pipeline, exatamente como se tivesse chegado com a Eva já ativ
 ## Arquivos afetados
 
 - `app/chatwoot.py` — `get_last_patient_message` passa a devolver `last_note_content`.
-- `app/main.py` — ramo `_EVA_ACTIVE_LABEL in added` de `_apply_eva_label_action`:
-  nova lógica de decisão; helper de execução da nota (payload sintético +
-  `_handle_attendant_note`); helper de leitura do marcador anti-dupla.
-- `tests/test_webhook.py` — novos testes (abaixo).
+- `app/database.py` — novo helper `get_events_by_type(phone, event_type)` para ler os
+  eventos de supressão/execução (usado pela trava de pendência).
+- `app/main.py`:
+  - helper puro `_looks_like_eva_command(text)` (regex `^\s*eva\b`).
+  - helper `_note_command_pending(phone, note_text)` (usa `get_events_by_type`).
+  - helper `_execute_attendant_note_on_resume(phone, conversation_id, note_text)` (monta o
+    payload sintético e chama `_handle_attendant_note`; grava `attendant_note_resumed_executed`).
+  - ramo `_EVA_ACTIVE_LABEL in added` de `_apply_eva_label_action`: nova lógica de decisão.
+  - ramo de supressão em `_handle_attendant_note`: guardar o conteúdo completo da nota no
+    evento `attendant_note_suppressed_paused` (tirar o corte de 300 caracteres).
+- `tests/test_webhook.py` — testes novos + atualização do teste existente
+  `test_conv_updated_eva_ativa_skips_replay_when_note_is_newer`.
 
 ## Testes (tests/test_webhook.py)
 
@@ -110,14 +132,18 @@ normalmente pelo pipeline, exatamente como se tivesse chegado com a Eva já ativ
 2. **Mensagem do paciente mais nova que a nota** → paciente é reproduzido; o comando NÃO
    roda.
 3. **Última nota não começa com "Eva"** → nada roda, nada é reproduzido.
-4. **Nota-comando pendente mas já executada** (marcador presente com `note_at >=`) → não
-   executa de novo.
+4. **Nota-comando é a última mas já foi executada** (só existe `attendant_note_resumed_executed`
+   com aquele conteúdo, ou a nota rodou ao vivo e nunca foi suprimida → não pendente) → não
+   executa de novo, não reproduz o paciente. Cobre a regressão do PIX em dobro
+   (caso 5581979037093). Atualiza o teste existente `..._skips_replay_when_note_is_newer`.
 5. **Sem nota, com mensagem do paciente** → reproduz a mensagem do paciente (comportamento
    atual).
 6. **Reativação removendo `eva-inativa`** → não reproduz nem executa nada.
+7. **`_looks_like_eva_command`** (teste unitário puro) → aceita "Eva, ...", "eva: ...",
+   "Eva ..."; rejeita "Evaristo ...", "" e texto que não começa com Eva.
 
 Mocks: `get_last_patient_message`, `_handle_attendant_note`, `_resume_bot_for_patient`,
-o leitor do marcador (events) e o caminho de replay do paciente (buffer/process).
+`get_events_by_type` (a trava de pendência) e `buffer_push` (o caminho de replay do paciente).
 
 ## Fora de escopo (YAGNI)
 
