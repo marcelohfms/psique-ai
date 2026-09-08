@@ -964,6 +964,26 @@ async def test_attendant_note_triggers_eva_when_active():
     assert "attendant_note_received" in logged
 
 
+async def test_pause_does_not_expire_after_24h():
+    """A pausa (active=False) vale até reativação explícita — não expira mais por
+    tempo. Antes, passadas 24 h a Eva se auto-reativava enquanto a etiqueta
+    eva-inativa continuava no Chatwoot, e a atendente achava a conversa pausada
+    (casos Wayne #320 e Renata #206, 08/09/2026). _eva_paused_for_phone tem que
+    seguir True mesmo com deactivated_at antigo, e NÃO pode reescrever o registro."""
+    from datetime import datetime, timezone, timedelta
+    from app.main import _eva_paused_for_phone
+
+    long_ago = (datetime.now(timezone.utc) - timedelta(days=30)).isoformat()
+    stale_user = {"id": "u1", "active": False, "deactivated_at": long_ago}
+    with patch("app.main.get_users_by_phone", new_callable=AsyncMock, return_value=[stale_user]), \
+         patch("app.main.get_contact_by_phone", new_callable=AsyncMock, return_value=None), \
+         patch("app.database.upsert_user", new_callable=AsyncMock) as mock_upsert:
+        assert await _eva_paused_for_phone("5581999597907@s.whatsapp.net") is True
+
+    # A pausa não pode se auto-reativar reescrevendo o registro.
+    mock_upsert.assert_not_called()
+
+
 def _chatwoot_public_agent_payload(
     message_id: int = 501,
     content: str = "Bom dia! Aqui é a Débora, secretária da clínica.",
