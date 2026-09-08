@@ -29,6 +29,7 @@ from app.buffer import (
     hold as buffer_hold,
 )
 from app.auth import router as auth_router
+from app import whatsapp
 from app.whatsapp import send_text
 
 logger = logging.getLogger(__name__)
@@ -756,6 +757,11 @@ async def _handle_payload(payload: dict) -> None:
             if _is_duplicate(msg_id):
                 logger.info("Duplicate msg_id %s from /webhook — skipping", msg_id)
                 return
+            # Marca como lida (tique azul) e acende o "digitando..." assim que a
+            # mensagem chega, antes de processar, para o paciente ver o retorno
+            # imediato. Fire-and-forget: a Meta pode demorar/falhar e isso não
+            # pode adiar o turno da Eva (a própria função engole exceções).
+            asyncio.create_task(whatsapp.mark_read_and_typing(msg_id))
         except (KeyError, IndexError):
             pass  # status/reaction payloads have no message id — let extract_message filter them
 

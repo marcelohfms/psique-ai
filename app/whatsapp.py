@@ -97,6 +97,41 @@ async def send_text(phone: str, text: str) -> None:
             raise
 
 
+async def mark_read_and_typing(message_id: str) -> None:
+    """Marca a mensagem do paciente como lida (tique azul) e liga o "digitando...".
+
+    O texto da Eva sai pelo Chatwoot, mas o indicador de digitação e o "visto"
+    só existem na Meta Cloud API direta. A Meta acende o "digitando..." por até
+    ~25s ou até a próxima mensagem sair, o que vier primeiro — não dá para manter
+    aceso além disso.
+
+    É puramente cosmético: qualquer falha aqui é engolida (log de aviso) para
+    nunca travar o processamento nem o envio da resposta ao paciente.
+    """
+    payload = {
+        "messaging_product": "whatsapp",
+        "status": "read",
+        "message_id": message_id,
+        "typing_indicator": {"type": "text"},
+    }
+    try:
+        async with httpx.AsyncClient(timeout=10) as client:
+            response = await client.post(
+                f"{_GRAPH_URL}/{_phone_number_id()}/messages",
+                json=payload,
+                headers=_headers(),
+            )
+            if not response.is_success:
+                _logger.warning(
+                    "TYPING_INDICATOR_FAILED message_id=%s status=%s: %s",
+                    message_id, response.status_code, response.text[:300],
+                )
+    except Exception:
+        _logger.warning(
+            "TYPING_INDICATOR_ERROR message_id=%s", message_id, exc_info=True
+        )
+
+
 async def send_template(phone: str, template_name: str, language: str, components: list) -> None:
     """Send a WhatsApp template message via Meta Cloud API."""
     number = phone.replace("@s.whatsapp.net", "")
