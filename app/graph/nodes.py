@@ -1788,11 +1788,23 @@ def _extract_pending_appointment(text: str, state: dict) -> dict | None:
     is_returning = state.get("is_returning_patient")
     duration = 120 if (p_age < 18 and not is_returning and doctor == "julio") else 60
 
+    # Nome do paciente mostrado no resumo ("👤 Paciente: <nome>"). Precisa ser
+    # congelado aqui para o fast-path de pending_appointment repassá-lo como
+    # patient_name_override — caso contrário, num contato com mais de um paciente
+    # (irmãos no mesmo telefone), a confirmação chega à rede de segurança
+    # multi-paciente com override vazio, ela não consegue singularizar quem é e a
+    # conversa é transferida (caso Janaina/Isadora, 5581988417858, 08/09/2026).
+    name_match = _re.search(r'Paciente[:\s]+(.+)', text)
+    patient_name = name_match.group(1).strip() if name_match else (
+        state.get("patient_name") or state.get("user_name") or ""
+    )
+
     return {
         "slot_datetime": slot_datetime,
         "slot_duration_minutes": duration,
         "modality": modality,
         "doctor": doctor,
+        "patient_name": patient_name,
     }
 
 
@@ -2259,7 +2271,18 @@ async def patient_agent_node(state: ConversationState, config: RunnableConfig) -
                     modality=_pending_appt.get("modality", ""),
                     session_note="",
                     force_encaixe=False,
-                    patient_name_override="",
+                    # Repassa o paciente que a Eva mostrou no resumo e o contato
+                    # confirmou. Sem isso, um contato com mais de um paciente
+                    # (irmãos no mesmo telefone) sempre batia na rede de segurança
+                    # multi-paciente do confirm_appointment com override vazio, que
+                    # não singularizava quem era e transferia para a equipe (caso
+                    # Janaina/Isadora, 5581988417858, 08/09/2026). Fallback ao
+                    # patient_name do state cobre pending_appointment antigos.
+                    patient_name_override=(
+                        _pending_appt.get("patient_name")
+                        or state.get("patient_name")
+                        or ""
+                    ),
                     state=state,
                     config=config,
                 )
@@ -3033,6 +3056,9 @@ async def patient_agent_node(state: ConversationState, config: RunnableConfig) -
                 "slot_duration_minutes": _duration,
                 "modality": _modality,
                 "doctor": _doctor_key,
+                # Congela o paciente exibido no resumo para o fast-path repassá-lo
+                # como patient_name_override na confirmação (contato multi-paciente).
+                "patient_name": _patient_nm,
             }
             return {
                 "messages": [_AIMsg2(content=_summary)],
