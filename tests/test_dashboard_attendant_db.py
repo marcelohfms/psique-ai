@@ -37,3 +37,12 @@ def test_link_fields_whitelist_is_valid():
     assert len(_LINK_FIELDS) > 0
     assert "is_self" in _LINK_FIELDS
     assert "relationship" in _LINK_FIELDS
+
+
+def test_booking_fee_waived_in_patient_fields_whitelist():
+    """Permite à atendente ligar/desligar a isenção permanente da taxa de reserva.
+
+    Sem estar na whitelist, o _filter de update_patient descartaria o campo
+    em silêncio e o salvamento pelo painel não persistiria.
+    """
+    assert "booking_fee_waived" in _PATIENT_FIELDS

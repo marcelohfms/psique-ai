@@ -162,6 +162,7 @@ _PATIENT_FIELDS = {
     "name", "birth_date", "age", "patient_cpf", "email", "doctor_id",
     "is_returning_patient", "modality_restriction", "age_exception", "custom_price",
     "financial_name", "financial_cpf", "financial_email", "social_name",
+    "booking_fee_waived",
 }
 _LINK_FIELDS = {"role", "is_self", "relationship"}
 _RETURN_FIELDS = {"next_return_date"}
