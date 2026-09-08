@@ -910,6 +910,20 @@ def test_attachment_is_pdf_tolerates_missing_fields():
     assert not _attachment_is_pdf({})
 
 
+def test_looks_like_eva_command():
+    from app.main import _looks_like_eva_command
+
+    assert _looks_like_eva_command("Eva, agende para 24/09") is True
+    assert _looks_like_eva_command("eva: agenda amanhã") is True
+    assert _looks_like_eva_command("Eva agende o paciente") is True
+    assert _looks_like_eva_command("  Eva, com espaços") is True
+    assert _looks_like_eva_command("Evaristo ligou reclamando") is False
+    assert _looks_like_eva_command("Evangelina confirmou") is False
+    assert _looks_like_eva_command("paciente pediu retorno") is False
+    assert _looks_like_eva_command("") is False
+    assert _looks_like_eva_command(None) is False
+
+
 async def test_process_chatwoot_attachments_detects_pdf_via_extension():
     """PDF com content_type genérico é processado como PDF, não cai no
     fallback '[pdf-recebido]'."""
@@ -1039,6 +1053,22 @@ async def test_attendant_note_suppressed_when_eva_paused():
     logged = [c.args[0] for c in mock_log.call_args_list]
     assert "attendant_note_suppressed_paused" in logged
     assert "attendant_note_received" not in logged
+
+
+async def test_suppressed_note_event_stores_full_content():
+    """O evento de supressão guarda o texto completo (sem corte de 300 chars), porque a
+    trava de pendência casa por conteúdo exato."""
+    from app.main import _handle_attendant_note
+
+    long_note = ("Eva, " + ("agende " * 100)).strip()  # > 300 chars
+    payload = _chatwoot_private_note_payload(content=long_note, sender_type="user")
+    with patch("app.main._eva_paused_for_phone", new_callable=AsyncMock, return_value=True), \
+         patch("app.main.log_event", new_callable=AsyncMock) as mock_log:
+        await _handle_attendant_note(payload)
+
+    calls = {c.args[0]: c.args[2] for c in mock_log.await_args_list}
+    assert "attendant_note_suppressed_paused" in calls
+    assert calls["attendant_note_suppressed_paused"]["content"] == long_note
 
 
 async def test_attendant_note_triggers_eva_when_active():
@@ -1384,23 +1414,120 @@ async def test_conv_updated_eva_ativa_added_resumes_and_reprocesses():
 
 
 async def test_conv_updated_eva_ativa_skips_replay_when_note_is_newer():
-    """A atendente respondeu o paciente na mão, mandou a nota "Eva, agende..." e só
-    então devolveu a conversa. A nota já virou um turno; reprocessar a última mensagem
-    do paciente faz a Eva mandar a confirmação e o PIX duas vezes (caso 5581979037093,
-    05/08/2026: "Presencial" 12:17:57 → nota 12:18:09 → eva-ativa 12:18:27)."""
+    """A atendente respondeu o paciente na mão e deixou uma nota (recado interno) mais
+    nova que a mensagem do paciente. Reprocessar a mensagem antiga mandaria a confirmação
+    e o PIX duas vezes (caso 5581979037093). A nota não começa com "Eva", então nada roda
+    e nada é reproduzido."""
     from app.main import _handle_label_change
 
     payload = _conv_updated_payload(previous_labels=[], current_labels=["eva-ativa"], conversation_id=4201)
     with patch("app.main._resume_bot_for_patient", new_callable=AsyncMock) as mock_resume, \
          patch("app.chatwoot.get_last_patient_message", new_callable=AsyncMock) as mock_last, \
+         patch("app.main._handle_attendant_note", new_callable=AsyncMock) as mock_note, \
          patch("app.main.buffer_push", new_callable=AsyncMock) as mock_push:
         mock_last.return_value = {
-            "content": "Presencial", "attachments": [], "created_at": 100, "last_note_at": 112,
+            "content": "Presencial", "attachments": [], "created_at": 100,
+            "last_note_at": 112, "last_note_content": "respondi por telefone, tudo certo",
         }
         handled = await _handle_label_change(payload)
 
     assert handled is True
     mock_resume.assert_awaited_once_with(_LABEL_PHONE_JID)
+    mock_note.assert_not_awaited()
+    mock_push.assert_not_awaited()
+
+
+async def test_conv_updated_eva_ativa_executes_pending_command_note():
+    """Nota-comando é a última coisa e está pendente → a Eva executa (via
+    _handle_attendant_note) e NÃO reproduz a mensagem do paciente."""
+    from app.main import _handle_label_change
+
+    payload = _conv_updated_payload(previous_labels=[], current_labels=["eva-ativa"], conversation_id=5001)
+    with patch("app.main._resume_bot_for_patient", new_callable=AsyncMock), \
+         patch("app.chatwoot.get_last_patient_message", new_callable=AsyncMock) as mock_last, \
+         patch("app.main._note_command_pending", new_callable=AsyncMock, return_value=True), \
+         patch("app.main._handle_attendant_note", new_callable=AsyncMock) as mock_note, \
+         patch("app.main.log_event", new_callable=AsyncMock) as mock_log, \
+         patch("app.main.buffer_push", new_callable=AsyncMock) as mock_push:
+        mock_last.return_value = {
+            "content": "obrigada!", "attachments": [], "created_at": 100,
+            "last_note_at": 130, "last_note_content": "Eva, agende 24/09 às 14h presencial",
+        }
+        handled = await _handle_label_change(payload)
+
+    assert handled is True
+    mock_push.assert_not_awaited()
+    mock_note.assert_awaited_once()
+    sent = mock_note.await_args[0][0]
+    assert sent["content"] == "Eva, agende 24/09 às 14h presencial"
+    assert sent["conversation"]["id"] == 5001
+    assert sent["sender"]["type"] == "user"
+    assert any(c.args[0] == "attendant_note_resumed_executed" for c in mock_log.await_args_list)
+
+
+async def test_conv_updated_eva_ativa_command_note_but_patient_spoke_after():
+    """Paciente falou DEPOIS da nota-comando → a mensagem do paciente vence: reproduz o
+    paciente e NÃO executa o comando."""
+    from app.main import _handle_label_change
+
+    payload = _conv_updated_payload(previous_labels=[], current_labels=["eva-ativa"], conversation_id=5002)
+    with patch("app.main._resume_bot_for_patient", new_callable=AsyncMock), \
+         patch("app.chatwoot.get_last_patient_message", new_callable=AsyncMock) as mock_last, \
+         patch("app.main._note_command_pending", new_callable=AsyncMock, return_value=True), \
+         patch("app.main._handle_attendant_note", new_callable=AsyncMock) as mock_note, \
+         patch("app.main.buffer_push", new_callable=AsyncMock) as mock_push:
+        mock_last.return_value = {
+            "content": "na verdade prefiro online", "attachments": [], "created_at": 200,
+            "last_note_at": 130, "last_note_content": "Eva, agende 24/09 às 14h presencial",
+        }
+        handled = await _handle_label_change(payload)
+
+    assert handled is True
+    mock_note.assert_not_awaited()
+    assert mock_push.await_args[0][1] == "na verdade prefiro online"
+
+
+async def test_conv_updated_eva_ativa_internal_note_not_a_command():
+    """Última nota não começa com "Eva" (recado interno) → não executa nem reproduz."""
+    from app.main import _handle_label_change
+
+    payload = _conv_updated_payload(previous_labels=[], current_labels=["eva-ativa"], conversation_id=5003)
+    with patch("app.main._resume_bot_for_patient", new_callable=AsyncMock), \
+         patch("app.chatwoot.get_last_patient_message", new_callable=AsyncMock) as mock_last, \
+         patch("app.main._note_command_pending", new_callable=AsyncMock, return_value=True) as mock_pending, \
+         patch("app.main._handle_attendant_note", new_callable=AsyncMock) as mock_note, \
+         patch("app.main.buffer_push", new_callable=AsyncMock) as mock_push:
+        mock_last.return_value = {
+            "content": "ok", "attachments": [], "created_at": 100,
+            "last_note_at": 130, "last_note_content": "paciente ligou reclamando",
+        }
+        handled = await _handle_label_change(payload)
+
+    assert handled is True
+    mock_note.assert_not_awaited()
+    mock_push.assert_not_awaited()
+    mock_pending.assert_not_awaited()  # nem chega a checar pendência
+
+
+async def test_conv_updated_eva_ativa_command_note_not_pending_is_skipped():
+    """Nota-comando é a última mas NÃO está pendente (já rodou / rodou ao vivo) → não
+    executa de novo e não reproduz o paciente. Regressão do PIX em dobro (5581979037093)."""
+    from app.main import _handle_label_change
+
+    payload = _conv_updated_payload(previous_labels=[], current_labels=["eva-ativa"], conversation_id=5004)
+    with patch("app.main._resume_bot_for_patient", new_callable=AsyncMock), \
+         patch("app.chatwoot.get_last_patient_message", new_callable=AsyncMock) as mock_last, \
+         patch("app.main._note_command_pending", new_callable=AsyncMock, return_value=False), \
+         patch("app.main._handle_attendant_note", new_callable=AsyncMock) as mock_note, \
+         patch("app.main.buffer_push", new_callable=AsyncMock) as mock_push:
+        mock_last.return_value = {
+            "content": "Presencial", "attachments": [], "created_at": 100,
+            "last_note_at": 130, "last_note_content": "Eva, agende 24/09 às 14h",
+        }
+        handled = await _handle_label_change(payload)
+
+    assert handled is True
+    mock_note.assert_not_awaited()
     mock_push.assert_not_awaited()
 
 
@@ -1796,3 +1923,70 @@ def test_security_headers_present(http_client):
     assert r.headers["X-Content-Type-Options"] == "nosniff"
     assert r.headers["Referrer-Policy"] == "no-referrer"
     assert "max-age=" in r.headers["Strict-Transport-Security"]
+
+
+async def test_get_events_by_type_queries_stripped_phone():
+    """get_events_by_type é o lado de leitura de log_event: filtra por phone (sem o
+    sufixo @s.whatsapp.net, como é gravado) e por event_type, mais novos primeiro."""
+    from app.database import get_events_by_type
+
+    captured = {}
+
+    class _Resp:
+        data = [{"event_type": "x", "phone": "5581999", "metadata": {"content": "Eva, oi"}}]
+
+    class _Q:
+        def select(self, *a, **k): return self
+        def eq(self, col, val):
+            captured[col] = val
+            return self
+        def order(self, *a, **k): return self
+        def limit(self, *a, **k): return self
+        async def execute(self): return _Resp()
+
+    class _Client:
+        def from_(self, name):
+            captured["table"] = name
+            return _Q()
+
+    with patch("app.database.get_supabase", new_callable=AsyncMock, return_value=_Client()):
+        rows = await get_events_by_type("5581999@s.whatsapp.net", "attendant_note_suppressed_paused")
+
+    assert captured["table"] == "events"
+    assert captured["phone"] == "5581999"
+    assert captured["event_type"] == "attendant_note_suppressed_paused"
+    assert rows == [{"event_type": "x", "phone": "5581999", "metadata": {"content": "Eva, oi"}}]
+
+
+async def test_note_command_pending_true_when_suppressed_and_not_executed():
+    from app.main import _note_command_pending
+
+    async def fake_events(phone, event_type, limit=50):
+        if event_type == "attendant_note_suppressed_paused":
+            return [{"metadata": {"content": "Eva, agende 24/09"}}]
+        return []  # nada em attendant_note_resumed_executed
+
+    with patch("app.database.get_events_by_type", side_effect=fake_events):
+        assert await _note_command_pending("5581999@s.whatsapp.net", "Eva, agende 24/09") is True
+
+
+async def test_note_command_pending_false_when_already_executed():
+    from app.main import _note_command_pending
+
+    async def fake_events(phone, event_type, limit=50):
+        return [{"metadata": {"content": "Eva, agende 24/09"}}]  # aparece nos dois tipos
+
+    with patch("app.database.get_events_by_type", side_effect=fake_events):
+        assert await _note_command_pending("5581999@s.whatsapp.net", "Eva, agende 24/09") is False
+
+
+async def test_note_command_pending_false_when_never_suppressed():
+    """Nota executada ao vivo (Eva ativa) grava attendant_note_received, nunca
+    suppressed_paused → nunca é considerada pendente. Protege o PIX em dobro."""
+    from app.main import _note_command_pending
+
+    async def fake_events(phone, event_type, limit=50):
+        return []
+
+    with patch("app.database.get_events_by_type", side_effect=fake_events):
+        assert await _note_command_pending("5581999@s.whatsapp.net", "Eva, agende 24/09") is False
