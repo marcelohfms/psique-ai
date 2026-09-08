@@ -470,7 +470,13 @@ async def test_get_last_patient_message_returns_content_and_attachments():
          }):
         result = await get_last_patient_message(42)
 
-    assert result == {"content": "oi, tudo bem?", "attachments": [], "created_at": 1, "last_note_at": None}
+    assert result == {
+        "content": "oi, tudo bem?",
+        "attachments": [],
+        "created_at": 1,
+        "last_note_at": None,
+        "last_note_content": None,
+    }
 
 
 async def test_get_last_patient_message_reports_last_attendant_note_timestamp():
@@ -541,7 +547,57 @@ async def test_get_last_patient_message_includes_attachment_only_message():
          }):
         result = await get_last_patient_message(42)
 
-    assert result == {"content": "", "attachments": attachments, "created_at": 5, "last_note_at": None}
+    assert result == {
+        "content": "",
+        "attachments": attachments,
+        "created_at": 5,
+        "last_note_at": None,
+        "last_note_content": None,
+    }
+
+
+async def test_get_last_patient_message_returns_last_note_content():
+    """Quem reativa a Eva pela label precisa do TEXTO da última nota da atendente para
+    decidir se é uma nota-comando ("Eva, ...") e executá-la."""
+    from app.chatwoot import get_last_patient_message
+
+    messages = [
+        {"message_type": 0, "content": "Presencial", "attachments": [], "created_at": 100},
+        {"message_type": 1, "private": True, "sender": {"type": "user"},
+         "content": "Eva, agende o paciente para 24/09 às 14:00", "created_at": 112},
+    ]
+    mock_client = _messages_get_mock(messages)
+
+    with patch("httpx.AsyncClient", return_value=mock_client), \
+         patch.dict("os.environ", {
+             "CHATWOOT_BASE_URL": "https://chat.example.com",
+             "CHATWOOT_ACCOUNT_ID": "1",
+             "CHATWOOT_AGENT_BOT_TOKEN": "test-token",
+         }):
+        result = await get_last_patient_message(42)
+
+    assert result["last_note_at"] == 112
+    assert result["last_note_content"] == "Eva, agende o paciente para 24/09 às 14:00"
+
+
+async def test_get_last_patient_message_note_content_is_none_without_notes():
+    """Sem nota humana, last_note_content é None (não string vazia), espelhando last_note_at."""
+    from app.chatwoot import get_last_patient_message
+
+    messages = [
+        {"message_type": 0, "content": "oi", "attachments": [], "created_at": 100},
+    ]
+    mock_client = _messages_get_mock(messages)
+    with patch("httpx.AsyncClient", return_value=mock_client), \
+         patch.dict("os.environ", {
+             "CHATWOOT_BASE_URL": "https://chat.example.com",
+             "CHATWOOT_ACCOUNT_ID": "1",
+             "CHATWOOT_AGENT_BOT_TOKEN": "test-token",
+         }):
+        result = await get_last_patient_message(42)
+
+    assert result["last_note_at"] is None
+    assert result["last_note_content"] is None
 
 
 async def test_get_last_patient_message_returns_none_when_no_incoming():
