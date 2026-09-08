@@ -1843,3 +1843,37 @@ async def test_get_events_by_type_queries_stripped_phone():
     assert captured["phone"] == "5581999"
     assert captured["event_type"] == "attendant_note_suppressed_paused"
     assert rows == [{"event_type": "x", "phone": "5581999", "metadata": {"content": "Eva, oi"}}]
+
+
+async def test_note_command_pending_true_when_suppressed_and_not_executed():
+    from app.main import _note_command_pending
+
+    async def fake_events(phone, event_type, limit=50):
+        if event_type == "attendant_note_suppressed_paused":
+            return [{"metadata": {"content": "Eva, agende 24/09"}}]
+        return []  # nada em attendant_note_resumed_executed
+
+    with patch("app.database.get_events_by_type", side_effect=fake_events):
+        assert await _note_command_pending("5581999@s.whatsapp.net", "Eva, agende 24/09") is True
+
+
+async def test_note_command_pending_false_when_already_executed():
+    from app.main import _note_command_pending
+
+    async def fake_events(phone, event_type, limit=50):
+        return [{"metadata": {"content": "Eva, agende 24/09"}}]  # aparece nos dois tipos
+
+    with patch("app.database.get_events_by_type", side_effect=fake_events):
+        assert await _note_command_pending("5581999@s.whatsapp.net", "Eva, agende 24/09") is False
+
+
+async def test_note_command_pending_false_when_never_suppressed():
+    """Nota executada ao vivo (Eva ativa) grava attendant_note_received, nunca
+    suppressed_paused → nunca é considerada pendente. Protege o PIX em dobro."""
+    from app.main import _note_command_pending
+
+    async def fake_events(phone, event_type, limit=50):
+        return []
+
+    with patch("app.database.get_events_by_type", side_effect=fake_events):
+        assert await _note_command_pending("5581999@s.whatsapp.net", "Eva, agende 24/09") is False

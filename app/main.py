@@ -999,6 +999,21 @@ def _looks_like_eva_command(text: str | None) -> bool:
     return bool(text and _EVA_COMMAND_RE.match(text))
 
 
+async def _note_command_pending(phone: str, note_text: str) -> bool:
+    """True se esta nota exata foi suprimida enquanto a Eva estava pausada e ainda NÃO
+    rodou. Casa por conteúdo exato (webhook e API de mensagens do Chatwoot podem formatar
+    timestamps diferente; o texto é estável). Uma nota executada ao vivo grava
+    attendant_note_received — nunca attendant_note_suppressed_paused — logo nunca é
+    pendente, o que preserva a proteção contra confirmação/PIX em dobro (caso
+    5581979037093)."""
+    from app.database import get_events_by_type
+    suppressed = await get_events_by_type(phone, "attendant_note_suppressed_paused")
+    if not any((e.get("metadata") or {}).get("content") == note_text for e in suppressed):
+        return False
+    executed = await get_events_by_type(phone, "attendant_note_resumed_executed")
+    return not any((e.get("metadata") or {}).get("content") == note_text for e in executed)
+
+
 async def _apply_eva_label_action(payload: dict, added: set, removed: set) -> bool:
     """Pause/resume Eva based on which control labels were added or removed."""
     phone = _extract_phone_from_payload(payload)
