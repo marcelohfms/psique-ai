@@ -5917,3 +5917,117 @@ def test_article_before_patient_name_guard_in_all_prompts():
     for prompt in (COLLECT_SYSTEM, EXISTING_PATIENT_SYSTEM, NEW_PATIENT_SYSTEM):
         assert "ARTIGO ANTES DO NOME" in prompt
         assert "NUNCA coloque artigo" in prompt
+
+
+# ── Fast-path de pending_appointment repassa o nome do paciente confirmado ────
+# Caso Janaina/Isadora (contato 5581988417858, 08/09/2026): a mãe administra duas
+# pacientes (Marina e Isadora). O resumo mostrou "Paciente: Isadora" e ela
+# confirmou "Sim", mas o fast-path de pending_appointment chamava
+# confirm_appointment com patient_name_override="" fixo. A rede de segurança
+# multi-paciente (tools.py) não conseguia singularizar quem era, devolvia a
+# instrução interna "peça o nome completo", que caía no ramo de erro inesperado
+# do handler e virava "Tive um problema ao confirmar" + transfer_to_human. O nome
+# que a paciente confirmou no resumo tem de ser repassado como override.
+
+
+def test_extract_pending_appointment_captures_patient_name():
+    """O resumo tem '👤 Paciente: <nome>'. _extract_pending_appointment precisa
+    congelar esse nome no pending_appointment para o fast-path repassá-lo depois."""
+    from app.graph.nodes import _extract_pending_appointment
+
+    summary = (
+        "Só confirmar antes de registrar: 😊\n"
+        "📅 Quinta-feira, dia 10/09, às 16:00\n"
+        "👨‍⚕️ Dr. Júlio\n"
+        "👤 Paciente: Isadora de Sousa Costa\n"
+        "📍 Modalidade: Presencial\n"
+        "Posso confirmar o agendamento?"
+    )
+    parsed = _extract_pending_appointment(summary, {"preferred_doctor": "julio"})
+    assert parsed is not None
+    assert parsed.get("patient_name") == "Isadora de Sousa Costa"
+
+
+async def test_pending_confirm_forwards_patient_name_as_override():
+    """Regressão (caso Janaina/Isadora): o fast-path de pending_appointment deve
+    chamar confirm_appointment com patient_name_override = o nome congelado no
+    resumo, não com string vazia — senão a rede multi-paciente bloqueia e transfere."""
+    from app.graph.nodes import patient_agent_node
+    from app.graph.tools import confirm_appointment
+
+    state = _make_patient_agent_state(
+        patient_name="Isadora de Sousa Costa",
+        messages=[
+            AIMessage(content="Só confirmar antes de registrar: ...\n👤 Paciente: Isadora de Sousa Costa"),
+            HumanMessage(content="Sim"),
+        ],
+        pending_appointment={
+            "slot_datetime": "2026-09-10T16:00:00",
+            "slot_duration_minutes": 60,
+            "modality": "presencial",
+            "doctor": "julio",
+            "patient_name": "Isadora de Sousa Costa",
+        },
+    )
+
+    ok = (
+        "[INSTRUÇÃO INTERNA — NÃO ENVIE AO PACIENTE] AGENDAMENTO_OK\n"
+        "Dr. Júlio — quinta-feira, 10/09/2026 às 16:00\nID: abc123"
+    )
+    confirm_mock = AsyncMock(return_value=ok)
+
+    with patch.object(confirm_appointment, "coroutine", confirm_mock), \
+         patch("app.whatsapp.send_text", new_callable=AsyncMock), \
+         patch("app.database.save_message", new_callable=AsyncMock), \
+         patch("app.graph.nodes.get_upcoming_appointments", new_callable=AsyncMock, return_value=[]), \
+         patch("app.graph.nodes.get_user_by_phone", new_callable=AsyncMock, return_value={"price_adjustment_notified_at": "2026-01-01"}), \
+         patch("app.graph.nodes.get_last_assistant_message_time", new_callable=AsyncMock, return_value=None):
+        await patient_agent_node(state, CONFIG)
+
+    confirm_mock.assert_awaited_once()
+    assert confirm_mock.await_args.kwargs.get("patient_name_override") == "Isadora de Sousa Costa"
+
+
+async def test_guard_premature_confirm_freezes_patient_name():
+    """GUARD_PREMATURE_CONFIRM: ao interceptar o confirm_appointment prematuro e
+    montar o resumo, o pending_appointment tem de nascer com o nome mostrado no
+    resumo, para o fast-path repassá-lo na confirmação."""
+    from app.graph.nodes import patient_agent_node
+
+    ai_response = AIMessage(content="")
+    ai_response.tool_calls = [{
+        "name": "confirm_appointment",
+        "args": {
+            "slot_datetime": "2026-09-10T16:00:00",
+            "slot_duration_minutes": 60,
+            "modality": "presencial",
+        },
+        "id": "tc_confirm",
+        "type": "tool_call",
+    }]
+
+    state = _make_patient_agent_state(
+        patient_name="Isadora de Sousa Costa",
+        pending_appointment=None,
+        messages=[HumanMessage(content="quinta 10/09 16h presencial")],
+    )
+
+    async def fake_ainvoke(messages):
+        return ai_response
+
+    with patch("app.graph.nodes._get_agent_llm") as mock_llm_fn, \
+         patch("app.graph.nodes.send_text", new_callable=AsyncMock), \
+         patch("app.whatsapp.send_text", new_callable=AsyncMock), \
+         patch("app.graph.nodes.save_message", new_callable=AsyncMock), \
+         patch("app.graph.nodes.get_upcoming_appointments", new_callable=AsyncMock, return_value=[]), \
+         patch("app.graph.nodes.get_user_by_phone", new_callable=AsyncMock, return_value={"price_adjustment_notified_at": "2026-01-01"}), \
+         patch("app.graph.nodes.get_last_assistant_message_time", new_callable=AsyncMock, return_value=None), \
+         patch("app.google_calendar.format_doctor_schedules", return_value="seg-sex"):
+        mock_llm = MagicMock()
+        mock_llm.ainvoke = fake_ainvoke
+        mock_llm_fn.return_value = mock_llm
+        result = await patient_agent_node(state, CONFIG)
+
+    pend = result.get("pending_appointment")
+    assert pend is not None
+    assert pend.get("patient_name") == "Isadora de Sousa Costa"
