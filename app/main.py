@@ -357,9 +357,6 @@ async def extract_message(payload: dict) -> tuple[str, str] | None:
 # With Meta Cloud API, messages typed in the WhatsApp app are NOT delivered
 # to the webhook. Attendant commands are handled via these admin endpoints.
 
-_HOLD_HOURS = 24
-
-
 async def _pause_bot_for_patient(phone: str) -> None:
     from app.database import upsert_user
     await upsert_user(phone, {
@@ -500,16 +497,19 @@ async def admin_patch_state(request: Request, x_admin_secret: str | None = Heade
 async def _eva_paused_for_phone(phone: str) -> bool:
     """True quando a Eva deve permanecer em silêncio para este número.
 
-    Espelha o portão de pausa do recebimento: manual_hold (permanente) ou
-    active=False dentro da janela de 24 h. Passada a janela, reativa e devolve
-    False. Fonte única para os dois caminhos que podem fazer a Eva falar com o
-    paciente — a mensagem recebida (process_message) e a nota privada da
-    atendente — para que uma conversa pausada (eva-inativa) não seja disparada
-    nem por uma nota interna (caso Rayssa 558399495410, 03/09/2026).
+    Espelha o portão de pausa do recebimento: manual_hold ou active=False.
+    A pausa NÃO expira sozinha — vale até a atendente reativar de propósito
+    (label eva-ativa, remoção da eva-inativa ou o endpoint /admin/resume). Antes
+    havia uma auto-reativação após 24 h, mas a etiqueta eva-inativa no Chatwoot
+    não expira, então as duas fontes desencontravam: a conversa aparecia pausada
+    para a atendente enquanto a Eva já tinha voltado a responder sozinha (casos
+    Wayne #320 e Renata #206, 08/09/2026). Fonte única para os dois caminhos que
+    podem fazer a Eva falar com o paciente — a mensagem recebida (process_message)
+    e a nota privada da atendente.
     """
     all_users = await get_users_by_phone(phone)
     if any(r.get("manual_hold") for r in all_users):
-        return True  # hold permanente — nunca reativa
+        return True
 
     # Contato solto (não-paciente, ex.: representante) também é silenciado.
     try:
@@ -519,33 +519,9 @@ async def _eva_paused_for_phone(phone: str) -> bool:
     if _contact and _contact.get("manual_hold"):
         return True
 
-    inactive = [r for r in all_users if r.get("active") is False]
-    if not inactive:
-        return False
-
-    def _deactivated_dt(r: dict):
-        ts = r.get("deactivated_at")
-        if not ts:
-            return None
-        try:
-            dt = datetime.fromisoformat(ts)
-            if not dt.tzinfo:
-                dt = dt.replace(tzinfo=timezone.utc)
-            return dt
-        except ValueError:
-            return None
-
-    deactivated_dts = [d for r in inactive if (d := _deactivated_dt(r)) is not None]
-    if not deactivated_dts:
-        return True  # sem timestamp = hold permanente
-    most_recent = max(deactivated_dts)
-    if datetime.now(timezone.utc) - most_recent < timedelta(hours=_HOLD_HOURS):
-        return True  # ainda dentro do hold de 24 h
-    # 24 h decorridas — reativa todos os registros deste telefone
-    from app.database import upsert_user
-    await upsert_user(phone, {"active": True, "deactivated_at": None})
-    logger.info("Bot auto-reativado para %s após 24 h", phone)
-    return False
+    # active=False = pausada até reativação explícita. deactivated_at continua
+    # sendo gravado para auditoria, mas não reabre mais a conversa por tempo.
+    return any(r.get("active") is False for r in all_users)
 
 
 async def process_message(phone: str, text: str) -> None:
@@ -558,9 +534,9 @@ async def process_message(phone: str, text: str) -> None:
 
     existing = await get_user_by_phone(phone)
 
-    # Hold/deactivation: mesma checagem usada pela nota privada da atendente.
-    # (manual_hold permanente, active=False dentro das 24 h, e auto-reativação
-    # após a janela). Ver _eva_paused_for_phone.
+    # Hold/deactivation: mesma checagem usada pela nota privada da atendente
+    # (manual_hold ou active=False, sem expiração por tempo). Ver
+    # _eva_paused_for_phone.
     if await _eva_paused_for_phone(phone):
         return
 
