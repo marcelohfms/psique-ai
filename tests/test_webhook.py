@@ -1055,6 +1055,22 @@ async def test_attendant_note_suppressed_when_eva_paused():
     assert "attendant_note_received" not in logged
 
 
+async def test_suppressed_note_event_stores_full_content():
+    """O evento de supressão guarda o texto completo (sem corte de 300 chars), porque a
+    trava de pendência casa por conteúdo exato."""
+    from app.main import _handle_attendant_note
+
+    long_note = ("Eva, " + ("agende " * 100)).strip()  # > 300 chars
+    payload = _chatwoot_private_note_payload(content=long_note, sender_type="user")
+    with patch("app.main._eva_paused_for_phone", new_callable=AsyncMock, return_value=True), \
+         patch("app.main.log_event", new_callable=AsyncMock) as mock_log:
+        await _handle_attendant_note(payload)
+
+    calls = {c.args[0]: c.args[2] for c in mock_log.await_args_list}
+    assert "attendant_note_suppressed_paused" in calls
+    assert calls["attendant_note_suppressed_paused"]["content"] == long_note
+
+
 async def test_attendant_note_triggers_eva_when_active():
     """Regressão: com a conversa ATIVA, a nota privada continua steerando a Eva."""
     from app.main import _handle_attendant_note

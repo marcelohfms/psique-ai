@@ -1274,7 +1274,7 @@ async def _handle_attendant_note(payload: dict) -> None:
     # zera active=False), e então a nota passa por aqui normalmente.
     if await _eva_paused_for_phone(phone):
         await log_event("attendant_note_suppressed_paused", phone, {
-            "content": content[:300], "conversation_id": conv_id,
+            "content": content, "conversation_id": conv_id,
         })
         logger.info("ATTENDANT_NOTE suprimida (Eva pausada) phone=%s conv=%s", phone, conv_id)
         return
