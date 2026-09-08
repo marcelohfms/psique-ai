@@ -910,6 +910,20 @@ def test_attachment_is_pdf_tolerates_missing_fields():
     assert not _attachment_is_pdf({})
 
 
+def test_looks_like_eva_command():
+    from app.main import _looks_like_eva_command
+
+    assert _looks_like_eva_command("Eva, agende para 24/09") is True
+    assert _looks_like_eva_command("eva: agenda amanhã") is True
+    assert _looks_like_eva_command("Eva agende o paciente") is True
+    assert _looks_like_eva_command("  Eva, com espaços") is True
+    assert _looks_like_eva_command("Evaristo ligou reclamando") is False
+    assert _looks_like_eva_command("Evangelina confirmou") is False
+    assert _looks_like_eva_command("paciente pediu retorno") is False
+    assert _looks_like_eva_command("") is False
+    assert _looks_like_eva_command(None) is False
+
+
 async def test_process_chatwoot_attachments_detects_pdf_via_extension():
     """PDF com content_type genérico é processado como PDF, não cai no
     fallback '[pdf-recebido]'."""

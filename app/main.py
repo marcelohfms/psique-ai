@@ -5,6 +5,7 @@ import hmac
 import json
 import logging
 import os
+import re
 import time
 from collections import OrderedDict
 from contextlib import asynccontextmanager
@@ -986,6 +987,16 @@ def _extract_label_delta(changed: list) -> tuple[set, set] | None:
             return _split(change.get("previous_value")), _split(change.get("current_value"))
 
     return None
+
+
+_EVA_COMMAND_RE = re.compile(r"^\s*eva\b", re.IGNORECASE)
+
+
+def _looks_like_eva_command(text: str | None) -> bool:
+    """A nota é um comando para a Eva quando começa chamando-a pelo nome: "Eva, ...",
+    "Eva ...", "eva: ...". "Evaristo"/"Evangelina" não contam — o \\b exige um limite de
+    palavra logo depois de "eva"."""
+    return bool(text and _EVA_COMMAND_RE.match(text))
 
 
 async def _apply_eva_label_action(payload: dict, added: set, removed: set) -> bool:
