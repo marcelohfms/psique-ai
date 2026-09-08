@@ -317,6 +317,100 @@ async def test_duplicate_audio_webhook_sends_notice_only_once():
     assert mock_send.call_count == 1
 
 
+# ── "digitando..." + visto (read receipt) ─────────────────────────────────────
+# Assim que a mensagem do paciente chega, marcamos como lida (tique azul) e
+# ligamos o indicador "digitando..." pela Meta Cloud API. O texto da Eva sai
+# pelo Chatwoot, mas o indicador de digitação só existe na API direta da Meta.
+
+async def test_incoming_text_marks_read_and_typing_with_msg_id():
+    """Toda mensagem recebida deve disparar o read+typing com o id da mensagem."""
+    from app.main import _handle_payload
+    payload = _meta_payload(body="olá")  # id == "wamid.test"
+    with patch("app.main.whatsapp.mark_read_and_typing", new_callable=AsyncMock) as mock_typing, \
+         patch("app.main.save_message", new_callable=AsyncMock), \
+         patch("app.main.buffer_push", new_callable=AsyncMock):
+        await _handle_payload(payload)
+        await asyncio.sleep(0)  # deixa a task fire-and-forget rodar
+    mock_typing.assert_awaited_once_with("wamid.test")
+
+
+async def test_duplicate_webhook_does_not_mark_typing_twice():
+    """Retry da Meta (mesmo msg_id) não pode reacender o "digitando" nem o visto."""
+    from app.main import _handle_payload
+    payload = _meta_payload(body="olá")  # id == "wamid.test"
+    with patch("app.main.whatsapp.mark_read_and_typing", new_callable=AsyncMock) as mock_typing, \
+         patch("app.main.save_message", new_callable=AsyncMock), \
+         patch("app.main.buffer_push", new_callable=AsyncMock):
+        await _handle_payload(payload)
+        await _handle_payload(payload)  # duplicate retry from Meta
+        await asyncio.sleep(0)
+    assert mock_typing.await_count == 1
+
+
+async def test_status_payload_does_not_mark_typing():
+    """Payload de status (sem id de mensagem) não pode disparar read+typing."""
+    from app.main import _handle_payload
+    payload = _status_payload()
+    with patch("app.main.whatsapp.mark_read_and_typing", new_callable=AsyncMock) as mock_typing, \
+         patch("app.main.save_message", new_callable=AsyncMock), \
+         patch("app.main.buffer_push", new_callable=AsyncMock):
+        await _handle_payload(payload)
+        await asyncio.sleep(0)
+    mock_typing.assert_not_awaited()
+
+
+async def test_mark_read_and_typing_posts_expected_payload_to_meta(monkeypatch):
+    """mark_read_and_typing faz POST à Graph API com status=read e typing_indicator."""
+    import app.whatsapp as wa
+    monkeypatch.setenv("WHATSAPP_PHONE_NUMBER_ID", "PN-123")
+    monkeypatch.setenv("WHATSAPP_TOKEN", "tok-abc")
+
+    captured: dict = {}
+
+    class _Resp:
+        is_success = True
+        status_code = 200
+        text = ""
+
+    class _FakeClient:
+        def __init__(self, *a, **k): ...
+        async def __aenter__(self): return self
+        async def __aexit__(self, *a): return False
+        async def post(self, url, json=None, headers=None):
+            captured["url"] = url
+            captured["json"] = json
+            captured["headers"] = headers
+            return _Resp()
+
+    monkeypatch.setattr(wa.httpx, "AsyncClient", _FakeClient)
+    await wa.mark_read_and_typing("wamid.abc")
+
+    assert captured["url"].endswith("/PN-123/messages")
+    assert captured["json"] == {
+        "messaging_product": "whatsapp",
+        "status": "read",
+        "message_id": "wamid.abc",
+        "typing_indicator": {"type": "text"},
+    }
+    assert captured["headers"]["Authorization"] == "Bearer tok-abc"
+
+
+async def test_mark_read_and_typing_swallows_errors(monkeypatch):
+    """Falha no indicador é cosmética: não pode subir exceção e travar o turno."""
+    import app.whatsapp as wa
+
+    class _FakeClient:
+        def __init__(self, *a, **k): ...
+        async def __aenter__(self): return self
+        async def __aexit__(self, *a): return False
+        async def post(self, *a, **k):
+            raise RuntimeError("meta down")
+
+    monkeypatch.setattr(wa.httpx, "AsyncClient", _FakeClient)
+    # Não deve levantar.
+    await wa.mark_read_and_typing("wamid.abc")
+
+
 # ── /webhook endpoint tests ───────────────────────────────────────────────────
 
 def _signed(body: bytes) -> str:
