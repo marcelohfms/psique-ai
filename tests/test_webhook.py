@@ -1414,23 +1414,120 @@ async def test_conv_updated_eva_ativa_added_resumes_and_reprocesses():
 
 
 async def test_conv_updated_eva_ativa_skips_replay_when_note_is_newer():
-    """A atendente respondeu o paciente na mão, mandou a nota "Eva, agende..." e só
-    então devolveu a conversa. A nota já virou um turno; reprocessar a última mensagem
-    do paciente faz a Eva mandar a confirmação e o PIX duas vezes (caso 5581979037093,
-    05/08/2026: "Presencial" 12:17:57 → nota 12:18:09 → eva-ativa 12:18:27)."""
+    """A atendente respondeu o paciente na mão e deixou uma nota (recado interno) mais
+    nova que a mensagem do paciente. Reprocessar a mensagem antiga mandaria a confirmação
+    e o PIX duas vezes (caso 5581979037093). A nota não começa com "Eva", então nada roda
+    e nada é reproduzido."""
     from app.main import _handle_label_change
 
     payload = _conv_updated_payload(previous_labels=[], current_labels=["eva-ativa"], conversation_id=4201)
     with patch("app.main._resume_bot_for_patient", new_callable=AsyncMock) as mock_resume, \
          patch("app.chatwoot.get_last_patient_message", new_callable=AsyncMock) as mock_last, \
+         patch("app.main._handle_attendant_note", new_callable=AsyncMock) as mock_note, \
          patch("app.main.buffer_push", new_callable=AsyncMock) as mock_push:
         mock_last.return_value = {
-            "content": "Presencial", "attachments": [], "created_at": 100, "last_note_at": 112,
+            "content": "Presencial", "attachments": [], "created_at": 100,
+            "last_note_at": 112, "last_note_content": "respondi por telefone, tudo certo",
         }
         handled = await _handle_label_change(payload)
 
     assert handled is True
     mock_resume.assert_awaited_once_with(_LABEL_PHONE_JID)
+    mock_note.assert_not_awaited()
+    mock_push.assert_not_awaited()
+
+
+async def test_conv_updated_eva_ativa_executes_pending_command_note():
+    """Nota-comando é a última coisa e está pendente → a Eva executa (via
+    _handle_attendant_note) e NÃO reproduz a mensagem do paciente."""
+    from app.main import _handle_label_change
+
+    payload = _conv_updated_payload(previous_labels=[], current_labels=["eva-ativa"], conversation_id=5001)
+    with patch("app.main._resume_bot_for_patient", new_callable=AsyncMock), \
+         patch("app.chatwoot.get_last_patient_message", new_callable=AsyncMock) as mock_last, \
+         patch("app.main._note_command_pending", new_callable=AsyncMock, return_value=True), \
+         patch("app.main._handle_attendant_note", new_callable=AsyncMock) as mock_note, \
+         patch("app.main.log_event", new_callable=AsyncMock) as mock_log, \
+         patch("app.main.buffer_push", new_callable=AsyncMock) as mock_push:
+        mock_last.return_value = {
+            "content": "obrigada!", "attachments": [], "created_at": 100,
+            "last_note_at": 130, "last_note_content": "Eva, agende 24/09 às 14h presencial",
+        }
+        handled = await _handle_label_change(payload)
+
+    assert handled is True
+    mock_push.assert_not_awaited()
+    mock_note.assert_awaited_once()
+    sent = mock_note.await_args[0][0]
+    assert sent["content"] == "Eva, agende 24/09 às 14h presencial"
+    assert sent["conversation"]["id"] == 5001
+    assert sent["sender"]["type"] == "user"
+    assert any(c.args[0] == "attendant_note_resumed_executed" for c in mock_log.await_args_list)
+
+
+async def test_conv_updated_eva_ativa_command_note_but_patient_spoke_after():
+    """Paciente falou DEPOIS da nota-comando → a mensagem do paciente vence: reproduz o
+    paciente e NÃO executa o comando."""
+    from app.main import _handle_label_change
+
+    payload = _conv_updated_payload(previous_labels=[], current_labels=["eva-ativa"], conversation_id=5002)
+    with patch("app.main._resume_bot_for_patient", new_callable=AsyncMock), \
+         patch("app.chatwoot.get_last_patient_message", new_callable=AsyncMock) as mock_last, \
+         patch("app.main._note_command_pending", new_callable=AsyncMock, return_value=True), \
+         patch("app.main._handle_attendant_note", new_callable=AsyncMock) as mock_note, \
+         patch("app.main.buffer_push", new_callable=AsyncMock) as mock_push:
+        mock_last.return_value = {
+            "content": "na verdade prefiro online", "attachments": [], "created_at": 200,
+            "last_note_at": 130, "last_note_content": "Eva, agende 24/09 às 14h presencial",
+        }
+        handled = await _handle_label_change(payload)
+
+    assert handled is True
+    mock_note.assert_not_awaited()
+    assert mock_push.await_args[0][1] == "na verdade prefiro online"
+
+
+async def test_conv_updated_eva_ativa_internal_note_not_a_command():
+    """Última nota não começa com "Eva" (recado interno) → não executa nem reproduz."""
+    from app.main import _handle_label_change
+
+    payload = _conv_updated_payload(previous_labels=[], current_labels=["eva-ativa"], conversation_id=5003)
+    with patch("app.main._resume_bot_for_patient", new_callable=AsyncMock), \
+         patch("app.chatwoot.get_last_patient_message", new_callable=AsyncMock) as mock_last, \
+         patch("app.main._note_command_pending", new_callable=AsyncMock, return_value=True) as mock_pending, \
+         patch("app.main._handle_attendant_note", new_callable=AsyncMock) as mock_note, \
+         patch("app.main.buffer_push", new_callable=AsyncMock) as mock_push:
+        mock_last.return_value = {
+            "content": "ok", "attachments": [], "created_at": 100,
+            "last_note_at": 130, "last_note_content": "paciente ligou reclamando",
+        }
+        handled = await _handle_label_change(payload)
+
+    assert handled is True
+    mock_note.assert_not_awaited()
+    mock_push.assert_not_awaited()
+    mock_pending.assert_not_awaited()  # nem chega a checar pendência
+
+
+async def test_conv_updated_eva_ativa_command_note_not_pending_is_skipped():
+    """Nota-comando é a última mas NÃO está pendente (já rodou / rodou ao vivo) → não
+    executa de novo e não reproduz o paciente. Regressão do PIX em dobro (5581979037093)."""
+    from app.main import _handle_label_change
+
+    payload = _conv_updated_payload(previous_labels=[], current_labels=["eva-ativa"], conversation_id=5004)
+    with patch("app.main._resume_bot_for_patient", new_callable=AsyncMock), \
+         patch("app.chatwoot.get_last_patient_message", new_callable=AsyncMock) as mock_last, \
+         patch("app.main._note_command_pending", new_callable=AsyncMock, return_value=False), \
+         patch("app.main._handle_attendant_note", new_callable=AsyncMock) as mock_note, \
+         patch("app.main.buffer_push", new_callable=AsyncMock) as mock_push:
+        mock_last.return_value = {
+            "content": "Presencial", "attachments": [], "created_at": 100,
+            "last_note_at": 130, "last_note_content": "Eva, agende 24/09 às 14h",
+        }
+        handled = await _handle_label_change(payload)
+
+    assert handled is True
+    mock_note.assert_not_awaited()
     mock_push.assert_not_awaited()
 
 

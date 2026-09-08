@@ -1014,6 +1014,26 @@ async def _note_command_pending(phone: str, note_text: str) -> bool:
     return not any((e.get("metadata") or {}).get("content") == note_text for e in executed)
 
 
+async def _execute_attendant_note_on_resume(phone: str, conversation_id, note_text: str) -> None:
+    """Executa uma nota-comando que ficou pendente (suprimida enquanto a Eva estava
+    pausada) quando a atendente reativa pela label eva-ativa. Reusa o caminho normal
+    _handle_attendant_note com um payload sintético e grava o marcador de execução, para
+    não repetir numa próxima reativação."""
+    from app.phone import _strip_phone
+    bare = _strip_phone(phone)
+    synthetic = {
+        "message_type": 1,
+        "private": True,
+        "content": note_text,
+        "sender": {"type": "user"},
+        "conversation": {"id": conversation_id, "meta": {"sender": {"phone_number": bare}}},
+    }
+    await _handle_attendant_note(synthetic)
+    await log_event("attendant_note_resumed_executed", phone, {
+        "content": note_text, "conversation_id": conversation_id,
+    })
+
+
 async def _apply_eva_label_action(payload: dict, added: set, removed: set) -> bool:
     """Pause/resume Eva based on which control labels were added or removed."""
     phone = _extract_phone_from_payload(payload)
@@ -1045,16 +1065,29 @@ async def _apply_eva_label_action(payload: dict, added: set, removed: set) -> bo
                 # turno em cima do mesmo assunto e a paciente recebe a confirmação e o PIX
                 # duas vezes (caso 5581979037093, 05/08/2026).
                 _note_at = last.get("last_note_at") if last else None
-                if _note_at and _note_at >= (last.get("created_at") or 0):
-                    logger.info(
-                        "EVA_ATIVA_REPLAY_SKIPPED phone=%s conv=%s — nota da atendente "
-                        "posterior à mensagem do paciente: %.60s",
-                        phone, conversation_id, last.get("content"),
-                    )
-                    await log_event("eva_ativa_replay_skipped", phone, {
-                        "content": (last.get("content") or "")[:300],
-                        "conversation_id": conversation_id,
-                    })
+                if last and _note_at and _note_at >= (last.get("created_at") or 0):
+                    # A última coisa da conversa é uma nota da atendente, mais nova que a
+                    # mensagem do paciente. Se for uma nota-comando ("Eva, ...") ainda
+                    # pendente, executa; senão mantém o skip antigo — sem reprocessar a
+                    # mensagem do paciente, pra não mandar confirmação/PIX em dobro
+                    # (caso 5581979037093).
+                    note_text = last.get("last_note_content") or ""
+                    if _looks_like_eva_command(note_text) and await _note_command_pending(phone, note_text):
+                        logger.info(
+                            "EVA_ATIVA_NOTE_COMMAND phone=%s conv=%s: %.60s",
+                            phone, conversation_id, note_text,
+                        )
+                        await _execute_attendant_note_on_resume(phone, conversation_id, note_text)
+                    else:
+                        logger.info(
+                            "EVA_ATIVA_REPLAY_SKIPPED phone=%s conv=%s — nota da atendente "
+                            "posterior à mensagem do paciente: %.60s",
+                            phone, conversation_id, last.get("content"),
+                        )
+                        await log_event("eva_ativa_replay_skipped", phone, {
+                            "content": (last.get("content") or "")[:300],
+                            "conversation_id": conversation_id,
+                        })
                     last = None
                 if last:
                     text = last["content"] or None
