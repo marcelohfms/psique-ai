@@ -32,6 +32,7 @@ from app.buffer import (
 from app.auth import router as auth_router
 from app import whatsapp
 from app.whatsapp import send_text
+from app.auto_reply import is_auto_reply
 
 logger = logging.getLogger(__name__)
 
@@ -530,6 +531,18 @@ async def process_message(phone: str, text: str) -> None:
     """Route a (possibly debounced) message through the LangGraph chatbot."""
     if _is_duplicate_phone_text(phone, text):
         logger.info("Duplicate process_message suppressed for %s: %.40s", phone, text)
+        return
+
+    # Resposta automática de ausência do WhatsApp (ex.: "Não estou disponível
+    # nesse momento. Retornarei o contato assim que possível."): a mensagem já foi
+    # gravada em `messages` na ingestão, mas a Eva não deve tratá-la como pedido
+    # real nem responder — senão ela chuta uma intenção (o "retornarei o contato"
+    # virou remarcação no caso Natalia/Leonardo, 5581996332827, 08/09/2026). Só
+    # ignora quando o texto INTEIRO é a resposta automática; se vier colada com um
+    # pedido real, is_auto_reply devolve False e o fluxo segue normal.
+    if is_auto_reply(text):
+        logger.info("Auto-reply ignorado para %s: %.60s", phone, text)
+        await log_event("auto_reply_ignored", phone, {"text": text[:200]})
         return
 
     config = {"configurable": {"thread_id": phone, "phone": phone}, "recursion_limit": 15}

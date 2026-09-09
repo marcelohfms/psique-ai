@@ -6031,3 +6031,52 @@ async def test_guard_premature_confirm_freezes_patient_name():
     pend = result.get("pending_appointment")
     assert pend is not None
     assert pend.get("patient_name") == "Isadora de Sousa Costa"
+
+
+# ── Guarda contra respostas automáticas de ausência ───────────────────────────
+
+async def test_auto_reply_is_ignored_without_running_graph():
+    """Resposta automática de ausência do WhatsApp não deve rodar o grafo nem responder,
+    e deve registrar o evento auto_reply_ignored (caso Natalia/Leonardo 08/09/2026)."""
+    import app.graph.graph as gg
+    chatbot = _make_chatbot()
+    original = gg.chatbot
+    gg.chatbot = chatbot
+    try:
+        with patch("app.main.get_user_by_phone", new_callable=AsyncMock) as mock_get_user, \
+             patch("app.main.log_event", new_callable=AsyncMock) as mock_log_event:
+            from app.main import process_message
+            await process_message(
+                PHONE,
+                "Não estou disponível nesse momento. Retornarei o contato assim que possível.",
+            )
+            chatbot.ainvoke.assert_not_called()
+            chatbot.aget_state.assert_not_called()
+            mock_get_user.assert_not_called()
+            assert mock_log_event.await_args_list, "esperava log_event chamado"
+            assert mock_log_event.await_args_list[0].args[0] == "auto_reply_ignored"
+    finally:
+        gg.chatbot = original
+
+
+async def test_auto_reply_with_real_content_still_processes():
+    """Se a resposta automática vier colada com um pedido real, a Eva processa normal."""
+    import app.graph.graph as gg
+    chatbot = _make_chatbot()
+    original = gg.chatbot
+    gg.chatbot = chatbot
+    try:
+        with patch("app.main.get_user_by_phone", new_callable=AsyncMock, return_value=None), \
+             patch("app.main.get_users_by_phone", new_callable=AsyncMock, return_value=[]), \
+             patch("app.main.get_contact_by_phone", new_callable=AsyncMock,
+                   return_value={"id": "c1", "phone": "5583999999999", "manual_hold": False}), \
+             patch("app.main.log_event", new_callable=AsyncMock):
+            from app.main import process_message
+            await process_message(
+                PHONE,
+                "Não estou disponível nesse momento. Retornarei o contato assim que possível.\n"
+                "Na verdade quero remarcar para sexta de manhã",
+            )
+            chatbot.ainvoke.assert_called()
+    finally:
+        gg.chatbot = original
