@@ -611,17 +611,25 @@ async def process_message(phone: str, text: str) -> None:
                             [tc["name"] for tc in _orphaned],
                         )
 
-        # Cross-process dedup: if the most recent message in the checkpoint is
-        # already this exact HumanMessage, another worker already processed it.
-        # This works across multiple uvicorn workers since the checkpoint is in Postgres.
+        # Cross-process dedup: if the VERY LAST message in the checkpoint is
+        # already this exact HumanMessage, another worker already processed it
+        # (and hasn't produced a reply yet). This works across multiple uvicorn
+        # workers since the checkpoint is in Postgres.
+        #
+        # We must look only at msgs[-1], not "the most recent human message":
+        # when the patient sends the same short text twice in a row (classic:
+        # "Sim" to two consecutive questions), the second "Sim" arrives AFTER Eva
+        # already answered the first, so the last checkpoint message is an
+        # AIMessage. That second "Sim" is a legitimate, distinct turn — dedup
+        # must not swallow it. (Regressão Eva Maria de Andrade Lima,
+        # 5581999365179, 09/09/2026: o 2º "Sim" sumiu sem resposta.)
         if snapshot and snapshot.values:
             _cp_msgs = snapshot.values.get("messages") or []
-            for _m in reversed(_cp_msgs):
-                if getattr(_m, "type", None) == "human":
-                    if _m.content == text:
-                        logger.info("Cross-process dedup: message already in checkpoint for %s — skipping", phone)
-                        return
-                    break  # only check the most recent human message
+            if _cp_msgs:
+                _last = _cp_msgs[-1]
+                if getattr(_last, "type", None) == "human" and _last.content == text:
+                    logger.info("Cross-process dedup: message already in checkpoint for %s — skipping", phone)
+                    return
 
         if snapshot.values:
             state_update = {"messages": [HumanMessage(content=text)], "silent_mode": False, "phone": phone}

@@ -357,6 +357,61 @@ async def test_orphaned_invalid_tool_call_recovery_answers_pending_call():
         gg.chatbot = original
 
 
+async def test_cross_process_dedup_skips_repeat_when_last_message_is_the_human():
+    """Cross-worker dedup: if the LAST checkpoint message is already this exact
+    HumanMessage, another worker got there first — skip without re-processing."""
+    import app.graph.graph as gg
+    existing_state = {
+        "stage": "patient_agent",
+        "messages": [
+            AIMessage(content="Pode ser online?"),
+            HumanMessage(content="Sim"),
+        ],
+        "preferred_doctor": "julio",
+    }
+    chatbot = _make_chatbot(snapshot_values=existing_state)
+    original = gg.chatbot
+    gg.chatbot = chatbot
+    try:
+        with patch("app.main.get_user_by_phone", new_callable=AsyncMock, return_value=_KNOWN_USER), \
+             patch("app.main.get_users_by_phone", new_callable=AsyncMock, return_value=[_KNOWN_USER]), \
+             patch("app.main.log_event", new_callable=AsyncMock):
+            from app.main import process_message
+            await process_message(PHONE, "Sim")
+            chatbot.ainvoke.assert_not_called()  # deduped
+    finally:
+        gg.chatbot = original
+
+
+async def test_consecutive_identical_human_messages_not_deduped():
+    """Regressão (Eva Maria de Andrade Lima, 5581999365179, 09/09/2026): o
+    paciente respondeu "Sim" a duas perguntas seguidas. O 2º "Sim" chega depois
+    de a Eva já ter respondido o 1º — logo a ÚLTIMA mensagem do checkpoint é uma
+    AIMessage, não a humana repetida. Isso é uma mensagem legítima e distinta e
+    NÃO pode ser tratada como duplicata cross-worker."""
+    import app.graph.graph as gg
+    existing_state = {
+        "stage": "patient_agent",
+        "messages": [
+            HumanMessage(content="Sim"),                       # 1º "Sim" (online?)
+            AIMessage(content="Posso confirmar o agendamento?"),  # Eva já respondeu
+        ],
+        "preferred_doctor": "julio",
+    }
+    chatbot = _make_chatbot(snapshot_values=existing_state)
+    original = gg.chatbot
+    gg.chatbot = chatbot
+    try:
+        with patch("app.main.get_user_by_phone", new_callable=AsyncMock, return_value=_KNOWN_USER), \
+             patch("app.main.get_users_by_phone", new_callable=AsyncMock, return_value=[_KNOWN_USER]), \
+             patch("app.main.log_event", new_callable=AsyncMock):
+            from app.main import process_message
+            await process_message(PHONE, "Sim")
+            chatbot.ainvoke.assert_called_once()  # NÃO deduplica
+    finally:
+        gg.chatbot = original
+
+
 # ── _strip_orphan_tool_calls: sanitize unbalanced tool-call history ───────────
 # Regression guard for the caso Kimmy/Darleide (5581999656460): a ToolMessage
 # left in the checkpoint without the AIMessage that emitted it made every
