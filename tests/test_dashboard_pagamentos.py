@@ -251,6 +251,38 @@ async def test_pagar_sem_smtp_registra_pagamento_e_falha_de_email(mock_supabase)
     assert "clinic_email_failed" in logged
 
 
+# ── Auto-extensão da Tabela nativa (cópia do painel) ──────────────────────────
+# Espelha app/google_sheets.py: a linha nova gravada pelo painel também precisa ser
+# puxada para dentro da Tabela_1 na hora, senão fica sem o dropdown de conferência.
+
+def _service_with_table(end_row_index, *, sheet_id=2138324397, start_col=0):
+    rng = {"sheetId": sheet_id, "startRowIndex": 0, "endRowIndex": end_row_index,
+           "startColumnIndex": start_col, "endColumnIndex": 10}
+    meta = {"sheets": [{"properties": {"title": "Pagamentos", "sheetId": sheet_id},
+                        "tables": [{"tableId": "T1", "range": rng}]}]}
+    service = MagicMock()
+    service.spreadsheets.return_value.get.return_value.execute.return_value = meta
+    return service
+
+
+def test_dashboard_extend_table_grows_when_new_row_below():
+    import payments
+    service = _service_with_table(end_row_index=581)
+    payments._extend_table_to_row(service, "sheet-123", "Pagamentos!A583:J583")
+    batch = service.spreadsheets.return_value.batchUpdate
+    batch.assert_called_once()
+    req = batch.call_args.kwargs["body"]["requests"][0]["updateTable"]
+    assert req["table"]["range"]["endRowIndex"] == 583
+    assert req["table"]["tableId"] == "T1"
+
+
+def test_dashboard_extend_table_noop_when_inside():
+    import payments
+    service = _service_with_table(end_row_index=600)
+    payments._extend_table_to_row(service, "sheet-123", "Pagamentos!A583:J583")
+    service.spreadsheets.return_value.batchUpdate.assert_not_called()
+
+
 def test_missing_smtp_vars_lista_apenas_ausentes():
     """missing_smtp_vars alimenta o aviso de startup do dashboard."""
     import payments

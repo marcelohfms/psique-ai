@@ -212,6 +212,53 @@ def _set_hyperlink_cell(service, spreadsheet_id: str, updated_range: str, drive_
     ).execute()
 
 
+def _extend_table_to_row(service, spreadsheet_id: str, updated_range: str) -> None:
+    """Estica a Tabela nativa da aba para incluir a linha recém-anexada.
+
+    A aba Pagamentos é uma Tabela nativa do Google Sheets. `values().append` escreve
+    a linha logo ABAIXO da tabela mas NÃO estica a borda dela, então a linha nova
+    fica um degrau de fora — sem a formatação listrada e sem o menu suspenso da
+    coluna "Conferência Humana", até alguém abrir a planilha no navegador e o Google
+    absorver a linha vizinha. Esta função puxa a borda para a linha nova na hora.
+    Best-effort: uma falha aqui NUNCA pode desfazer a gravação da linha (o chamador
+    isola em try/except). Espelha app/google_sheets.py — os dois têm que andar juntos.
+    """
+    match = re.search(r"'?([^'!]+)'?!(?:[A-Z]+)(\d+)", updated_range)
+    if not match:
+        return
+    sheet_name, row_number = match.group(1), int(match.group(2))  # row_number 1-based
+
+    meta = service.spreadsheets().get(
+        spreadsheetId=spreadsheet_id,
+        fields="sheets(properties(title,sheetId),tables(tableId,range))",
+    ).execute()
+    for sh in meta.get("sheets", []):
+        props = sh.get("properties", {})
+        if props.get("title") != sheet_name:
+            continue
+        sheet_id = props.get("sheetId")
+        for tbl in sh.get("tables", []):
+            rng = tbl.get("range", {})
+            if rng.get("sheetId") != sheet_id:
+                continue
+            if rng.get("startColumnIndex", 0) != 0:
+                continue  # só a tabela ancorada na coluna A (a de Pagamentos)
+            if rng.get("endRowIndex", 0) >= row_number:
+                return  # a linha já está dentro da tabela — nada a fazer
+            new_range = dict(rng)
+            new_range["endRowIndex"] = row_number  # endRowIndex é exclusivo
+            service.spreadsheets().batchUpdate(
+                spreadsheetId=spreadsheet_id,
+                body={"requests": [{
+                    "updateTable": {
+                        "table": {"tableId": tbl["tableId"], "range": new_range},
+                        "fields": "range",
+                    }
+                }]},
+            ).execute()
+            return
+
+
 async def _append_payment_sheet(
     patient_name: str,
     phone: str,
@@ -281,6 +328,17 @@ async def _append_payment_sheet(
             )
         except Exception:
             logger.exception("HYPERLINK_FAILED (row was written) range=%r drive_link=%r", updated_range, drive_link)
+
+    # Estica a Tabela nativa para que a linha nova já nasça dentro dela (formatação
+    # listrada + dropdown de Conferência Humana). Isolado: nunca desfaz a gravação.
+    if updated_range:
+        try:
+            service = build("sheets", "v4", credentials=creds)
+            await loop.run_in_executor(
+                None, _extend_table_to_row, service, spreadsheet_id, updated_range,
+            )
+        except Exception:
+            logger.exception("EXTEND_TABLE_FAILED (row was written) range=%r", updated_range)
 
 
 def _clinic_share_emails() -> list[str]:
