@@ -175,6 +175,33 @@ async def consultation_reminder_contacts(
     return [l["contact"] for l in linked]
 
 
+async def return_reminder_contacts(
+    patient_id: str, include_inactive: bool = True
+) -> list[dict]:
+    """Destinatários do lembrete de RETORNO.
+
+    - Adulto (>=18) com contato próprio → só o(s) próprio(s).
+    - Menor → só os responsáveis (relação mãe/pai/tutor/avó/...), excluindo
+      terceiro avulso (relação vazia).
+    - Sem responsável mas com próprio (ex.: menor com telefone dele) → o próprio.
+    - Senão → todos os vinculados (fallback degenerado, garante entrega).
+    """
+    patient = await get_patient_by_id(patient_id)
+    age = _compute_age((patient or {}).get("birth_date"))
+    linked = await _linked_contacts_with_marker(patient_id, include_inactive=include_inactive)
+
+    own = [l["contact"] for l in linked if l["is_self"] and _is_self_like(l["relationship"])]
+    if age is not None and age >= 18 and own:
+        return own
+
+    guardians = [l["contact"] for l in linked if _is_guardian_relationship(l["relationship"])]
+    if guardians:
+        return guardians
+    if own:
+        return own
+    return [l["contact"] for l in linked]
+
+
 async def get_reminder_contacts(
     patient_id: str, role: str, include_inactive: bool = False
 ) -> list[dict]:

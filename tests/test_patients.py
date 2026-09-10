@@ -772,3 +772,51 @@ async def test_consultation_no_booking_falls_back_to_all_linked():
     with _patch("app.patients.get_supabase", new=AsyncMock(return_value=client)):
         out = await consultation_reminder_contacts("p1", {"contact_id": None})
     assert [c["phone"] for c in out] == ["5581999"]
+
+
+# --- return_reminder_contacts ---
+from app.patients import return_reminder_contacts
+
+
+def _ret_client(pc_rows, birth_date):
+    def make(data):
+        t = MagicMock()
+        t.select.return_value = t
+        t.eq.return_value = t
+        t.execute = AsyncMock(return_value=MagicMock(data=data))
+        return t
+    pc_t = make(pc_rows)
+    pat_t = make([{"birth_date": birth_date}])
+    client = MagicMock()
+    client.from_.side_effect = lambda n: {"patient_contacts": pc_t, "patients": pat_t}[n]
+    return client
+
+
+@pytest.mark.asyncio
+async def test_return_adult_with_self_only_self():
+    rows = [_pcm("c-self", "5581000", True, "self", "consulta"),
+            _pcm("c-mae", "5581999", False, "mãe", "consulta")]
+    client = _ret_client(rows, "15/01/1990")
+    with _patch("app.patients.get_supabase", new=AsyncMock(return_value=client)):
+        out = await return_reminder_contacts("p1")
+    assert [c["phone"] for c in out] == ["5581000"]
+
+
+@pytest.mark.asyncio
+async def test_return_minor_only_guardians_excludes_third_party():
+    rows = [_pcm("c-mae", "5581999", False, "mãe", "consulta"),
+            _pcm("c-3p", "5581888", False, None, "consulta")]  # terceiro avulso
+    client = _ret_client(rows, "12/08/2015")
+    with _patch("app.patients.get_supabase", new=AsyncMock(return_value=client)):
+        out = await return_reminder_contacts("p1")
+    assert [c["phone"] for c in out] == ["5581999"]
+
+
+@pytest.mark.asyncio
+async def test_return_minor_self_only_falls_back_to_self():
+    # menor com telefone próprio e sem responsável (caso Luísa) -> vai pro próprio
+    rows = [_pcm("c-self", "5581000", True, "self", "consulta")]
+    client = _ret_client(rows, "12/08/2010")
+    with _patch("app.patients.get_supabase", new=AsyncMock(return_value=client)):
+        out = await return_reminder_contacts("p1")
+    assert [c["phone"] for c in out] == ["5581000"]
