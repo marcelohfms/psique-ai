@@ -605,9 +605,9 @@ def _update_event(service, calendar_id: str, event_id: str, patch: dict) -> None
     service.events().patch(calendarId=calendar_id, eventId=event_id, body=patch).execute()
 
 
-# Cor "Basil" do Google Calendar (verde). É a marca visual de consulta com
+# Cor "Sage" do Google Calendar (verde claro). É a marca visual de consulta com
 # presença confirmada pelo paciente no lembrete de véspera.
-CONFIRMED_COLOR_ID = "10"
+CONFIRMED_COLOR_ID = "2"
 CONFIRMED_PREFIX = "✅ "
 
 
