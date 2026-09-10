@@ -238,7 +238,7 @@ async def test_is_stale_classification_false_quando_sem_consultas():
 async def test_send_for_row_envia_a_todos_contatos_consulta_e_marca_flag():
     client, table = _client_returning([])
     contacts = [{"phone": "5581111", "name": "João"}, {"phone": "5581222", "name": "Mãe"}]
-    with patch("scripts.send_return_reminders.get_reminder_contacts",
+    with patch("scripts.send_return_reminders.return_reminder_contacts",
                new_callable=AsyncMock, return_value=contacts), \
          patch("scripts.send_return_reminders.send_return_reminder_template",
                new_callable=AsyncMock) as mock_send:
@@ -252,7 +252,7 @@ async def test_send_for_row_contato_igual_paciente_usa_template_self():
     # próprio paciente, usa o template base (sem {{3}}).
     client, _ = _client_returning([])
     contacts = [{"phone": "5581111", "name": "João"}]
-    with patch("scripts.send_return_reminders.get_reminder_contacts",
+    with patch("scripts.send_return_reminders.return_reminder_contacts",
                new_callable=AsyncMock, return_value=contacts), \
          patch("scripts.send_return_reminders.send_return_reminder_template",
                new_callable=AsyncMock) as mock_send:
@@ -265,7 +265,7 @@ async def test_send_for_row_contato_diferente_paciente_usa_template_terceiro():
     # nome do paciente como 4º argumento (vira {{3}} no template).
     client, _ = _client_returning([])
     contacts = [{"phone": "5581222", "name": "Carla Souza"}]
-    with patch("scripts.send_return_reminders.get_reminder_contacts",
+    with patch("scripts.send_return_reminders.return_reminder_contacts",
                new_callable=AsyncMock, return_value=contacts), \
          patch("scripts.send_return_reminders.send_return_reminder_template",
                new_callable=AsyncMock) as mock_send:
@@ -278,7 +278,7 @@ async def test_send_for_row_sem_nome_de_contato_usa_template_self():
     # patient_name)), então não é tratado como terceiro.
     client, _ = _client_returning([])
     contacts = [{"phone": "5581333", "name": None}]
-    with patch("scripts.send_return_reminders.get_reminder_contacts",
+    with patch("scripts.send_return_reminders.return_reminder_contacts",
                new_callable=AsyncMock, return_value=contacts), \
          patch("scripts.send_return_reminders.send_return_reminder_template",
                new_callable=AsyncMock) as mock_send:
@@ -291,17 +291,17 @@ async def test_send_for_row_inclui_contatos_pausados():
     # não deve silenciar o lembrete (mesmo padrão de
     # send_appointment_reminders.py / app/patients.py::get_contacts_for_patient).
     client, _ = _client_returning([])
-    with patch("scripts.send_return_reminders.get_reminder_contacts",
+    with patch("scripts.send_return_reminders.return_reminder_contacts",
                new_callable=AsyncMock, return_value=[]) as mock_get_contacts, \
          patch("scripts.send_return_reminders.send_return_reminder_template",
                new_callable=AsyncMock):
         await srr._send_for_row(client, _row(), "retorno_no_mes", "month_of_sent_at", None)
-    mock_get_contacts.assert_awaited_once_with("p1", "consulta", include_inactive=True)
+    mock_get_contacts.assert_awaited_once_with("p1", include_inactive=True)
 
 
 async def test_send_for_row_sem_contato_nao_envia_nem_marca():
     client, table = _client_returning([])
-    with patch("scripts.send_return_reminders.get_reminder_contacts",
+    with patch("scripts.send_return_reminders.return_reminder_contacts",
                new_callable=AsyncMock, return_value=[]), \
          patch("scripts.send_return_reminders.send_return_reminder_template",
                new_callable=AsyncMock) as mock_send:
@@ -319,7 +319,7 @@ async def test_send_for_row_aborta_se_paciente_agendou_durante_a_fila():
     # a linha volta a ser filtrada pelo guard na run de amanhã.
     client, table = _client_returning([{"appointment_id": "appt-novo"}])
     contacts = [{"phone": "5581111", "name": "João"}]
-    with patch("scripts.send_return_reminders.get_reminder_contacts",
+    with patch("scripts.send_return_reminders.return_reminder_contacts",
                new_callable=AsyncMock, return_value=contacts), \
          patch("scripts.send_return_reminders.send_return_reminder_template",
                new_callable=AsyncMock) as mock_send:
@@ -338,7 +338,7 @@ async def test_send_for_row_marca_flag_mesmo_se_um_contato_falhar():
         if phone == "5581111":
             raise RuntimeError("falha transitória")
 
-    with patch("scripts.send_return_reminders.get_reminder_contacts",
+    with patch("scripts.send_return_reminders.return_reminder_contacts",
                new_callable=AsyncMock, return_value=contacts), \
          patch("scripts.send_return_reminders.send_return_reminder_template",
                side_effect=flaky):
@@ -396,12 +396,12 @@ async def test_return_reminder_adult_with_self_only_self():
     # appointments vazio -> _is_stale_classification False -> não aborta o envio
     table.execute = AsyncMock(return_value=MagicMock(data=[]))
     client.from_.return_value = table
-    with patch("scripts.send_return_reminders.get_reminder_contacts",
+    with patch("scripts.send_return_reminders.return_reminder_contacts",
                new=AsyncMock(return_value=[{"phone": "5581000", "name": "João Silva"}])) as grc, \
          patch("scripts.send_return_reminders.send_return_reminder_template",
                new=AsyncMock()) as send:
         await srr._send_for_row(client, row, "retorno_no_mes", "month_of_sent_at", None)
-    grc.assert_awaited_once_with("p-joao", "consulta", include_inactive=True)
+    grc.assert_awaited_once_with("p-joao", include_inactive=True)
     assert send.await_count == 1
 
 

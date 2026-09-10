@@ -642,3 +642,222 @@ async def test_get_contact_by_id_missing_returns_none():
     with _patch("app.patients.get_supabase", new=AsyncMock(return_value=client)):
         assert await get_contact_by_id("nope") is None
     assert await get_contact_by_id(None) is None
+
+
+# --- Marker helpers ---
+from app.patients import _is_self_like, _is_guardian_relationship
+
+
+def test_is_self_like():
+    assert _is_self_like(None) is True
+    assert _is_self_like("") is True
+    assert _is_self_like("self") is True
+    assert _is_self_like("Próprio") is True
+    assert _is_self_like("mãe") is False
+    assert _is_self_like("pai") is False
+
+
+def test_is_guardian_relationship():
+    assert _is_guardian_relationship("mãe") is True
+    assert _is_guardian_relationship("MAE") is True
+    assert _is_guardian_relationship("pai") is True
+    assert _is_guardian_relationship("avó") is True
+    assert _is_guardian_relationship("avô") is True
+    assert _is_guardian_relationship("responsável") is True
+    assert _is_guardian_relationship("tutor") is True
+    assert _is_guardian_relationship("self") is False
+    assert _is_guardian_relationship(None) is False
+    assert _is_guardian_relationship("") is False
+
+
+# --- _linked_contacts_with_marker ---
+from app.patients import _linked_contacts_with_marker
+
+
+def _lc_client(pc_rows):
+    pc_table = MagicMock()
+    pc_table.select.return_value = pc_table
+    pc_table.eq.return_value = pc_table
+    pc_table.execute = AsyncMock(return_value=MagicMock(data=pc_rows))
+    client = MagicMock()
+    client.from_.return_value = pc_table
+    return client
+
+
+def _pcm(cid, phone, is_self, relationship, role, active=True):
+    return {"contact_id": cid, "is_self": is_self, "relationship": relationship,
+            "role": role, "contacts": {"id": cid, "phone": phone, "active": active}}
+
+
+@pytest.mark.asyncio
+async def test_linked_marker_dedupes_and_consolidates():
+    # mesma pessoa (c-mae) com is_self divergente entre roles -> is_self True se alguma disser
+    rows = [
+        _pcm("c-mae", "5581999", False, "mãe", "agendamento"),
+        _pcm("c-mae", "5581999", True, "mãe", "consulta"),
+        _pcm("c-self", "5581000", True, "self", "consulta"),
+    ]
+    client = _lc_client(rows)
+    with _patch("app.patients.get_supabase", new=AsyncMock(return_value=client)):
+        out = await _linked_contacts_with_marker("p1", include_inactive=True)
+    by_phone = {o["contact"]["phone"]: o for o in out}
+    assert by_phone["5581999"]["is_self"] is True
+    assert by_phone["5581999"]["relationship"] == "mãe"
+    assert by_phone["5581000"]["is_self"] is True
+
+
+@pytest.mark.asyncio
+async def test_linked_marker_excludes_inactive_by_default():
+    rows = [_pcm("c1", "5581000", True, "self", "consulta", active=False)]
+    client = _lc_client(rows)
+    with _patch("app.patients.get_supabase", new=AsyncMock(return_value=client)):
+        out = await _linked_contacts_with_marker("p1", include_inactive=False)
+    assert out == []
+
+
+# --- consultation_reminder_contacts ---
+from app.patients import consultation_reminder_contacts
+
+
+def _sel_client(pc_rows, birth_date, booking_contact):
+    """from_('patient_contacts') -> pc_rows ; from_('patients') -> [{birth_date}] ;
+    from_('contacts') -> [booking_contact] (para get_contact_by_id)."""
+    def make(data):
+        t = MagicMock()
+        t.select.return_value = t
+        t.eq.return_value = t
+        t.execute = AsyncMock(return_value=MagicMock(data=data))
+        return t
+    pc_t = make(pc_rows)
+    pat_t = make([{"birth_date": birth_date}])
+    con_t = make([booking_contact] if booking_contact else [])
+    client = MagicMock()
+    client.from_.side_effect = lambda n: {
+        "patient_contacts": pc_t, "patients": pat_t, "contacts": con_t}[n]
+    return client
+
+
+@pytest.mark.asyncio
+async def test_consultation_adult_with_self_only_self():
+    rows = [_pcm("c-self", "5581000", True, "self", "consulta"),
+            _pcm("c-mae", "5581999", True, "mãe", "consulta")]  # mãe corrompida is_self=True
+    client = _sel_client(rows, "15/01/1990", {"id": "c-book", "phone": "5581777", "active": True})
+    with _patch("app.patients.get_supabase", new=AsyncMock(return_value=client)):
+        out = await consultation_reminder_contacts("p1", {"contact_id": "c-book"})
+    assert [c["phone"] for c in out] == ["5581000"]
+
+
+@pytest.mark.asyncio
+async def test_consultation_minor_goes_to_booking():
+    rows = [_pcm("c-mae", "5581999", False, "mãe", "consulta")]
+    client = _sel_client(rows, "12/08/2015", {"id": "c-book", "phone": "5581777", "active": True})
+    with _patch("app.patients.get_supabase", new=AsyncMock(return_value=client)):
+        out = await consultation_reminder_contacts("p1", {"contact_id": "c-book"})
+    assert [c["phone"] for c in out] == ["5581777"]
+
+
+@pytest.mark.asyncio
+async def test_consultation_adult_no_self_falls_back_to_booking():
+    rows = [_pcm("c-mae", "5581999", False, "mãe", "consulta")]
+    client = _sel_client(rows, "15/01/1990", {"id": "c-book", "phone": "5581777", "active": True})
+    with _patch("app.patients.get_supabase", new=AsyncMock(return_value=client)):
+        out = await consultation_reminder_contacts("p1", {"contact_id": "c-book"})
+    assert [c["phone"] for c in out] == ["5581777"]
+
+
+@pytest.mark.asyncio
+async def test_consultation_no_booking_falls_back_to_all_linked():
+    rows = [_pcm("c-mae", "5581999", False, "mãe", "consulta")]
+    client = _sel_client(rows, "12/08/2015", None)  # sem booking resolvível
+    with _patch("app.patients.get_supabase", new=AsyncMock(return_value=client)):
+        out = await consultation_reminder_contacts("p1", {"contact_id": None})
+    assert [c["phone"] for c in out] == ["5581999"]
+
+
+# --- return_reminder_contacts ---
+from app.patients import return_reminder_contacts
+
+
+def _ret_client(pc_rows, birth_date):
+    def make(data):
+        t = MagicMock()
+        t.select.return_value = t
+        t.eq.return_value = t
+        t.execute = AsyncMock(return_value=MagicMock(data=data))
+        return t
+    pc_t = make(pc_rows)
+    pat_t = make([{"birth_date": birth_date}])
+    client = MagicMock()
+    client.from_.side_effect = lambda n: {"patient_contacts": pc_t, "patients": pat_t}[n]
+    return client
+
+
+@pytest.mark.asyncio
+async def test_return_adult_with_self_only_self():
+    rows = [_pcm("c-self", "5581000", True, "self", "consulta"),
+            _pcm("c-mae", "5581999", False, "mãe", "consulta")]
+    client = _ret_client(rows, "15/01/1990")
+    with _patch("app.patients.get_supabase", new=AsyncMock(return_value=client)):
+        out = await return_reminder_contacts("p1")
+    assert [c["phone"] for c in out] == ["5581000"]
+
+
+@pytest.mark.asyncio
+async def test_return_minor_only_guardians_excludes_third_party():
+    rows = [_pcm("c-mae", "5581999", False, "mãe", "consulta"),
+            _pcm("c-3p", "5581888", False, None, "consulta")]  # terceiro avulso
+    client = _ret_client(rows, "12/08/2015")
+    with _patch("app.patients.get_supabase", new=AsyncMock(return_value=client)):
+        out = await return_reminder_contacts("p1")
+    assert [c["phone"] for c in out] == ["5581999"]
+
+
+@pytest.mark.asyncio
+async def test_return_minor_self_only_falls_back_to_self():
+    # menor com telefone próprio e sem responsável (caso Luísa) -> vai pro próprio
+    rows = [_pcm("c-self", "5581000", True, "self", "consulta")]
+    client = _ret_client(rows, "12/08/2010")
+    with _patch("app.patients.get_supabase", new=AsyncMock(return_value=client)):
+        out = await return_reminder_contacts("p1")
+    assert [c["phone"] for c in out] == ["5581000"]
+
+
+@pytest.mark.asyncio
+async def test_consultation_inactive_booking_falls_back_to_all_linked():
+    # include_inactive=False + contato que agendou está inativo -> cai pra todos os vinculados
+    rows = [_pcm("c-mae", "5581999", False, "mãe", "consulta")]
+    booking = {"id": "c-book", "phone": "5581777", "active": False}
+    client = _sel_client(rows, "12/08/2015", booking)
+    with _patch("app.patients.get_supabase", new=AsyncMock(return_value=client)):
+        out = await consultation_reminder_contacts("p1", {"contact_id": "c-book"}, include_inactive=False)
+    assert [c["phone"] for c in out] == ["5581999"]
+
+
+@pytest.mark.asyncio
+async def test_consultation_empty_linked_returns_empty():
+    client = _sel_client([], "12/08/2015", None)
+    with _patch("app.patients.get_supabase", new=AsyncMock(return_value=client)):
+        out = await consultation_reminder_contacts("p1", {"contact_id": None})
+    assert out == []
+
+
+@pytest.mark.asyncio
+async def test_return_minor_prefers_legal_guardian_over_extended():
+    # menor com mãe (legal) e tio -> só a mãe recebe
+    rows = [_pcm("c-mae", "5581999", False, "mãe", "consulta"),
+            _pcm("c-tio", "5581888", False, "tio", "consulta")]
+    client = _ret_client(rows, "12/08/2015")
+    with _patch("app.patients.get_supabase", new=AsyncMock(return_value=client)):
+        out = await return_reminder_contacts("p1")
+    assert [c["phone"] for c in out] == ["5581999"]
+
+
+@pytest.mark.asyncio
+async def test_return_minor_shares_with_extended_when_no_legal_guardian():
+    # menor sem responsável legal, só tio e irmão -> ambos recebem
+    rows = [_pcm("c-tio", "5581888", False, "tio", "consulta"),
+            _pcm("c-irmao", "5581777", False, "irmão", "consulta")]
+    client = _ret_client(rows, "12/08/2015")
+    with _patch("app.patients.get_supabase", new=AsyncMock(return_value=client)):
+        out = await return_reminder_contacts("p1")
+    assert sorted(c["phone"] for c in out) == ["5581777", "5581888"]

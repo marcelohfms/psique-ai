@@ -116,10 +116,103 @@ async def get_contacts_for_patient(patient_id: str, role: str, include_inactive:
     return out
 
 
+async def _linked_contacts_with_marker(patient_id: str, include_inactive: bool = False) -> list[dict]:
+    """Contatos do paciente (todas as roles), deduplicados por contato, com o
+    marcador consolidado: [{"contact": <row>, "is_self": bool, "relationship": str|None}].
+
+    Consolidação robusta a divergência residual entre roles: is_self=True se
+    qualquer role disser; relationship = a de responsável se houver.
+    """
+    client = await get_supabase()
+    result = (
+        await client.from_("patient_contacts")
+        .select("contact_id, is_self, relationship, contacts(*)")
+        .eq("patient_id", patient_id)
+        .execute()
+    )
+    by_contact: dict[str, dict] = {}
+    for row in (result.data or []):
+        contact = row.get("contacts")
+        if not contact or not (include_inactive or contact.get("active")):
+            continue
+        cid = contact["id"]
+        entry = by_contact.setdefault(
+            cid, {"contact": contact, "is_self": False, "relationship": None}
+        )
+        if row.get("is_self"):
+            entry["is_self"] = True
+        rel = row.get("relationship")
+        if rel and not _is_self_like(rel):
+            entry["relationship"] = rel
+    return list(by_contact.values())
+
+
+async def consultation_reminder_contacts(
+    patient_id: str, appointment: dict, include_inactive: bool = True
+) -> list[dict]:
+    """Destinatários do lembrete de consulta (véspera/dia).
+
+    - Adulto (>=18) com contato próprio (is_self) → só o(s) próprio(s).
+    - Caso contrário (menor, ou adulto sem próprio) → o contato que agendou
+      (`appointment['contact_id']`).
+    - Sem booking resolvível → todos os contatos vinculados (fallback seguro).
+    """
+    patient = await get_patient_by_id(patient_id)
+    age = _compute_age((patient or {}).get("birth_date"))
+    linked = await _linked_contacts_with_marker(patient_id, include_inactive=include_inactive)
+
+    own = [
+        lc["contact"] for lc in linked
+        if lc["is_self"] and _is_self_like(lc["relationship"])
+    ]
+    if age is not None and age >= 18 and own:
+        return own
+
+    booking = await get_contact_by_id((appointment or {}).get("contact_id"))
+    if booking and (include_inactive or booking.get("active")):
+        return [booking]
+
+    return [lc["contact"] for lc in linked]
+
+
+async def return_reminder_contacts(
+    patient_id: str, include_inactive: bool = True
+) -> list[dict]:
+    """Destinatários do lembrete de RETORNO.
+
+    - Adulto (>=18) com contato próprio → só o(s) próprio(s).
+    - Menor → só os responsáveis legais (mãe/pai/tutor/avó); se não houver,
+      compartilha com outros parentescos (tio/tia/irmão...).
+    - Sem responsável mas com próprio (ex.: menor com telefone dele) → o próprio.
+    - Senão → todos os vinculados (fallback degenerado, garante entrega).
+    """
+    patient = await get_patient_by_id(patient_id)
+    age = _compute_age((patient or {}).get("birth_date"))
+    linked = await _linked_contacts_with_marker(patient_id, include_inactive=include_inactive)
+
+    own = [lc["contact"] for lc in linked if lc["is_self"] and _is_self_like(lc["relationship"])]
+    if age is not None and age >= 18 and own:
+        return own
+
+    legal = [lc["contact"] for lc in linked if _is_legal_guardian(lc["relationship"])]
+    if legal:
+        return legal
+    guardians = [lc["contact"] for lc in linked if _is_guardian_relationship(lc["relationship"])]
+    if guardians:
+        return guardians
+    if own:
+        return own
+    return [lc["contact"] for lc in linked]
+
+
 async def get_reminder_contacts(
     patient_id: str, role: str, include_inactive: bool = False
 ) -> list[dict]:
-    """Contatos que devem receber um lembrete de consulta/retorno.
+    """NOTA: superseti por consultation_reminder_contacts / return_reminder_contacts
+    (que resolvem por idade + contato próprio + quem agendou). Mantida só porque um
+    script one-off histórico ainda a importa; não usar em código novo.
+
+    Contatos que devem receber um lembrete de consulta/retorno.
 
     Regra: paciente ADULTO (idade >= 18) que tem ao menos um contato próprio
     (is_self=True) recebe o lembrete SÓ nesse(s) contato(s) — os responsáveis
@@ -194,6 +287,49 @@ def _compute_age(birth_date: str | None) -> int | None:
         return None
     today = date.today()
     return today.year - bd.year - ((today.month, today.day) < (bd.month, bd.day))
+
+
+_SELF_LIKE = {"", "self", "próprio", "proprio", "eu", "mesmo", "a própria", "o próprio"}
+_GUARDIAN_RELATIONSHIPS = {
+    "mãe", "mae", "pai", "tutor", "tutora", "responsável", "responsavel",
+    "responsavel legal", "responsável legal", "avó", "avo", "avô",
+    "tio", "tia", "irmã", "irma", "irmão", "irmao", "padrasto", "madrasta",
+    "guardião", "guardiao",
+}
+
+
+def _norm_rel(rel: str | None) -> str:
+    """Relação normalizada para comparação: sem acento, minúscula, sem espaços extras."""
+    stripped = "".join(
+        c for c in unicodedata.normalize("NFKD", rel or "")
+        if not unicodedata.combining(c)
+    )
+    return " ".join(stripped.lower().split())
+
+
+def _is_self_like(rel: str | None) -> bool:
+    """True se a relação indica o próprio paciente (self/vazio/None)."""
+    if rel is None:
+        return True
+    return _norm_rel(rel) in {_norm_rel(s) for s in _SELF_LIKE}
+
+
+def _is_guardian_relationship(rel: str | None) -> bool:
+    """True se a relação é de responsável (mãe/pai/tutor/avó/...)."""
+    return _norm_rel(rel) in {_norm_rel(s) for s in _GUARDIAN_RELATIONSHIPS}
+
+
+_LEGAL_GUARDIAN_RELATIONSHIPS = {
+    "mãe", "mae", "pai", "tutor", "tutora", "responsável", "responsavel",
+    "responsavel legal", "responsável legal", "avó", "avo", "avô",
+    "guardião", "guardiao",
+}
+
+
+def _is_legal_guardian(rel: str | None) -> bool:
+    """True se a relação é de responsável legal (mãe/pai/tutor/avó/guardião).
+    Subconjunto de `_is_guardian_relationship` — exclui tio/tia/irmão/padrasto."""
+    return _norm_rel(rel) in {_norm_rel(s) for s in _LEGAL_GUARDIAN_RELATIONSHIPS}
 
 
 async def get_patient_by_id(patient_id: str) -> dict | None:
