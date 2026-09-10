@@ -839,3 +839,25 @@ async def test_consultation_empty_linked_returns_empty():
     with _patch("app.patients.get_supabase", new=AsyncMock(return_value=client)):
         out = await consultation_reminder_contacts("p1", {"contact_id": None})
     assert out == []
+
+
+@pytest.mark.asyncio
+async def test_return_minor_prefers_legal_guardian_over_extended():
+    # menor com mãe (legal) e tio -> só a mãe recebe
+    rows = [_pcm("c-mae", "5581999", False, "mãe", "consulta"),
+            _pcm("c-tio", "5581888", False, "tio", "consulta")]
+    client = _ret_client(rows, "12/08/2015")
+    with _patch("app.patients.get_supabase", new=AsyncMock(return_value=client)):
+        out = await return_reminder_contacts("p1")
+    assert [c["phone"] for c in out] == ["5581999"]
+
+
+@pytest.mark.asyncio
+async def test_return_minor_shares_with_extended_when_no_legal_guardian():
+    # menor sem responsável legal, só tio e irmão -> ambos recebem
+    rows = [_pcm("c-tio", "5581888", False, "tio", "consulta"),
+            _pcm("c-irmao", "5581777", False, "irmão", "consulta")]
+    client = _ret_client(rows, "12/08/2015")
+    with _patch("app.patients.get_supabase", new=AsyncMock(return_value=client)):
+        out = await return_reminder_contacts("p1")
+    assert sorted(c["phone"] for c in out) == ["5581777", "5581888"]

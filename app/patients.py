@@ -181,8 +181,8 @@ async def return_reminder_contacts(
     """Destinatários do lembrete de RETORNO.
 
     - Adulto (>=18) com contato próprio → só o(s) próprio(s).
-    - Menor → só os responsáveis (relação mãe/pai/tutor/avó/...), excluindo
-      terceiro avulso (relação vazia).
+    - Menor → só os responsáveis legais (mãe/pai/tutor/avó); se não houver,
+      compartilha com outros parentescos (tio/tia/irmão...).
     - Sem responsável mas com próprio (ex.: menor com telefone dele) → o próprio.
     - Senão → todos os vinculados (fallback degenerado, garante entrega).
     """
@@ -194,6 +194,9 @@ async def return_reminder_contacts(
     if age is not None and age >= 18 and own:
         return own
 
+    legal = [lc["contact"] for lc in linked if _is_legal_guardian(lc["relationship"])]
+    if legal:
+        return legal
     guardians = [lc["contact"] for lc in linked if _is_guardian_relationship(lc["relationship"])]
     if guardians:
         return guardians
@@ -314,6 +317,19 @@ def _is_self_like(rel: str | None) -> bool:
 def _is_guardian_relationship(rel: str | None) -> bool:
     """True se a relação é de responsável (mãe/pai/tutor/avó/...)."""
     return _norm_rel(rel) in {_norm_rel(s) for s in _GUARDIAN_RELATIONSHIPS}
+
+
+_LEGAL_GUARDIAN_RELATIONSHIPS = {
+    "mãe", "mae", "pai", "tutor", "tutora", "responsável", "responsavel",
+    "responsavel legal", "responsável legal", "avó", "avo", "avô",
+    "guardião", "guardiao",
+}
+
+
+def _is_legal_guardian(rel: str | None) -> bool:
+    """True se a relação é de responsável legal (mãe/pai/tutor/avó/guardião).
+    Subconjunto de `_is_guardian_relationship` — exclui tio/tia/irmão/padrasto."""
+    return _norm_rel(rel) in {_norm_rel(s) for s in _LEGAL_GUARDIAN_RELATIONSHIPS}
 
 
 async def get_patient_by_id(patient_id: str) -> dict | None:
