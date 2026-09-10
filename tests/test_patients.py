@@ -642,3 +642,29 @@ async def test_get_contact_by_id_missing_returns_none():
     with _patch("app.patients.get_supabase", new=AsyncMock(return_value=client)):
         assert await get_contact_by_id("nope") is None
     assert await get_contact_by_id(None) is None
+
+
+# --- Marker helpers ---
+from app.patients import _is_self_like, _is_guardian_relationship
+
+
+def test_is_self_like():
+    assert _is_self_like(None) is True
+    assert _is_self_like("") is True
+    assert _is_self_like("self") is True
+    assert _is_self_like("Próprio") is True
+    assert _is_self_like("mãe") is False
+    assert _is_self_like("pai") is False
+
+
+def test_is_guardian_relationship():
+    assert _is_guardian_relationship("mãe") is True
+    assert _is_guardian_relationship("MAE") is True
+    assert _is_guardian_relationship("pai") is True
+    assert _is_guardian_relationship("avó") is True
+    assert _is_guardian_relationship("avô") is True
+    assert _is_guardian_relationship("responsável") is True
+    assert _is_guardian_relationship("tutor") is True
+    assert _is_guardian_relationship("self") is False
+    assert _is_guardian_relationship(None) is False
+    assert _is_guardian_relationship("") is False

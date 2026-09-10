@@ -196,6 +196,36 @@ def _compute_age(birth_date: str | None) -> int | None:
     return today.year - bd.year - ((today.month, today.day) < (bd.month, bd.day))
 
 
+_SELF_LIKE = {"", "self", "próprio", "proprio", "eu", "mesmo", "a própria", "o próprio"}
+_GUARDIAN_RELATIONSHIPS = {
+    "mãe", "mae", "pai", "tutor", "tutora", "responsável", "responsavel",
+    "responsavel legal", "responsável legal", "avó", "avo", "avô",
+    "tio", "tia", "irmã", "irma", "irmão", "irmao", "padrasto", "madrasta",
+    "guardião", "guardiao",
+}
+
+
+def _norm_rel(rel: str | None) -> str:
+    """Relação normalizada para comparação: sem acento, minúscula, sem espaços extras."""
+    stripped = "".join(
+        c for c in unicodedata.normalize("NFKD", rel or "")
+        if not unicodedata.combining(c)
+    )
+    return " ".join(stripped.lower().split())
+
+
+def _is_self_like(rel: str | None) -> bool:
+    """True se a relação indica o próprio paciente (self/vazio/None)."""
+    if rel is None:
+        return True
+    return _norm_rel(rel) in {_norm_rel(s) for s in _SELF_LIKE}
+
+
+def _is_guardian_relationship(rel: str | None) -> bool:
+    """True se a relação é de responsável (mãe/pai/tutor/avó/...)."""
+    return _norm_rel(rel) in {_norm_rel(s) for s in _GUARDIAN_RELATIONSHIPS}
+
+
 async def get_patient_by_id(patient_id: str) -> dict | None:
     """Retorna a linha de `patients` por id, ou None."""
     client = await get_supabase()
