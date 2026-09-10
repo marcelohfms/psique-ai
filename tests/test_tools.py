@@ -2198,6 +2198,80 @@ async def test_confirm_attendance_marks_confirmed_when_not_yet_confirmed():
     mock_log.assert_awaited()             # logou o evento
 
 
+async def test_confirm_attendance_marks_calendar_event_confirmed():
+    """Ao confirmar presença, o evento do Google Calendar do médico vira verde e
+    ganha "✅" no título, para a clínica ver de relance quais consultas o paciente
+    já confirmou. O calendário é resolvido pelo doctor_id da consulta."""
+    from app.graph.tools import confirm_attendance
+
+    def _table(execute):
+        t = MagicMock()
+        for m in ("select", "eq", "in_", "limit", "single", "maybe_single",
+                  "gte", "order", "insert", "update", "upsert", "or_", "filter", "is_"):
+            getattr(t, m).return_value = t
+        t.execute = execute
+        return t
+
+    appts = _table(AsyncMock(return_value=MagicMock(data=[{
+        "confirmed_at": None, "status": "scheduled",
+        "patient_id": "p-1", "doctor_id": "doc-9",
+    }])))
+    doctors = _table(AsyncMock(return_value=MagicMock(data={"agenda_id": "dr.julio@gmail.com"})))
+    other = _table(AsyncMock(return_value=MagicMock(data=[])))
+    client = MagicMock()
+    client.from_.side_effect = lambda name: {"appointments": appts, "doctors": doctors}.get(name, other)
+
+    with patch("app.graph.tools.get_supabase", new_callable=AsyncMock, return_value=client), \
+         patch("app.graph.tools.get_users_by_phone", new_callable=AsyncMock, return_value=[{"id": "p-1"}]), \
+         patch("app.graph.tools.log_event", new_callable=AsyncMock), \
+         patch("app.google_calendar.mark_event_confirmed", new_callable=AsyncMock) as mock_mark:
+        result = await confirm_attendance.coroutine(
+            appointment_id="evt-abc",
+            state=_make_state(),
+            config=CONFIG,
+        )
+
+    assert "confirmada" in result.lower()
+    mock_mark.assert_awaited_once_with("dr.julio@gmail.com", "evt-abc")
+
+
+async def test_confirm_attendance_survives_calendar_marking_failure():
+    """Uma falha ao pintar/etiquetar o evento no Calendar não pode derrubar a
+    confirmação de presença em si."""
+    from app.graph.tools import confirm_attendance
+
+    def _table(execute):
+        t = MagicMock()
+        for m in ("select", "eq", "limit", "single", "update"):
+            getattr(t, m).return_value = t
+        t.execute = execute
+        return t
+
+    appts = _table(AsyncMock(return_value=MagicMock(data=[{
+        "confirmed_at": None, "status": "scheduled",
+        "patient_id": "p-1", "doctor_id": "doc-9",
+    }])))
+    doctors = _table(AsyncMock(return_value=MagicMock(data={"agenda_id": "dr.julio@gmail.com"})))
+    other = _table(AsyncMock(return_value=MagicMock(data=[])))
+    client = MagicMock()
+    client.from_.side_effect = lambda name: {"appointments": appts, "doctors": doctors}.get(name, other)
+
+    with patch("app.graph.tools.get_supabase", new_callable=AsyncMock, return_value=client), \
+         patch("app.graph.tools.get_users_by_phone", new_callable=AsyncMock, return_value=[{"id": "p-1"}]), \
+         patch("app.graph.tools.log_event", new_callable=AsyncMock) as mock_log, \
+         patch("app.google_calendar.mark_event_confirmed", new_callable=AsyncMock,
+               side_effect=RuntimeError("Calendar down")):
+        result = await confirm_attendance.coroutine(
+            appointment_id="evt-abc",
+            state=_make_state(),
+            config=CONFIG,
+        )
+
+    assert result.startswith("Presença confirmada")
+    appts.update.assert_called()      # gravou confirmed_at mesmo assim
+    mock_log.assert_awaited()         # logou o evento mesmo assim
+
+
 async def test_confirm_attendance_is_idempotent_when_already_confirmed():
     from app.graph.tools import confirm_attendance
     client, table, execute = _make_supabase_client()

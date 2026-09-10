@@ -605,6 +605,23 @@ def _update_event(service, calendar_id: str, event_id: str, patch: dict) -> None
     service.events().patch(calendarId=calendar_id, eventId=event_id, body=patch).execute()
 
 
+# Cor "Basil" do Google Calendar (verde). É a marca visual de consulta com
+# presença confirmada pelo paciente no lembrete de véspera.
+CONFIRMED_COLOR_ID = "10"
+CONFIRMED_PREFIX = "✅ "
+
+
+def _mark_event_confirmed(service, calendar_id: str, event_id: str) -> None:
+    # Lê o evento atual para preservar o título já existente (inclusive edições
+    # manuais da clínica) e só acrescenta o "✅" quando ainda não está lá.
+    event = service.events().get(calendarId=calendar_id, eventId=event_id).execute()
+    summary = event.get("summary") or ""
+    if not summary.startswith(CONFIRMED_PREFIX.strip()):
+        summary = f"{CONFIRMED_PREFIX}{summary}".strip()
+    patch = {"summary": summary, "colorId": CONFIRMED_COLOR_ID}
+    service.events().patch(calendarId=calendar_id, eventId=event_id, body=patch).execute()
+
+
 async def fetch_supabase_busy(
     doctor_key: str,
     window_start: datetime,
@@ -974,3 +991,11 @@ async def update_event(
     service = build("calendar", "v3", credentials=creds)
     loop = asyncio.get_running_loop()
     await loop.run_in_executor(None, _update_event, service, calendar_id, event_id, patch)
+
+
+async def mark_event_confirmed(calendar_id: str, event_id: str) -> None:
+    """Marca o evento como confirmado: pinta de verde e prefixa "✅" no título."""
+    creds = _credentials()
+    service = build("calendar", "v3", credentials=creds)
+    loop = asyncio.get_running_loop()
+    await loop.run_in_executor(None, _mark_event_confirmed, service, calendar_id, event_id)
