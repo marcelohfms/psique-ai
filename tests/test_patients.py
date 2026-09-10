@@ -820,3 +820,22 @@ async def test_return_minor_self_only_falls_back_to_self():
     with _patch("app.patients.get_supabase", new=AsyncMock(return_value=client)):
         out = await return_reminder_contacts("p1")
     assert [c["phone"] for c in out] == ["5581000"]
+
+
+@pytest.mark.asyncio
+async def test_consultation_inactive_booking_falls_back_to_all_linked():
+    # include_inactive=False + contato que agendou está inativo -> cai pra todos os vinculados
+    rows = [_pcm("c-mae", "5581999", False, "mãe", "consulta")]
+    booking = {"id": "c-book", "phone": "5581777", "active": False}
+    client = _sel_client(rows, "12/08/2015", booking)
+    with _patch("app.patients.get_supabase", new=AsyncMock(return_value=client)):
+        out = await consultation_reminder_contacts("p1", {"contact_id": "c-book"}, include_inactive=False)
+    assert [c["phone"] for c in out] == ["5581999"]
+
+
+@pytest.mark.asyncio
+async def test_consultation_empty_linked_returns_empty():
+    client = _sel_client([], "12/08/2015", None)
+    with _patch("app.patients.get_supabase", new=AsyncMock(return_value=client)):
+        out = await consultation_reminder_contacts("p1", {"contact_id": None})
+    assert out == []

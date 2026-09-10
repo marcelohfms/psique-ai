@@ -162,8 +162,8 @@ async def consultation_reminder_contacts(
     linked = await _linked_contacts_with_marker(patient_id, include_inactive=include_inactive)
 
     own = [
-        l["contact"] for l in linked
-        if l["is_self"] and _is_self_like(l["relationship"])
+        lc["contact"] for lc in linked
+        if lc["is_self"] and _is_self_like(lc["relationship"])
     ]
     if age is not None and age >= 18 and own:
         return own
@@ -172,7 +172,7 @@ async def consultation_reminder_contacts(
     if booking and (include_inactive or booking.get("active")):
         return [booking]
 
-    return [l["contact"] for l in linked]
+    return [lc["contact"] for lc in linked]
 
 
 async def return_reminder_contacts(
@@ -190,22 +190,26 @@ async def return_reminder_contacts(
     age = _compute_age((patient or {}).get("birth_date"))
     linked = await _linked_contacts_with_marker(patient_id, include_inactive=include_inactive)
 
-    own = [l["contact"] for l in linked if l["is_self"] and _is_self_like(l["relationship"])]
+    own = [lc["contact"] for lc in linked if lc["is_self"] and _is_self_like(lc["relationship"])]
     if age is not None and age >= 18 and own:
         return own
 
-    guardians = [l["contact"] for l in linked if _is_guardian_relationship(l["relationship"])]
+    guardians = [lc["contact"] for lc in linked if _is_guardian_relationship(lc["relationship"])]
     if guardians:
         return guardians
     if own:
         return own
-    return [l["contact"] for l in linked]
+    return [lc["contact"] for lc in linked]
 
 
 async def get_reminder_contacts(
     patient_id: str, role: str, include_inactive: bool = False
 ) -> list[dict]:
-    """Contatos que devem receber um lembrete de consulta/retorno.
+    """NOTA: superseti por consultation_reminder_contacts / return_reminder_contacts
+    (que resolvem por idade + contato próprio + quem agendou). Mantida só porque um
+    script one-off histórico ainda a importa; não usar em código novo.
+
+    Contatos que devem receber um lembrete de consulta/retorno.
 
     Regra: paciente ADULTO (idade >= 18) que tem ao menos um contato próprio
     (is_self=True) recebe o lembrete SÓ nesse(s) contato(s) — os responsáveis
