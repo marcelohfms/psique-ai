@@ -1001,7 +1001,7 @@ async def test_mark_event_confirmed_paints_green_and_adds_checkmark():
 
     _, kwargs = patch_mock.call_args
     body = kwargs["body"]
-    assert body["colorId"] == "10"                       # Basil (verde)
+    assert body["colorId"] == "2"                        # Sage (verde claro)
     assert body["summary"].startswith("✅")
     assert "Consulta — Maria [Presencial]" in body["summary"]
 
@@ -1024,4 +1024,4 @@ async def test_mark_event_confirmed_does_not_duplicate_checkmark():
     _, kwargs = patch_mock.call_args
     body = kwargs["body"]
     assert body["summary"].count("✅") == 1
-    assert body["colorId"] == "10"
+    assert body["colorId"] == "2"
