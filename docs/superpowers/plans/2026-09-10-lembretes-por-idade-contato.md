@@ -317,7 +317,7 @@ async def consultation_reminder_contacts(
     age = _compute_age((patient or {}).get("birth_date"))
     linked = await _linked_contacts_with_marker(patient_id, include_inactive=include_inactive)
 
-    own = [l["contact"] for l in linked if l["is_self"]]
+    own = [l["contact"] for l in linked if l["is_self"] and _is_self_like(l["relationship"])]
     if age is not None and age >= 18 and own:
         return own
 
@@ -424,13 +424,13 @@ async def return_reminder_contacts(
     age = _compute_age((patient or {}).get("birth_date"))
     linked = await _linked_contacts_with_marker(patient_id, include_inactive=include_inactive)
 
-    own = [l["contact"] for l in linked if l["is_self"]]
+    own = [l["contact"] for l in linked if l["is_self"] and _is_self_like(l["relationship"])]
     if age is not None and age >= 18 and own:
         return own
 
     guardians = [
         l["contact"] for l in linked
-        if not l["is_self"] and _is_guardian_relationship(l["relationship"])
+        if _is_guardian_relationship(l["relationship"])
     ]
     if guardians:
         return guardians
