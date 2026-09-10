@@ -304,6 +304,17 @@ class _FrozenDTTuesday(_real_dt):
         return _real_dt(2026, 7, 7, 10, 0, tzinfo=tz) if tz else _real_dt(2026, 7, 7, 10, 0)
 
 
+class _FrozenDTWedBefore19(_real_dt):
+    """'Agora' = 2026-09-09 (quarta) 17:54, horário de Recife. Reproduz o momento
+    do pedido da Kédma: a consulta do Benjamim era 10/09 (quinta) às 10:00, então
+    faltavam ~16h (menos de 24h), mas ainda era ANTES das 19h do dia anterior — a
+    janela exata em que o prazo antigo ('19h do dia anterior') não disparava e a
+    taxa era indevidamente reaproveitada."""
+    @classmethod
+    def now(cls, tz=None):
+        return _real_dt(2026, 9, 9, 17, 54, tzinfo=tz) if tz else _real_dt(2026, 9, 9, 17, 54)
+
+
 # ── get_available_slots — "qualquer dia" (sem preferência de dia) ─────────────
 
 async def test_get_available_slots_qualquer_dia_uses_current_week_when_enough_days():
@@ -2758,6 +2769,40 @@ async def test_mark_reschedule_in_progress_less_than_24h_fee_unpaid_proceeds_nor
     assert "get_available_slots" in result
 
 
+async def test_mark_reschedule_in_progress_morning_appt_before_19h_still_blocks():
+    """Consulta de MANHÃ remarcada na véspera, antes das 19h, ainda está a menos de
+    24h e com taxa paga — deve recolher a taxa e cobrar nova (caso Benjamim/Kédma,
+    5581996535274, 09/09/2026: consulta 10/09 10:00 remarcada às 17:54 do dia
+    anterior = 16h antes). O prazo antigo ('19h do dia anterior') deixava passar
+    justamente essa janela; a regra de 24h reais pega."""
+    from app.graph.tools import mark_reschedule_in_progress
+    client, table, execute = _make_supabase_client()
+    appt_data = {
+        "appointment_id": "evt-abc",
+        "status": "scheduled",
+        "patient_id": "user-1",
+        "start_time": "2026-09-10T10:00:00-03:00",
+        "booking_fee_paid_at": "2026-09-02T00:01:08-03:00",
+        "booking_fee_waived": False,
+    }
+    execute.return_value = MagicMock(data=appt_data)
+    with patch("app.graph.tools.datetime", _FrozenDTWedBefore19), \
+         patch("app.graph.tools.get_supabase", new_callable=AsyncMock, return_value=client), \
+         patch("app.graph.tools.get_users_by_phone", new_callable=AsyncMock, return_value=[{"id": "user-1"}]), \
+         patch("app.graph.tools.log_event", new_callable=AsyncMock) as mock_log:
+        result = await mark_reschedule_in_progress.coroutine(
+            appointment_id="evt-abc",
+            state=_make_state(),
+            config=CONFIG,
+        )
+    assert "INSTRUÇÃO INTERNA" in result
+    assert "nova taxa" in result.lower()
+    assert "cancel_appointment" in result
+    assert "confirm_appointment" in result
+    table.update.assert_not_called()
+    mock_log.assert_not_awaited()
+
+
 async def test_mark_reschedule_in_progress_silent_mode_bypasses_24h_guard():
     """Reagendamento iniciado pela atendente (silent_mode) ignora a checagem das 24h."""
     from app.graph.tools import mark_reschedule_in_progress
@@ -2949,6 +2994,85 @@ async def test_reschedule_appointment_updates_event_and_notifies():
     assert "remarcada" in result.lower()
     mock_update.assert_awaited_once()
     mock_notify.assert_called()
+
+
+async def test_reschedule_appointment_within_24h_paid_fee_refuses():
+    """Backstop determinístico da regra das 24h: se a Eva pular o aviso do
+    mark_reschedule_in_progress e chamar reschedule_appointment direto para uma
+    consulta a MENOS de 24h com a taxa já paga, a tool recusa em vez de reaproveitar
+    a taxa preservando booking_fee_paid_at na mesma linha (caso Benjamim/Kédma,
+    5581996535274: consulta 10/09 10:00 remarcada às 17:54 do dia anterior)."""
+    from app.graph.tools import reschedule_appointment
+    client, table, execute = _make_supabase_client()
+    execute.return_value = MagicMock(data={
+        "start_time": "2026-09-10T10:00:00-03:00",
+        "patient_id": "user-1",
+        "patients": {"name": "Benjamim"},
+        "booking_fee_paid_at": "2026-09-02T00:01:08-03:00",
+        "booking_fee_waived": False,
+        "status": "scheduled",
+    })
+    with patch("app.graph.tools.datetime", _FrozenDTWedBefore19), \
+         patch("app.graph.tools._get_doctor_calendar_id", new_callable=AsyncMock, return_value="cal123"), \
+         patch("app.google_calendar.update_event", new_callable=AsyncMock) as mock_update, \
+         patch("app.google_calendar.create_event", new_callable=AsyncMock) as mock_create, \
+         patch("app.graph.tools.get_supabase", new_callable=AsyncMock, return_value=client), \
+         patch("app.graph.tools.get_users_by_phone", new_callable=AsyncMock, return_value=[{"id": "user-1"}]), \
+         patch("app.graph.tools.log_event", new_callable=AsyncMock) as mock_log, \
+         patch("app.graph.tools._notify_clinic", new_callable=AsyncMock) as mock_notify:
+        result = await reschedule_appointment.coroutine(
+            appointment_id="evt-abc",
+            new_slot_datetime="2026-09-14T11:00:00",
+            slot_duration_minutes=60,
+            state=_make_state(),
+            config=CONFIG,
+        )
+    assert "INSTRUÇÃO INTERNA" in result
+    assert "nova taxa" in result.lower()
+    mock_update.assert_not_awaited()
+    mock_create.assert_not_awaited()
+    mock_notify.assert_not_called()
+    assert not any(
+        c.args and c.args[0] == "appointment_rescheduled"
+        for c in mock_log.call_args_list
+    )
+
+
+async def test_reschedule_appointment_more_than_24h_paid_fee_proceeds():
+    """A trava das 24h não pode bloquear remarcações no prazo: com 24h ou mais de
+    antecedência e taxa paga, reschedule_appointment segue o fluxo normal e preserva
+    a taxa (atualiza a mesma linha, sem tocar em booking_fee_paid_at)."""
+    from app.graph.tools import reschedule_appointment
+    client, table, execute = _make_supabase_client()
+    execute.return_value = MagicMock(data={
+        "start_time": "2026-09-12T10:00:00-03:00",
+        "patient_id": "user-1",
+        "patients": {"name": "Benjamim"},
+        "booking_fee_paid_at": "2026-09-02T00:01:08-03:00",
+        "booking_fee_waived": False,
+        "status": "scheduled",
+    })
+    with patch("app.graph.tools.datetime", _FrozenDTWedBefore19), \
+         patch("app.graph.tools._get_doctor_calendar_id", new_callable=AsyncMock, return_value="cal123"), \
+         patch("app.google_calendar.update_event", new_callable=AsyncMock) as mock_update, \
+         patch("app.graph.tools.get_supabase", new_callable=AsyncMock, return_value=client), \
+         patch("app.graph.tools.get_users_by_phone", new_callable=AsyncMock, return_value=[{"id": "user-1"}]), \
+         patch("app.graph.tools.log_event", new_callable=AsyncMock), \
+         patch("app.graph.tools._notify_clinic", new_callable=AsyncMock), \
+         patch("app.google_calendar._credentials", return_value=MagicMock()), \
+         patch("googleapiclient.discovery.build", return_value=MagicMock()), \
+         patch("app.google_calendar._get_busy", return_value=[]):
+        result = await reschedule_appointment.coroutine(
+            appointment_id="evt-abc",
+            new_slot_datetime="2026-09-13T11:00:00",
+            slot_duration_minutes=60,
+            state=_make_state(),
+            config=CONFIG,
+        )
+    assert "remarcada" in result.lower()
+    mock_update.assert_awaited_once()
+    update_data = table.update.call_args[0][0]
+    assert "booking_fee_paid_at" not in update_data
 
 
 async def test_reschedule_appointment_blocks_when_new_slot_busy():

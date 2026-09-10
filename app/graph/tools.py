@@ -1929,13 +1929,18 @@ async def mark_reschedule_in_progress(
         effective_initiated_by = "patient"
 
     # Regra das 24h precede a regra do primeiro reagendamento: mesmo sendo a
-    # primeira remarcação do paciente, se já passou o prazo (19h do dia anterior,
-    # ou o próprio dia da consulta) e a taxa já foi paga, a taxa é recolhida e uma
-    # nova é cobrada — não se aplica o benefício de remarcação gratuita.
+    # primeira remarcação do paciente, se faltam MENOS de 24h para a consulta e a
+    # taxa já foi paga, a taxa é recolhida e uma nova é cobrada — não se aplica o
+    # benefício de remarcação gratuita.
+    # O prazo é 24h REAIS antes do horário da consulta. A fórmula antiga usava
+    # "19h do dia anterior", que para consultas de manhã é bem mais frouxa que 24h
+    # (uma consulta 10:00 remarcada às 18:00 do dia anterior — 16h antes — passava
+    # como se estivesse no prazo e reaproveitava a taxa: caso Benjamim/Kédma,
+    # 5581996535274, 09/09/2026).
     if not state.get("silent_mode") and appt.data.get("start_time"):
         fee_paid = bool(appt.data.get("booking_fee_paid_at") or appt.data.get("booking_fee_waived"))
         appt_start = datetime.fromisoformat(appt.data["start_time"]).astimezone(TZ)
-        deadline = (appt_start - timedelta(days=1)).replace(hour=19, minute=0, second=0, microsecond=0)
+        deadline = appt_start - timedelta(hours=24)
         if fee_paid and now >= deadline:
             return (
                 "[INSTRUÇÃO INTERNA — NÃO ENVIE AO PACIENTE] Este reagendamento está sendo "
@@ -2350,7 +2355,7 @@ async def reschedule_appointment(
     # not the actual patient — e.g. when the phone has multiple patients like parent + child).
     client = await get_supabase()
     phone = config["configurable"]["phone"]
-    appt_result = await client.from_("appointments").select("start_time, patient_id, patients(name), reschedule_initiated_by").eq("appointment_id", appointment_id).maybe_single().execute()
+    appt_result = await client.from_("appointments").select("start_time, patient_id, patients(name), reschedule_initiated_by, booking_fee_paid_at, booking_fee_waived").eq("appointment_id", appointment_id).maybe_single().execute()
 
     # Validate that this appointment actually belongs to this phone number
     _phone_clean = phone.replace("@s.whatsapp.net", "")
@@ -2405,6 +2410,42 @@ async def reschedule_appointment(
             old_dt = datetime.fromisoformat(old_start_time).astimezone(TZ)
         except ValueError:
             old_dt = None
+
+    # ── Trava determinística da regra das 24h (taxa já paga) ─────────────────
+    # Backstop da mesma regra aplicada em mark_reschedule_in_progress: se o
+    # paciente pede para remarcar com MENOS de 24h de antecedência e a taxa de
+    # reserva já foi paga, a taxa NÃO é reaproveitada — é recolhida e uma nova é
+    # cobrada. Sem esta trava, a Eva podia pular o aviso do
+    # mark_reschedule_in_progress e chamar reschedule_appointment direto, que
+    # atualiza a mesma linha preservando booking_fee_paid_at (caso Benjamim/Kédma,
+    # 5581996535274, 09/09/2026: consulta 10/09 10:00 remarcada às 17:54 do dia
+    # anterior — 16h antes — e a taxa foi indevidamente aproveitada "sem custo").
+    # Escopo: só paciente (silent_mode/clínica é isento), só movimento real de
+    # horário (troca de modalidade tem old_dt == new_start) e só com a consulta
+    # ainda "scheduled" — em pending_reschedule o mark já validou o prazo e o
+    # evento antigo já foi removido do Calendar, então recusar aqui deixaria a
+    # consulta sem evento.
+    if (
+        not state.get("silent_mode")
+        and not is_pending_reschedule
+        and old_dt is not None
+        and old_dt != new_start
+        and appt_result.data
+    ):
+        _fee_paid = bool(
+            appt_result.data.get("booking_fee_paid_at")
+            or appt_result.data.get("booking_fee_waived")
+        )
+        if _fee_paid and datetime.now(TZ) >= old_dt - timedelta(hours=24):
+            return (
+                "[INSTRUÇÃO INTERNA — NÃO ENVIE AO PACIENTE] Este reagendamento está "
+                "sendo solicitado com MENOS de 24h de antecedência e a taxa de reserva "
+                "já foi paga. A taxa anterior é recolhida e NÃO é reaproveitada. NÃO "
+                "remarque por aqui: avise o paciente que será necessária uma nova taxa "
+                "de reserva de R$ 100,00 para garantir a nova data e, ao confirmar o "
+                "novo horário, chame cancel_appointment (para esta consulta) e "
+                "confirm_appointment (para a nova data)."
+            )
 
     # Guard: check Google Calendar for conflicts on the NEW slot before writing it.
     # confirm_appointment already had this check, but reschedule_appointment didn't —
