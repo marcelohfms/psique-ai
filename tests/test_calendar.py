@@ -981,3 +981,47 @@ async def test_slot_de_2h_que_atravessa_a_borda_do_turno(freeze_calendar_now):
 
     horas = [dt.strftime("%H:%M") for dt, _ in slots]
     assert horas == ["16:30"], f"16:30→18:30 cabe inteiro na janela: {horas}"
+
+
+# ── mark_event_confirmed (verde + "✅" quando o paciente confirma presença) ────
+
+async def test_mark_event_confirmed_paints_green_and_adds_checkmark():
+    from app.google_calendar import mark_event_confirmed
+
+    service = MagicMock()
+    service.events.return_value.get.return_value.execute.return_value = {
+        "summary": "Consulta — Maria [Presencial]",
+    }
+    patch_mock = service.events.return_value.patch
+    patch_mock.return_value.execute.return_value = {}
+
+    with patch("app.google_calendar._credentials", return_value=MagicMock()), \
+         patch("app.google_calendar.build", return_value=service):
+        await mark_event_confirmed("cal-test", "evt-1")
+
+    _, kwargs = patch_mock.call_args
+    body = kwargs["body"]
+    assert body["colorId"] == "10"                       # Basil (verde)
+    assert body["summary"].startswith("✅")
+    assert "Consulta — Maria [Presencial]" in body["summary"]
+
+
+async def test_mark_event_confirmed_does_not_duplicate_checkmark():
+    """Reconfirmar não pode empilhar "✅ ✅" no título."""
+    from app.google_calendar import mark_event_confirmed
+
+    service = MagicMock()
+    service.events.return_value.get.return_value.execute.return_value = {
+        "summary": "✅ Consulta — Maria [Presencial]",
+    }
+    patch_mock = service.events.return_value.patch
+    patch_mock.return_value.execute.return_value = {}
+
+    with patch("app.google_calendar._credentials", return_value=MagicMock()), \
+         patch("app.google_calendar.build", return_value=service):
+        await mark_event_confirmed("cal-test", "evt-1")
+
+    _, kwargs = patch_mock.call_args
+    body = kwargs["body"]
+    assert body["summary"].count("✅") == 1
+    assert body["colorId"] == "10"

@@ -3016,7 +3016,7 @@ async def confirm_attendance(
     # loga de novo.
     existing = (
         await client.from_("appointments")
-        .select("confirmed_at, status, patient_id")
+        .select("confirmed_at, status, patient_id, doctor_id")
         .eq("appointment_id", appointment_id)
         .limit(1)
         .execute()
@@ -3081,6 +3081,28 @@ async def confirm_attendance(
     await client.from_("appointments").update({
         "confirmed_at": datetime.now(TZ).isoformat(),
     }).eq("appointment_id", appointment_id).execute()
+
+    # Marca o evento no Google Calendar como confirmado (verde + "✅" no título),
+    # para a clínica ver de relance quais consultas o paciente já confirmou. Uma
+    # falha aqui não pode derrubar a confirmação em si — só registra no log.
+    doctor_id = rows[0].get("doctor_id")
+    if doctor_id:
+        try:
+            cal = (
+                await client.from_("doctors")
+                .select("agenda_id")
+                .eq("doctor_id", doctor_id)
+                .single()
+                .execute()
+            )
+            calendar_id = (cal.data or {}).get("agenda_id")
+            if calendar_id:
+                from app.google_calendar import mark_event_confirmed
+                await mark_event_confirmed(calendar_id, appointment_id)
+        except Exception as e:  # noqa: BLE001
+            logging.getLogger(__name__).warning(
+                "MARK_CONFIRMED_FAILED appt=%s error=%s", appointment_id, e
+            )
 
     await log_event("appointment_confirmed", config["configurable"]["phone"], {
         "appointment_id": appointment_id,
