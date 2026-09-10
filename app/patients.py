@@ -147,6 +147,34 @@ async def _linked_contacts_with_marker(patient_id: str, include_inactive: bool =
     return list(by_contact.values())
 
 
+async def consultation_reminder_contacts(
+    patient_id: str, appointment: dict, include_inactive: bool = True
+) -> list[dict]:
+    """Destinatários do lembrete de consulta (véspera/dia).
+
+    - Adulto (>=18) com contato próprio (is_self) → só o(s) próprio(s).
+    - Caso contrário (menor, ou adulto sem próprio) → o contato que agendou
+      (`appointment['contact_id']`).
+    - Sem booking resolvível → todos os contatos vinculados (fallback seguro).
+    """
+    patient = await get_patient_by_id(patient_id)
+    age = _compute_age((patient or {}).get("birth_date"))
+    linked = await _linked_contacts_with_marker(patient_id, include_inactive=include_inactive)
+
+    own = [
+        l["contact"] for l in linked
+        if l["is_self"] and _is_self_like(l["relationship"])
+    ]
+    if age is not None and age >= 18 and own:
+        return own
+
+    booking = await get_contact_by_id((appointment or {}).get("contact_id"))
+    if booking and (include_inactive or booking.get("active")):
+        return [booking]
+
+    return [l["contact"] for l in linked]
+
+
 async def get_reminder_contacts(
     patient_id: str, role: str, include_inactive: bool = False
 ) -> list[dict]:

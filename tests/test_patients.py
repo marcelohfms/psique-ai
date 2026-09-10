@@ -713,3 +713,62 @@ async def test_linked_marker_excludes_inactive_by_default():
     with _patch("app.patients.get_supabase", new=AsyncMock(return_value=client)):
         out = await _linked_contacts_with_marker("p1", include_inactive=False)
     assert out == []
+
+
+# --- consultation_reminder_contacts ---
+from app.patients import consultation_reminder_contacts
+
+
+def _sel_client(pc_rows, birth_date, booking_contact):
+    """from_('patient_contacts') -> pc_rows ; from_('patients') -> [{birth_date}] ;
+    from_('contacts') -> [booking_contact] (para get_contact_by_id)."""
+    def make(data):
+        t = MagicMock()
+        t.select.return_value = t
+        t.eq.return_value = t
+        t.execute = AsyncMock(return_value=MagicMock(data=data))
+        return t
+    pc_t = make(pc_rows)
+    pat_t = make([{"birth_date": birth_date}])
+    con_t = make([booking_contact] if booking_contact else [])
+    client = MagicMock()
+    client.from_.side_effect = lambda n: {
+        "patient_contacts": pc_t, "patients": pat_t, "contacts": con_t}[n]
+    return client
+
+
+@pytest.mark.asyncio
+async def test_consultation_adult_with_self_only_self():
+    rows = [_pcm("c-self", "5581000", True, "self", "consulta"),
+            _pcm("c-mae", "5581999", True, "mãe", "consulta")]  # mãe corrompida is_self=True
+    client = _sel_client(rows, "15/01/1990", {"id": "c-book", "phone": "5581777", "active": True})
+    with _patch("app.patients.get_supabase", new=AsyncMock(return_value=client)):
+        out = await consultation_reminder_contacts("p1", {"contact_id": "c-book"})
+    assert [c["phone"] for c in out] == ["5581000"]
+
+
+@pytest.mark.asyncio
+async def test_consultation_minor_goes_to_booking():
+    rows = [_pcm("c-mae", "5581999", False, "mãe", "consulta")]
+    client = _sel_client(rows, "12/08/2015", {"id": "c-book", "phone": "5581777", "active": True})
+    with _patch("app.patients.get_supabase", new=AsyncMock(return_value=client)):
+        out = await consultation_reminder_contacts("p1", {"contact_id": "c-book"})
+    assert [c["phone"] for c in out] == ["5581777"]
+
+
+@pytest.mark.asyncio
+async def test_consultation_adult_no_self_falls_back_to_booking():
+    rows = [_pcm("c-mae", "5581999", False, "mãe", "consulta")]
+    client = _sel_client(rows, "15/01/1990", {"id": "c-book", "phone": "5581777", "active": True})
+    with _patch("app.patients.get_supabase", new=AsyncMock(return_value=client)):
+        out = await consultation_reminder_contacts("p1", {"contact_id": "c-book"})
+    assert [c["phone"] for c in out] == ["5581777"]
+
+
+@pytest.mark.asyncio
+async def test_consultation_no_booking_falls_back_to_all_linked():
+    rows = [_pcm("c-mae", "5581999", False, "mãe", "consulta")]
+    client = _sel_client(rows, "12/08/2015", None)  # sem booking resolvível
+    with _patch("app.patients.get_supabase", new=AsyncMock(return_value=client)):
+        out = await consultation_reminder_contacts("p1", {"contact_id": None})
+    assert [c["phone"] for c in out] == ["5581999"]
