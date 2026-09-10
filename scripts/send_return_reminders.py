@@ -40,7 +40,7 @@ from zoneinfo import ZoneInfo
 from dotenv import load_dotenv
 load_dotenv()
 
-from app.patients import get_reminder_contacts
+from app.patients import return_reminder_contacts
 
 TZ = ZoneInfo("America/Recife")
 # Envio individual (1 por vez) com pausa entre cada mensagem — evita rajadas
@@ -316,15 +316,16 @@ async def _send_for_row(client, row: dict, template_name: str, sent_col: str, gr
     """Envia `template_name` a todos os contatos 'consulta' do paciente.
 
     Marca `sent_col` UMA vez, só se ao menos um envio teve sucesso (retries
-    do cron permanecem seguros). Sem contato de consulta: não envia, não
-    marca — a linha continua candidata nos próximos dias (visível via print
-    de [SKIP], sem retry automático de outra natureza).
+    do cron permanecem seguros). Sem contato: não envia, não marca — a linha
+    continua candidata nos próximos dias (visível via print de [SKIP], sem
+    retry automático de outra natureza).
 
     Inclui contatos pausados (`include_inactive=True`), mesmo padrão de
     send_appointment_reminders.py: acesso a medicação controlada depende de
     retorno em dia (Art. 37 CEM, citado no próprio corpo do lembrete), então
-    pausa do bot não deve silenciar esse aviso — mesma lógica de
-    app/patients.py::get_reminder_contacts para lembretes transacionais.
+    pausa do bot não deve silenciar esse aviso. Usa
+    app/patients.py::return_reminder_contacts, que resolve por idade do
+    paciente (adulto usa o próprio contato; menor usa os responsáveis).
     """
     patient_id = row.get("patient_id")
     patient = row.get("patients") or {}
@@ -349,9 +350,9 @@ async def _send_for_row(client, row: dict, template_name: str, sent_col: str, gr
         print(f"  [SKIP] return_reminder {row.get('id')} — paciente agendou durante a fila; classificação desatualizada.")
         return
 
-    contacts = await get_reminder_contacts(patient_id, "consulta", include_inactive=True) if patient_id else []
+    contacts = await return_reminder_contacts(patient_id, include_inactive=True) if patient_id else []
     if not contacts:
-        print(f"  [SKIP] return_reminder {row.get('id')} sem contato de consulta (patient_id={patient_id})")
+        print(f"  [SKIP] return_reminder {row.get('id')} sem contato (patient_id={patient_id})")
         return
 
     sent_any = False
