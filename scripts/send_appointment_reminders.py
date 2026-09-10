@@ -25,7 +25,7 @@ load_dotenv()
 # para diagnosticar timeouts na resolução de conversa por número.
 logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s %(message)s")
 
-from app.patients import get_reminder_contacts
+from app.patients import consultation_reminder_contacts
 
 TZ = ZoneInfo("America/Recife")
 
@@ -158,9 +158,11 @@ async def _send_reminder_to_contacts(client, appt, template_name, sent_col, now,
     # include_inactive=True: lembrete de consulta é transacional e deve chegar
     # mesmo se o contato estiver com o bot pausado (ex.: transferido para
     # atendimento humano) — pausa do bot não deve silenciar avisos de horário.
-    contacts = await get_reminder_contacts(patient_id, "consulta", include_inactive=True) if patient_id else []
+    contacts = await consultation_reminder_contacts(
+        patient_id, appt, include_inactive=True
+    ) if patient_id else []
     if not contacts:
-        print(f"  [SKIP] appt {appointment_id} sem contato de consulta (patient_id={patient_id})")
+        print(f"  [SKIP] appt {appointment_id} sem contato para lembrete (patient_id={patient_id})")
         return []
 
     # Use online-specific template name for online appointments
@@ -215,7 +217,7 @@ async def main():
         booked_before = (now - timedelta(hours=12)).isoformat()
         result = await (
             client.from_("appointments")
-            .select("appointment_id, start_time, doctor_id, modality, patient_id, patients(name)")
+            .select("appointment_id, start_time, doctor_id, modality, patient_id, contact_id, patients(name, birth_date)")
             .eq("status", "scheduled")
             .is_("reminder_day_before_sent_at", "null")
             .gte("start_time", f"{tomorrow_start}T00:00:00")
@@ -230,7 +232,7 @@ async def main():
     # For appointments at 9h or later: reminder goes at 7h.
     day_of_result = await (
         client.from_("appointments")
-        .select("appointment_id, start_time, doctor_id, modality, patient_id, patients(name)")
+        .select("appointment_id, start_time, doctor_id, modality, patient_id, contact_id, patients(name, birth_date)")
         .eq("status", "scheduled")
         .is_("reminder_day_of_sent_at", "null")
         .gt("start_time", now.isoformat())
