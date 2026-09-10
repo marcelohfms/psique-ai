@@ -84,7 +84,12 @@ async def get_link(patient_id: str, contact_id: str) -> dict | None:
         .execute()
     )
     rows = res.data or []
-    return rows[0] if rows else None
+    if not rows:
+        return None
+    for r in rows:
+        if r.get("role") == "agendamento":
+            return r
+    return rows[0]
 
 
 async def get_return_reminder(patient_id: str) -> dict | None:
@@ -188,12 +193,33 @@ async def update_patient(patient_id: str, data: dict) -> None:
     await client.from_("patients").update(payload).eq("id", patient_id).execute()
 
 
+_MARKER_FIELDS = {"is_self", "relationship"}
+
+
 async def update_link(pc_id: str, data: dict) -> None:
+    """Atualiza um vínculo. `role` afeta só a linha `pc_id`; is_self/relationship
+    são propriedade do PAR (paciente, contato) e são gravados em TODAS as roles
+    do par — senão as linhas divergem e o cron de lembrete lê um valor e o painel
+    mostra outro.
+    """
     payload = _filter(data, _LINK_FIELDS)
     if not payload:
         return
     client = await get_client()
-    await client.from_("patient_contacts").update(payload).eq("id", pc_id).execute()
+    marker = {k: v for k, v in payload.items() if k in _MARKER_FIELDS}
+    role_only = {k: v for k, v in payload.items() if k not in _MARKER_FIELDS}
+
+    if marker:
+        link = await get_link_by_id(pc_id)
+        if link:
+            await (
+                client.from_("patient_contacts").update(marker)
+                .eq("patient_id", link["patient_id"])
+                .eq("contact_id", link["contact_id"])
+                .execute()
+            )
+    if role_only:
+        await client.from_("patient_contacts").update(role_only).eq("id", pc_id).execute()
 
 
 async def update_return_reminder(patient_id: str, data: dict) -> bool:

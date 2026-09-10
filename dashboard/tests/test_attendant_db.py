@@ -88,6 +88,17 @@ async def test_get_link(patched_client):
     assert out["relationship"] == "mãe"
 
 
+async def test_get_link_prefers_agendamento_row(patched_client):
+    patched_client.store["patient_contacts"] = [
+        {"id": "pc-cons", "patient_id": "p1", "contact_id": "c1", "role": "consulta",
+         "is_self": True, "relationship": "mãe"},
+        {"id": "pc-agen", "patient_id": "p1", "contact_id": "c1", "role": "agendamento",
+         "is_self": False, "relationship": "mãe"},
+    ]
+    link = await attendant_db.get_link("p1", "c1")
+    assert link["role"] == "agendamento"
+
+
 # ── Leitura da data de retorno ────────────────────────────────────────────────
 
 
@@ -140,13 +151,53 @@ async def test_update_contact_whitelist(patched_client):
 
 async def test_update_link_whitelist(patched_client):
     patched_client.store["patient_contacts"] = [
-        {"id": "pc1", "role": "agendamento", "is_self": False, "relationship": None},
+        {"id": "pc1", "patient_id": "p1", "contact_id": "c1", "role": "agendamento",
+         "is_self": False, "relationship": None},
     ]
     await attendant_db.update_link("pc1", {"role": "consulta", "relationship": "pai", "patient_id": "X"})
     row = patched_client.store["patient_contacts"][0]
     assert row["role"] == "consulta"
     assert row["relationship"] == "pai"
     assert "patient_id" not in row or row.get("patient_id") != "X"
+
+
+async def test_update_link_propagates_marker_to_all_roles_of_pair(patched_client):
+    """is_self/relationship são propriedade do PAR (paciente, contato): devem ser
+    gravados em TODAS as roles do par, senão o cron de lembrete lê uma linha e o
+    painel mostra outra."""
+    patched_client.store["patient_contacts"] = [
+        {"id": "pc-cons", "patient_id": "p1", "contact_id": "c1", "role": "consulta",
+         "is_self": True, "relationship": None},
+        {"id": "pc-agen", "patient_id": "p1", "contact_id": "c1", "role": "agendamento",
+         "is_self": True, "relationship": None},
+        {"id": "pc-fin", "patient_id": "p1", "contact_id": "c1", "role": "financeiro",
+         "is_self": True, "relationship": None},
+        # outro paciente com o mesmo contato: não deve ser afetado
+        {"id": "pc-outro", "patient_id": "p2", "contact_id": "c1", "role": "agendamento",
+         "is_self": True, "relationship": None},
+    ]
+    await attendant_db.update_link("pc-agen", {"is_self": False, "relationship": "mãe"})
+    rows = {r["id"]: r for r in patched_client.store["patient_contacts"]}
+    for pc_id in ("pc-cons", "pc-agen", "pc-fin"):
+        assert rows[pc_id]["is_self"] is False
+        assert rows[pc_id]["relationship"] == "mãe"
+    # não vazou para outro paciente
+    assert rows["pc-outro"]["is_self"] is True
+    assert rows["pc-outro"]["relationship"] is None
+
+
+async def test_update_link_role_field_updates_single_row(patched_client):
+    """`role` é propriedade da LINHA (pc_id), não do par: só a linha alvo muda."""
+    patched_client.store["patient_contacts"] = [
+        {"id": "pc-agen", "patient_id": "p1", "contact_id": "c1", "role": "agendamento",
+         "is_self": True, "relationship": None},
+        {"id": "pc-fin", "patient_id": "p1", "contact_id": "c1", "role": "financeiro",
+         "is_self": True, "relationship": None},
+    ]
+    await attendant_db.update_link("pc-agen", {"role": "consulta"})
+    rows = {r["id"]: r for r in patched_client.store["patient_contacts"]}
+    assert rows["pc-agen"]["role"] == "consulta"
+    assert rows["pc-fin"]["role"] == "financeiro"  # não afetada
 
 
 # ── Escrita da data de retorno ────────────────────────────────────────────────
