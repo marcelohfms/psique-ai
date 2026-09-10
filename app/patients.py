@@ -116,6 +116,37 @@ async def get_contacts_for_patient(patient_id: str, role: str, include_inactive:
     return out
 
 
+async def _linked_contacts_with_marker(patient_id: str, include_inactive: bool = False) -> list[dict]:
+    """Contatos do paciente (todas as roles), deduplicados por contato, com o
+    marcador consolidado: [{"contact": <row>, "is_self": bool, "relationship": str|None}].
+
+    Consolidação robusta a divergência residual entre roles: is_self=True se
+    qualquer role disser; relationship = a de responsável se houver.
+    """
+    client = await get_supabase()
+    result = (
+        await client.from_("patient_contacts")
+        .select("contact_id, is_self, relationship, contacts(*)")
+        .eq("patient_id", patient_id)
+        .execute()
+    )
+    by_contact: dict[str, dict] = {}
+    for row in (result.data or []):
+        contact = row.get("contacts")
+        if not contact or not (include_inactive or contact.get("active")):
+            continue
+        cid = contact["id"]
+        entry = by_contact.setdefault(
+            cid, {"contact": contact, "is_self": False, "relationship": None}
+        )
+        if row.get("is_self"):
+            entry["is_self"] = True
+        rel = row.get("relationship")
+        if rel and not _is_self_like(rel):
+            entry["relationship"] = rel
+    return list(by_contact.values())
+
+
 async def get_reminder_contacts(
     patient_id: str, role: str, include_inactive: bool = False
 ) -> list[dict]:

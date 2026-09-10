@@ -668,3 +668,48 @@ def test_is_guardian_relationship():
     assert _is_guardian_relationship("self") is False
     assert _is_guardian_relationship(None) is False
     assert _is_guardian_relationship("") is False
+
+
+# --- _linked_contacts_with_marker ---
+from app.patients import _linked_contacts_with_marker
+
+
+def _lc_client(pc_rows):
+    pc_table = MagicMock()
+    pc_table.select.return_value = pc_table
+    pc_table.eq.return_value = pc_table
+    pc_table.execute = AsyncMock(return_value=MagicMock(data=pc_rows))
+    client = MagicMock()
+    client.from_.return_value = pc_table
+    return client
+
+
+def _pcm(cid, phone, is_self, relationship, role, active=True):
+    return {"contact_id": cid, "is_self": is_self, "relationship": relationship,
+            "role": role, "contacts": {"id": cid, "phone": phone, "active": active}}
+
+
+@pytest.mark.asyncio
+async def test_linked_marker_dedupes_and_consolidates():
+    # mesma pessoa (c-mae) com is_self divergente entre roles -> is_self True se alguma disser
+    rows = [
+        _pcm("c-mae", "5581999", False, "mãe", "agendamento"),
+        _pcm("c-mae", "5581999", True, "mãe", "consulta"),
+        _pcm("c-self", "5581000", True, "self", "consulta"),
+    ]
+    client = _lc_client(rows)
+    with _patch("app.patients.get_supabase", new=AsyncMock(return_value=client)):
+        out = await _linked_contacts_with_marker("p1", include_inactive=True)
+    by_phone = {o["contact"]["phone"]: o for o in out}
+    assert by_phone["5581999"]["is_self"] is True
+    assert by_phone["5581999"]["relationship"] == "mãe"
+    assert by_phone["5581000"]["is_self"] is True
+
+
+@pytest.mark.asyncio
+async def test_linked_marker_excludes_inactive_by_default():
+    rows = [_pcm("c1", "5581000", True, "self", "consulta", active=False)]
+    client = _lc_client(rows)
+    with _patch("app.patients.get_supabase", new=AsyncMock(return_value=client)):
+        out = await _linked_contacts_with_marker("p1", include_inactive=False)
+    assert out == []
