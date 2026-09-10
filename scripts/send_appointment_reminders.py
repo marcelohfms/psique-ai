@@ -217,7 +217,7 @@ async def main():
         booked_before = (now - timedelta(hours=12)).isoformat()
         result = await (
             client.from_("appointments")
-            .select("appointment_id, start_time, doctor_id, modality, patient_id, contact_id, patients(name, birth_date)")
+            .select("appointment_id, start_time, doctor_id, modality, patient_id, contact_id, patients(name)")
             .eq("status", "scheduled")
             .is_("reminder_day_before_sent_at", "null")
             .gte("start_time", f"{tomorrow_start}T00:00:00")
@@ -232,7 +232,7 @@ async def main():
     # For appointments at 9h or later: reminder goes at 7h.
     day_of_result = await (
         client.from_("appointments")
-        .select("appointment_id, start_time, doctor_id, modality, patient_id, contact_id, patients(name, birth_date)")
+        .select("appointment_id, start_time, doctor_id, modality, patient_id, contact_id, patients(name)")
         .eq("status", "scheduled")
         .is_("reminder_day_of_sent_at", "null")
         .gt("start_time", now.isoformat())
