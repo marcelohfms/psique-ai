@@ -15,17 +15,17 @@ TZ = ZoneInfo("America/Recife")
 _SHEET_RANGE = "Solicitações!A:G"
 
 CONTROLLED_MEDICATIONS: list[str] = [
-    # Benzodiazepínicos
-    "rivotril", "clonazepam",
-    "diazepam", "valium",
-    "alprazolam", "xanax", "frontal",
-    "lorazepam", "lorax",
-    "bromazepam", "lexotan",
-    "midazolam", "dormicum",
-    "nitrazepam", "mogadon",
+    # Benzodiazepínicos (princípio ativo + nomes comerciais)
+    "clonazepam", "rivotril", "clonotril",
+    "diazepam", "valium", "compaz", "dienpax", "kiatrium",
+    "alprazolam", "xanax", "frontal", "apraz", "altrox",
+    "lorazepam", "lorax", "mesmerin",
+    "bromazepam", "lexotan", "somalium", "brozepax", "deptran", "nervium",
+    "midazolam", "dormicum", "dormonid",
+    "nitrazepam", "mogadon", "sonebon",
     "flurazepam", "dalmadorm",
-    "clobazam", "frisium",
-    "zolpidem", "stilnox", "nuit flash",
+    "clobazam", "frisium", "urbanil",
+    "zolpidem", "stilnox", "nuit flash", "patz", "lioram",
     # Estimulantes (TDAH)
     "metilfenidato", "ritalina", "ritalin", "concerta", "rubifen",
     "lisdexanfetamina", "venvanse", "vyvanse",
