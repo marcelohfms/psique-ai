@@ -96,6 +96,20 @@ async def get_today_appointments(client, doctor_id: str, today: date | None = No
     return _with_local_date_time(result.data or [])
 
 
+def drop_today_already_pending(hoje: list[dict], pendentes: list[dict]) -> list[dict]:
+    """Remove de "Hoje" as consultas que já estão em "Pendentes de classificação".
+
+    Uma consulta de hoje que já terminou entra na fila de pendentes; sem esse
+    filtro o mesmo paciente apareceria nas duas seções no mesmo dia. A clínica
+    pediu que, ao cair em pendentes, o paciente saia da lista de hoje.
+
+    Casa por `appointment_id` (não por paciente) para não derrubar uma segunda
+    consulta do mesmo paciente no mesmo dia que ainda não terminou.
+    """
+    pending_ids = {p.get("appointment_id") for p in pendentes}
+    return [a for a in hoje if a.get("appointment_id") not in pending_ids]
+
+
 def _has_ended(end_time: str | None, now: datetime) -> bool:
     """True se a consulta já terminou (end_time < now). Sem end_time -> False."""
     if not end_time:

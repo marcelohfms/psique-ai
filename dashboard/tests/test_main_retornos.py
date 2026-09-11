@@ -137,3 +137,32 @@ def test_api_no_show_muda_status(monkeypatch, fake_client):
     assert r.status_code == 200
     assert r.json()["ok"] is True
     assert fake_client.store["appointments"][0]["status"] == "no_show"
+
+
+def test_retornos_page_nao_duplica_paciente_em_hoje_e_pendentes(monkeypatch):
+    # a1 (Leonardo) já terminou -> cai em pendentes; a3 (Djalma) ainda não.
+    # Leonardo não deve aparecer também na lista "Hoje".
+    async def fake_today(client, doctor_id, today=None):
+        return [
+            {"appointment_id": "a1", "patient_id": "p1",
+             "start_time": "2026-09-11T14:00:00+00:00", "patients": {"name": "Leonardo"}},
+            {"appointment_id": "a3", "patient_id": "p3",
+             "start_time": "2026-09-11T18:00:00+00:00", "patients": {"name": "Djalma"}},
+        ]
+
+    async def fake_pending(client, doctor_id):
+        return [
+            {"appointment_id": "a1", "patient_id": "p1",
+             "start_time": "2026-09-11T14:00:00+00:00", "patients": {"name": "Leonardo"}},
+        ]
+
+    monkeypatch.setattr(dashboard_main, "get_supabase", lambda: object())
+    monkeypatch.setattr(return_reminders, "get_today_appointments", fake_today)
+    monkeypatch.setattr(return_reminders, "get_pending_classification", fake_pending)
+
+    r = _client().get("/retornos", auth=AUTH, params={"medico": "bruna"})
+    assert r.status_code == 200
+    # a1 sai de "Hoje" e fica só em "Pendentes" -> uma única linha no total
+    assert r.text.count('id="row-a1"') == 1
+    # a3 continua em "Hoje" (ainda não terminou)
+    assert r.text.count('id="row-a3"') == 1

@@ -376,3 +376,35 @@ async def test_mark_no_show_tira_da_fila(fake_client):
     await rr.mark_no_show(fake_client, "a1")
     out = await rr.get_pending_classification(fake_client, JULIO_ID)
     assert out == []
+
+
+# ── drop_today_already_pending ──────────────────────────────────────────────
+
+
+def test_drop_today_already_pending_remove_quem_esta_em_pendentes():
+    hoje = [
+        {"appointment_id": "a1", "patient_id": "p1"},
+        {"appointment_id": "a2", "patient_id": "p2"},
+        {"appointment_id": "a3", "patient_id": "p3"},
+    ]
+    pendentes = [{"appointment_id": "a1", "patient_id": "p1"},
+                 {"appointment_id": "a2", "patient_id": "p2"}]
+    out = rr.drop_today_already_pending(hoje, pendentes)
+    assert [a["appointment_id"] for a in out] == ["a3"]
+
+
+def test_drop_today_already_pending_casa_por_appointment_nao_por_paciente():
+    # mesmo paciente, uma consulta hoje já terminada (em pendentes) e outra
+    # ainda por acontecer no mesmo dia: só a que está em pendentes some.
+    hoje = [
+        {"appointment_id": "a1", "patient_id": "p1"},
+        {"appointment_id": "a2", "patient_id": "p1"},
+    ]
+    pendentes = [{"appointment_id": "a1", "patient_id": "p1"}]
+    out = rr.drop_today_already_pending(hoje, pendentes)
+    assert [a["appointment_id"] for a in out] == ["a2"]
+
+
+def test_drop_today_already_pending_sem_pendentes_mantem_tudo():
+    hoje = [{"appointment_id": "a1", "patient_id": "p1"}]
+    assert rr.drop_today_already_pending(hoje, []) == hoje
