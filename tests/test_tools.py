@@ -3853,6 +3853,41 @@ async def test_request_document_receita_nuit_flash_orienta_retirada():
     assert "FÍSICA" in mock_notify.await_args.args[0]
 
 
+@pytest.mark.parametrize(
+    "medication_note",
+    [
+        "Clonotril 2mg",
+        "Dienpax",
+        "Apraz 1mg",
+        "Somalium 3mg",
+        "Dormonid",
+        "Sonebon",
+        "Urbanil 20mg",
+        "Patz SL",
+        "Lioram",
+    ],
+)
+async def test_request_document_receita_nomes_comerciais_orienta_retirada(medication_note):
+    """Nomes comerciais das medicações controladas também disparam a receita física."""
+    from app.graph.tools import request_document
+    client, _, _ = _make_supabase_client()
+    with patch("app.graph.tools.get_supabase", new_callable=AsyncMock, return_value=client), \
+         patch("app.graph.tools.log_event", new_callable=AsyncMock), \
+         patch("app.graph.tools._notify_clinic", new_callable=AsyncMock) as mock_notify, \
+         patch("app.google_sheets.append_document_request", new_callable=AsyncMock), \
+         patch("app.email_sender.send_document_request_email", new_callable=AsyncMock):
+        result = await request_document.coroutine(
+            document_type="receita",
+            patient_email="paciente@example.com",
+            state=_make_state(patient_name="Paciente"),
+            config=CONFIG,
+            medication_note=medication_note,
+        )
+    assert "física" in result.lower()
+    assert "retirada" in result.lower()
+    assert "FÍSICA" in mock_notify.await_args.args[0]
+
+
 async def test_request_document_receita_sem_medicacao_pede_medicacao():
     """Receita sem medicação informada não registra — Eva pergunta qual medicação."""
     from app.graph.tools import request_document
