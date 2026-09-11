@@ -324,6 +324,7 @@ async def retornos_page(request: Request, medico: str = "julio", username: str =
     doctor_id = return_reminders.DOCTOR_ID_BY_KEY[medico]
     hoje = await return_reminders.get_today_appointments(client, doctor_id)
     pendentes = await return_reminders.get_pending_classification(client, doctor_id)
+    hoje = return_reminders.drop_today_already_pending(hoje, pendentes)
     return templates.TemplateResponse(request, "retornos.html", {
         "username": username,
         "medico": medico,
