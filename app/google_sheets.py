@@ -25,14 +25,12 @@ CONTROLLED_MEDICATIONS: list[str] = [
     "nitrazepam", "mogadon",
     "flurazepam", "dalmadorm",
     "clobazam", "frisium",
-    "zolpidem", "stilnox",
+    "zolpidem", "stilnox", "nuit flash",
     # Estimulantes (TDAH)
     "metilfenidato", "ritalina", "ritalin", "concerta", "rubifen",
     "lisdexanfetamina", "venvanse", "vyvanse",
     "atomoxetina", "strattera",
     "dexanfetamina", "dextroamphetamine",
-    # Outros de receita física
-    "nuit flash",
 ]
 
 # Column order: Data do Pagamento | Paciente | Médico | Data da Consulta | Valor | Telefone | Tipo | Forma de Pagamento | Comprovante | Conferência Humana
