@@ -1962,9 +1962,14 @@ async def mark_reschedule_in_progress(
         # Reagendamentos marcados como iniciativa da clínica (reschedule_initiated_by
         # = "clinic") não contam aqui — eventos antigos sem essa marcação são
         # tratados como remarcação do paciente (era o único fluxo antes desta mudança).
+        # fee_paid=false também não conta: trocar a data antes de pagar a taxa não
+        # transfere nada, então não consome a remarcação (caso Maria Luiza,
+        # 5581988788701). Eventos antigos sem fee_paid (nulo) continuam contando como
+        # antes desta mudança, para não liberar remarcações extras sem querer.
         count_res = await client.from_("events").select("id", count="exact") \
             .eq("phone", phone_clean).eq("event_type", "appointment_rescheduled") \
-            .or_("metadata->>initiated_by.is.null,metadata->>initiated_by.eq.patient").execute()
+            .or_("metadata->>initiated_by.is.null,metadata->>initiated_by.eq.patient") \
+            .or_("metadata->>fee_paid.is.null,metadata->>fee_paid.eq.true").execute()
         patient_reschedule_count = count_res.count or 0
         if patient_reschedule_count >= 1:
             return (
@@ -2557,11 +2562,21 @@ async def reschedule_appointment(
             "new_modality": effective_modality,
         })
     else:
+        # fee_paid registra se a taxa de reserva JÁ ESTAVA PAGA no momento desta
+        # remarcação. A política de "1 remarcação" (mark_reschedule_in_progress) só
+        # conta trocas com taxa paga: mudar a data antes de pagar não tem taxa para
+        # transferir e não consome o benefício (caso Maria Luiza, 5581988788701,
+        # 03/09/2026: trocou 02/10→25/09 antes de pagar a taxa).
+        _fee_paid_now = bool(
+            (appt_result.data or {}).get("booking_fee_paid_at")
+            or (appt_result.data or {}).get("booking_fee_waived")
+        )
         await log_event("appointment_rescheduled", phone, {
             "appointment_id": appointment_id,
             "new_datetime": new_slot_datetime,
             "initiated_by": (appt_result.data or {}).get("reschedule_initiated_by")
                 or ("clinic" if state.get("silent_mode") else "patient"),
+            "fee_paid": _fee_paid_now,
         })
 
     await _notify_clinic(
