@@ -31,6 +31,8 @@ CONTROLLED_MEDICATIONS: list[str] = [
     "lisdexanfetamina", "venvanse", "vyvanse",
     "atomoxetina", "strattera",
     "dexanfetamina", "dextroamphetamine",
+    # Outros de receita física
+    "nuit flash",
 ]
 
 # Column order: Data do Pagamento | Paciente | Médico | Data da Consulta | Valor | Telefone | Tipo | Forma de Pagamento | Comprovante | Conferência Humana
