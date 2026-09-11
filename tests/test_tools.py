@@ -2647,6 +2647,49 @@ async def test_mark_reschedule_in_progress_first_reschedule_notice():
     assert "get_available_slots" in result
 
 
+async def test_mark_reschedule_in_progress_count_query_ignores_unpaid_reschedules():
+    """A política de 1 remarcação só conta remarcações feitas com a taxa JÁ PAGA.
+    A troca de data feita ANTES do pagamento não tem taxa para transferir, então
+    não pode consumir o benefício (caso Maria Luiza, 5581988788701, 03/09/2026:
+    trocou 02/10→25/09 às 20h37, taxa só entrou às 22h16). A contagem precisa
+    filtrar eventos appointment_rescheduled com fee_paid=false."""
+    from app.graph.tools import mark_reschedule_in_progress
+    client, table, execute = _make_supabase_client()
+    future_start = (datetime.now(TZ) + timedelta(days=10)).isoformat()
+    appt_data = {
+        "appointment_id": "evt-abc",
+        "status": "scheduled",
+        "patient_id": "user-1",
+        "start_time": future_start,
+        "booking_fee_paid_at": "2026-01-01T10:00:00-03:00",
+        "booking_fee_waived": False,
+    }
+    execute.side_effect = [
+        MagicMock(data=appt_data),  # appointment select
+        MagicMock(count=0),         # reschedule count
+        MagicMock(data=[]),         # cancel_event update
+    ]
+    with patch("app.graph.tools.get_supabase", new_callable=AsyncMock, return_value=client), \
+         patch("app.graph.tools.get_users_by_phone", new_callable=AsyncMock, return_value=[{"id": "user-1"}]), \
+         patch("app.graph.tools._resolve_doctor", new_callable=AsyncMock, return_value="julio"), \
+         patch("app.graph.tools._get_doctor_calendar_id", new_callable=AsyncMock, return_value="cal-123"), \
+         patch("app.google_calendar.cancel_event", new_callable=AsyncMock), \
+         patch("app.graph.tools.log_event", new_callable=AsyncMock):
+        await mark_reschedule_in_progress.coroutine(
+            appointment_id="evt-abc",
+            state=_make_state(),
+            config=CONFIG,
+        )
+    # A contagem precisa ter aplicado um filtro que exclui fee_paid=false, mas
+    # mantém os eventos antigos (sem a marca, fee_paid nulo) contando como antes.
+    or_calls = [c.args[0] for c in table.or_.call_args_list if c.args]
+    fee_filter = next((f for f in or_calls if "fee_paid" in f), None)
+    assert fee_filter is not None, "count query não filtra por fee_paid"
+    assert "fee_paid.is.null" in fee_filter        # eventos antigos continuam contando
+    assert "fee_paid.eq.true" in fee_filter        # remarcações com taxa paga contam
+    assert "fee_paid.eq.false" not in fee_filter   # pré-pagamento não conta
+
+
 async def test_mark_reschedule_in_progress_canceled_status_says_slot_released():
     """Consulta já cancelada (ex: por timeout de taxa não paga): a tool não pode deixar
     a Eva inferir que a consulta ainda está reservada — regressão do caso Larissa
@@ -2967,9 +3010,8 @@ async def test_mark_reschedule_in_progress_count_query_excludes_clinic_initiated
             state=_make_state(),
             config=CONFIG,
         )
-    table.or_.assert_called_once_with(
-        "metadata->>initiated_by.is.null,metadata->>initiated_by.eq.patient"
-    )
+    or_filters = [c.args[0] for c in table.or_.call_args_list if c.args]
+    assert "metadata->>initiated_by.is.null,metadata->>initiated_by.eq.patient" in or_filters
 
 
 # ── reschedule_appointment ────────────────────────────────────────────────────
@@ -2994,6 +3036,77 @@ async def test_reschedule_appointment_updates_event_and_notifies():
     assert "remarcada" in result.lower()
     mock_update.assert_awaited_once()
     mock_notify.assert_called()
+
+
+async def test_reschedule_appointment_event_records_fee_paid_true_when_fee_paid():
+    """O evento appointment_rescheduled deve registrar fee_paid=True quando a taxa
+    de reserva já estava paga no momento da remarcação — é isso que a política de
+    1 remarcação usa depois para saber se essa troca consumiu o benefício."""
+    from app.graph.tools import reschedule_appointment
+    client, table, execute = _make_supabase_client()
+    # Datas no futuro (>24h): a trava das 24h só bloqueia remarcação de taxa paga
+    # dentro do prazo — aqui queremos o fluxo normal para checar o evento gravado.
+    old_start = (datetime.now(TZ) + timedelta(days=10)).replace(microsecond=0)
+    new_slot = (datetime.now(TZ) + timedelta(days=12)).replace(minute=0, second=0, microsecond=0)
+    execute.return_value = MagicMock(data={
+        "start_time": old_start.isoformat(),
+        "patient_id": "user-1",
+        "patients": {"name": "Maria"},
+        "booking_fee_paid_at": "2026-01-01T10:00:00-03:00",
+        "booking_fee_waived": False,
+        "status": "scheduled",
+    })
+    with patch("app.graph.tools._get_doctor_calendar_id", new_callable=AsyncMock, return_value="cal123"), \
+         patch("app.google_calendar.update_event", new_callable=AsyncMock), \
+         patch("app.graph.tools.get_supabase", new_callable=AsyncMock, return_value=client), \
+         patch("app.graph.tools.get_users_by_phone", new_callable=AsyncMock, return_value=[{"id": "user-1"}]), \
+         patch("app.graph.tools.log_event", new_callable=AsyncMock) as mock_log, \
+         patch("app.graph.tools._notify_clinic", new_callable=AsyncMock):
+        await reschedule_appointment.coroutine(
+            appointment_id="evt-abc",
+            new_slot_datetime=new_slot.strftime("%Y-%m-%dT%H:%M:%S"),
+            slot_duration_minutes=60,
+            state=_make_state(),
+            config=CONFIG,
+        )
+    resched = next(
+        c for c in mock_log.call_args_list
+        if c.args and c.args[0] == "appointment_rescheduled"
+    )
+    assert resched.args[2]["fee_paid"] is True
+
+
+async def test_reschedule_appointment_event_records_fee_paid_false_when_unpaid():
+    """Se a taxa ainda NÃO foi paga, o evento appointment_rescheduled grava
+    fee_paid=False — assim a política de 1 remarcação não conta essa troca."""
+    from app.graph.tools import reschedule_appointment
+    client, table, execute = _make_supabase_client()
+    execute.return_value = MagicMock(data={
+        "start_time": "2026-03-23T09:00:00+00:00",
+        "patient_id": "user-1",
+        "patients": {"name": "Maria"},
+        "booking_fee_paid_at": None,
+        "booking_fee_waived": False,
+        "status": "scheduled",
+    })
+    with patch("app.graph.tools._get_doctor_calendar_id", new_callable=AsyncMock, return_value="cal123"), \
+         patch("app.google_calendar.update_event", new_callable=AsyncMock), \
+         patch("app.graph.tools.get_supabase", new_callable=AsyncMock, return_value=client), \
+         patch("app.graph.tools.get_users_by_phone", new_callable=AsyncMock, return_value=[{"id": "user-1"}]), \
+         patch("app.graph.tools.log_event", new_callable=AsyncMock) as mock_log, \
+         patch("app.graph.tools._notify_clinic", new_callable=AsyncMock):
+        await reschedule_appointment.coroutine(
+            appointment_id="evt-abc",
+            new_slot_datetime="2026-03-25T10:00:00",
+            slot_duration_minutes=60,
+            state=_make_state(),
+            config=CONFIG,
+        )
+    resched = next(
+        c for c in mock_log.call_args_list
+        if c.args and c.args[0] == "appointment_rescheduled"
+    )
+    assert resched.args[2]["fee_paid"] is False
 
 
 async def test_reschedule_appointment_within_24h_paid_fee_refuses():
