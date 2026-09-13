@@ -4121,8 +4121,19 @@ def _make_supabase_client_with_appointment(start_time="2026-03-23T09:00:00+00:00
               "gte", "order", "insert", "update", "upsert", "is_"):
         getattr(table, m).return_value = table
     table.execute = execute
+
+    # Tabela `events` isolada: a guarda de dedup lê daqui. Vazia por padrão, então
+    # nenhum comprovante é tratado como duplicado nos testes que não configuram isto.
+    events_table = MagicMock()
+    for m in ("select", "eq", "in_", "limit", "gte", "order"):
+        getattr(events_table, m).return_value = events_table
+    events_table.execute = AsyncMock(return_value=MagicMock(data=[]))
+
     client = MagicMock()
-    client.from_.return_value = table
+
+    def _from(name):
+        return events_table if name == "events" else table
+    client.from_.side_effect = _from
     return client, table, execute
 
 
@@ -4271,8 +4282,19 @@ def _make_supabase_client_fee_just_paid(start_time, booking_fee_paid_at):
               "gte", "order", "insert", "update", "upsert", "is_"):
         getattr(table, m).return_value = table
     table.execute = execute
+
+    # Tabela `events` isolada: a guarda de dedup do register_payment lê daqui,
+    # sempre vazia, para não consumir/deslocar a sequência de calls de `table`.
+    events_table = MagicMock()
+    for m in ("select", "eq", "in_", "limit", "gte", "order"):
+        getattr(events_table, m).return_value = events_table
+    events_table.execute = AsyncMock(return_value=MagicMock(data=[]))
+
     client = MagicMock()
-    client.from_.return_value = table
+
+    def _from(name):
+        return events_table if name == "events" else table
+    client.from_.side_effect = _from
     return client, table, execute
 
 
@@ -4466,8 +4488,19 @@ def _make_supabase_client_with_canceled_appointment(slot_taken=False):
         getattr(table, m).return_value = table
     table.select = MagicMock(side_effect=_select)
     table.execute = execute
+
+    # Tabela `events` isolada: a guarda de dedup do register_payment lê daqui,
+    # sempre vazia, para não consumir/deslocar a sequência de calls de `table`.
+    events_table = MagicMock()
+    for m in ("select", "eq", "in_", "limit", "gte", "order"):
+        getattr(events_table, m).return_value = events_table
+    events_table.execute = AsyncMock(return_value=MagicMock(data=[]))
+
     client = MagicMock()
-    client.from_.return_value = table
+
+    def _from(name):
+        return events_table if name == "events" else table
+    client.from_.side_effect = _from
     return client
 
 
@@ -4563,8 +4596,19 @@ async def test_register_payment_reactivation_slot_taken_returns_marker():
               "gte", "gt", "lt", "neq", "order", "insert", "update", "upsert", "is_"):
         getattr(table, m).return_value = table
     table.execute = execute
+
+    # Tabela `events` isolada: a guarda de dedup do register_payment lê daqui,
+    # sempre vazia, para não consumir/deslocar a sequência de calls de `table`.
+    events_table = MagicMock()
+    for m in ("select", "eq", "in_", "limit", "gte", "order"):
+        getattr(events_table, m).return_value = events_table
+    events_table.execute = AsyncMock(return_value=MagicMock(data=[]))
+
     client = MagicMock()
-    client.from_.return_value = table
+
+    def _from(name):
+        return events_table if name == "events" else table
+    client.from_.side_effect = _from
 
     with patch("app.graph.tools.get_supabase", new_callable=AsyncMock, return_value=client), \
          patch("app.patients.get_contact_by_phone", new_callable=AsyncMock, return_value={"id": "contact-1"}), \
@@ -4688,8 +4732,19 @@ def _make_supabase_client_for_override(candidates: list[dict]):
               "gte", "order", "insert", "update", "upsert", "is_", "ilike"):
         getattr(table, m).return_value = table
     table.execute = execute
+
+    # Tabela `events` isolada: a guarda de dedup do register_payment lê daqui,
+    # sempre vazia, para não consumir/deslocar a sequência de calls de `table`.
+    events_table = MagicMock()
+    for m in ("select", "eq", "in_", "limit", "gte", "order"):
+        getattr(events_table, m).return_value = events_table
+    events_table.execute = AsyncMock(return_value=MagicMock(data=[]))
+
     client = MagicMock()
-    client.from_.return_value = table
+
+    def _from(name):
+        return events_table if name == "events" else table
+    client.from_.side_effect = _from
     return client
 
 
@@ -4849,8 +4904,20 @@ def _make_supabase_client_self_path_old_completed():
         getattr(table, m).return_value = table
     table.gte = MagicMock(side_effect=_gte)
     table.execute = execute
+
+    # Tabela `events` isolada: a guarda de dedup do register_payment lê daqui,
+    # sempre vazia, para não consumir/deslocar a sequência de calls de `table`
+    # nem interferir no rastreio de `.gte("start_time", ...)` acima.
+    events_table = MagicMock()
+    for m in ("select", "eq", "in_", "limit", "gte", "order"):
+        getattr(events_table, m).return_value = events_table
+    events_table.execute = AsyncMock(return_value=MagicMock(data=[]))
+
     client = MagicMock()
-    client.from_.return_value = table
+
+    def _from(name):
+        return events_table if name == "events" else table
+    client.from_.side_effect = _from
     return client
 
 
@@ -5083,8 +5150,20 @@ def _make_supabase_client_with_old_completed_appointment():
         getattr(table, m).return_value = table
     table.gte = MagicMock(side_effect=_gte)
     table.execute = execute
+
+    # Tabela `events` isolada: a guarda de dedup do register_payment lê daqui,
+    # sempre vazia, para não consumir/deslocar a sequência de calls de `table`
+    # nem interferir no rastreio de `.gte("start_time", ...)` acima.
+    events_table = MagicMock()
+    for m in ("select", "eq", "in_", "limit", "gte", "order"):
+        getattr(events_table, m).return_value = events_table
+    events_table.execute = AsyncMock(return_value=MagicMock(data=[]))
+
     client = MagicMock()
-    client.from_.return_value = table
+
+    def _from(name):
+        return events_table if name == "events" else table
+    client.from_.side_effect = _from
     return client
 
 
@@ -5574,8 +5653,19 @@ def _make_supabase_client_with_appointment_waived(booking_fee_waived=True, custo
               "gte", "order", "insert", "update", "upsert", "is_"):
         getattr(table, m).return_value = table
     table.execute = execute
+
+    # Tabela `events` isolada: a guarda de dedup do register_payment lê daqui,
+    # sempre vazia, para não consumir/deslocar a sequência de calls de `table`.
+    events_table = MagicMock()
+    for m in ("select", "eq", "in_", "limit", "gte", "order"):
+        getattr(events_table, m).return_value = events_table
+    events_table.execute = AsyncMock(return_value=MagicMock(data=[]))
+
     client = MagicMock()
-    client.from_.return_value = table
+
+    def _from(name):
+        return events_table if name == "events" else table
+    client.from_.side_effect = _from
     return client, table, execute
 
 
@@ -6538,3 +6628,125 @@ async def test_register_payment_panel_skips_guard_even_with_foreign_desc():
                 image_description=desc, is_link=True,
             )
     mock_db.assert_called_once()  # guard pulado, avançou
+
+
+def _client_with_appointment_and_event(event_rows):
+    """Como _make_supabase_client_with_appointment, mas a tabela events devolve
+    event_rows na query de dedup (lista de dicts, ex: [{'id': 'e1'}])."""
+    client, table, execute = _make_supabase_client_with_appointment()
+    events_table = MagicMock()
+    for m in ("select", "eq", "in_", "limit", "gte", "order"):
+        getattr(events_table, m).return_value = events_table
+    events_table.execute = AsyncMock(return_value=MagicMock(data=event_rows))
+    def _from(name):
+        return events_table if name == "events" else table
+    client.from_.side_effect = _from
+    return client, table, execute
+
+
+async def test_register_payment_dedup_same_drive_link_skips_write():
+    """Segundo processamento do MESMO comprovante (mesmo drive_link, <30min):
+    não grava planilha, não grava evento, e devolve o marcador de dedup para o
+    node suprimir a 2a mensagem. Corrida de processamento duplo — casos Silvia
+    5581981179458 (11s) e Renato 34637036406 (52s)."""
+    from app.graph.tools import register_payment, RECEIPT_DEDUP_MARKER
+    client, table, execute = _client_with_appointment_and_event([{"id": "e-prev"}])
+    with patch("app.graph.tools.get_supabase", new_callable=AsyncMock, return_value=client), \
+         patch("app.graph.tools.get_users_by_phone", new_callable=AsyncMock, return_value=[{"id": "user-123", "patient_name": "Maria"}]), \
+         patch("app.graph.tools.log_event", new_callable=AsyncMock) as mock_log, \
+         patch("app.google_drive.rename_file", new_callable=AsyncMock), \
+         patch("app.google_sheets.append_payment_receipt", new_callable=AsyncMock) as mock_sheets, \
+         patch("app.graph.tools._notify_clinic", new_callable=AsyncMock):
+        result = await register_payment.coroutine(
+            amount="100,00",
+            drive_link="https://drive.google.com/file/d/abc/view",
+            state=_make_state(),
+            config=CONFIG,
+        )
+
+    assert RECEIPT_DEDUP_MARKER in result
+    mock_sheets.assert_not_called()
+    mock_log.assert_not_called()
+    assert not table.insert.called
+    assert not table.update.called
+
+
+async def test_register_payment_different_drive_link_registers_normally():
+    """Comprovante com drive_link DIFERENTE (não é a mesma imagem) grava normal.
+    events vazio para este link → sem dedup."""
+    from app.graph.tools import register_payment, RECEIPT_DEDUP_MARKER
+    client, table, execute = _client_with_appointment_and_event([])  # nenhum evento prévio
+    with patch("app.graph.tools.get_supabase", new_callable=AsyncMock, return_value=client), \
+         patch("app.graph.tools.get_users_by_phone", new_callable=AsyncMock, return_value=[{"id": "user-123", "patient_name": "Maria"}]), \
+         patch("app.graph.tools.log_event", new_callable=AsyncMock), \
+         patch("app.google_drive.rename_file", new_callable=AsyncMock), \
+         patch("app.google_sheets.append_payment_receipt", new_callable=AsyncMock) as mock_sheets, \
+         patch("app.graph.tools._notify_clinic", new_callable=AsyncMock):
+        result = await register_payment.coroutine(
+            amount="100,00",
+            drive_link="https://drive.google.com/file/d/NOVO/view",
+            state=_make_state(),
+            config=CONFIG,
+        )
+    assert RECEIPT_DEDUP_MARKER not in result
+    assert "✅" in result
+    mock_sheets.assert_awaited_once()
+
+
+async def test_register_payment_panel_link_never_dedups():
+    """Lançamento do painel (is_link=True, sem drive_link) nunca entra na guarda de
+    dedup, mesmo que a tabela events tivesse algo — a guarda exige drive_link."""
+    from app.graph.tools import register_payment, RECEIPT_DEDUP_MARKER
+    client, table, execute = _client_with_appointment_and_event([{"id": "e-prev"}])
+    with patch("app.graph.tools.get_supabase", new_callable=AsyncMock, return_value=client), \
+         patch("app.graph.tools.get_users_by_phone", new_callable=AsyncMock, return_value=[{"id": "user-123", "patient_name": "Maria"}]), \
+         patch("app.graph.tools.log_event", new_callable=AsyncMock), \
+         patch("app.google_sheets.append_payment_receipt", new_callable=AsyncMock) as mock_sheets, \
+         patch("app.graph.tools._notify_clinic", new_callable=AsyncMock):
+        result = await register_payment.coroutine(
+            amount="600,00",
+            drive_link="",
+            state=_make_state(),
+            config=CONFIG,
+            is_link=True,
+        )
+    assert RECEIPT_DEDUP_MARKER not in result
+    mock_sheets.assert_awaited_once()
+
+
+async def test_receipt_already_registered_uses_30min_window():
+    """A janela de dedup é _BOOKING_FEE_RESEND_WINDOW_MINUTES (30min): o cutoff
+    passado a .gte(created_at, ...) fica ~30min atrás de agora. Garante que um
+    reenvio do mesmo comprovante FORA dessa janela (dias depois) não seria pego."""
+    from datetime import datetime, timezone, timedelta
+    from app.graph.tools import _receipt_already_registered, _BOOKING_FEE_RESEND_WINDOW_MINUTES
+    events_table = MagicMock()
+    for m in ("select", "eq", "in_", "limit", "gte", "order"):
+        getattr(events_table, m).return_value = events_table
+    events_table.execute = AsyncMock(return_value=MagicMock(data=[]))
+    client = MagicMock()
+    client.from_.return_value = events_table
+
+    before = datetime.now(timezone.utc)
+    await _receipt_already_registered(client, "5581999999999", "https://drive/x")
+    after = datetime.now(timezone.utc)
+
+    # captura o cutoff passado a .gte("created_at", cutoff)
+    gte_args = [c.args for c in events_table.gte.call_args_list if c.args and c.args[0] == "created_at"]
+    assert gte_args, "esperava .gte('created_at', cutoff)"
+    cutoff = datetime.fromisoformat(gte_args[0][1])
+    esperado_min = before - timedelta(minutes=_BOOKING_FEE_RESEND_WINDOW_MINUTES)
+    esperado_max = after - timedelta(minutes=_BOOKING_FEE_RESEND_WINDOW_MINUTES)
+    assert esperado_min <= cutoff <= esperado_max, f"cutoff {cutoff} fora da janela de 30min"
+
+
+async def test_receipt_already_registered_returns_false_on_db_error():
+    """Falha na leitura de dedup não derruba o registro do pagamento: retorna False."""
+    from app.graph.tools import _receipt_already_registered
+    events_table = MagicMock()
+    for m in ("select", "eq", "in_", "limit", "gte", "order"):
+        getattr(events_table, m).return_value = events_table
+    events_table.execute = AsyncMock(side_effect=Exception("supabase down"))
+    client = MagicMock()
+    client.from_.return_value = events_table
+    assert await _receipt_already_registered(client, "5581999999999", "https://drive/x") is False

@@ -6280,3 +6280,87 @@ async def test_pending_confirm_dedup_reconhece_mesmo_horario_em_servidor_utc():
         f"o guard de duplicata deveria reconhecer a consulta de 16:00; enviado: {sent!r}"
     )
     transfer_mock.assert_not_called()
+
+
+# ── Guard: resultado de dedup de comprovante de register_payment não vai ao paciente ─
+
+
+async def test_receipt_dedup_marker_ends_turn_without_message():
+    """Quando register_payment devolve o marcador de dedup (2o processamento do
+    mesmo comprovante), o node encerra o turno sem enviar mensagem ao paciente.
+    Assim o paciente recebe uma única confirmação, a do 1o processamento."""
+    from app.graph.nodes import patient_agent_node
+    from app.graph.tools import RECEIPT_DEDUP_MARKER
+    from langchain_core.messages import ToolMessage
+
+    ai_with_call = AIMessage(content="")
+    ai_with_call.tool_calls = [{"name": "register_payment", "args": {}, "id": "tc_rp", "type": "tool_call"}]
+    tool_msg = ToolMessage(
+        content=f"{RECEIPT_DEDUP_MARKER}\n[INSTRUÇÃO INTERNA — NÃO ENVIE AO PACIENTE] duplicado.",
+        tool_call_id="tc_rp",
+        name="register_payment",
+    )
+
+    state = _make_patient_agent_state(
+        messages=[
+            HumanMessage(content="[imagem]: COMPROVANTE ..."),
+            ai_with_call,
+            tool_msg,
+        ],
+    )
+
+    sent = []
+    async def fake_send_text(phone, text):
+        sent.append(text)
+
+    with patch("app.graph.nodes.send_text", side_effect=fake_send_text), \
+         patch("app.whatsapp.send_text", side_effect=fake_send_text), \
+         patch("app.graph.nodes.save_message", new_callable=AsyncMock) as mock_save, \
+         patch("app.graph.nodes.get_upcoming_appointments", new_callable=AsyncMock, return_value=[]), \
+         patch("app.graph.nodes.get_user_by_phone", new_callable=AsyncMock, return_value={"price_adjustment_notified_at": "2026-01-01"}), \
+         patch("app.graph.nodes.get_last_assistant_message_time", new_callable=AsyncMock, return_value=None):
+        result = await patient_agent_node(state, CONFIG)
+
+    assert sent == [], f"nenhuma mensagem deve ir ao paciente no 2o processamento; foi: {sent!r}"
+    mock_save.assert_not_called()
+    last = result["messages"][-1]
+    assert getattr(last, "tool_calls", None) in (None, [])
+
+
+async def test_register_payment_normal_result_still_replies():
+    """Resultado normal de register_payment (sem o marcador de dedup) NÃO é
+    suprimido: o fluxo segue e a LLM responde ao paciente como hoje."""
+    from app.graph.nodes import patient_agent_node
+    from langchain_core.messages import ToolMessage
+
+    ai_with_call = AIMessage(content="")
+    ai_with_call.tool_calls = [{"name": "register_payment", "args": {}, "id": "tc_rp", "type": "tool_call"}]
+    tool_msg = ToolMessage(
+        content="Comprovante recebido e registrado com sucesso! ✅",
+        tool_call_id="tc_rp",
+        name="register_payment",
+    )
+    state = _make_patient_agent_state(
+        messages=[HumanMessage(content="[imagem]: COMPROVANTE ..."), ai_with_call, tool_msg],
+    )
+
+    final = AIMessage(content="Perfeito! Comprovante registrado ✅")
+    async def fake_ainvoke(messages):
+        return final
+    sent = []
+    async def fake_send_text(phone, text):
+        sent.append(text)
+
+    with patch("app.graph.nodes._get_agent_llm") as mock_llm_fn, \
+         patch("app.graph.nodes.send_text", side_effect=fake_send_text), \
+         patch("app.whatsapp.send_text", side_effect=fake_send_text), \
+         patch("app.graph.nodes.save_message", new_callable=AsyncMock), \
+         patch("app.graph.nodes.get_upcoming_appointments", new_callable=AsyncMock, return_value=[]), \
+         patch("app.graph.nodes.get_user_by_phone", new_callable=AsyncMock, return_value={"price_adjustment_notified_at": "2026-01-01"}), \
+         patch("app.graph.nodes.get_last_assistant_message_time", new_callable=AsyncMock, return_value=None):
+        mock_llm = MagicMock()
+        mock_llm.ainvoke = fake_ainvoke
+        mock_llm_fn.return_value = mock_llm
+        await patient_agent_node(state, CONFIG)
+
+    assert any("registrado" in t for t in sent), f"resultado normal deve responder ao paciente; enviado: {sent!r}"

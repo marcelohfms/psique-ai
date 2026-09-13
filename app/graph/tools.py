@@ -3369,6 +3369,45 @@ def _receipt_destination_is_foreign(image_description: str) -> bool:
 # paciente quita o saldo cheio, não outros R$100), então a janela pode ser folgada.
 _BOOKING_FEE_RESEND_WINDOW_MINUTES = 30
 
+# Marcador devolvido por register_payment quando o MESMO comprovante de imagem já
+# foi registrado há pouco (drive_link idêntico dentro da janela de reenvio). O
+# patient_agent_node detecta este marcador e encerra o turno em silêncio, para o
+# paciente receber uma única mensagem de sucesso. É a corrida de processamento
+# duplo do turno: mesmo arquivo, mesmos segundos, mesmo drive_link (casos Silvia
+# 5581981179458 11s, Renato 34637036406 52s). NÃO cobre reenvio em outro dia
+# (arquivo novo, drive_link diferente) — isso não é rajada e é tratado por outros
+# guards (paid_at) ou pela atendente.
+RECEIPT_DEDUP_MARKER = "[COMPROVANTE_JA_REGISTRADO]"
+
+
+async def _receipt_already_registered(client, phone: str, drive_link: str) -> bool:
+    """True se já existe um payment_receipt_registered com este drive_link, para
+    as variantes deste telefone, dentro de _BOOKING_FEE_RESEND_WINDOW_MINUTES.
+
+    Espelha o dedup de request_document (tools.py request_document). Só faz sentido
+    para comprovante de imagem: lançamentos do painel (is_link/payment_method) não
+    têm drive_link e nunca chegam aqui.
+
+    Leitura best-effort: se a consulta ao Supabase falhar, retorna False (não
+    deduplica) em vez de derrubar o registro de um pagamento legítimo. No pior caso
+    o comprovante é reprocessado, que é o comportamento anterior a esta guarda."""
+    import logging as _log
+    from datetime import timezone as _tz
+    _cutoff = (datetime.now(_tz.utc) - timedelta(minutes=_BOOKING_FEE_RESEND_WINDOW_MINUTES)).isoformat()
+    try:
+        _recent = await client.from_("events").select("id") \
+            .eq("event_type", "payment_receipt_registered") \
+            .eq("metadata->>drive_link", drive_link) \
+            .in_("phone", _phone_variants(phone)) \
+            .gte("created_at", _cutoff) \
+            .limit(1).execute()
+        return bool(_recent.data)
+    except Exception:
+        _log.getLogger(__name__).exception(
+            "RECEIPT_DEDUP read falhou — seguindo sem deduplicar phone=%s", phone
+        )
+        return False
+
 
 @tool
 async def register_payment(
@@ -3453,6 +3492,25 @@ async def register_payment(
         "REGISTER_PAYMENT start: drive_link=%r amount=%r image_description=%r",
         drive_link, amount, image_description[:120] if image_description else "",
     )
+
+    # ── Guard: mesmo comprovante de imagem processado em dobro ─────────────────
+    # A corrida de processamento duplo do turno chama register_payment duas vezes
+    # com o MESMO drive_link em segundos. Sem esta guarda o pagamento é gravado
+    # duas vezes (planilha + evento) e o paciente recebe duas mensagens de sucesso.
+    # Só imagem: is_link/payment_method (painel) não têm drive_link. Reenvio em
+    # outro dia gera arquivo novo (drive_link diferente) e não é pego aqui — é o
+    # comportamento certo, pois é um envio separado que merece resposta própria.
+    if drive_link and not is_link and not payment_method:
+        if await _receipt_already_registered(client, phone, drive_link):
+            _logger.warning(
+                "REGISTER_PAYMENT dedup: mesmo drive_link em <%dmin — não registra de novo. phone=%s link=%s",
+                _BOOKING_FEE_RESEND_WINDOW_MINUTES, phone, drive_link,
+            )
+            return (
+                f"{RECEIPT_DEDUP_MARKER}\n"
+                "[INSTRUÇÃO INTERNA — NÃO ENVIE AO PACIENTE] Este comprovante já foi "
+                "registrado há instantes (processamento duplo). Nada foi gravado de novo."
+            )
 
     # ── Resolve patient ────────────────────────────────────────────────────────
     is_third_party = False
