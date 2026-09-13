@@ -1890,6 +1890,28 @@ def _requested_hms_from_messages(messages: list, limit: int = 3) -> set[str]:
     return out
 
 
+_INTERNAL_NOTE_PREFIXES = (
+    "nota para a equipe",
+    "nota interna",
+    "nota para equipe",
+    "[nota interna]",
+    "[nota para a equipe]",
+)
+
+
+def _first_internal_marker_idx(text: str) -> int:
+    """Índice da 1ª ocorrência de um marcador de nota interna em QUALQUER posição
+    (case-insensitive), ou -1 se não houver.
+
+    Usado em dois pontos de patient_agent_node: para DIVIDIR a mensagem no envio
+    (parte antes do marcador vai ao paciente, o resto vira nota privada) e para os
+    guards anteriores (GUARD_TRANSFER, GUARD_FALSE_NO_SHIFT) NÃO agirem sobre um
+    conteúdo que contém nota interna — senão eles enviariam o texto inteiro ao
+    paciente (vazando a nota) ou o descartariam. Caso Wayne 5581999597907."""
+    _lower = (text or "").lower()
+    return min((_lower.find(p) for p in _INTERNAL_NOTE_PREFIXES if p in _lower), default=-1)
+
+
 def _correct_confirmation_summary_time(content: str, state: dict) -> str | None:
     """Corrige o horário do resumo "Só confirmar antes de registrar" quando o modelo
     escreve um horário que não foi oferecido e diverge do que o paciente pediu.
@@ -3117,6 +3139,11 @@ async def patient_agent_node(state: ConversationState, config: RunnableConfig) -
         not response.tool_calls
         and not state.get("silent_mode")
         and response.content
+        # Nota interna não é gatilho de transferência ao paciente: se o marcador
+        # está no texto, o split abaixo cuida do envio (nota → privada). Sem esta
+        # guarda, "Nota para a equipe: vou transferir..." vazaria inteira ao
+        # paciente e ainda forçaria um handoff indevido.
+        and _first_internal_marker_idx(response.content) < 0
     ):
         _transfer_phrases = (
             "vou transferir",
@@ -3179,6 +3206,9 @@ async def patient_agent_node(state: ConversationState, config: RunnableConfig) -
         and response.content
         and not state.get("silent_mode")
         and _last_h_idx is not None
+        # Não agir sobre conteúdo com nota interna: o texto da nota pode parecer uma
+        # negação de turno e o guard descartaria a nota silenciosamente.
+        and _first_internal_marker_idx(response.content) < 0
     ):
         _patient_txt = str(getattr(clean_messages[_last_h_idx], "content", "") or "")
         _requested = _shifts_requested_from_text(_patient_txt)
@@ -3235,19 +3265,8 @@ async def patient_agent_node(state: ConversationState, config: RunnableConfig) -
         # vira nota privada. Prompt regra (b): o marcador é APENAS para a equipe.
         # NÃO usar silent_mode aqui: em modo atendente a Eva ainda entrega mensagens
         # ao paciente pelo WhatsApp; silent_mode só controla a instrução do prompt.
-        _INTERNAL_PREFIXES = (
-            "nota para a equipe",
-            "nota interna",
-            "nota para equipe",
-            "[nota interna]",
-            "[nota para a equipe]",
-        )
         _content = response.content
-        _lower = _content.lower()
-        _marker_idx = min(
-            (_lower.find(p) for p in _INTERNAL_PREFIXES if p in _lower),
-            default=-1,
-        )
+        _marker_idx = _first_internal_marker_idx(_content)
 
         if _marker_idx >= 0:
             _patient_part = _content[:_marker_idx].strip()

@@ -6439,3 +6439,44 @@ async def test_internal_note_fallback_to_whatsapp_without_conv_id():
     assert notes == []  # add_private_note nunca chamado (sem conv_id)
     assert any("Confirmado" in s for s in sent)
     assert any("conferir cadastro" in s for s in sent)
+
+
+async def test_internal_note_with_transfer_phrase_does_not_leak_or_handoff():
+    """Regressão do review: uma nota interna contendo 'vou transferir' NÃO pode
+    vazar ao paciente nem disparar transfer_to_human. O GUARD_TRANSFER roda antes
+    do split e agia sobre o conteúdo inteiro; agora ele ignora conteúdo com
+    marcador de nota. A nota vai para a nota privada; o paciente não recebe nada."""
+    from app.graph.nodes import patient_agent_node
+    from app.graph.tools import transfer_to_human
+
+    state = _make_patient_agent_state(messages=[HumanMessage(content="oi")])
+    ai_response = AIMessage(content=(
+        "Nota para a equipe: vou transferir esse caso para o Dr. Júlio conferir o histórico."
+    ))
+    async def fake_ainvoke(messages):
+        return ai_response
+    sent, notes = [], []
+    async def fake_send_text(phone, text):
+        sent.append(text)
+    async def fake_add_note(cid, text):
+        notes.append(text)
+    transfer_mock = AsyncMock(return_value="Transferido.")
+
+    with patch("app.graph.nodes._get_agent_llm") as mock_llm_fn, \
+         patch("app.graph.nodes.send_text", side_effect=fake_send_text), \
+         patch("app.graph.nodes.save_message", new_callable=AsyncMock), \
+         patch("app.graph.nodes.get_conversation_id", return_value="conv-1"), \
+         patch("app.graph.nodes.add_private_note", side_effect=fake_add_note), \
+         patch.object(transfer_to_human, "coroutine", transfer_mock), \
+         _GUARD_RECEIPT_PATCHES["get_upcoming_appointments"], \
+         _GUARD_RECEIPT_PATCHES["get_user_by_phone"], \
+         _GUARD_RECEIPT_PATCHES["get_last_assistant_message_time"], \
+         _GUARD_RECEIPT_PATCHES["format_doctor_schedules"]:
+        mock_llm = MagicMock()
+        mock_llm.ainvoke = fake_ainvoke
+        mock_llm_fn.return_value = mock_llm
+        await patient_agent_node(state, CONFIG)
+
+    assert sent == [], f"nada deve ir ao paciente; foi: {sent!r}"
+    assert len(notes) == 1 and "vou transferir" in notes[0]
+    transfer_mock.assert_not_called()
