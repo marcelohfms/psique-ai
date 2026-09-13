@@ -3032,7 +3032,19 @@ async def patient_agent_node(state: ConversationState, config: RunnableConfig) -
         try:
             from datetime import datetime as _dt2
             from zoneinfo import ZoneInfo as _ZI2
-            _slot = _dt2.fromisoformat(_slot_dt).astimezone(_ZI2("America/Recife"))
+            _tz_rec = _ZI2("America/Recife")
+            _slot = _dt2.fromisoformat(_slot_dt)
+            # slot_datetime chega em horário LOCAL de Recife (igual a
+            # book_appointment em tools.py, que faz .replace(tzinfo=TZ)). Se vier
+            # naive, o horário de parede JÁ é de Recife — apenas anexamos o fuso.
+            # Usar .astimezone() sobre um naive o interpretaria como horário do
+            # sistema (UTC em produção) e deslocaria o resumo -3h (13:00 no lugar
+            # de 16:00), fazendo o paciente confirmar um horário errado enquanto o
+            # banco grava o certo. Só quando vier com fuso é que convertemos.
+            if _slot.tzinfo is None:
+                _slot = _slot.replace(tzinfo=_tz_rec)
+            else:
+                _slot = _slot.astimezone(_tz_rec)
             _weekdays_pt = ["Segunda-feira", "Terça-feira", "Quarta-feira", "Quinta-feira", "Sexta-feira", "Sábado", "Domingo"]
             _weekday_name = _weekdays_pt[_slot.weekday()]
             _summary = (
