@@ -2530,6 +2530,12 @@ async def reschedule_appointment(
         "updated_at": datetime.now(TZ).isoformat(),
         "reminder_day_before_sent_at": None,
         "reminder_day_of_sent_at": None,
+        # A confirmação de presença vale para uma DATA específica. Ao mudar a data,
+        # a confirmação da data antiga deixa de valer — o paciente ainda não
+        # confirmou a nova. Se confirmed_at sobrevivesse, a trava de idempotência
+        # em confirm_attendance suprimiria a confirmação genuína da nova data (nem
+        # regravava nem pintava o evento de verde no Calendar). Caso Isaac 13/09.
+        "confirmed_at": None,
     }
 
     # Only mark as scheduled and clear reschedule flag if patient confirmed

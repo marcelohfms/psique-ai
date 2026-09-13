@@ -3038,6 +3038,42 @@ async def test_reschedule_appointment_updates_event_and_notifies():
     mock_notify.assert_called()
 
 
+async def test_reschedule_appointment_clears_confirmed_at():
+    """Ao remarcar, a confirmação de presença da data ANTIGA não pode sobreviver:
+    reschedule_appointment deve zerar confirmed_at junto com os flags de lembrete.
+    Sem isso, a trava de idempotência de confirm_attendance suprime a confirmação
+    genuína da nova data e o evento no Calendar nunca é marcado (caso Isaac 13/09)."""
+    from app.graph.tools import reschedule_appointment
+    client, table, execute = _make_supabase_client()
+    execute.return_value = MagicMock(data={
+        "start_time": "2026-03-23T09:00:00+00:00",
+        "patient_id": "user-1",
+        "patients": {"name": "Maria"},
+        "confirmed_at": "2026-03-22T10:00:00+00:00",
+        "status": "scheduled",
+    })
+    with patch("app.graph.tools._get_doctor_calendar_id", new_callable=AsyncMock, return_value="cal123"), \
+         patch("app.google_calendar.update_event", new_callable=AsyncMock), \
+         patch("app.graph.tools.get_supabase", new_callable=AsyncMock, return_value=client), \
+         patch("app.graph.tools.get_users_by_phone", new_callable=AsyncMock, return_value=[{"id": "user-1"}]), \
+         patch("app.graph.tools.log_event", new_callable=AsyncMock), \
+         patch("app.graph.tools._notify_clinic", new_callable=AsyncMock):
+        await reschedule_appointment.coroutine(
+            appointment_id="evt-abc",
+            new_slot_datetime="2026-03-25T10:00:00",
+            slot_duration_minutes=60,
+            state=_make_state(),
+            config=CONFIG,
+        )
+    # o UPDATE da remarcação é o que carrega os flags de lembrete zerados
+    reschedule_update = next(
+        c.args[0] for c in table.update.call_args_list
+        if c.args and isinstance(c.args[0], dict) and "reminder_day_before_sent_at" in c.args[0]
+    )
+    assert "confirmed_at" in reschedule_update, "remarcação não zerou confirmed_at"
+    assert reschedule_update["confirmed_at"] is None
+
+
 async def test_reschedule_appointment_event_records_fee_paid_true_when_fee_paid():
     """O evento appointment_rescheduled deve registrar fee_paid=True quando a taxa
     de reserva já estava paga no momento da remarcação — é isso que a política de
