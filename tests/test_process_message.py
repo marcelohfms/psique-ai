@@ -1,4 +1,5 @@
 """Tests for process_message() — conversation routing logic."""
+import contextlib
 import pytest
 from unittest.mock import AsyncMock, MagicMock, patch, call
 from langchain_core.messages import HumanMessage, AIMessage
@@ -6150,3 +6151,132 @@ async def test_auto_reply_with_real_content_still_processes():
             chatbot.ainvoke.assert_called()
     finally:
         gg.chatbot = original
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# slot_datetime da LLM: horário de parede é sempre Recife (mesma regra do
+# confirm_appointment). Continuação do #238, que corrigiu só o card do resumo.
+# ─────────────────────────────────────────────────────────────────────────────
+
+@contextlib.contextmanager
+def _tz_utc():
+    """Força TZ=UTC para reproduzir o servidor de produção em qualquer máquina.
+
+    O dev roda em UTC-3, onde .astimezone() sobre um naive coincide com Recife e
+    o bug não aparece."""
+    import os as _os
+    import time as _time
+    _old = _os.environ.get("TZ")
+    _os.environ["TZ"] = "UTC"
+    _time.tzset()
+    try:
+        yield
+    finally:
+        if _old is None:
+            _os.environ.pop("TZ", None)
+        else:
+            _os.environ["TZ"] = _old
+        _time.tzset()
+
+
+@pytest.mark.parametrize("slot_dt", [
+    "2026-09-16T15:00:00",        # naive — o formato que o prompt pede
+    "2026-09-16T15:00:00-03:00",  # já com o fuso de Recife
+    "2026-09-16T15:00:00Z",       # com sufixo UTC, mas os dígitos são locais
+    "2026-09-16T15:00:00+00:00",
+])
+def test_slot_dt_recife_keeps_wallclock(slot_dt):
+    """O horário de parede do slot_datetime da LLM é sempre Recife.
+
+    Essa é a mesma leitura que confirm_appointment faz (tools.py:
+    `datetime.fromisoformat(slot_datetime).replace(tzinfo=TZ)`), que descarta
+    qualquer fuso que venha na string e grava os dígitos. Qualquer outro ponto do
+    código que interprete esse mesmo campo precisa concordar, senão o paciente lê
+    um horário e o banco grava outro."""
+    from app.graph.nodes import _slot_dt_recife
+
+    with _tz_utc():
+        got = _slot_dt_recife(slot_dt)
+
+    assert got.strftime("%H:%M") == "15:00", f"{slot_dt} deveria ler 15:00 em Recife"
+    assert got.strftime("%d/%m") == "16/09"
+    assert got.utcoffset().total_seconds() == -3 * 3600
+
+
+async def test_pending_confirm_slot_taken_message_uses_recife_wallclock():
+    """Quando o horário é tomado entre a oferta e o "sim", a mensagem que avisa a
+    paciente tem de citar o horário dela, não um deslocado de -3h.
+
+    O texto era montado com .astimezone(Recife) sobre o slot_datetime naive do
+    pending_appointment. Em produção (servidor em UTC) o naive virava UTC e a
+    paciente lia "das 13:00" para um horário de 16:00 — o mesmo erro de -3h do
+    card de confirmação corrigido no #238, que passou batido aqui."""
+    with _tz_utc():
+        result, sent, transfer_mock = await _run_pending_confirm_returning(
+            "[INSTRUÇÃO INTERNA — NÃO ENVIE AO PACIENTE] Este horário acabou de ser "
+            "preenchido por outra pessoa. Chame get_available_slots."
+        )
+
+    assert sent, "a paciente precisa ser avisada de que o horário foi preenchido"
+    aviso = sent[0]
+    assert "das 16:00 do dia 19/08" in aviso, (
+        f"a mensagem deve citar o horário de Recife (16:00), mas veio: {aviso!r}"
+    )
+    assert "13:00" not in aviso, "horário deslocado -3h chegou à paciente"
+
+
+async def test_pending_confirm_dedup_reconhece_mesmo_horario_em_servidor_utc():
+    """O guard de consulta duplicada compara o slot do pending_appointment com as
+    consultas já gravadas. Como parseava o slot naive com .astimezone(), em
+    produção (servidor em UTC) ele comparava um instante 3h deslocado e nunca
+    reconhecia a consulta que a própria Eva tinha acabado de gravar — a paciente
+    recebia "Tive um problema ao confirmar o agendamento" e ia para a fila humana
+    em vez de "sua consulta já está confirmada"."""
+    from app.graph.nodes import patient_agent_node
+    from app.graph.tools import confirm_appointment, transfer_to_human
+
+    state = _make_patient_agent_state(
+        preferred_doctor="bruna",
+        messages=[
+            AIMessage(content="Só confirmar antes de registrar: 19/08 às 16:00 ..."),
+            HumanMessage(content="Ok"),
+        ],
+        pending_appointment={
+            "slot_datetime": "2026-08-19T16:00:00",
+            "slot_duration_minutes": 60,
+            "modality": "online",
+            "doctor": "bruna",
+        },
+    )
+
+    client, table, execute = make_supabase_client()
+    table.in_.return_value = table
+    # A consulta já está no banco, gravada por confirm_appointment: 16:00 Recife.
+    execute.return_value = MagicMock(data=[
+        {"appointment_id": "evt-1", "start_time": "2026-08-19T16:00:00-03:00"},
+    ])
+
+    sent = []
+
+    async def fake_send_text(phone, text):
+        sent.append(text)
+
+    transfer_mock = AsyncMock(return_value="Transferido.")
+
+    with _tz_utc():
+        with patch.object(confirm_appointment, "coroutine", new_callable=AsyncMock,
+                          return_value="[INSTRUÇÃO INTERNA — NÃO ENVIE AO PACIENTE] Falha inesperada ao gravar a consulta."), \
+             patch.object(transfer_to_human, "coroutine", transfer_mock), \
+             patch("app.database.get_supabase", new_callable=AsyncMock, return_value=client), \
+             patch("app.database.get_users_by_phone", new_callable=AsyncMock, return_value=[{"id": "pid-1"}]), \
+             patch("app.whatsapp.send_text", side_effect=fake_send_text), \
+             patch("app.database.save_message", new_callable=AsyncMock), \
+             patch("app.graph.nodes.get_upcoming_appointments", new_callable=AsyncMock, return_value=[]), \
+             patch("app.graph.nodes.get_user_by_phone", new_callable=AsyncMock, return_value={"price_adjustment_notified_at": "2026-01-01"}), \
+             patch("app.graph.nodes.get_last_assistant_message_time", new_callable=AsyncMock, return_value=None):
+            await patient_agent_node(state, CONFIG)
+
+    assert any("já está confirmada" in t for t in sent), (
+        f"o guard de duplicata deveria reconhecer a consulta de 16:00; enviado: {sent!r}"
+    )
+    transfer_mock.assert_not_called()

@@ -1808,6 +1808,26 @@ def _extract_pending_appointment(text: str, state: dict) -> dict | None:
     }
 
 
+def _slot_dt_recife(slot_datetime: str) -> datetime:
+    """Lê um slot_datetime vindo da LLM como horário de parede de Recife.
+
+    É a MESMA leitura que confirm_appointment e reschedule_appointment fazem em
+    tools.py (`datetime.fromisoformat(slot_datetime).replace(tzinfo=TZ)`): os
+    dígitos são o horário local e qualquer fuso na string é descartado. Todo ponto
+    que exibe ou compara esse campo precisa concordar com a ferramenta que grava,
+    senão o paciente lê um horário e o banco guarda outro.
+
+    Usar .astimezone() aqui é o bug: sobre um naive ele assume o fuso do sistema
+    (UTC em produção) e desloca o horário -3h. Foi o que fez o card "Só confirmar
+    antes de registrar" mostrar 12:00 para um slot de 15:00 (#238) — casos
+    Cinthya/Taynnar 5581994522754 e Djalma 5581996228956.
+
+    NÃO use com valores vindos do banco (appointments.start_time): esses são
+    genuinamente com fuso e continuam convertendo com .astimezone().
+    """
+    return datetime.fromisoformat(slot_datetime).replace(tzinfo=ZoneInfo("America/Recife"))
+
+
 def _offered_hms_from_messages(messages: list) -> set[str]:
     """Horários (HH:MM) da oferta mais recente do get_available_slots no histórico.
 
@@ -2335,7 +2355,8 @@ async def patient_agent_node(state: ConversationState, config: RunnableConfig) -
                         _dup_check = await _sb.from_("appointments").select("appointment_id, start_time").in_("patient_id", _uids).eq("status", "scheduled").execute()
                         from datetime import datetime as _dtt
                         from zoneinfo import ZoneInfo as _ZI
-                        _slot_parsed = _dtt.fromisoformat(_slot_dt_check).astimezone(_ZI("America/Recife")) if _slot_dt_check else None
+                        # slot_datetime é o campo da LLM: horário de parede de Recife.
+                        _slot_parsed = _slot_dt_recife(_slot_dt_check) if _slot_dt_check else None
                         for _row in (_dup_check.data or []):
                             _row_dt = _dtt.fromisoformat(_row["start_time"]).astimezone(_ZI("America/Recife"))
                             if _slot_parsed and abs((_row_dt - _slot_parsed).total_seconds()) < 60:
@@ -2350,11 +2371,9 @@ async def patient_agent_node(state: ConversationState, config: RunnableConfig) -
                     # Slot taken between offer and confirmation — clear pending and ask Eva to find alternatives
                     _slot_str = ""
                     try:
-                        from datetime import datetime as _dtt2
-                        from zoneinfo import ZoneInfo as _ZI2
                         _sd = _pending_appt.get("slot_datetime", "")
                         if _sd:
-                            _dt = _dtt2.fromisoformat(_sd).astimezone(_ZI2("America/Recife"))
+                            _dt = _slot_dt_recife(_sd)
                             _slot_str = f" das {_dt.strftime('%H:%M')} do dia {_dt.strftime('%d/%m')}"
                     except Exception:
                         pass
@@ -3030,21 +3049,9 @@ async def patient_agent_node(state: ConversationState, config: RunnableConfig) -
 
         _summary = ""
         try:
-            from datetime import datetime as _dt2
-            from zoneinfo import ZoneInfo as _ZI2
-            _tz_rec = _ZI2("America/Recife")
-            _slot = _dt2.fromisoformat(_slot_dt)
-            # slot_datetime chega em horário LOCAL de Recife (igual a
-            # book_appointment em tools.py, que faz .replace(tzinfo=TZ)). Se vier
-            # naive, o horário de parede JÁ é de Recife — apenas anexamos o fuso.
-            # Usar .astimezone() sobre um naive o interpretaria como horário do
-            # sistema (UTC em produção) e deslocaria o resumo -3h (13:00 no lugar
-            # de 16:00), fazendo o paciente confirmar um horário errado enquanto o
-            # banco grava o certo. Só quando vier com fuso é que convertemos.
-            if _slot.tzinfo is None:
-                _slot = _slot.replace(tzinfo=_tz_rec)
-            else:
-                _slot = _slot.astimezone(_tz_rec)
+            # slot_datetime chega em horário LOCAL de Recife, igual ao que
+            # confirm_appointment grava — ver _slot_dt_recife.
+            _slot = _slot_dt_recife(_slot_dt)
             _weekdays_pt = ["Segunda-feira", "Terça-feira", "Quarta-feira", "Quinta-feira", "Sexta-feira", "Sábado", "Domingo"]
             _weekday_name = _weekdays_pt[_slot.weekday()]
             _summary = (
