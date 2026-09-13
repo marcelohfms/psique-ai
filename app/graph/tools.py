@@ -3380,16 +3380,27 @@ async def _receipt_already_registered(client, phone: str, drive_link: str) -> bo
 
     Espelha o dedup de request_document (tools.py request_document). Só faz sentido
     para comprovante de imagem: lançamentos do painel (is_link/payment_method) não
-    têm drive_link e nunca chegam aqui."""
+    têm drive_link e nunca chegam aqui.
+
+    Leitura best-effort: se a consulta ao Supabase falhar, retorna False (não
+    deduplica) em vez de derrubar o registro de um pagamento legítimo. No pior caso
+    o comprovante é reprocessado, que é o comportamento anterior a esta guarda."""
+    import logging as _log
     from datetime import timezone as _tz
     _cutoff = (datetime.now(_tz.utc) - timedelta(minutes=_BOOKING_FEE_RESEND_WINDOW_MINUTES)).isoformat()
-    _recent = await client.from_("events").select("id") \
-        .eq("event_type", "payment_receipt_registered") \
-        .eq("metadata->>drive_link", drive_link) \
-        .in_("phone", _phone_variants(phone)) \
-        .gte("created_at", _cutoff) \
-        .limit(1).execute()
-    return bool(_recent.data)
+    try:
+        _recent = await client.from_("events").select("id") \
+            .eq("event_type", "payment_receipt_registered") \
+            .eq("metadata->>drive_link", drive_link) \
+            .in_("phone", _phone_variants(phone)) \
+            .gte("created_at", _cutoff) \
+            .limit(1).execute()
+        return bool(_recent.data)
+    except Exception:
+        _log.getLogger(__name__).exception(
+            "RECEIPT_DEDUP read falhou — seguindo sem deduplicar phone=%s", phone
+        )
+        return False
 
 
 @tool

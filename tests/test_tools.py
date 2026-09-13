@@ -6676,3 +6676,41 @@ async def test_register_payment_panel_link_never_dedups():
         )
     assert RECEIPT_DEDUP_MARKER not in result
     mock_sheets.assert_awaited_once()
+
+
+async def test_receipt_already_registered_uses_30min_window():
+    """A janela de dedup é _BOOKING_FEE_RESEND_WINDOW_MINUTES (30min): o cutoff
+    passado a .gte(created_at, ...) fica ~30min atrás de agora. Garante que um
+    reenvio do mesmo comprovante FORA dessa janela (dias depois) não seria pego."""
+    from datetime import datetime, timezone, timedelta
+    from app.graph.tools import _receipt_already_registered, _BOOKING_FEE_RESEND_WINDOW_MINUTES
+    events_table = MagicMock()
+    for m in ("select", "eq", "in_", "limit", "gte", "order"):
+        getattr(events_table, m).return_value = events_table
+    events_table.execute = AsyncMock(return_value=MagicMock(data=[]))
+    client = MagicMock()
+    client.from_.return_value = events_table
+
+    before = datetime.now(timezone.utc)
+    await _receipt_already_registered(client, "5581999999999", "https://drive/x")
+    after = datetime.now(timezone.utc)
+
+    # captura o cutoff passado a .gte("created_at", cutoff)
+    gte_args = [c.args for c in events_table.gte.call_args_list if c.args and c.args[0] == "created_at"]
+    assert gte_args, "esperava .gte('created_at', cutoff)"
+    cutoff = datetime.fromisoformat(gte_args[0][1])
+    esperado_min = before - timedelta(minutes=_BOOKING_FEE_RESEND_WINDOW_MINUTES)
+    esperado_max = after - timedelta(minutes=_BOOKING_FEE_RESEND_WINDOW_MINUTES)
+    assert esperado_min <= cutoff <= esperado_max, f"cutoff {cutoff} fora da janela de 30min"
+
+
+async def test_receipt_already_registered_returns_false_on_db_error():
+    """Falha na leitura de dedup não derruba o registro do pagamento: retorna False."""
+    from app.graph.tools import _receipt_already_registered
+    events_table = MagicMock()
+    for m in ("select", "eq", "in_", "limit", "gte", "order"):
+        getattr(events_table, m).return_value = events_table
+    events_table.execute = AsyncMock(side_effect=Exception("supabase down"))
+    client = MagicMock()
+    client.from_.return_value = events_table
+    assert await _receipt_already_registered(client, "5581999999999", "https://drive/x") is False
