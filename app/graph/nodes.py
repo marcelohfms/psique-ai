@@ -2037,6 +2037,7 @@ async def patient_agent_node(state: ConversationState, config: RunnableConfig) -
     # mais que a ToolMessage. Sobre disponibilidade a tool é a única fonte de
     # verdade, então o texto dela vai direto ao paciente e o turno termina aqui.
     from app.graph.tools import REACTIVATION_SLOT_TAKEN_MARKER as _SLOT_TAKEN_MARKER
+    from app.graph.tools import RECEIPT_DEDUP_MARKER as _RECEIPT_DEDUP_MARKER
     _msgs_rp = list(state.get("messages") or [])
     _trailing_tools = []
     for _m_rp in reversed(_msgs_rp):
@@ -2055,6 +2056,16 @@ async def patient_agent_node(state: ConversationState, config: RunnableConfig) -
         for _tm_rp in _trailing_tools:
             _tm_name = getattr(_tm_rp, "name", None) or _tc_names_rp.get(getattr(_tm_rp, "tool_call_id", None))
             _tm_content = str(getattr(_tm_rp, "content", "") or "")
+            if _tm_name == "register_payment" and _RECEIPT_DEDUP_MARKER in _tm_content:
+                # 2o processamento do mesmo comprovante (dedup na tool). Nada foi
+                # gravado de novo; encerrar o turno em silêncio para o paciente não
+                # receber uma 2a mensagem de sucesso. AIMessage vazio fecha o turno
+                # (routing vai para END: sem tool_calls e sem RESUME_AFTER_TOOL).
+                _pa_logger.info(
+                    "GUARD_RECEIPT_DEDUP: comprovante duplicado, encerrando turno em silêncio phone=%s",
+                    state.get("phone"),
+                )
+                return {"messages": [AIMessage(content="")], "silent_mode": False}
             if _tm_name == "register_payment" and _SLOT_TAKEN_MARKER in _tm_content:
                 _pa_logger.info(
                     "GUARD_SLOT_TAKEN_VERBATIM: sending register_payment slot-taken result "
