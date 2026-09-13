@@ -6364,3 +6364,78 @@ async def test_register_payment_normal_result_still_replies():
         await patient_agent_node(state, CONFIG)
 
     assert any("registrado" in t for t in sent), f"resultado normal deve responder ao paciente; enviado: {sent!r}"
+
+
+# ── Nota interna: split no marcador em qualquer posição ───────────────────────
+
+async def _run_agent_note_split(ai_content, conv_id="conv-1"):
+    """Roda patient_agent_node com resposta de texto puro e captura send_text e
+    add_private_note. Retorna (sent, notes)."""
+    from app.graph.nodes import patient_agent_node
+    state = _make_patient_agent_state(messages=[HumanMessage(content="oi")])
+    ai_response = AIMessage(content=ai_content)
+    async def fake_ainvoke(messages):
+        return ai_response
+    sent, notes = [], []
+    async def fake_send_text(phone, text):
+        sent.append(text)
+    async def fake_add_note(cid, text):
+        notes.append(text)
+    with patch("app.graph.nodes._get_agent_llm") as mock_llm_fn, \
+         patch("app.graph.nodes.send_text", side_effect=fake_send_text), \
+         patch("app.graph.nodes.save_message", new_callable=AsyncMock), \
+         patch("app.graph.nodes.get_conversation_id", return_value=conv_id), \
+         patch("app.graph.nodes.add_private_note", side_effect=fake_add_note), \
+         _GUARD_RECEIPT_PATCHES["get_upcoming_appointments"], \
+         _GUARD_RECEIPT_PATCHES["get_user_by_phone"], \
+         _GUARD_RECEIPT_PATCHES["get_last_assistant_message_time"], \
+         _GUARD_RECEIPT_PATCHES["format_doctor_schedules"]:
+        mock_llm = MagicMock()
+        mock_llm.ainvoke = fake_ainvoke
+        mock_llm_fn.return_value = mock_llm
+        await patient_agent_node(state, CONFIG)
+    return sent, notes
+
+
+async def test_internal_note_mid_message_splits_patient_and_team():
+    """Caso Wayne (5581999597907, 08/09/2026): frase de paciente + nota interna na
+    mesma mensagem. A parte antes do marcador vai ao paciente; a nota vira nota
+    privada; o texto da nota NÃO chega ao paciente."""
+    content = (
+        "Os valores das consultas foram atualizados em junho de 2026, tá bom? 😊\n\n"
+        "Nota para a equipe: segundo a Dra. Bruna, Wayne não está mais em acompanhamento."
+    )
+    sent, notes = await _run_agent_note_split(content)
+
+    assert len(sent) == 1
+    assert "valores das consultas foram atualizados" in sent[0]
+    assert "Nota para a equipe" not in sent[0], "nota vazou para o paciente"
+    assert "não está mais em acompanhamento" not in sent[0]
+    assert len(notes) == 1
+    assert "não está mais em acompanhamento" in notes[0]
+
+
+async def test_internal_note_at_start_only_private_note():
+    """Marcador no início: nada vai ao paciente, tudo vira nota privada (igual a hoje)."""
+    sent, notes = await _run_agent_note_split("Nota para a equipe: verificar X com o Dr. Júlio.")
+    assert sent == []
+    assert len(notes) == 1
+    assert "verificar X" in notes[0]
+
+
+async def test_no_marker_goes_to_patient():
+    """Sem marcador: tudo vai ao paciente, nada vira nota privada."""
+    sent, notes = await _run_agent_note_split("Perfeito! Sua consulta está confirmada. 😊")
+    assert len(sent) == 1
+    assert "consulta está confirmada" in sent[0]
+    assert notes == []
+
+
+async def test_internal_note_fallback_to_whatsapp_without_conv_id():
+    """Fallback preservado: sem conv_id, a nota cai para o WhatsApp (melhor lugar
+    errado do que sumir). Só a parte da nota; a parte de paciente também é enviada."""
+    content = "Confirmado! 😊\n\nNota para a equipe: conferir cadastro."
+    sent, notes = await _run_agent_note_split(content, conv_id=None)
+    assert notes == []  # add_private_note nunca chamado (sem conv_id)
+    assert any("Confirmado" in s for s in sent)
+    assert any("conferir cadastro" in s for s in sent)

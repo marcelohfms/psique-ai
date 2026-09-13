@@ -3227,10 +3227,14 @@ async def patient_agent_node(state: ConversationState, config: RunnableConfig) -
     if not response.tool_calls and response.content:
         phone = state["phone"]
 
-        # Detect internal-note responses by content prefix ONLY.
-        # Do NOT use silent_mode here: when an attendant sends a command, Eva must
-        # still deliver patient-facing messages to the patient via WhatsApp.
-        # silent_mode only controls the system-prompt instruction (see below).
+        # Detecta nota interna em QUALQUER posição do texto (não só no início).
+        # A Eva às vezes gruda uma frase de paciente antes do marcador (caso Wayne
+        # 5581999597907, 08/09/2026: aviso de preço + "Nota para a equipe: ..."),
+        # e o startswith antigo deixava a nota vazar inteira para o paciente.
+        # Dividimos: parte ANTES do marcador vai ao paciente; do marcador em diante
+        # vira nota privada. Prompt regra (b): o marcador é APENAS para a equipe.
+        # NÃO usar silent_mode aqui: em modo atendente a Eva ainda entrega mensagens
+        # ao paciente pelo WhatsApp; silent_mode só controla a instrução do prompt.
         _INTERNAL_PREFIXES = (
             "nota para a equipe",
             "nota interna",
@@ -3238,13 +3242,20 @@ async def patient_agent_node(state: ConversationState, config: RunnableConfig) -
             "[nota interna]",
             "[nota para a equipe]",
         )
-        _content_lower = response.content.lstrip().lower()
-        is_internal = any(_content_lower.startswith(p) for p in _INTERNAL_PREFIXES)
+        _content = response.content
+        _lower = _content.lower()
+        _marker_idx = min(
+            (_lower.find(p) for p in _INTERNAL_PREFIXES if p in _lower),
+            default=-1,
+        )
 
-        if is_internal:
-            # Post as Chatwoot private note.
-            # Fallback to WhatsApp if conv_id is missing or the API call fails —
-            # better the message arrive in the wrong place than disappear silently.
+        if _marker_idx >= 0:
+            _patient_part = _content[:_marker_idx].strip()
+            _note_part = _content[_marker_idx:].strip()
+
+            # Nota (marcador em diante) → nota privada no Chatwoot.
+            # Fallback: sem conv_id ou falha da API, cai para o WhatsApp — melhor a
+            # nota chegar no lugar errado do que sumir.
             import logging as _log
             _node_logger = _log.getLogger(__name__)
             conv_id = get_conversation_id(phone)
@@ -3252,7 +3263,7 @@ async def patient_agent_node(state: ConversationState, config: RunnableConfig) -
             posted = False
             if conv_id:
                 try:
-                    await add_private_note(conv_id, response.content)
+                    await add_private_note(conv_id, _note_part)
                     posted = True
                 except Exception:
                     _node_logger.exception(
@@ -3260,13 +3271,21 @@ async def patient_agent_node(state: ConversationState, config: RunnableConfig) -
                     )
             if not posted:
                 _node_logger.warning(
-                    "PRIVATE_NOTE no conv_id or post failed — sending to WhatsApp phone=%s", phone
+                    "PRIVATE_NOTE no conv_id or post failed — sending note to WhatsApp phone=%s", phone
                 )
-                await send_text(phone, response.content)
-            await save_message(phone, "assistant", response.content)
+                await send_text(phone, _note_part)
+
+            # Parte antes do marcador (se houver) → paciente.
+            if _patient_part:
+                await send_text(phone, _patient_part)
+                if needs_price_notice:
+                    await upsert_user(phone, {"price_adjustment_notified_at": now_dt.isoformat()}, user_id=state.get("user_db_id"))
+
+            # Histórico fiel: grava o conteúdo completo uma vez.
+            await save_message(phone, "assistant", _content)
         else:
-            await send_text(phone, response.content)
-            await save_message(phone, "assistant", response.content)
+            await send_text(phone, _content)
+            await save_message(phone, "assistant", _content)
             if needs_price_notice:
                 await upsert_user(phone, {"price_adjustment_notified_at": now_dt.isoformat()}, user_id=state.get("user_db_id"))
 
