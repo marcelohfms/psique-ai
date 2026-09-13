@@ -4085,8 +4085,19 @@ def _make_supabase_client_with_appointment(start_time="2026-03-23T09:00:00+00:00
               "gte", "order", "insert", "update", "upsert", "is_"):
         getattr(table, m).return_value = table
     table.execute = execute
+
+    # Tabela `events` isolada: a guarda de dedup lê daqui. Vazia por padrão, então
+    # nenhum comprovante é tratado como duplicado nos testes que não configuram isto.
+    events_table = MagicMock()
+    for m in ("select", "eq", "in_", "limit", "gte", "order"):
+        getattr(events_table, m).return_value = events_table
+    events_table.execute = AsyncMock(return_value=MagicMock(data=[]))
+
     client = MagicMock()
-    client.from_.return_value = table
+
+    def _from(name):
+        return events_table if name == "events" else table
+    client.from_.side_effect = _from
     return client, table, execute
 
 
