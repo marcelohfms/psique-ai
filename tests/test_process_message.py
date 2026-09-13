@@ -6033,6 +6033,76 @@ async def test_guard_premature_confirm_freezes_patient_name():
     assert pend.get("patient_name") == "Isadora de Sousa Costa"
 
 
+async def test_guard_premature_confirm_summary_time_in_recife_wallclock():
+    """GUARD_PREMATURE_CONFIRM: o resumo enviado ao paciente deve mostrar o MESMO
+    horário de parede do slot_datetime (horário local de Recife), igual ao que
+    book_appointment grava. O slot_datetime chega naive ('2026-09-10T16:00:00') e
+    representa 16:00 em Recife. Num servidor em UTC, montar o resumo com
+    .astimezone(Recife) sobre um datetime naive o interpretava como 16:00 UTC e
+    exibia 13:00 (-3h) — a paciente confirmava um horário errado enquanto o banco
+    gravava 16:00. Regressão: casos Cinthya/Taynnar 5581994522754 e Djalma
+    5581996228956, 09-13/09/2026.
+
+    O teste força TZ=UTC para reproduzir a condição de produção em qualquer
+    máquina (o dev aqui roda em UTC-3, onde o bug não apareceria)."""
+    import os as _os
+    import time as _time
+    from app.graph.nodes import patient_agent_node
+
+    ai_response = AIMessage(content="")
+    ai_response.tool_calls = [{
+        "name": "confirm_appointment",
+        "args": {
+            "slot_datetime": "2026-09-10T16:00:00",
+            "slot_duration_minutes": 60,
+            "modality": "presencial",
+        },
+        "id": "tc_confirm",
+        "type": "tool_call",
+    }]
+
+    state = _make_patient_agent_state(
+        patient_name="Isadora de Sousa Costa",
+        preferred_doctor="julio",
+        pending_appointment=None,
+        messages=[HumanMessage(content="quinta 10/09 16h presencial")],
+    )
+
+    async def fake_ainvoke(messages):
+        return ai_response
+
+    sent = AsyncMock()
+
+    _old_tz = _os.environ.get("TZ")
+    _os.environ["TZ"] = "UTC"
+    _time.tzset()
+    try:
+        with patch("app.graph.nodes._get_agent_llm") as mock_llm_fn, \
+             patch("app.graph.nodes.send_text", sent), \
+             patch("app.whatsapp.send_text", new_callable=AsyncMock), \
+             patch("app.graph.nodes.save_message", new_callable=AsyncMock), \
+             patch("app.graph.nodes.get_upcoming_appointments", new_callable=AsyncMock, return_value=[]), \
+             patch("app.graph.nodes.get_user_by_phone", new_callable=AsyncMock, return_value={"price_adjustment_notified_at": "2026-01-01"}), \
+             patch("app.graph.nodes.get_last_assistant_message_time", new_callable=AsyncMock, return_value=None), \
+             patch("app.google_calendar.format_doctor_schedules", return_value="seg-sex"):
+            mock_llm = MagicMock()
+            mock_llm.ainvoke = fake_ainvoke
+            mock_llm_fn.return_value = mock_llm
+            result = await patient_agent_node(state, CONFIG)
+    finally:
+        if _old_tz is None:
+            _os.environ.pop("TZ", None)
+        else:
+            _os.environ["TZ"] = _old_tz
+        _time.tzset()
+
+    summary = sent.await_args.args[1]
+    assert "às 16:00" in summary, f"resumo com horário errado: {summary!r}"
+    assert "13:00" not in summary
+    # E o pending_appointment segue com o slot original intacto.
+    assert result["pending_appointment"]["slot_datetime"] == "2026-09-10T16:00:00"
+
+
 # ── Guarda contra respostas automáticas de ausência ───────────────────────────
 
 async def test_auto_reply_is_ignored_without_running_graph():
