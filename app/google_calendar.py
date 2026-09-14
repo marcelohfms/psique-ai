@@ -74,7 +74,7 @@ SCHEDULE_EXCEPTIONS: dict[str, dict[str, list[tuple[int, int, int, int, str]]]] 
 
 DOCTOR_SCHEDULES: dict[str, dict[int, list[tuple[int, int, int, int, str]]]] = {
     "bruna": {
-        0: [(7, 30, 8, 30, "online"), (16, 30, 18, 30, "online")],   # Segunda — tudo online
+        0: [(14, 0, 18, 0, "online")],                               # Segunda — só à tarde, tudo online (14h/15h/16h/17h)
         2: [(9, 0, 12, 0, "escolha"), (14, 0, 18, 0, "escolha")],    # Quarta — paciente escolhe
         4: [(8, 0, 12, 0, "escolha"), (13, 0, 16, 0, "online")],     # Sexta — manhã escolha, tarde online
     },

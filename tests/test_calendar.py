@@ -431,9 +431,9 @@ async def test_bruna_wednesday_returns_slots(freeze_calendar_now):
     assert all(dt.weekday() == 2 for dt, _ in slots)  # Wednesday
 
 
-async def test_bruna_monday_morning_no_mid_morning_slots(freeze_calendar_now):
-    """Dra. Bruna on Monday works 07:30-08:30 and 16:30-18:30 only.
-    Requesting 'manha' must NOT return 9h/10h/11h slots."""
+async def test_bruna_monday_has_no_morning(freeze_calendar_now):
+    """Dra. Bruna on Monday works only in the afternoon (14h-18h, online).
+    Requesting 'manha' must return no slots at all."""
     from app.google_calendar import get_available_slots
 
     service = _make_service([])  # empty calendar
@@ -446,20 +446,13 @@ async def test_bruna_monday_morning_no_mid_morning_slots(freeze_calendar_now):
             slot_minutes=60,
             doctor_key="bruna",
         )
-    hours = [dt.hour for dt, _ in slots]
-    # 9, 10, 11 must never appear — Bruna's Monday morning window is 07:30-08:30
-    for bad_hour in (9, 10, 11, 12, 13, 14, 15):
-        assert bad_hour not in hours, f"Unexpected slot at {bad_hour}h for Bruna on Monday"
+    assert slots == [], f"Bruna has no Monday morning, got {slots}"
 
 
-async def test_bruna_monday_default_shift_includes_half_hour_window(freeze_calendar_now):
-    """Dra. Bruna's Monday window is 07:30-08:30. With no specific shift
-    requested ("qualquer"), every window for the day must be offered as-is,
-    including this one that starts on a half hour.
-    Regression: the shift-overlap filter used to compare whole hours only
-    (entry[2] > shift_start_h -> 8 > 8 -> False), incorrectly discarding this
-    window under the "qualquer" default shift bounds (8-18h) before it could
-    even be clipped."""
+async def test_bruna_monday_afternoon_slots(freeze_calendar_now):
+    """Dra. Bruna's Monday afternoon window is 14h-18h, all online.
+    With a 1h slot that yields starts at 14h, 15h, 16h and 17h, every one
+    flagged as online."""
     from app.google_calendar import get_available_slots
 
     service = _make_service([])  # empty calendar
@@ -472,7 +465,8 @@ async def test_bruna_monday_default_shift_includes_half_hour_window(freeze_calen
             slot_minutes=60,
             doctor_key="bruna",
         )
-    assert (datetime(2026, 3, 23, 7, 30, tzinfo=TZ), "online") in slots
+    assert [dt.hour for dt, _ in slots] == [14, 15, 16, 17]
+    assert all(mod == "online" for _, mod in slots)
 
 
 # ── turno combinado "tarde e noite" ──────────────────────────────────────────
@@ -896,19 +890,24 @@ async def test_no_supabase_crosscheck_without_doctor_key(freeze_calendar_now):
 
 
 # ── slot que atravessa a borda do turno ───────────────────────────────────────
-# A segunda da Dra. Bruna vai das 16:30 às 18:30, mas "tarde" termina às 18:00 e
-# "noite" começa às 18:00. O recorte cortava o FIM da janela, então o 17:30
-# (17:30→18:30) estourava a tarde e não cabia na noite (18:00→18:30 é curto
-# demais): o horário sumia dos dois turnos e não era ofertado a ninguém.
-# Vale para qualquer janela que cruze 12:00, 13:00 ou 18:00.
+# Cenário: uma janela das 16:30 às 18:30, mas "tarde" termina às 18:00 e "noite"
+# começa às 18:00. O recorte cortava o FIM da janela, então o 17:30 (17:30→18:30)
+# estourava a tarde e não cabia na noite (18:00→18:30 é curto demais): o horário
+# sumia dos dois turnos e não era ofertado a ninguém. Vale para qualquer janela
+# que cruze 12:00, 13:00 ou 18:00.
+# A janela 16:30-18:30 é injetada via patch (SYNTHETIC_BOUNDARY_SCHEDULE) porque
+# a grade real da Bruna na segunda não tem mais horário meio (é 14h-18h cheio);
+# assim o teste protege a regra de borda sem depender do horário de produção.
+SYNTHETIC_BOUNDARY_SCHEDULE = {"bruna": {0: [(16, 30, 18, 30, "online")]}}
 
 
 async def test_slot_que_termina_depois_do_turno_ainda_e_ofertado(freeze_calendar_now):
-    """Bruna, segunda 16:30-18:30, tarde: 16:30 E 17:30 — o 17:30 termina 18:30."""
+    """Janela 16:30-18:30, tarde: 16:30 E 17:30 — o 17:30 termina 18:30."""
     from app.google_calendar import get_available_slots
 
     with patch("app.google_calendar._credentials", return_value=MagicMock()), \
-         patch("app.google_calendar.build", return_value=_make_service([])):
+         patch("app.google_calendar.build", return_value=_make_service([])), \
+         patch.dict("app.google_calendar.DOCTOR_SCHEDULES", SYNTHETIC_BOUNDARY_SCHEDULE):
         slots = await get_available_slots(
             calendar_id="cal-test",
             preferred_day="2026-03-23",  # segunda
@@ -926,7 +925,8 @@ async def test_slot_que_atravessa_a_borda_nao_aparece_tambem_no_turno_seguinte(f
     from app.google_calendar import get_available_slots
 
     with patch("app.google_calendar._credentials", return_value=MagicMock()), \
-         patch("app.google_calendar.build", return_value=_make_service([])):
+         patch("app.google_calendar.build", return_value=_make_service([])), \
+         patch.dict("app.google_calendar.DOCTOR_SCHEDULES", SYNTHETIC_BOUNDARY_SCHEDULE):
         slots = await get_available_slots(
             calendar_id="cal-test",
             preferred_day="2026-03-23",
@@ -965,15 +965,16 @@ async def test_slot_na_borda_das_18h_pertence_a_noite_e_nao_duplica(freeze_calen
 
 async def test_slot_de_2h_que_atravessa_a_borda_do_turno(freeze_calendar_now):
     """A consulta de 2h da primeira consulta de menor também atravessa a borda:
-    na segunda da Bruna, 16:30→18:30 cabe na janela e não pode sumir só porque a
+    na janela 16:30-18:30, o 16:30→18:30 cabe inteiro e não pode sumir só porque a
     tarde termina às 18:00."""
     from app.google_calendar import get_available_slots
 
     with patch("app.google_calendar._credentials", return_value=MagicMock()), \
-         patch("app.google_calendar.build", return_value=_make_service([])):
+         patch("app.google_calendar.build", return_value=_make_service([])), \
+         patch.dict("app.google_calendar.DOCTOR_SCHEDULES", SYNTHETIC_BOUNDARY_SCHEDULE):
         slots = await get_available_slots(
             calendar_id="cal-test",
-            preferred_day="2026-03-23",  # Bruna: segunda 16:30-18:30
+            preferred_day="2026-03-23",  # janela sintética 16:30-18:30
             preferred_shift="tarde",
             slot_minutes=120,
             doctor_key="bruna",
