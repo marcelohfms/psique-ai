@@ -142,3 +142,113 @@ async def test_fetch_abandoned_excludes_already_handled():
     # com exclude_handled=False, aparece (relatório read-only)
     got = await fetch_abandoned(_FakeClient(data), NOW, exclude_handled=False)
     assert [c["phone"] for c in got] == ["5583111"]
+
+
+# ── guarda: quem já tem consulta ativa não está abandonado ────────────────────
+# Cenário real (Ana Daniela): paciente com consulta marcada e confirmada pede para
+# adiantar o horário, a Eva mostra horários (slots_offered), ela mantém a consulta
+# que já tinha. Sem novo appointment_booked/rescheduled, o detector antigo tratava
+# como abandono e disparava o nudge "a gente não chegou a fechar o horário".
+
+class _TableAwareQuery:
+    """Fake de query que roteia por tabela e aplica in_/eq/gte em memória."""
+
+    def __init__(self, rows):
+        self._rows = rows
+        self._filters = []
+        self._event_key = None
+
+    def select(self, *a, **k):
+        return self
+
+    def order(self, *a, **k):
+        return self
+
+    def eq(self, col, val):
+        if col == "event_type":
+            self._event_key = val
+        else:
+            self._filters.append(("eq", col, val))
+        return self
+
+    def in_(self, col, vals):
+        if col == "event_type":
+            self._event_key = tuple(vals)
+        else:
+            self._filters.append(("in", col, list(vals)))
+        return self
+
+    def gte(self, col, val):
+        self._filters.append(("gte", col, val))
+        return self
+
+    async def execute(self):
+        rows = self._rows
+        if self._event_key is not None:  # tabela events, keyed por event_type
+            rows = rows.get(self._event_key, []) if isinstance(rows, dict) else []
+        for kind, col, val in self._filters:
+            if kind == "eq":
+                rows = [r for r in rows if r.get(col) == val]
+            elif kind == "in":
+                rows = [r for r in rows if r.get(col) in val]
+            elif kind == "gte":
+                rows = [r for r in rows if str(r.get(col)) >= str(val)]
+        return MagicMock(data=rows)
+
+
+class _TableAwareClient:
+    def __init__(self, events, contacts=None, appointments=None):
+        self._events = events
+        self._contacts = contacts or []
+        self._appointments = appointments or []
+
+    def from_(self, table):
+        if table == "contacts":
+            return _TableAwareQuery(self._contacts)
+        if table == "appointments":
+            return _TableAwareQuery(self._appointments)
+        return _TableAwareQuery(self._events)
+
+
+def _abandoning_events():
+    offered = NOW - timedelta(hours=6)
+    return {
+        "slots_offered": [{"phone": "5581996993880", "metadata": {"doctor": "bruna"},
+                           "created_at": offered.isoformat()}],
+        CONVERSION_EVENTS: [],
+        HANDLED_EVENTS: [],
+    }
+
+
+async def test_fetch_abandoned_skips_phone_with_active_appointment():
+    """Telefone com consulta scheduled futura não entra na varredura de abandono."""
+    client = _TableAwareClient(
+        events=_abandoning_events(),
+        contacts=[{"id": "c1", "phone": "5581996993880"}],
+        appointments=[{"contact_id": "c1", "status": "scheduled",
+                       "start_time": (NOW + timedelta(days=1)).isoformat()}],
+    )
+    assert await fetch_abandoned(client, NOW) == []
+
+
+async def test_fetch_abandoned_flags_phone_without_active_appointment():
+    """Sem consulta ativa, o abandono continua sendo detectado (não silencia demais)."""
+    client = _TableAwareClient(
+        events=_abandoning_events(),
+        contacts=[{"id": "c1", "phone": "5581996993880"}],
+        appointments=[],  # nenhuma consulta ativa
+    )
+    result = await fetch_abandoned(client, NOW)
+    assert [c["phone"] for c in result] == ["5581996993880"]
+
+
+async def test_fetch_abandoned_ignores_canceled_appointment():
+    """Consulta cancelada não protege: continua sendo abandono."""
+    client = _TableAwareClient(
+        events=_abandoning_events(),
+        contacts=[{"id": "c1", "phone": "5581996993880"}],
+        appointments=[{"contact_id": "c1", "status": "canceled",
+                       "start_time": (NOW + timedelta(days=1)).isoformat()}],
+    )
+    result = await fetch_abandoned(client, NOW)
+    assert [c["phone"] for c in result] == ["5581996993880"]

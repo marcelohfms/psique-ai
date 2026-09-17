@@ -109,7 +109,64 @@ async def fetch_abandoned(
         ).data or []
         handled = {ev["phone"] for ev in rows if ev.get("phone")}
 
-    return select_abandoned(latest_offer, booked_at, cutoff, handled)
+    abandoned = select_abandoned(latest_offer, booked_at, cutoff, handled)
+
+    # Guarda: quem já tem consulta ativa não está abandonado. É o caso de quem só
+    # pediu horários para adiantar/mudar e manteve a consulta que já tinha — sem
+    # gerar appointment_booked/rescheduled, parecia abandono. Uma confirmação
+    # (appointment_confirmed) não vira evento de conversão, então filtramos aqui
+    # olhando a agenda de fato.
+    active = await _phones_with_active_appointment(
+        client, [c["phone"] for c in abandoned], now,
+    )
+    return [c for c in abandoned if c["phone"] not in active]
+
+
+async def _phones_with_active_appointment(
+    client, phones: list[str], now: datetime,
+) -> set[str]:
+    """Dos telefones dados, devolve os que têm consulta ativa (status scheduled,
+    início a partir de agora). Mapeia telefone → contato → appointments usando o
+    mesmo client, aceitando as variantes com/sem o 9 (contacts guarda a canônica).
+    """
+    if not phones:
+        return set()
+    from app.phone import _phone_variants
+
+    variant_to_phone: dict[str, str] = {}
+    for ph in set(phones):
+        for variant in _phone_variants(ph):
+            variant_to_phone[variant] = ph
+    if not variant_to_phone:
+        return set()
+
+    contacts = (
+        await client.from_("contacts")
+        .select("id, phone")
+        .in_("phone", list(variant_to_phone))
+        .execute()
+    ).data or []
+    contact_to_phone: dict[str, str] = {}
+    for c in contacts:
+        phone = variant_to_phone.get(c.get("phone"))
+        if phone and c.get("id"):
+            contact_to_phone[c["id"]] = phone
+    if not contact_to_phone:
+        return set()
+
+    appts = (
+        await client.from_("appointments")
+        .select("contact_id, status, start_time")
+        .in_("contact_id", list(contact_to_phone))
+        .eq("status", "scheduled")
+        .gte("start_time", now.isoformat())
+        .execute()
+    ).data or []
+    return {
+        contact_to_phone[a["contact_id"]]
+        for a in appts
+        if a.get("contact_id") in contact_to_phone
+    }
 
 
 def is_nudge_eligible(active: bool, window_open: bool) -> bool:
