@@ -721,7 +721,7 @@ def test_days_summary_omits_exception_block_when_none_upcoming():
     from app.google_calendar import format_doctor_days_summary
 
     with patch("app.google_calendar.date") as mock_date:
-        mock_date.today.return_value = date(2026, 9, 15)
+        mock_date.today.return_value = date(2026, 9, 24)
         mock_date.fromisoformat = date.fromisoformat
         mock_date.side_effect = lambda *a, **kw: date(*a, **kw)
         text = format_doctor_days_summary()
