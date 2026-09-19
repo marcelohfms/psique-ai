@@ -141,3 +141,35 @@ async def test_nudge_skipped_when_not_cadastro(monkeypatch):
     await cron._maybe_nudge(client=None, graph=None, rec=rec, now=NOW)
 
     send_mock.assert_not_awaited()
+
+
+# ── relatório: seleção de cadastro-abandonado frio ────────────────────────────
+
+import scripts.send_scheduling_stall_report as report
+from app.lead_stall import REPORT_EVENT
+
+
+async def test_report_selects_cold_cadastro_abandonado(monkeypatch):
+    async def fake_evaluate(client, now):
+        return [
+            {"phone": "5581111", "situation": LABEL_CADASTRO,
+             "user": {"name": "Ana", "active": False}, "last_msg_at": NOW},   # pausado → reportável
+            {"phone": "5582222", "situation": LABEL_CADASTRO,
+             "user": {"name": "Bia", "active": True}, "last_msg_at": NOW},    # ativo+janela → nudge cuida
+            {"phone": "5583333", "situation": LABEL_NEW,
+             "user": {"name": "Cid", "active": True}, "last_msg_at": NOW},    # não é cadastro-abandonado
+        ]
+
+    async def fake_window(client, phone, now):
+        return True  # 5582222 está na janela
+
+    async def fake_get_events(phone, event_type, limit=50):
+        return []  # nada reportado ainda
+
+    monkeypatch.setattr(report, "evaluate_leads", fake_evaluate)
+    monkeypatch.setattr(report, "_window_open_safe", fake_window)
+    monkeypatch.setattr(report, "get_events_by_type", fake_get_events)
+
+    got = await report.fetch_cadastro_abandonado_reportable(client=None, now=NOW)
+    assert [c["phone"] for c in got] == ["5581111"]
+    assert got[0]["name"] == "Ana"

@@ -22,8 +22,10 @@ from dotenv import load_dotenv
 load_dotenv()
 
 from app.scheduling_stall import (
-    fetch_abandoned, is_nudge_eligible, REPORT_EVENT, mark_handled,
+    fetch_abandoned, is_nudge_eligible, REPORT_EVENT as REPORT_EVENT_SCHED, mark_handled,
 )
+from app.lead_stall import evaluate_leads, LABEL_CADASTRO, REPORT_EVENT
+from app.database import get_events_by_type
 
 TZ = ZoneInfo("America/Recife")
 
@@ -45,6 +47,42 @@ def _fmt_case(case: dict) -> str:
     return line
 
 
+async def fetch_cadastro_abandonado_reportable(client, now: datetime) -> list[dict]:
+    """cadastro-abandonado que a Eva NÃO vai cutucar (pausado OU fora da janela de
+    24h) e que ainda não foi reportado. Espelha a regra do relatório de
+    agendamento."""
+    records = await evaluate_leads(client, now)
+    reportable: list[dict] = []
+    for rec in records:
+        if rec["situation"] != LABEL_CADASTRO:
+            continue
+        phone = rec["phone"]
+        user = rec["user"]
+        active = bool(user.get("active", True))
+        window = await _window_open_safe(client, phone, now) if active else False
+        if active and window:
+            continue  # o cron de nudge cuida deste
+        if await get_events_by_type(phone, REPORT_EVENT, limit=1):
+            continue  # já reportado
+        reportable.append({
+            "phone": phone,
+            "name": user.get("name") or "(sem cadastro)",
+            "active": active,
+            "last_msg_at": rec["last_msg_at"],
+        })
+    return reportable
+
+
+def _fmt_cadastro_case(case: dict) -> str:
+    quando = case["last_msg_at"].astimezone(TZ).strftime("%d/%m/%Y às %H:%M")
+    motivo = "Eva pausada (eva-inativa)" if not case["active"] else "fora da janela de 24h"
+    line = f"• {case['name']}"
+    line += f"\n  WhatsApp: {case['phone']}"
+    line += f"\n  Última mensagem em: {quando}"
+    line += f"\n  Motivo do contato manual: {motivo}"
+    return line
+
+
 async def main() -> None:
     from supabase import acreate_client
     from app.database import get_user_by_phone
@@ -52,9 +90,8 @@ async def main() -> None:
     client = await acreate_client(os.environ["SUPABASE_URL"], os.environ["SUPABASE_KEY"])
     now = datetime.now(TZ)
 
+    # Seção 1: agendamento abandonado (comportamento existente).
     cases = await fetch_abandoned(client, now)
-
-    # Mantém só quem NÃO será cutucado automaticamente (pausado OU frio).
     reportable: list[dict] = []
     for case in cases:
         phone = case["phone"]
@@ -62,33 +99,56 @@ async def main() -> None:
         active = bool(user.get("active"))
         window = await _window_open_safe(client, phone, now) if active else False
         if is_nudge_eligible(active, window):
-            continue  # o cron de nudge cuida deste
+            continue
         case["name"] = user.get("name") or "(sem cadastro)"
         case["active"] = active
         reportable.append(case)
 
-    if not reportable:
-        print("Nenhum caso de agendamento abandonado para reportar — e-mail não enviado.")
+    # Seção 2: cadastro abandonado frio (novo).
+    cadastro_cases = await fetch_cadastro_abandonado_reportable(client, now)
+
+    if not reportable and not cadastro_cases:
+        print("Nenhum caso para reportar — e-mail não enviado.")
         return
 
     today_str = now.strftime("%d/%m/%Y")
-    lines = [
-        f"Pacientes que começaram a agendar e não confirmaram — {today_str}",
-        "=" * 60,
-        "Estes pacientes viram horários com a Eva mas não fecharam a consulta, e",
-        "NÃO estão sendo cutucados automaticamente (Eva pausada, ou já fora da",
-        "janela de 24h do WhatsApp). Vale um contato manual da clínica.",
-        "",
-        f"Total: {len(reportable)}",
-        "-" * 60,
-        "",
-    ]
-    for case in reportable:
-        lines.append(_fmt_case(case))
-        lines.append("")
+    lines: list[str] = []
+
+    if reportable:
+        lines += [
+            f"Pacientes que começaram a agendar e não confirmaram — {today_str}",
+            "=" * 60,
+            "Viram horários com a Eva mas não fecharam a consulta, e NÃO estão",
+            "sendo cutucados automaticamente (Eva pausada, ou fora da janela de",
+            "24h do WhatsApp). Vale um contato manual.",
+            "",
+            f"Total: {len(reportable)}",
+            "-" * 60,
+            "",
+        ]
+        for case in reportable:
+            lines.append(_fmt_case(case))
+            lines.append("")
+
+    if cadastro_cases:
+        lines += [
+            f"Leads que começaram o cadastro e não terminaram — {today_str}",
+            "=" * 60,
+            "Informaram o nome mas não concluíram o cadastro, e NÃO estão sendo",
+            "cutucados automaticamente (Eva pausada, ou fora da janela de 24h).",
+            "Vale um contato manual.",
+            "",
+            f"Total: {len(cadastro_cases)}",
+            "-" * 60,
+            "",
+        ]
+        for case in cadastro_cases:
+            lines.append(_fmt_cadastro_case(case))
+            lines.append("")
 
     body = "\n".join(lines)
-    subject = f"Psique — Agendamentos não finalizados ({len(reportable)}) — {today_str}"
+    total = len(reportable) + len(cadastro_cases)
+    subject = f"Psique — Leads não finalizados ({total}) — {today_str}"
 
     print(body)
     print()
@@ -103,9 +163,12 @@ async def main() -> None:
 
     # "Avisou, não repete": marca cada caso só APÓS o e-mail sair.
     for case in reportable:
-        await mark_handled(client, case["phone"], REPORT_EVENT,
+        await mark_handled(client, case["phone"], REPORT_EVENT_SCHED,
                            {"offered_at": case["offered_at"].isoformat()})
-    print(f"E-mail enviado: {len(reportable)} caso(s) reportado(s).")
+    for case in cadastro_cases:
+        await mark_handled(client, case["phone"], REPORT_EVENT,
+                           {"last_msg_at": case["last_msg_at"].isoformat()})
+    print(f"E-mail enviado: {len(reportable)} agendamento(s) + {len(cadastro_cases)} cadastro(s).")
 
 
 async def _window_open_safe(client, phone: str, now: datetime) -> bool:
