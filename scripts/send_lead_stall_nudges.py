@@ -52,6 +52,9 @@ async def _reconcile_label(rec: dict) -> None:
     phone = rec["phone"]
     situation = rec["situation"]
 
+    if not rec["user"].get("active", True):
+        return  # pausado/eva-inativa: não mexe em label (spec) — preserva a última para a atendente
+
     events = await get_events_by_type(phone, LABEL_SET_EVENT, limit=1)
     last_set = (events[0].get("metadata") or {}).get("label") if events else None
     if not needs_label_change(situation, last_set):

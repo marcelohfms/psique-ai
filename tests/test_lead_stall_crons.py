@@ -44,6 +44,18 @@ async def test_reconcile_writes_when_label_changed(monkeypatch):
     assert calls["logged"][0] == "lead_label_set"
 
 
+async def test_reconcile_skips_when_paused(monkeypatch):
+    from unittest.mock import AsyncMock
+    set_labels_mock = AsyncMock()
+    monkeypatch.setattr(cron, "get_events_by_type", AsyncMock(return_value=[{"metadata": {"label": LABEL_CADASTRO}}]))
+    monkeypatch.setattr(cron, "set_labels", set_labels_mock)
+
+    rec = {"phone": "5581111", "situation": None, "user": {"active": False}, "last_msg_at": NOW}
+    await cron._reconcile_label(rec)
+
+    set_labels_mock.assert_not_awaited()
+
+
 async def test_reconcile_skips_when_label_unchanged(monkeypatch):
     async def fake_get_events(phone, event_type, limit=50):
         return [{"metadata": {"label": LABEL_CADASTRO}}]
