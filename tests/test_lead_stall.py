@@ -93,3 +93,52 @@ def test_needs_label_change():
     assert needs_label_change(LABEL_NEW, LABEL_NEW) is False
     assert needs_label_change(None, LABEL_NEW) is True
     assert needs_label_change(None, None) is False
+
+
+# ── evaluate_leads (I/O mockado) ──────────────────────────────────────────────
+
+class _FakeMessagesClient:
+    """from_('messages').select(...).gte(...).execute() → rows fixos."""
+    def __init__(self, rows):
+        self._rows = rows
+
+    def from_(self, table):
+        assert table == "messages"
+        return self
+
+    def select(self, *a, **k):
+        return self
+
+    def gte(self, *a, **k):
+        return self
+
+    async def execute(self):
+        from unittest.mock import MagicMock
+        return MagicMock(data=self._rows)
+
+
+async def test_evaluate_leads_classifies_each_phone(monkeypatch):
+    import app.lead_stall as mod
+
+    rows = [_msg("5581111", "user", NOW - timedelta(hours=5))]  # silêncio 5h, tem nome
+    client = _FakeMessagesClient(rows)
+
+    async def fake_fetch_abandoned(c, now, **k):
+        return []  # ninguém abandonou agendamento
+
+    async def fake_get_user(phone):
+        return {"name": "Ana", "active": True}
+
+    async def fake_upcoming(phone):
+        return []
+
+    monkeypatch.setattr(mod, "fetch_abandoned", fake_fetch_abandoned)
+    monkeypatch.setattr("app.database.get_user_by_phone", fake_get_user)
+    monkeypatch.setattr("app.database.get_upcoming_appointments", fake_upcoming)
+    monkeypatch.setattr("app.database.is_registration_complete", lambda u: False)
+
+    recs = await mod.evaluate_leads(client, NOW)
+    assert len(recs) == 1
+    assert recs[0]["phone"] == "5581111"
+    assert recs[0]["situation"] == LABEL_CADASTRO
+    assert recs[0]["user"]["name"] == "Ana"

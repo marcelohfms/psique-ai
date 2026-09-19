@@ -90,3 +90,48 @@ def label_ops(situation: str | None) -> tuple[list[str], list[str]]:
 def needs_label_change(situation: str | None, last_set: str | None) -> bool:
     """Só chama o Chatwoot quando a situação mudou desde a última vez que setamos."""
     return situation != last_set
+
+
+async def evaluate_leads(client, now: datetime) -> list[dict]:
+    """Para cada telefone com mensagem do paciente nos últimos MAX_LEAD_AGE_DAYS,
+    reúne os fatos do banco e classifica a situação. Devolve
+    [{"phone", "situation", "user", "last_msg_at"}].
+
+    Faz I/O (Supabase + shim get_user_by_phone/get_upcoming_appointments) — a
+    lógica de decisão fica em classify_situation (pura, testada à parte)."""
+    from app.database import (
+        get_user_by_phone, get_upcoming_appointments, is_registration_complete,
+    )
+
+    cutoff_iso = (now - timedelta(days=MAX_LEAD_AGE_DAYS)).isoformat()
+    rows = (
+        await client.from_("messages")
+        .select("phone, role, created_at")
+        .gte("created_at", cutoff_iso)
+        .execute()
+    ).data or []
+    latest = select_recent_phones(rows, now)
+
+    abandoned = {c["phone"] for c in await fetch_abandoned(client, now)}
+
+    records: list[dict] = []
+    for phone, last_msg_at in latest.items():
+        user = await get_user_by_phone(phone) or {}
+        appts = await get_upcoming_appointments(phone)
+        has_appointment = any(a.get("status") == "scheduled" for a in appts)
+        situation = classify_situation(
+            active=bool(user.get("active", True)),
+            has_appointment=has_appointment,
+            offered_abandoned=phone in abandoned,
+            registration_complete=is_registration_complete(user),
+            has_name=bool((user.get("name") or "").strip()),
+            last_msg_at=last_msg_at,
+            now=now,
+        )
+        records.append({
+            "phone": phone,
+            "situation": situation,
+            "user": user,
+            "last_msg_at": last_msg_at,
+        })
+    return records
