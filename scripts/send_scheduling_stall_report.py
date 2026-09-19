@@ -15,6 +15,7 @@ e não entra no e-mail do dia seguinte.
 """
 import asyncio
 import os
+import traceback
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
@@ -104,8 +105,15 @@ async def main() -> None:
         case["active"] = active
         reportable.append(case)
 
-    # Seção 2: cadastro abandonado frio (novo).
-    cadastro_cases = await fetch_cadastro_abandonado_reportable(client, now)
+    # Seção 2: cadastro abandonado frio (novo). Isolado: uma falha aqui não pode
+    # derrubar o relatório de agendamento, que já funcionava sozinho.
+    try:
+        cadastro_cases = await fetch_cadastro_abandonado_reportable(client, now)
+    except Exception as e:
+        print(f"[cadastro] falha ao selecionar (mantendo só a seção de agendamento): "
+              f"{type(e).__name__}: {e}")
+        traceback.print_exc()
+        cadastro_cases = []
 
     if not reportable and not cadastro_cases:
         print("Nenhum caso para reportar — e-mail não enviado.")
