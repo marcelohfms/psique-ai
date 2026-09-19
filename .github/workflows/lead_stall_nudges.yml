@@ -5,6 +5,10 @@ on:
     - cron: "*/30 * * * *"  # a cada 30 min; o script só envia entre 8h–20h Recife
   workflow_dispatch:         # allow manual runs for testing
 
+concurrency:
+  group: lead-stall-nudges
+  cancel-in-progress: false
+
 jobs:
   lead-stall-nudges:
     runs-on: ubuntu-latest

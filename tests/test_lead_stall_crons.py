@@ -132,6 +132,30 @@ async def test_nudge_skipped_when_paused(monkeypatch):
     send_mock.assert_not_awaited()
 
 
+async def test_nudge_skipped_when_manual_hold(monkeypatch):
+    async def fake_get_events(phone, event_type, limit=50):
+        return []
+    send_mock = AsyncMock()
+    monkeypatch.setattr(cron, "get_events_by_type", fake_get_events)
+    monkeypatch.setattr(cron, "send_whatsapp", send_mock)
+
+    rec = {"phone": "5581111", "situation": LABEL_CADASTRO,
+           "user": {"name": "Ana", "active": True, "manual_hold": True}, "last_msg_at": NOW}
+    await cron._maybe_nudge(client=None, graph=None, rec=rec, now=NOW)
+    send_mock.assert_not_awaited()
+
+
+async def test_reconcile_skips_when_manual_hold(monkeypatch):
+    set_labels_mock = AsyncMock()
+    monkeypatch.setattr(cron, "get_events_by_type", AsyncMock(return_value=[{"metadata": {"label": LABEL_CADASTRO}}]))
+    monkeypatch.setattr(cron, "set_labels", set_labels_mock)
+
+    rec = {"phone": "5581111", "situation": None,
+           "user": {"active": True, "manual_hold": True}, "last_msg_at": NOW}
+    await cron._reconcile_label(rec)
+    set_labels_mock.assert_not_awaited()
+
+
 async def test_nudge_skipped_when_not_cadastro(monkeypatch):
     send_mock = AsyncMock()
     monkeypatch.setattr(cron, "send_whatsapp", send_mock)
@@ -173,3 +197,26 @@ async def test_report_selects_cold_cadastro_abandonado(monkeypatch):
     got = await report.fetch_cadastro_abandonado_reportable(client=None, now=NOW)
     assert [c["phone"] for c in got] == ["5581111"]
     assert got[0]["name"] == "Ana"
+
+
+async def test_report_excludes_already_nudged(monkeypatch):
+    async def fake_evaluate(client, now):
+        return [
+            {"phone": "5581111", "situation": LABEL_CADASTRO,
+             "user": {"name": "Ana", "active": False}, "last_msg_at": NOW},
+        ]
+
+    async def fake_window(client, phone, now):
+        return False
+
+    async def fake_get_events(phone, event_type, limit=50):
+        if event_type == "lead_stall_nudge_sent":
+            return [{"metadata": {}}]  # já cutucado
+        return []
+
+    monkeypatch.setattr(report, "evaluate_leads", fake_evaluate)
+    monkeypatch.setattr(report, "_window_open_safe", fake_window)
+    monkeypatch.setattr(report, "get_events_by_type", fake_get_events)
+
+    got = await report.fetch_cadastro_abandonado_reportable(client=None, now=NOW)
+    assert got == []

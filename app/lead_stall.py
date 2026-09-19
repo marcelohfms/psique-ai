@@ -27,6 +27,13 @@ NUDGE_EVENT = "lead_stall_nudge_sent"
 REPORT_EVENT = "lead_stall_reported"
 
 
+def is_lead_paused(user: dict) -> bool:
+    """Pausa da Eva: espelha o gate _eva_paused_for_phone (active=False OU
+    manual_hold). Contato pausado é pulado por completo — sem nudge, sem mexer
+    em label."""
+    return (user.get("active", True) is False) or bool(user.get("manual_hold"))
+
+
 def classify_situation(
     *,
     active: bool,
@@ -112,7 +119,10 @@ async def evaluate_leads(client, now: datetime) -> list[dict]:
     ).data or []
     latest = select_recent_phones(rows, now)
 
-    abandoned = {c["phone"] for c in await fetch_abandoned(client, now)}
+    # exclude_handled=False: a label reflete a situação real, mesmo depois de o
+    # cron de agendamento já ter cutucado/reportado o caso (senão a label some em
+    # ~30 min e a atendente não consegue filtrar quem abandonou o agendamento).
+    abandoned = {c["phone"] for c in await fetch_abandoned(client, now, exclude_handled=False)}
 
     records: list[dict] = []
     for phone, last_msg_at in latest.items():
@@ -120,7 +130,7 @@ async def evaluate_leads(client, now: datetime) -> list[dict]:
         appts = await get_upcoming_appointments(phone)
         has_appointment = any(a.get("status") == "scheduled" for a in appts)
         situation = classify_situation(
-            active=bool(user.get("active", True)),
+            active=not is_lead_paused(user),
             has_appointment=has_appointment,
             offered_abandoned=phone in abandoned,
             registration_complete=is_registration_complete(user),

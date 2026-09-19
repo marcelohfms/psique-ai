@@ -19,7 +19,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 from app.lead_stall import (
-    evaluate_leads, label_ops, needs_label_change,
+    evaluate_leads, label_ops, needs_label_change, is_lead_paused,
     LABEL_CADASTRO, LABEL_SET_EVENT, NUDGE_EVENT,
 )
 from app.database import log_event, get_events_by_type
@@ -52,8 +52,8 @@ async def _reconcile_label(rec: dict) -> None:
     phone = rec["phone"]
     situation = rec["situation"]
 
-    if not rec["user"].get("active", True):
-        return  # pausado/eva-inativa: não mexe em label (spec) — preserva a última para a atendente
+    if is_lead_paused(rec["user"]):
+        return  # pausado/eva-inativa/manual_hold: não mexe em label (spec) — preserva a última para a atendente
 
     events = await get_events_by_type(phone, LABEL_SET_EVENT, limit=1)
     last_set = (events[0].get("metadata") or {}).get("label") if events else None
@@ -88,8 +88,8 @@ async def _maybe_nudge(client, graph, rec: dict, now: datetime) -> None:
 
     if await get_events_by_type(phone, NUDGE_EVENT, limit=1):
         return  # já cutucado
-    if not user.get("active", True):
-        return  # pausado → relatório da clínica cuida
+    if is_lead_paused(user):
+        return  # pausado (active=False/manual_hold) → relatório da clínica cuida
     if not await _window_open(client, phone, now):
         return  # frio (fora das 24h) → relatório da clínica cuida
 

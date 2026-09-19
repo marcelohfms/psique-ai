@@ -25,7 +25,7 @@ load_dotenv()
 from app.scheduling_stall import (
     fetch_abandoned, is_nudge_eligible, REPORT_EVENT as REPORT_EVENT_SCHED, mark_handled,
 )
-from app.lead_stall import evaluate_leads, LABEL_CADASTRO, REPORT_EVENT
+from app.lead_stall import evaluate_leads, LABEL_CADASTRO, REPORT_EVENT, NUDGE_EVENT
 from app.database import get_events_by_type
 
 TZ = ZoneInfo("America/Recife")
@@ -65,6 +65,8 @@ async def fetch_cadastro_abandonado_reportable(client, now: datetime) -> list[di
             continue  # o cron de nudge cuida deste
         if await get_events_by_type(phone, REPORT_EVENT, limit=1):
             continue  # já reportado
+        if await get_events_by_type(phone, NUDGE_EVENT, limit=1):
+            continue  # a Eva já cutucou este lead — não pedir contato manual duplicado
         reportable.append({
             "phone": phone,
             "name": user.get("name") or "(sem cadastro)",
