@@ -31,11 +31,13 @@ Um relatório periódico por e-mail com o funil de conversão do período e a si
   - **Perdidos** — em aberto e frio (sem atividade há mais de 7 dias).
 - Corte pendente/perdido: **7 dias** de atividade.
 
-## Decisões a confirmar na revisão do spec (padrões sensatos)
+## Entrega (decidido)
 
-- **Periodicidade:** semanal (segunda de manhã, horário de Recife). Pode virar diário/mensal.
-- **Destinatário:** e-mail configurável via `FUNNEL_REPORT_EMAIL`, com fallback para `CLINIC_NOTIFY_EMAIL`. O público é a dona/gestão, não a recepção.
-- **Janela do funil:** cohort de quem chegou nos **últimos 30 dias** (não 7), para a conversão e o "perdido" fazerem sentido. O corte de 7 dias continua sendo só o que separa pendente de perdido dentro desse cohort. Pode ser ajustado.
+- **Só para a dona, ainda não para a clínica.** A feature não foi fechada com a clínica; o relatório deve ficar pronto e rodando, mas entregue apenas à dona por enquanto. Quando ela alinhar com a clínica, é só apontar o destinatário para lá.
+- **Destinatário:** e-mail em `FUNNEL_REPORT_EMAIL`, **sem fallback** para `CLINIC_NOTIFY_EMAIL` (para nunca vazar para a clínica por engano). Se `FUNNEL_REPORT_EMAIL` não estiver setado, o relatório **não envia** e falha explícito. Setar essa variável no ambiente com o e-mail da dona.
+- **Periodicidade:** semanal (segunda de manhã, horário de Recife).
+- **Janela do funil:** cohort de quem chegou nos **últimos 30 dias**, para a conversão e o "perdido" fazerem sentido. O corte de 7 dias continua sendo só o que separa pendente de perdido dentro do cohort.
+- **Lista de pendentes:** como o e-mail vai só para a dona, o relatório **inclui** a lista dos pendentes (nome, telefone e etapa alcançada). Os perdidos ficam só como número.
 
 ## Modelo de cálculo
 
@@ -76,12 +78,13 @@ Duas partes no corpo do e-mail:
    Pendentes (quentes, ativos ≤7 dias):  16
    Perdidos (frios, >7 dias):            12
    ```
-   Opcional: listar os pendentes (nome + telefone + etapa alcançada) para a clínica agir; os perdidos ficam só como número. Decidir na revisão se lista os pendentes.
+   Em seguida, a **lista dos pendentes** (nome, telefone e etapa alcançada), para a dona agir; os perdidos ficam só como número.
 
 ## Componentes
 
 - **Novo** `app/funnel_report.py`: lógica pura — recebe as linhas de eventos + últimas atividades + agora, e devolve as contagens do funil e as listas pendente/perdido. Sem I/O.
-- **Novo** `scripts/send_funnel_report.py`: cron — lê `events` e `messages` da janela, chama a lógica pura, monta o corpo e envia via `app/email_sender.send_clinic_notification_email` (com o destinatário do funil). Registra nada de volta (read-only; não precisa de marcador de idempotência porque é 1 envio por período).
+- **Modificar** `app/email_sender.py`: adicionar `send_report_email(subject, body, to_email)` — envia para um destinatário explícito reusando o `_send_email` interno que já existe (não usa `CLINIC_NOTIFY_EMAIL`). Falha explícito se faltar SMTP ou `to_email`.
+- **Novo** `scripts/send_funnel_report.py`: cron — lê `events` e `messages` da janela, chama a lógica pura, monta o corpo e envia via `send_report_email` para `FUNNEL_REPORT_EMAIL`. Se `FUNNEL_REPORT_EMAIL` faltar, não envia (falha explícito). Read-only; não grava marcador (é um resumo do período; reenviar é inofensivo).
 - **Novo** `.github/workflows/funnel_report.yml`: agenda semanal.
 - **Testes:** `tests/test_funnel_report.py` (lógica pura), `tests/test_funnel_report_cron.py` (cron com Supabase e e-mail mockados).
 
