@@ -59,6 +59,20 @@ def test_update_paciente_no_escopo_ok(client, monkeypatch):
 
 # ── contato ─────────────────────────────────────────────────────────────────
 
+def test_eva_off_fora_do_escopo_recusa(client, monkeypatch):
+    _scope(monkeypatch, "c1", {"p1"})
+    called = {"n": 0}
+    async def fake_set(pid, off):
+        called["n"] += 1
+        return 0
+    monkeypatch.setattr(attendant_db, "set_patient_eva_off", fake_set)
+    monkeypatch.setattr(attendant_db, "log_event", _noop)
+    r = client.post("/api/atendente/paciente/p_ALHEIO/eva", params=TOKEN,
+                    json={"phone": PHONE, "data": {"off": True}})
+    assert r.status_code == 403
+    assert called["n"] == 0
+
+
 def test_update_contato_fora_do_escopo_recusa(client, monkeypatch):
     _scope(monkeypatch, "c1", {"p1"})
     monkeypatch.setattr(attendant_db, "update_contact", _noop2)
