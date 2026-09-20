@@ -917,3 +917,37 @@ def test_within_send_window_converts_from_utc():
     # 23:30 UTC == 20:30 em Recife (UTC-3) → dentro da janela.
     now_utc = datetime(2026, 9, 2, 23, 30, tzinfo=ZoneInfo("UTC"))
     assert spr._within_send_window(now_utc) is True
+
+
+# ── Task 4: lembrete/cancelamento de taxa respeita manual_hold ───────────────
+
+def _client_pc(rows):
+    execute = AsyncMock(return_value=MagicMock(data=rows))
+    table = MagicMock()
+    for m in ("select", "eq", "in_", "order", "limit"):
+        getattr(table, m).return_value = table
+    table.execute = execute
+    client = MagicMock()
+    client.from_.return_value = table
+    return client
+
+
+@pytest.mark.asyncio
+async def test_get_financial_contacts_pula_manual_hold():
+    client = _client_pc([
+        {"role": "financeiro", "contacts": {"phone": "5581111", "name": "OK", "manual_hold": False}},
+        {"role": "financeiro", "contacts": {"phone": "5581222", "name": "Hold", "manual_hold": True}},
+    ])
+    out = await spr.get_financial_contacts(client, "p1")
+    assert [c["phone"] for c in out] == ["5581111"]
+
+
+@pytest.mark.asyncio
+async def test_reminder_recipients_ignora_booking_em_hold():
+    financeiros = [{"phone": "5581111", "name": "Fin"}]
+    with patch("scripts.send_payment_reminders.get_contact_by_id",
+               new_callable=AsyncMock,
+               return_value={"id": "cb", "phone": "5581999", "manual_hold": True}):
+        out = await spr._reminder_recipients({"contact_id": "cb"}, financeiros)
+    # booking em hold é ignorado → cai no fallback dos financeiros (já filtrados)
+    assert [c["phone"] for c in out] == ["5581111"]
