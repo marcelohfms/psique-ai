@@ -112,6 +112,7 @@ async def test_report_excludes_nudge_eligible_and_marks_reported():
          patch.object(rep, "fetch_abandoned", new_callable=AsyncMock, return_value=cases), \
          patch("app.database.get_user_by_phone", side_effect=_get_user), \
          patch.object(rep, "_window_open_safe", side_effect=_window), \
+         patch.object(rep, "fetch_cadastro_abandonado_reportable", new_callable=AsyncMock, return_value=[]), \
          patch("app.email_sender.send_clinic_notification_email", new_callable=AsyncMock) as email, \
          patch.object(rep, "mark_handled", new_callable=AsyncMock) as mark:
         await rep.main()
@@ -123,15 +124,48 @@ async def test_report_excludes_nudge_eligible_and_marks_reported():
 
     reported = {c.args[1] for c in mark.await_args_list}
     assert reported == {"55B", "55C"}
-    assert all(c.args[2] == rep.REPORT_EVENT for c in mark.await_args_list)
+    assert all(c.args[2] == rep.REPORT_EVENT_SCHED for c in mark.await_args_list)
 
 
 async def test_report_no_cases_sends_no_email():
     with patch.dict(os.environ, _SMTP_ENV, clear=False), \
          patch("supabase.acreate_client", new_callable=AsyncMock, return_value=MagicMock()), \
          patch.object(rep, "fetch_abandoned", new_callable=AsyncMock, return_value=[]), \
+         patch.object(rep, "fetch_cadastro_abandonado_reportable", new_callable=AsyncMock, return_value=[]), \
          patch("app.email_sender.send_clinic_notification_email", new_callable=AsyncMock) as email, \
          patch.object(rep, "mark_handled", new_callable=AsyncMock):
         await rep.main()
 
     email.assert_not_awaited()
+
+
+async def test_report_only_cadastro_section_sends_email():
+    """Agendamento vazio + 1 caso de cadastro-abandonado: o e-mail ainda sai, só
+    com a seção 2, e o marker gravado é o REPORT_EVENT do app.lead_stall (não o
+    de agendamento)."""
+    from app.lead_stall import REPORT_EVENT as LEAD_REPORT_EVENT
+
+    cadastro_cases = [{
+        "phone": "5581111", "name": "Ana", "active": False,
+        "last_msg_at": TZ_NOW,
+    }]
+
+    with patch.dict(os.environ, _SMTP_ENV, clear=False), \
+         patch("supabase.acreate_client", new_callable=AsyncMock, return_value=MagicMock()), \
+         patch.object(rep, "fetch_abandoned", new_callable=AsyncMock, return_value=[]), \
+         patch.object(rep, "fetch_cadastro_abandonado_reportable", new_callable=AsyncMock,
+                      return_value=cadastro_cases), \
+         patch("app.email_sender.send_clinic_notification_email", new_callable=AsyncMock) as email, \
+         patch.object(rep, "mark_handled", new_callable=AsyncMock) as mark:
+        await rep.main()
+
+    email.assert_awaited_once()
+    body = email.call_args[0][1]
+    assert "não terminaram" in body
+    assert "cadastro" in body.lower()
+    assert "Ana" in body
+
+    mark.assert_awaited_once()
+    call = mark.await_args_list[0]
+    assert call.args[1] == "5581111"
+    assert call.args[2] == LEAD_REPORT_EVENT
