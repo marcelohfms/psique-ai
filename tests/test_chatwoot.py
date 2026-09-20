@@ -617,3 +617,65 @@ async def test_get_last_patient_message_returns_none_when_no_incoming():
         result = await get_last_patient_message(42)
 
     assert result is None
+
+
+# ── custom attributes de contato ──────────────────────────────────────────────
+
+async def test_set_contact_custom_attributes_merges_and_calls_api():
+    from app.chatwoot import set_contact_custom_attributes
+    get_response = MagicMock()
+    get_response.status_code = 200
+    get_response.raise_for_status = MagicMock()
+    get_response.json = MagicMock(return_value={"payload": {"custom_attributes": {"outro": "x"}}})
+
+    put_response = MagicMock()
+    put_response.status_code = 200
+    put_response.raise_for_status = MagicMock()
+
+    with patch("httpx.AsyncClient") as mock_client_cls:
+        mock_client = AsyncMock()
+        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_client.__aexit__ = AsyncMock(return_value=False)
+        mock_client.get = AsyncMock(return_value=get_response)
+        mock_client.put = AsyncMock(return_value=put_response)
+        mock_client_cls.return_value = mock_client
+
+        with patch.dict("os.environ", {
+            "CHATWOOT_BASE_URL": "https://chat.example.com",
+            "CHATWOOT_ACCOUNT_ID": "1",
+            "CHATWOOT_USER_TOKEN": "user-token",
+        }):
+            await set_contact_custom_attributes(7, {"medico": "Dr. Júlio"})
+
+        mock_client.put.assert_called_once()
+        url = mock_client.put.call_args[0][0]
+        assert "/contacts/7" in url
+        # merge preserva 'outro' e adiciona 'medico'
+        assert mock_client.put.call_args[1]["json"] == {
+            "custom_attributes": {"outro": "x", "medico": "Dr. Júlio"}
+        }
+
+
+async def test_find_or_create_contact_id_uses_existing():
+    from app.chatwoot import find_or_create_contact_id
+    with patch("app.chatwoot._search_contact", AsyncMock(return_value={"id": 55})):
+        with patch.dict("os.environ", {
+            "CHATWOOT_BASE_URL": "https://chat.example.com",
+            "CHATWOOT_ACCOUNT_ID": "1",
+            "CHATWOOT_USER_TOKEN": "user-token",
+        }):
+            got = await find_or_create_contact_id("5581999999999@s.whatsapp.net")
+        assert got == 55
+
+
+async def test_find_or_create_contact_id_creates_when_missing():
+    from app.chatwoot import find_or_create_contact_id
+    with patch("app.chatwoot._search_contact", AsyncMock(return_value=None)), \
+         patch("app.chatwoot._create_contact", AsyncMock(return_value={"id": 88})):
+        with patch.dict("os.environ", {
+            "CHATWOOT_BASE_URL": "https://chat.example.com",
+            "CHATWOOT_ACCOUNT_ID": "1",
+            "CHATWOOT_USER_TOKEN": "user-token",
+        }):
+            got = await find_or_create_contact_id("5581999999999@s.whatsapp.net")
+        assert got == 88

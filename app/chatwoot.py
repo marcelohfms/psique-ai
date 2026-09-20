@@ -196,6 +196,36 @@ async def add_label(conversation_id: int, label: str) -> None:
     await set_labels(conversation_id, add=[label])
 
 
+async def set_contact_custom_attributes(contact_id: int, attrs: dict) -> None:
+    """Grava custom attributes de CONTATO (aparecem na lateral da conversa).
+
+    Faz MERGE com os atributos atuais: o PUT do Chatwoot substitui o objeto
+    custom_attributes inteiro, então lemos os valores atuais e sobrescrevemos só
+    as nossas chaves, para nunca apagar um atributo que a clínica mantenha fora
+    deste conjunto. As chaves precisam existir como atributos de contato no painel
+    para aparecerem."""
+    url = f"{_base_url()}/api/v1/accounts/{_account_id()}/contacts/{contact_id}"
+    async with httpx.AsyncClient(timeout=10) as client:
+        resp = await _request(client, "GET", url, headers=_headers())
+        try:
+            current = (resp.json().get("payload") or {}).get("custom_attributes") or {}
+        except Exception:
+            current = {}
+        merged = {**current, **attrs}
+        await _request(client, "PUT", url, json={"custom_attributes": merged}, headers=_headers())
+
+
+async def find_or_create_contact_id(phone: str) -> int | None:
+    """Resolve o contact_id do Chatwoot por telefone, criando o contato se não
+    existir. Reusa a busca/criação já usada por find_or_create_conversation."""
+    digits = _strip_phone(phone)
+    async with httpx.AsyncClient(timeout=10) as client:
+        contact = await _search_contact(client, digits)
+        if contact is None:
+            contact = await _create_contact(client, digits)
+        return contact.get("id")
+
+
 async def get_last_patient_message(conversation_id: int) -> dict | None:
     """Return the last incoming message from the patient as
     {"content", "attachments", "created_at", "last_note_at", "last_note_content"},
