@@ -295,3 +295,44 @@ async def test_reset_checkpoint_matches_variant_without_9(patched_client):
     deleted = await attendant_db.reset_checkpoint("5581999998888@s.whatsapp.net")
     assert deleted == 1
     assert patched_client.store["checkpoints"] == []
+
+
+# ── Liga/desliga Eva por paciente (todos os contatos) ─────────────────────────
+
+
+async def test_set_patient_eva_off_liga_em_todos_os_contatos(patched_client):
+    patched_client.store["patient_contacts"] = [
+        {"patient_id": "p1", "contact_id": "c1", "role": "agendamento"},
+        {"patient_id": "p1", "contact_id": "c2", "role": "financeiro"},
+    ]
+    patched_client.store["contacts"] = [
+        {"id": "c1", "manual_hold": False},
+        {"id": "c2", "manual_hold": False},
+    ]
+    n = await attendant_db.set_patient_eva_off("p1", True)
+    assert n == 2
+    assert all(c["manual_hold"] for c in patched_client.store["contacts"])
+
+
+async def test_set_patient_eva_off_religa(patched_client):
+    patched_client.store["patient_contacts"] = [
+        {"patient_id": "p1", "contact_id": "c1", "role": "agendamento"},
+    ]
+    patched_client.store["contacts"] = [{"id": "c1", "manual_hold": True}]
+    await attendant_db.set_patient_eva_off("p1", False)
+    assert patched_client.store["contacts"][0]["manual_hold"] is False
+
+
+async def test_is_patient_eva_off_true_quando_algum_em_hold(patched_client):
+    patched_client.store["patient_contacts"] = [
+        {"patient_id": "p1", "contact_id": "c1", "contacts": {"manual_hold": False}},
+        {"patient_id": "p1", "contact_id": "c2", "contacts": {"manual_hold": True}},
+    ]
+    assert await attendant_db.is_patient_eva_off("p1") is True
+
+
+async def test_is_patient_eva_off_false_quando_nenhum(patched_client):
+    patched_client.store["patient_contacts"] = [
+        {"patient_id": "p1", "contact_id": "c1", "contacts": {"manual_hold": False}},
+    ]
+    assert await attendant_db.is_patient_eva_off("p1") is False
