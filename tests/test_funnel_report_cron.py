@@ -101,3 +101,30 @@ async def test_cron_raises_without_recipient(monkeypatch):
     monkeypatch.delenv("FUNNEL_REPORT_EMAIL", raising=False)
     with pytest.raises(EnvironmentError):
         await cron.run(client, NOW)
+
+
+async def test_cron_never_uses_clinic_email(monkeypatch):
+    client = _FakeClient({
+        "events": [
+            {"phone": "5581bbb", "event_type": "conversation_started",
+             "created_at": (NOW - timedelta(days=1)).isoformat()},
+        ],
+        "messages": [],
+    })
+
+    async def fake_get_user(phone):
+        return {}
+
+    sent = {}
+    async def fake_send(subject, body, to_email):
+        sent["to"] = to_email
+
+    monkeypatch.setattr(cron, "get_user_by_phone", fake_get_user)
+    monkeypatch.setattr(cron, "send_report_email", fake_send)
+    monkeypatch.setenv("FUNNEL_REPORT_EMAIL", "dona@example.com")
+    monkeypatch.setenv("CLINIC_NOTIFY_EMAIL", "clinica@example.com")
+
+    await cron.run(client, NOW)
+
+    assert sent["to"] == "dona@example.com"
+    assert sent["to"] != "clinica@example.com"

@@ -35,6 +35,8 @@ async def run(client, now: datetime) -> None:
 
     cutoff = (now - timedelta(days=FUNNEL_WINDOW_DAYS)).astimezone(timezone.utc).isoformat()
 
+    # Volume de 30 dias numa clínica pequena cabe numa página do Supabase; se um dia
+    # crescer muito, paginar com .range().
     rows = (
         await client.from_("events")
         .select("phone, event_type, created_at")
@@ -65,6 +67,8 @@ async def run(client, now: datetime) -> None:
         .execute()
     ).data or []
     last_activity: dict[str, datetime] = {}
+    # Atividade = mensagem do próprio paciente (role user); resposta automática da
+    # Eva não conta como sinal de vida do lead.
     for m in mrows:
         phone = m.get("phone")
         if not phone or m.get("role") != "user":
@@ -78,9 +82,14 @@ async def run(client, now: datetime) -> None:
         last_activity=last_activity, now=now,
     )
 
-    # Enriquece os pendentes com o nome (o e-mail vai só para a dona).
+    # Enriquece os pendentes com o nome (o e-mail vai só para a dona). Uma falha
+    # pontual numa busca não pode derrubar o relatório todo — cai para nome vazio.
     for p in result["pendentes"]:
-        user = await get_user_by_phone(p["phone"]) or {}
+        try:
+            user = await get_user_by_phone(p["phone"]) or {}
+        except Exception as e:
+            print(f"  [funnel] falha ao buscar nome de {p['phone']}: {type(e).__name__}: {e}")
+            user = {}
         p["name"] = user.get("patient_name") or user.get("name") or ""
 
     subject, body = format_report(result, now, TZ)
