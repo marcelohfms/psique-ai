@@ -85,7 +85,9 @@ async def paciente(patient_id: str, contact_id: str, _: None = Depends(verify_to
     if link is None:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=_FORA_DO_ESCOPO)
     return_reminder = await attendant_db.get_return_reminder(patient_id)
-    return {"patient": patient, "link": link, "return_reminder": return_reminder}
+    eva_off = await attendant_db.is_patient_eva_off(patient_id)
+    return {"patient": patient, "link": link, "return_reminder": return_reminder,
+            "eva_off": eva_off}
 
 
 # ── Escrita ───────────────────────────────────────────────────────────────────
@@ -107,6 +109,18 @@ async def update_paciente(patient_id: str, body: UpdateBody, _: None = Depends(v
     await attendant_db.log_event("attendant_edit_patient", body.phone,
                                  {"patient_id": patient_id, "fields": list(body.data.keys())})
     return {"ok": True}
+
+
+@router.post("/paciente/{patient_id}/eva")
+async def set_eva(patient_id: str, body: UpdateBody, _: None = Depends(verify_token)):
+    """Liga/desliga a Eva em definitivo para o paciente inteiro (manual_hold em
+    todos os contatos). body.data = {"off": true|false}."""
+    await _assert_patient_scope(body.phone, patient_id)
+    off = bool(body.data.get("off"))
+    afetados = await attendant_db.set_patient_eva_off(patient_id, off)
+    await attendant_db.log_event("attendant_set_eva_off", body.phone,
+                                 {"patient_id": patient_id, "off": off, "afetados": afetados})
+    return {"ok": True, "off": off, "afetados": afetados}
 
 
 @router.post("/paciente/{patient_id}/retorno")

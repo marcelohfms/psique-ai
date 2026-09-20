@@ -54,6 +54,8 @@ async def _send_nudge(client, graph, case: dict, now: datetime) -> None:
 
     if not user.get("active"):
         return  # eva-inativa/pausado → e-mail da clínica cuida
+    if user.get("manual_hold"):
+        return  # Eva desligada em definitivo para este contato
     if not await _window_open(client, phone, now):
         return  # frio (fora das 24h) → e-mail da clínica cuida
 

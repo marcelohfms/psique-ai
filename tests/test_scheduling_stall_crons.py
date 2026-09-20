@@ -46,6 +46,19 @@ async def test_no_nudge_for_inactive_patient():
     mark.assert_not_awaited()
 
 
+async def test_no_nudge_for_manual_hold_patient():
+    """manual_hold → Eva desligada em definitivo, nunca cutuca."""
+    with patch("app.database.get_user_by_phone", new_callable=AsyncMock,
+               return_value={"active": True, "manual_hold": True, "name": "João"}), \
+         patch.object(nud, "_window_open", new_callable=AsyncMock, return_value=True), \
+         patch.object(nud, "send_whatsapp", new_callable=AsyncMock) as send, \
+         patch.object(nud, "mark_handled", new_callable=AsyncMock) as mark:
+        await nud._send_nudge(MagicMock(), None, _case(), TZ_NOW)
+
+    send.assert_not_awaited()
+    mark.assert_not_awaited()
+
+
 async def test_no_nudge_for_cold_patient_outside_24h():
     with patch("app.database.get_user_by_phone", new_callable=AsyncMock,
                return_value={"active": True, "name": "Ana"}), \

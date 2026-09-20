@@ -222,6 +222,41 @@ async def update_link(pc_id: str, data: dict) -> None:
         await client.from_("patient_contacts").update(role_only).eq("id", pc_id).execute()
 
 
+async def set_patient_eva_off(patient_id: str, off: bool) -> int:
+    """Liga/desliga a Eva em definitivo para o paciente INTEIRO.
+
+    Grava manual_hold=off em TODOS os contatos vinculados ao paciente. Retorna
+    quantos contatos foram afetados. Reversível: off=False religa a Eva."""
+    client = await get_client()
+    res = await (
+        client.from_("patient_contacts")
+        .select("contact_id")
+        .eq("patient_id", patient_id)
+        .execute()
+    )
+    contact_ids = sorted({r["contact_id"] for r in (res.data or []) if r.get("contact_id")})
+    for cid in contact_ids:
+        await client.from_("contacts").update({"manual_hold": off}).eq("id", cid).execute()
+    return len(contact_ids)
+
+
+async def is_patient_eva_off(patient_id: str) -> bool:
+    """True se algum contato vinculado ao paciente está em manual_hold
+    (Eva desligada em definitivo)."""
+    client = await get_client()
+    res = await (
+        client.from_("patient_contacts")
+        .select("contacts(manual_hold)")
+        .eq("patient_id", patient_id)
+        .execute()
+    )
+    for row in (res.data or []):
+        c = row.get("contacts") or {}
+        if c.get("manual_hold"):
+            return True
+    return False
+
+
 async def update_return_reminder(patient_id: str, data: dict) -> bool:
     """Atualiza a data de retorno do paciente e zera as flags de envio.
 

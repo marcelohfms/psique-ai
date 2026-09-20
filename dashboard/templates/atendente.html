@@ -268,8 +268,8 @@ async function load() {
 async function loadPatient(pid) {
   const r = await fetch(`/api/atendente/paciente/${pid}?contact_id=${CONTACT.id}&token=${encodeURIComponent(TOKEN)}`);
   if (!r.ok) { setStatus("Erro ao carregar paciente."); return; }
-  const { patient, link, return_reminder } = await r.json();
-  renderForms(patient, link, return_reminder);
+  const { patient, link, return_reminder, eva_off } = await r.json();
+  renderForms(patient, link, return_reminder, eva_off);
 }
 
 // ── 4. Renderizar formulários ───────────────────────────────────────────────
@@ -321,7 +321,22 @@ function returnBlock(pid, rr) {
   </div>`, true);
 }
 
-function renderForms(patient, link, returnReminder) {
+function evaBlock(pid, off) {
+  if (off) {
+    return `<div class="mt-3 rounded-md border border-red-300 bg-red-50 dark:border-red-700 dark:bg-red-900/30 p-3 flex items-center justify-between gap-3">
+      <div>
+        <div class="text-sm font-semibold text-red-700 dark:text-red-300">🔕 Eva desligada</div>
+        <div class="text-xs text-red-600 dark:text-red-400">sem lembretes e sem respostas</div>
+      </div>
+      <button onclick="setEva('${pid}', false)" class="bg-gray-600 hover:bg-gray-700 text-white text-xs px-3 py-1.5 rounded whitespace-nowrap">Religar Eva</button>
+    </div>`;
+  }
+  return `<div class="mt-3">
+    <button onclick="setEva('${pid}', true)" class="bg-red-600 hover:bg-red-700 text-white text-xs px-3 py-1.5 rounded">Desligar Eva</button>
+  </div>`;
+}
+
+function renderForms(patient, link, returnReminder, evaOff) {
   const c = CONTACT;
   let contatoHtml = `<section class="bg-white dark:bg-gray-800 rounded-lg shadow p-4">
     <h2 class="font-medium text-gray-700 dark:text-gray-100 mb-2">Contato</h2>
@@ -362,6 +377,7 @@ function renderForms(patient, link, returnReminder) {
         ${checkbox("Taxa de reserva sempre isenta", "p_fee_waived", patient.booking_fee_waived)}
       </div>
       ${returnBlock(patient.id, returnReminder)}
+      ${evaBlock(patient.id, evaOff)}
       <button onclick="savePatient('${patient.id}')" class="mt-2 bg-wa-green hover:bg-wa-green-dk text-white text-xs px-3 py-1.5 rounded">Salvar paciente</button>
     </section>`;
 
@@ -430,6 +446,14 @@ async function saveRetorno(pid) {
     next_return_date: val("p_return_date"),
   }});
   if (ok) flash("Data de retorno salva ✓");
+}
+async function setEva(pid, off) {
+  const msg = off
+    ? "Desligar a Eva em definitivo para este paciente? Ela para de mandar lembretes e de responder mensagens. Reversível pelo botão Religar."
+    : "Religar a Eva para este paciente?";
+  if (!confirm(msg)) return;
+  const ok = await post(`/api/atendente/paciente/${pid}/eva`, { data: { off } });
+  if (ok) { flash(off ? "Eva desligada ✓" : "Eva religada ✓"); loadPatient(pid); }
 }
 
 function flash(msg) { setStatus(msg); setTimeout(() => setStatus(CONTACT ? `Contato: ${CONTACT.name || CONTACT.phone}` : ""), 1500); }

@@ -13,7 +13,7 @@ from datetime import datetime, timezone, timedelta
 from dotenv import load_dotenv
 load_dotenv()
 
-from app.patients import get_contacts_for_patient
+from app.patients import get_contacts_for_patient, drop_manual_hold
 
 
 async def send_pos_consulta(phone: str, first_name: str) -> None:
@@ -100,6 +100,7 @@ async def _process_pos_consulta(client, appt: dict, now_iso: str) -> None:
 
     # Envia pós-consulta para TODOS os contatos com role 'consulta'.
     contacts = await get_contacts_for_patient(patient_id, "consulta") if patient_id else []
+    contacts = drop_manual_hold(contacts)
     if not contacts:
         print(f"Skipping pos_consulta for patient {patient_id} — sem contato de consulta.")
         await _mark_sent()

@@ -152,10 +152,12 @@ async def _notify(client, phone: str, *, kind: str, free_text: str,
 
 
 async def get_financial_contacts(client, patient_id: str) -> list[dict]:
-    """Return all contacts with role 'financeiro' for a patient (phone + name)."""
+    """Return all contacts with role 'financeiro' for a patient (phone + name).
+
+    Pula contatos em manual_hold: a Eva foi desligada em definitivo para eles."""
     result = await (
         client.from_("patient_contacts")
-        .select("role, contacts(phone, name)")
+        .select("role, contacts(phone, name, manual_hold)")
         .eq("patient_id", patient_id)
         .eq("role", "financeiro")
         .execute()
@@ -163,6 +165,8 @@ async def get_financial_contacts(client, patient_id: str) -> list[dict]:
     contacts = []
     for row in result.data or []:
         c = row.get("contacts") or {}
+        if c.get("manual_hold"):
+            continue
         if c.get("phone"):
             contacts.append({"phone": c["phone"], "name": c.get("name", "")})
     return contacts
@@ -177,7 +181,7 @@ async def _reminder_recipients(appt: dict, financial_contacts: list[dict]) -> li
     continuam sobre TODOS os contatos financeiros.
     """
     booking = await get_contact_by_id(appt.get("contact_id"))
-    if booking and booking.get("phone"):
+    if booking and booking.get("phone") and not booking.get("manual_hold"):
         return [{"phone": booking["phone"], "name": booking.get("name")}]
     return financial_contacts
 

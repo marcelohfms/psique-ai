@@ -861,3 +861,44 @@ async def test_return_minor_shares_with_extended_when_no_legal_guardian():
     with _patch("app.patients.get_supabase", new=AsyncMock(return_value=client)):
         out = await return_reminder_contacts("p1")
     assert sorted(c["phone"] for c in out) == ["5581777", "5581888"]
+
+
+# ── manual_hold: silêncio total dos lembretes proativos ──────────────────────
+
+def test_drop_manual_hold_remove_so_os_em_hold():
+    contatos = [
+        {"id": "c1", "phone": "5581111", "manual_hold": False},
+        {"id": "c2", "phone": "5581222", "manual_hold": True},
+        {"id": "c3", "phone": "5581333"},  # ausente == não-hold
+    ]
+    out = patients.drop_manual_hold(contatos)
+    assert {c["id"] for c in out} == {"c1", "c3"}
+
+
+@pytest.mark.asyncio
+async def test_return_reminder_contacts_pula_manual_hold():
+    linked = [
+        {"contact": {"id": "cmae", "phone": "5581999", "manual_hold": False},
+         "is_self": False, "relationship": "mãe"},
+        {"contact": {"id": "cpai", "phone": "5581888", "manual_hold": True},
+         "is_self": False, "relationship": "pai"},
+    ]
+    with patch("app.patients.get_patient_by_id", new_callable=AsyncMock,
+               return_value={"birth_date": "2015-01-01"}), \
+         patch("app.patients._linked_contacts_with_marker", new_callable=AsyncMock,
+               return_value=linked):
+        out = await patients.return_reminder_contacts("p1")
+    assert {c["id"] for c in out} == {"cmae"}
+
+
+@pytest.mark.asyncio
+async def test_consultation_reminder_contacts_pula_booking_em_hold():
+    with patch("app.patients.get_patient_by_id", new_callable=AsyncMock,
+               return_value={"birth_date": "2015-01-01"}), \
+         patch("app.patients._linked_contacts_with_marker", new_callable=AsyncMock,
+               return_value=[]), \
+         patch("app.patients.get_contact_by_id", new_callable=AsyncMock,
+               return_value={"id": "cbook", "phone": "5581777",
+                             "active": True, "manual_hold": True}):
+        out = await patients.consultation_reminder_contacts("p1", {"contact_id": "cbook"})
+    assert out == []

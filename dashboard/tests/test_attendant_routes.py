@@ -63,9 +63,12 @@ def test_get_patient_ok(client, monkeypatch):
         return {"id": "pc1", "role": "agendamento"}
     async def fake_get_rr(pid):
         return None
+    async def fake_eva_off(pid):
+        return False
     monkeypatch.setattr(attendant_db, "get_patient", fake_get_patient)
     monkeypatch.setattr(attendant_db, "get_link", fake_get_link)
     monkeypatch.setattr(attendant_db, "get_return_reminder", fake_get_rr)
+    monkeypatch.setattr(attendant_db, "is_patient_eva_off", fake_eva_off)
     r = client.get("/api/atendente/paciente/p1",
                    params={"contact_id": "c1", "token": "test-token"})
     assert r.status_code == 200
@@ -81,9 +84,12 @@ def test_get_patient_includes_return_reminder(client, monkeypatch):
         return {"id": "pc1"}
     async def fake_get_rr(pid):
         return {"next_return_date": "2026-09-15", "return_interval": "2_meses", "doctor_id": "d1"}
+    async def fake_eva_off(pid):
+        return False
     monkeypatch.setattr(attendant_db, "get_patient", fake_get_patient)
     monkeypatch.setattr(attendant_db, "get_link", fake_get_link)
     monkeypatch.setattr(attendant_db, "get_return_reminder", fake_get_rr)
+    monkeypatch.setattr(attendant_db, "is_patient_eva_off", fake_eva_off)
     r = client.get("/api/atendente/paciente/p1",
                    params={"contact_id": "c1", "token": "test-token"})
     assert r.status_code == 200
@@ -158,6 +164,23 @@ def test_update_return_date_requires_token(client):
     r = client.post("/api/atendente/paciente/p1/retorno",
                     json={"phone": "x", "data": {"next_return_date": "2026-10-15"}})
     assert r.status_code == 401
+
+
+def test_desligar_eva_liga_manual_hold(client, monkeypatch):
+    chamado = {}
+    async def _set(pid, off):
+        chamado["args"] = (pid, off); return 2
+    async def _log(*a, **k):
+        return None
+    monkeypatch.setattr(attendant_db, "set_patient_eva_off", _set)
+    monkeypatch.setattr(attendant_db, "log_event", _log)
+
+    r = client.post("/api/atendente/paciente/p1/eva",
+                    params={"token": "test-token"},
+                    json={"phone": "5581999", "data": {"off": True}})
+    assert r.status_code == 200
+    assert r.json()["afetados"] == 2
+    assert chamado["args"] == ("p1", True)
 
 
 def test_reset_checkpoint_endpoint(client, monkeypatch):

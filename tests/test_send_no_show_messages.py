@@ -91,3 +91,23 @@ def test_nao_marca_flag_sem_contato(monkeypatch):
     send.assert_not_awaited()
     # sem contato: não marca a flag, para retentar amanhã
     assert appts[0]["no_show_message_sent_at"] is None
+
+
+def test_no_show_pula_contato_em_manual_hold(monkeypatch):
+    appts = [
+        {"id": "r1", "appointment_id": "a1", "patient_id": "p1",
+         "status": "no_show", "no_show_message_sent_at": None,
+         "start_time": "2026-07-01T12:00:00+00:00", "patients": {"name": "Carlos Silva"}},
+    ]
+    client = _fake_client(appts)
+    send = AsyncMock()
+    monkeypatch.setattr(sns, "send_no_show_message", send)
+    monkeypatch.setattr(sns, "get_contacts_for_patient", AsyncMock(return_value=[
+        {"phone": "5581111", "manual_hold": False},
+        {"phone": "5581222", "manual_hold": True},
+    ]))
+
+    sent = asyncio.run(sns.process(client))
+
+    assert sent == 1
+    send.assert_awaited_once_with("5581111", "Carlos")

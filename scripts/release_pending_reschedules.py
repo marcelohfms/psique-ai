@@ -23,6 +23,8 @@ from zoneinfo import ZoneInfo
 from dotenv import load_dotenv
 load_dotenv()
 
+from app.patients import get_contact_by_phone
+
 TZ = ZoneInfo("America/Recife")
 WINDOW_START = 7
 WINDOW_END = 23
@@ -100,6 +102,12 @@ async def main():
         user = appt.get("users") or {}
         phone = user.get("number", "")
         if not phone:
+            continue
+
+        # Eva desligada em definitivo (manual_hold): não notifica nem libera o slot.
+        _contact = await get_contact_by_phone(phone)
+        if _contact and _contact.get("manual_hold"):
+            print(f"  ⏭️  Eva desligada (manual_hold) — pulando {phone}")
             continue
 
         # Verifica se o paciente respondeu na última hora
