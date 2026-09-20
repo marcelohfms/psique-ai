@@ -19,7 +19,7 @@ from datetime import datetime, timezone
 from dotenv import load_dotenv
 load_dotenv()
 
-from app.patients import get_contacts_for_patient
+from app.patients import get_contacts_for_patient, drop_manual_hold
 from app.utils import display_name as _dn
 
 
@@ -64,6 +64,7 @@ async def process(client) -> int:
         name = (appt.get("patients") or {}).get("name") or "paciente"
         first_name = _dn(name) if name else "paciente"
         contacts = await get_contacts_for_patient(patient_id, "consulta") if patient_id else []
+        contacts = drop_manual_hold(contacts)
         sent_any = False
         for contact in contacts:
             phone = contact.get("phone")
