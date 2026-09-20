@@ -90,6 +90,20 @@ async def get_patients_by_contact(contact_id: str, role: str | None = None) -> l
     return out
 
 
+def _is_held(contact: dict | None) -> bool:
+    """True quando a Eva foi desligada em definitivo para este contato."""
+    return bool(contact and contact.get("manual_hold"))
+
+
+def drop_manual_hold(contacts: list[dict]) -> list[dict]:
+    """Remove da lista os contatos em manual_hold (Eva desligada).
+
+    Usado pelos montadores de destinatário de mensagem PROATIVA (lembretes de
+    retorno/consulta, no-show, pós-consulta, taxa). O recebimento ao vivo já é
+    barrado antes, no portão _eva_paused_for_phone (app/main.py)."""
+    return [c for c in contacts if not _is_held(c)]
+
+
 async def get_contacts_for_patient(patient_id: str, role: str, include_inactive: bool = False) -> list[dict]:
     """Retorna os contatos com o papel `role` para um paciente.
 
@@ -160,6 +174,7 @@ async def consultation_reminder_contacts(
     patient = await get_patient_by_id(patient_id)
     age = _compute_age((patient or {}).get("birth_date"))
     linked = await _linked_contacts_with_marker(patient_id, include_inactive=include_inactive)
+    linked = [e for e in linked if not _is_held(e["contact"])]
 
     own = [
         lc["contact"] for lc in linked
@@ -169,7 +184,7 @@ async def consultation_reminder_contacts(
         return own
 
     booking = await get_contact_by_id((appointment or {}).get("contact_id"))
-    if booking and (include_inactive or booking.get("active")):
+    if booking and not _is_held(booking) and (include_inactive or booking.get("active")):
         return [booking]
 
     return [lc["contact"] for lc in linked]
@@ -189,6 +204,7 @@ async def return_reminder_contacts(
     patient = await get_patient_by_id(patient_id)
     age = _compute_age((patient or {}).get("birth_date"))
     linked = await _linked_contacts_with_marker(patient_id, include_inactive=include_inactive)
+    linked = [e for e in linked if not _is_held(e["contact"])]
 
     own = [lc["contact"] for lc in linked if lc["is_self"] and _is_self_like(lc["relationship"])]
     if age is not None and age >= 18 and own:
