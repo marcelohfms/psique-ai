@@ -40,6 +40,9 @@ def compute_funnel(*, cohort: set, qualified: set, booked: set, paid: set,
       (qualified ∪ booked ∪ paid), tudo dentro do cohort.
     - Pendente = não-convertido com última atividade nos últimos stall_days.
     - Perdido = não-convertido frio (sem atividade recente)."""
+    # Convertido = pagamento/isenção resolvido. Não exigimos appointment_booked
+    # junto: pagar implica ter agendado, e o booking pode ser anterior à janela ou
+    # vir pelo dashboard — o pagamento é o sinal firme de conversão.
     converted = cohort & paid
     reached_qualified = cohort & (qualified | booked | paid)
     non_converted = cohort - converted
@@ -79,7 +82,7 @@ def format_report(result: dict, now: datetime, tz) -> tuple[str, str]:
     a_drop = result["qualificados"] - result["agendados"]
 
     lines = [
-        f"Funil de leads — {hoje}",
+        f"Funil de leads (últimos {FUNNEL_WINDOW_DAYS} dias) — {hoje}",
         "=" * 50,
         f"Interessados   {result['interessados']}",
         f"Qualificados   {result['qualificados']}   (-{q_drop} no cadastro)",

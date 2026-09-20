@@ -64,6 +64,8 @@ async def run(client, now: datetime) -> None:
         await client.from_("messages")
         .select("phone, role, created_at")
         .gte("created_at", cutoff)
+        .order("created_at", desc=True)
+        .limit(50000)
         .execute()
     ).data or []
     last_activity: dict[str, datetime] = {}
@@ -93,7 +95,12 @@ async def run(client, now: datetime) -> None:
         p["name"] = user.get("patient_name") or user.get("name") or ""
 
     subject, body = format_report(result, now, TZ)
-    print(body)
+    print(
+        f"Funil (últimos {FUNNEL_WINDOW_DAYS} dias): "
+        f"interessados={result['interessados']} qualificados={result['qualificados']} "
+        f"agendados={result['agendados']} pendentes={len(result['pendentes'])} "
+        f"perdidos={result['perdidos']}"
+    )
     await send_report_email(subject, body, to_email)
     print(f"Relatório de funil enviado para {to_email}.")
 

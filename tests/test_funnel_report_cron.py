@@ -1,6 +1,6 @@
 """Testa o cron de relatório de funil (scripts/send_funnel_report.py) e o envio."""
 from datetime import datetime, timedelta, timezone
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -50,6 +50,10 @@ class _FakeQuery:
     def in_(self, *a, **k):
         return self
     def gte(self, *a, **k):
+        return self
+    def order(self, *a, **k):
+        return self
+    def limit(self, *a, **k):
         return self
     async def execute(self):
         return MagicMock(data=self._rows)
