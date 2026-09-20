@@ -159,6 +159,20 @@ async def test_sends_when_alta_row_is_for_a_different_appointment():
     mock_send.assert_awaited_once()
 
 
+@pytest.mark.asyncio
+async def test_pos_consulta_pula_contato_em_manual_hold():
+    client, table = _client()
+    with patch("scripts.complete_appointments.get_contacts_for_patient",
+               new_callable=AsyncMock, return_value=[
+                   {"phone": "5581111", "manual_hold": False},
+                   {"phone": "5581222", "manual_hold": True},
+               ]), \
+         patch("scripts.complete_appointments.send_pos_consulta",
+               new_callable=AsyncMock) as mock_send:
+        await ca._process_pos_consulta(client, _appt(), NOW_ISO)
+    mock_send.assert_awaited_once_with("5581111", "Natalia")
+
+
 def test_should_skip_unconfirmed():
     assert ca._should_skip_unconfirmed(
         {"reminder_day_before_sent_at": "2026-07-21T10:00:00+00:00", "confirmed_at": None}
