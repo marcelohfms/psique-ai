@@ -1,0 +1,28 @@
+name: Send funnel report
+
+on:
+  schedule:
+    - cron: "0 11 * * 1"  # 08h Recife (UTC-3), toda segunda
+  workflow_dispatch:        # allow manual runs for testing
+
+jobs:
+  funnel-report:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v5
+
+      - name: Install dependencies
+        run: uv sync --frozen --no-dev
+
+      - name: Email owner the weekly funnel report
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+          SMTP_HOST: ${{ secrets.SMTP_HOST }}
+          SMTP_PORT: ${{ secrets.SMTP_PORT }}
+          SMTP_USER: ${{ secrets.SMTP_USER }}
+          SMTP_PASSWORD: ${{ secrets.SMTP_PASSWORD }}
+          FUNNEL_REPORT_EMAIL: ${{ secrets.FUNNEL_REPORT_EMAIL }}
+        run: uv run python scripts/send_funnel_report.py
