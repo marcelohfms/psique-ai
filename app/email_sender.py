@@ -83,6 +83,33 @@ async def send_clinic_notification_email(subject: str, body: str) -> None:
 
 
 
+async def send_report_email(subject: str, body: str, to_email: str) -> None:
+    """Envia um e-mail de relatório para um destinatário EXPLÍCITO (não usa
+    CLINIC_NOTIFY_EMAIL). Usado pelo relatório de funil, que por ora vai só para
+    a dona. Falha explícito se faltar SMTP ou o destinatário."""
+    smtp_host = os.environ.get("SMTP_HOST")
+    smtp_port = int(os.environ.get("SMTP_PORT", "465"))
+    smtp_user = os.environ.get("SMTP_USER")
+    smtp_password = os.environ.get("SMTP_PASSWORD")
+
+    missing = [
+        name for name, value in (
+            ("SMTP_HOST", smtp_host), ("SMTP_USER", smtp_user),
+            ("SMTP_PASSWORD", smtp_password), ("destinatário", to_email),
+        ) if not value
+    ]
+    if missing:
+        raise RuntimeError(
+            f"E-mail de relatório NÃO enviado ({subject!r}) — faltando: {', '.join(missing)}"
+        )
+
+    loop = asyncio.get_running_loop()
+    await loop.run_in_executor(
+        None, _send_email, smtp_host, smtp_port, smtp_user, smtp_password,
+        to_email, subject, body,
+    )
+
+
 async def send_document_nudge_email(
     doctor_key: str,
     doctor_email: str,
