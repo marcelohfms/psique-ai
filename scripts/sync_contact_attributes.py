@@ -9,7 +9,7 @@ taxa de reserva, retornante). Roda a cada 30 min via GitHub Actions.
 """
 import asyncio
 import os
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
 from dotenv import load_dotenv
@@ -25,6 +25,7 @@ from app.database import (
 from app.chatwoot import set_contact_custom_attributes, find_or_create_contact_id
 
 TZ = ZoneInfo("America/Recife")
+SYNCED_LOOKBACK_DAYS = 30
 
 # Reexport para os testes referenciarem os ids reais por chave.
 DOCTOR_IDS_BY_KEY = DOCTOR_IDS
@@ -67,10 +68,12 @@ async def candidate_phones(client, now: datetime) -> set[str]:
             ).data or []
             phones = {c["phone"] for c in contacts if c.get("phone")}
 
+    synced_cutoff = (now - timedelta(days=SYNCED_LOOKBACK_DAYS)).astimezone(timezone.utc).isoformat()
     synced = (
         await client.from_("events")
         .select("phone")
         .eq("event_type", ATTR_EVENT)
+        .gte("created_at", synced_cutoff)
         .execute()
     ).data or []
     phones |= {e["phone"] for e in synced if e.get("phone")}

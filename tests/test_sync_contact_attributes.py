@@ -12,25 +12,32 @@ NOW = datetime(2026, 9, 20, 12, 0, tzinfo=timezone.utc)
 # ── candidate_phones (client fake por tabela) ─────────────────────────────────
 
 class _FakeQuery:
-    def __init__(self, rows):
+    def __init__(self, table, rows):
+        self._table = table
         self._rows = rows
+        self._min_created = None
     def select(self, *a, **k):
         return self
     def eq(self, *a, **k):
         return self
-    def gte(self, *a, **k):
+    def gte(self, col=None, val=None, *a, **k):
+        if col == "created_at" and val is not None:
+            self._min_created = val
         return self
     def in_(self, *a, **k):
         return self
     async def execute(self):
-        return MagicMock(data=self._rows)
+        rows = self._rows
+        if self._min_created is not None:
+            rows = [r for r in rows if r.get("created_at", "") >= self._min_created]
+        return MagicMock(data=rows)
 
 
 class _FakeClient:
     def __init__(self, by_table):
         self._by_table = by_table
     def from_(self, table):
-        return _FakeQuery(self._by_table.get(table, []))
+        return _FakeQuery(table, self._by_table.get(table, []))
 
 
 async def test_candidate_phones_unions_appointments_and_synced():
@@ -38,10 +45,23 @@ async def test_candidate_phones_unions_appointments_and_synced():
         "appointments": [{"patient_id": "p1"}, {"patient_id": "p1"}],
         "patient_contacts": [{"contact_id": "c1"}],
         "contacts": [{"phone": "5581111"}],
-        "events": [{"phone": "5582222"}],   # já sincronizado antes
+        "events": [{"phone": "5582222", "created_at": NOW.isoformat()}],   # já sincronizado antes (recente)
     })
     got = await cron.candidate_phones(client, NOW)
     assert got == {"5581111", "5582222"}
+
+
+async def test_candidate_phones_excludes_old_synced():
+    from datetime import timedelta
+    client = _FakeClient({
+        "appointments": [],
+        "events": [
+            {"phone": "5581old", "created_at": (NOW - timedelta(days=60)).isoformat()},
+            {"phone": "5582recent", "created_at": (NOW - timedelta(days=2)).isoformat()},
+        ],
+    })
+    got = await cron.candidate_phones(client, NOW)
+    assert got == {"5582recent"}
 
 
 # ── _sync_one (reconciliação) ─────────────────────────────────────────────────
@@ -154,3 +174,23 @@ async def test_build_attrs_for_phone_uses_next_appointment_patient(monkeypatch):
     assert "João" in attrs["proxima_consulta"]
     assert attrs["retornante"] == "Primeira vez"
     assert attrs["taxa_reserva"] == "Pendente"
+
+
+async def test_build_attrs_for_phone_no_upcoming_uses_recent_patient(monkeypatch):
+    async def fake_users(phone):
+        return [{"id": "p1", "name": "Ana", "doctor_id": cron.DOCTOR_IDS_BY_KEY["julio"],
+                 "is_returning_patient": True, "custom_price": 200}]
+    async def fake_upcoming(phone):
+        return []  # nenhuma consulta futura
+    async def fake_get_user(phone):
+        return {"id": "p1", "name": "Ana", "doctor_id": cron.DOCTOR_IDS_BY_KEY["julio"],
+                "is_returning_patient": True, "custom_price": 200}
+    monkeypatch.setattr(cron, "get_users_by_phone", fake_users)
+    monkeypatch.setattr(cron, "get_upcoming_appointments", fake_upcoming)
+    monkeypatch.setattr(cron, "get_user_by_phone", fake_get_user)
+
+    attrs = await cron._build_attrs_for_phone("5581111", NOW)
+    assert attrs["proxima_consulta"] == "sem consulta futura"
+    assert attrs["taxa_reserva"] == ""
+    assert attrs["medico"] == "Dr. Júlio"
+    assert attrs["retornante"] == "Retornante"
