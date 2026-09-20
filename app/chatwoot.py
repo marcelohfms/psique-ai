@@ -199,12 +199,20 @@ async def add_label(conversation_id: int, label: str) -> None:
 async def set_contact_custom_attributes(contact_id: int, attrs: dict) -> None:
     """Grava custom attributes de CONTATO (aparecem na lateral da conversa).
 
-    Envia o dict completo: a API do Chatwoot substitui o objeto custom_attributes
-    inteiro, então quem chama deve mandar todas as chaves de uma vez. As chaves
-    precisam existir como atributos de contato no painel para aparecerem."""
+    Faz MERGE com os atributos atuais: o PUT do Chatwoot substitui o objeto
+    custom_attributes inteiro, então lemos os valores atuais e sobrescrevemos só
+    as nossas chaves, para nunca apagar um atributo que a clínica mantenha fora
+    deste conjunto. As chaves precisam existir como atributos de contato no painel
+    para aparecerem."""
     url = f"{_base_url()}/api/v1/accounts/{_account_id()}/contacts/{contact_id}"
     async with httpx.AsyncClient(timeout=10) as client:
-        await _request(client, "PUT", url, json={"custom_attributes": attrs}, headers=_headers())
+        resp = await _request(client, "GET", url, headers=_headers())
+        try:
+            current = (resp.json().get("payload") or {}).get("custom_attributes") or {}
+        except Exception:
+            current = {}
+        merged = {**current, **attrs}
+        await _request(client, "PUT", url, json={"custom_attributes": merged}, headers=_headers())
 
 
 async def find_or_create_contact_id(phone: str) -> int | None:

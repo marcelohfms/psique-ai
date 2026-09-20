@@ -56,6 +56,14 @@ def format_next_appointment(next_appt: dict, patient_name: str, tz) -> str:
     return f"{label} — {first}" if first else label
 
 
+def _retornante_label(is_returning) -> str:
+    if is_returning is True:
+        return "Retornante"
+    if is_returning is False:
+        return "Primeira vez"
+    return ""
+
+
 def build_attributes(*, doctor_label: str, next_appt: dict | None,
                      patient_name: str, is_returning, custom_price, tz) -> dict:
     """Monta o dict dos quatro custom attributes (todos as ATTR_KEYS)."""
@@ -69,7 +77,7 @@ def build_attributes(*, doctor_label: str, next_appt: dict | None,
         ATTR_MEDICO: doctor_label or "",
         ATTR_PROXIMA: proxima,
         ATTR_TAXA: taxa,
-        ATTR_RETORNANTE: "Retornante" if is_returning else "Primeira vez",
+        ATTR_RETORNANTE: _retornante_label(is_returning),
     }
 
 

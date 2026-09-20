@@ -102,5 +102,14 @@ def test_needs_attr_change():
     assert needs_attr_change(a, {"medico": "Dra. Bruna"}) is True
 
 
+def test_retornante_unknown_is_blank():
+    appt = _appt(datetime(2026, 9, 22, 17, 0, tzinfo=timezone.utc))
+    attrs = build_attributes(
+        doctor_label="Dr. Júlio", next_appt=appt, patient_name="João",
+        is_returning=None, custom_price=200, tz=TZ,
+    )
+    assert attrs["retornante"] == ""
+
+
 def test_attr_event_name():
     assert ATTR_EVENT == "contact_attributes_synced"

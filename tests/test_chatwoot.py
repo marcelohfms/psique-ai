@@ -621,17 +621,23 @@ async def test_get_last_patient_message_returns_none_when_no_incoming():
 
 # ── custom attributes de contato ──────────────────────────────────────────────
 
-async def test_set_contact_custom_attributes_calls_api():
+async def test_set_contact_custom_attributes_merges_and_calls_api():
     from app.chatwoot import set_contact_custom_attributes
-    mock_response = MagicMock()
-    mock_response.status_code = 200
-    mock_response.raise_for_status = MagicMock()
+    get_response = MagicMock()
+    get_response.status_code = 200
+    get_response.raise_for_status = MagicMock()
+    get_response.json = MagicMock(return_value={"payload": {"custom_attributes": {"outro": "x"}}})
+
+    put_response = MagicMock()
+    put_response.status_code = 200
+    put_response.raise_for_status = MagicMock()
 
     with patch("httpx.AsyncClient") as mock_client_cls:
         mock_client = AsyncMock()
         mock_client.__aenter__ = AsyncMock(return_value=mock_client)
         mock_client.__aexit__ = AsyncMock(return_value=False)
-        mock_client.put = AsyncMock(return_value=mock_response)
+        mock_client.get = AsyncMock(return_value=get_response)
+        mock_client.put = AsyncMock(return_value=put_response)
         mock_client_cls.return_value = mock_client
 
         with patch.dict("os.environ", {
@@ -644,7 +650,10 @@ async def test_set_contact_custom_attributes_calls_api():
         mock_client.put.assert_called_once()
         url = mock_client.put.call_args[0][0]
         assert "/contacts/7" in url
-        assert mock_client.put.call_args[1]["json"] == {"custom_attributes": {"medico": "Dr. Júlio"}}
+        # merge preserva 'outro' e adiciona 'medico'
+        assert mock_client.put.call_args[1]["json"] == {
+            "custom_attributes": {"outro": "x", "medico": "Dr. Júlio"}
+        }
 
 
 async def test_find_or_create_contact_id_uses_existing():
