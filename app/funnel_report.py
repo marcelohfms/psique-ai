@@ -8,6 +8,7 @@ ou isenção), por decisão de produto.
 
 Consumido por scripts/send_funnel_report.py (lê events+messages e chama isto).
 """
+import html as _html
 from datetime import datetime, timedelta
 
 FUNNEL_WINDOW_DAYS = 30   # cohort: chegou nos últimos 30 dias
@@ -107,3 +108,133 @@ def format_report(result: dict, now: datetime, tz) -> tuple[str, str]:
     body = "\n".join(lines)
     subject = f"Psique — Funil de leads ({result['agendados']}/{result['interessados']}) — {hoje}"
     return subject, body
+
+
+# Cores da "pill" por etapa: (fundo, texto).
+_ETAPA_PILL = {
+    "Agendado": ("#dcfce7", "#166534"),
+    "Agendou, falta pagar": ("#fef3c7", "#92400e"),
+    "Qualificado": ("#ede4ff", "#6d4d94"),
+    "Interessado": ("#f1f5f9", "#475569"),
+}
+
+
+def _bar_width_pct(part: int, whole: int) -> int:
+    """Largura da barra em %, com mínimo visual de 6% para valor > 0 nunca sumir."""
+    if not whole or part <= 0:
+        return 0
+    return max(6, round(100 * part / whole))
+
+
+def _pendente_row(p: dict) -> str:
+    nome = _html.escape((p.get("name") or "").strip())
+    phone = _html.escape(p.get("phone") or "")
+    quem = nome if nome else phone
+    etapa = p.get("etapa") or ""
+    bg, fg = _ETAPA_PILL.get(etapa, ("#f1f5f9", "#475569"))
+    etapa_html = (
+        f'<span style="background:{bg};color:{fg};padding:2px 8px;'
+        f'border-radius:10px;font-size:12px;">{_html.escape(etapa)}</span>'
+    )
+    return (
+        '<tr>'
+        f'<td style="padding:8px 10px;color:#0f172a;border-bottom:1px solid #f1f5f9;">{quem}</td>'
+        f'<td style="padding:8px 10px;color:#334155;border-bottom:1px solid #f1f5f9;">{phone}</td>'
+        f'<td style="padding:8px 10px;border-bottom:1px solid #f1f5f9;">{etapa_html}</td>'
+        '</tr>'
+    )
+
+
+def build_html_report(result: dict, now: datetime, tz) -> str:
+    """Monta o corpo HTML do relatório (estilos inline, layout em tabela, sem JS
+    nem CSS externo — seguro para clientes de e-mail). Visual aprovado no mockup."""
+    hoje = now.astimezone(tz).strftime("%d/%m/%Y")
+    inter = result["interessados"]
+    qual = result["qualificados"]
+    agen = result["agendados"]
+    conv = result["conversao_pct"]
+    q_drop = inter - qual
+    a_drop = qual - agen
+    qual_w = _bar_width_pct(qual, inter)
+    agen_w = _bar_width_pct(agen, inter)
+
+    q_drop_html = (
+        f'<div style="font-size:11px;color:#ef4444;margin:0 0 8px 130px;">'
+        f'↓ {q_drop} desistiram no cadastro</div>' if q_drop > 0 else ""
+    )
+    a_drop_html = (
+        f'<div style="font-size:11px;color:#ef4444;margin:0 0 4px 130px;">'
+        f'↓ {a_drop} viram horário e não pagaram</div>' if a_drop > 0 else ""
+    )
+
+    if result["pendentes"]:
+        rows = "".join(_pendente_row(p) for p in result["pendentes"])
+    else:
+        rows = ('<tr><td colspan="3" style="padding:8px 10px;color:#94a3b8;'
+                'font-size:13px;">(nenhum)</td></tr>')
+
+    return f"""\
+<div style="background:#eef1f4;padding:24px;font-family:-apple-system,Segoe UI,Roboto,Arial,sans-serif;">
+  <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="max-width:600px;margin:0 auto;background:#ffffff;border-radius:12px;overflow:hidden;">
+    <tr><td style="background:#9B7DB8;padding:20px 24px;">
+      <div style="color:#ffffff;font-size:18px;font-weight:700;">Funil de leads — Clínica Psique</div>
+      <div style="color:#EDE4FF;font-size:13px;margin-top:2px;">Semana de {hoje} · últimos {FUNNEL_WINDOW_DAYS} dias</div>
+    </td></tr>
+
+    <tr><td style="padding:24px 24px 8px 24px;text-align:center;">
+      <div style="font-size:40px;font-weight:800;color:#7A5FA0;line-height:1;">{conv}%</div>
+      <div style="font-size:13px;color:#64748b;margin-top:4px;">conversão · {agen} de {inter} leads viraram consulta paga</div>
+    </td></tr>
+
+    <tr><td style="padding:16px 24px 8px 24px;">
+      <div style="font-size:12px;font-weight:700;color:#94a3b8;text-transform:uppercase;letter-spacing:.5px;margin-bottom:10px;">O funil</div>
+
+      <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="margin-bottom:8px;"><tr>
+        <td style="width:130px;font-size:13px;color:#334155;">Interessados</td>
+        <td><div style="background:#B49AD0;height:26px;width:100%;border-radius:5px;color:#fff;font-size:13px;font-weight:700;line-height:26px;padding-left:10px;">{inter}</div></td>
+      </tr></table>
+
+      <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="margin-bottom:2px;"><tr>
+        <td style="width:130px;font-size:13px;color:#334155;">Qualificados</td>
+        <td><div style="background:#9B7DB8;height:26px;width:{qual_w}%;border-radius:5px;color:#fff;font-size:13px;font-weight:700;line-height:26px;padding-left:10px;">{qual}</div></td>
+      </tr></table>
+      {q_drop_html}
+
+      <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="margin-bottom:2px;"><tr>
+        <td style="width:130px;font-size:13px;color:#334155;">Agendados (pagos)</td>
+        <td><div style="background:#7A5FA0;height:26px;width:{agen_w}%;border-radius:5px;color:#fff;font-size:13px;font-weight:700;line-height:26px;padding-left:10px;">{agen}</div></td>
+      </tr></table>
+      {a_drop_html}
+    </td></tr>
+
+    <tr><td style="padding:16px 24px 8px 24px;">
+      <table role="presentation" width="100%" cellpadding="0" cellspacing="0"><tr>
+        <td style="width:50%;padding-right:6px;">
+          <div style="background:#fff7ed;border:1px solid #fed7aa;border-radius:8px;padding:12px;text-align:center;">
+            <div style="font-size:24px;font-weight:800;color:#ea580c;">{len(result['pendentes'])}</div>
+            <div style="font-size:12px;color:#9a3412;">Pendentes (quentes)</div>
+          </div>
+        </td>
+        <td style="width:50%;padding-left:6px;">
+          <div style="background:#f8fafc;border:1px solid #e2e8f0;border-radius:8px;padding:12px;text-align:center;">
+            <div style="font-size:24px;font-weight:800;color:#64748b;">{result['perdidos']}</div>
+            <div style="font-size:12px;color:#64748b;">Perdidos (frios)</div>
+          </div>
+        </td>
+      </tr></table>
+    </td></tr>
+
+    <tr><td style="padding:16px 24px 24px 24px;">
+      <div style="font-size:12px;font-weight:700;color:#94a3b8;text-transform:uppercase;letter-spacing:.5px;margin-bottom:8px;">Pendentes para contato</div>
+      <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="border-collapse:collapse;font-size:13px;">
+        <tr style="background:#f1f5f9;">
+          <td style="padding:8px 10px;color:#475569;font-weight:600;border-bottom:1px solid #e2e8f0;">Paciente</td>
+          <td style="padding:8px 10px;color:#475569;font-weight:600;border-bottom:1px solid #e2e8f0;">WhatsApp</td>
+          <td style="padding:8px 10px;color:#475569;font-weight:600;border-bottom:1px solid #e2e8f0;">Etapa</td>
+        </tr>
+        {rows}
+      </table>
+      <div style="font-size:11px;color:#94a3b8;margin-top:10px;">Relatório automático · enviado só para você</div>
+    </td></tr>
+  </table>
+</div>"""

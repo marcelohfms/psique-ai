@@ -87,3 +87,43 @@ def test_format_report_has_sections_and_names():
     assert "Ana" in body and "5581111" in body    # pendente com nome
     assert "5582222" in body                        # pendente sem nome cai pro telefone
     assert "2/5" in subject or "2 de 5" in subject
+
+
+# ── build_html_report ─────────────────────────────────────────────────────────
+
+from app.funnel_report import build_html_report
+
+
+def test_build_html_report_has_numbers_and_pendentes():
+    result = {
+        "interessados": 50, "qualificados": 28, "agendados": 22, "conversao_pct": 44,
+        "pendentes": [{"phone": "5581999991234", "etapa": "Agendou, falta pagar", "name": "Mariana"},
+                      {"phone": "5581999995678", "etapa": "Qualificado", "name": ""}],
+        "perdidos": 21,
+    }
+    html = build_html_report(result, NOW, TZ)
+    assert html.lstrip().startswith("<")
+    assert "44%" in html
+    assert "22 de 50" in html or "22</" in html
+    assert "Mariana" in html and "5581999991234" in html
+    assert "5581999995678" in html          # pendente sem nome usa o telefone
+    assert "Agendou, falta pagar" in html
+    assert "text/html" not in html          # é fragmento HTML, não MIME
+    assert "<script" not in html            # e-mail: sem JS
+
+
+def test_build_html_report_escapes_name():
+    result = {
+        "interessados": 1, "qualificados": 0, "agendados": 0, "conversao_pct": 0,
+        "pendentes": [{"phone": "5581", "etapa": "Interessado", "name": "A & <b>"}],
+        "perdidos": 0,
+    }
+    html = build_html_report(result, NOW, TZ)
+    assert "A &amp; &lt;b&gt;" in html      # nome escapado
+
+
+def test_build_html_report_empty_cohort_no_crash():
+    result = {"interessados": 0, "qualificados": 0, "agendados": 0, "conversao_pct": 0,
+              "pendentes": [], "perdidos": 0}
+    html = build_html_report(result, NOW, TZ)
+    assert "0%" in html
