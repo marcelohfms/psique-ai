@@ -114,7 +114,7 @@ def format_report(result: dict, now: datetime, tz) -> tuple[str, str]:
 _ETAPA_PILL = {
     "Agendado": ("#dcfce7", "#166534"),
     "Agendou, falta pagar": ("#fef3c7", "#92400e"),
-    "Qualificado": ("#e0f2fe", "#075985"),
+    "Qualificado": ("#ede4ff", "#6d4d94"),
     "Interessado": ("#f1f5f9", "#475569"),
 }
 
@@ -176,13 +176,13 @@ def build_html_report(result: dict, now: datetime, tz) -> str:
     return f"""\
 <div style="background:#eef1f4;padding:24px;font-family:-apple-system,Segoe UI,Roboto,Arial,sans-serif;">
   <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="max-width:600px;margin:0 auto;background:#ffffff;border-radius:12px;overflow:hidden;">
-    <tr><td style="background:#0f766e;padding:20px 24px;">
+    <tr><td style="background:#9B7DB8;padding:20px 24px;">
       <div style="color:#ffffff;font-size:18px;font-weight:700;">Funil de leads — Clínica Psique</div>
-      <div style="color:#b8e0db;font-size:13px;margin-top:2px;">Semana de {hoje} · últimos {FUNNEL_WINDOW_DAYS} dias</div>
+      <div style="color:#EDE4FF;font-size:13px;margin-top:2px;">Semana de {hoje} · últimos {FUNNEL_WINDOW_DAYS} dias</div>
     </td></tr>
 
     <tr><td style="padding:24px 24px 8px 24px;text-align:center;">
-      <div style="font-size:40px;font-weight:800;color:#0f766e;line-height:1;">{conv}%</div>
+      <div style="font-size:40px;font-weight:800;color:#7A5FA0;line-height:1;">{conv}%</div>
       <div style="font-size:13px;color:#64748b;margin-top:4px;">conversão · {agen} de {inter} leads viraram consulta paga</div>
     </td></tr>
 
@@ -191,18 +191,18 @@ def build_html_report(result: dict, now: datetime, tz) -> str:
 
       <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="margin-bottom:8px;"><tr>
         <td style="width:130px;font-size:13px;color:#334155;">Interessados</td>
-        <td><div style="background:#3b82f6;height:26px;width:100%;border-radius:5px;color:#fff;font-size:13px;font-weight:700;line-height:26px;padding-left:10px;">{inter}</div></td>
+        <td><div style="background:#B49AD0;height:26px;width:100%;border-radius:5px;color:#fff;font-size:13px;font-weight:700;line-height:26px;padding-left:10px;">{inter}</div></td>
       </tr></table>
 
       <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="margin-bottom:2px;"><tr>
         <td style="width:130px;font-size:13px;color:#334155;">Qualificados</td>
-        <td><div style="background:#0ea5e9;height:26px;width:{qual_w}%;border-radius:5px;color:#fff;font-size:13px;font-weight:700;line-height:26px;padding-left:10px;">{qual}</div></td>
+        <td><div style="background:#9B7DB8;height:26px;width:{qual_w}%;border-radius:5px;color:#fff;font-size:13px;font-weight:700;line-height:26px;padding-left:10px;">{qual}</div></td>
       </tr></table>
       {q_drop_html}
 
       <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="margin-bottom:2px;"><tr>
         <td style="width:130px;font-size:13px;color:#334155;">Agendados (pagos)</td>
-        <td><div style="background:#0f766e;height:26px;width:{agen_w}%;border-radius:5px;color:#fff;font-size:13px;font-weight:700;line-height:26px;padding-left:10px;">{agen}</div></td>
+        <td><div style="background:#7A5FA0;height:26px;width:{agen_w}%;border-radius:5px;color:#fff;font-size:13px;font-weight:700;line-height:26px;padding-left:10px;">{agen}</div></td>
       </tr></table>
       {a_drop_html}
     </td></tr>
