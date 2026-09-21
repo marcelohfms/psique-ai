@@ -84,9 +84,10 @@ async def test_cron_builds_sets_and_sends(monkeypatch):
         return {"name": "Bruno"} if phone == "5581bbb" else {}
 
     sent = {}
-    async def fake_send(subject, body, to_email):
+    async def fake_send(subject, body, to_email, html_body=None):
         sent["to"] = to_email
         sent["body"] = body
+        sent["html"] = html_body
 
     monkeypatch.setattr(cron, "get_user_by_phone", fake_get_user)
     monkeypatch.setattr(cron, "send_report_email", fake_send)
@@ -98,6 +99,8 @@ async def test_cron_builds_sets_and_sends(monkeypatch):
     # aaa converteu (pagou), bbb é pendente qualificado
     assert "Conversão: 1 de 2" in sent["body"]
     assert "Bruno" in sent["body"] and "5581bbb" in sent["body"]
+    assert sent["html"] is not None and "<" in sent["html"]
+    assert "5581bbb" in sent["html"]      # pendente aparece no HTML
 
 
 async def test_cron_raises_without_recipient(monkeypatch):
@@ -120,7 +123,7 @@ async def test_cron_never_uses_clinic_email(monkeypatch):
         return {}
 
     sent = {}
-    async def fake_send(subject, body, to_email):
+    async def fake_send(subject, body, to_email, html_body=None):
         sent["to"] = to_email
 
     monkeypatch.setattr(cron, "get_user_by_phone", fake_get_user)

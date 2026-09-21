@@ -12,7 +12,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 from app.funnel_report import (
-    compute_funnel, format_report,
+    compute_funnel, format_report, build_html_report,
     FUNNEL_WINDOW_DAYS, ARRIVAL_EVENT, QUALIFIED_EVENT, BOOKED_EVENT, PAID_EVENTS,
 )
 from app.scheduling_stall import parse_ts
@@ -95,13 +95,14 @@ async def run(client, now: datetime) -> None:
         p["name"] = user.get("patient_name") or user.get("name") or ""
 
     subject, body = format_report(result, now, TZ)
+    html = build_html_report(result, now, TZ)
     print(
         f"Funil (últimos {FUNNEL_WINDOW_DAYS} dias): "
         f"interessados={result['interessados']} qualificados={result['qualificados']} "
         f"agendados={result['agendados']} pendentes={len(result['pendentes'])} "
         f"perdidos={result['perdidos']}"
     )
-    await send_report_email(subject, body, to_email)
+    await send_report_email(subject, body, to_email, html_body=html)
     print(f"Relatório de funil enviado para {to_email}.")
 
 
