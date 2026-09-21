@@ -61,7 +61,7 @@ def test_envia_so_para_no_show_sem_flag(monkeypatch):
     client = _fake_client(appts)
     send = AsyncMock()
     monkeypatch.setattr(sns, "send_no_show_message", send)
-    monkeypatch.setattr(sns, "get_contacts_for_patient",
+    monkeypatch.setattr(sns, "consultation_reminder_contacts",
                         AsyncMock(return_value=[{"phone": "5581999999999"}]))
 
     sent = asyncio.run(sns.process(client))
@@ -83,7 +83,7 @@ def test_nao_marca_flag_sem_contato(monkeypatch):
     client = _fake_client(appts)
     send = AsyncMock()
     monkeypatch.setattr(sns, "send_no_show_message", send)
-    monkeypatch.setattr(sns, "get_contacts_for_patient", AsyncMock(return_value=[]))
+    monkeypatch.setattr(sns, "consultation_reminder_contacts", AsyncMock(return_value=[]))
 
     sent = asyncio.run(sns.process(client))
 
@@ -93,21 +93,30 @@ def test_nao_marca_flag_sem_contato(monkeypatch):
     assert appts[0]["no_show_message_sent_at"] is None
 
 
-def test_no_show_pula_contato_em_manual_hold(monkeypatch):
+def test_no_show_usa_regra_da_idade_sem_fan_out(monkeypatch):
+    # Regressão (Mariana/Juliana, 21/09): o aviso de falta de uma paciente
+    # adulta vazava pra mãe porque o script pegava todo contato "consulta".
+    # Agora delega a consultation_reminder_contacts, que resolve por idade
+    # (adulto → só o próprio; menor → quem agendou) e já filtra manual_hold.
     appts = [
         {"id": "r1", "appointment_id": "a1", "patient_id": "p1",
          "status": "no_show", "no_show_message_sent_at": None,
-         "start_time": "2026-07-01T12:00:00+00:00", "patients": {"name": "Carlos Silva"}},
+         "start_time": "2026-07-01T12:00:00+00:00", "contact_id": "c-self",
+         "patients": {"name": "Carlos Silva"}},
     ]
     client = _fake_client(appts)
     send = AsyncMock()
+    crc = AsyncMock(return_value=[{"phone": "5581111"}])
     monkeypatch.setattr(sns, "send_no_show_message", send)
-    monkeypatch.setattr(sns, "get_contacts_for_patient", AsyncMock(return_value=[
-        {"phone": "5581111", "manual_hold": False},
-        {"phone": "5581222", "manual_hold": True},
-    ]))
+    monkeypatch.setattr(sns, "consultation_reminder_contacts", crc)
 
     sent = asyncio.run(sns.process(client))
 
     assert sent == 1
     send.assert_awaited_once_with("5581111", "Carlos")
+    # recebe a consulta inteira (com contact_id) e só o contato ativo
+    assert crc.await_count == 1
+    args, kwargs = crc.await_args
+    assert args[0] == "p1"
+    assert args[1]["appointment_id"] == "a1"
+    assert kwargs.get("include_inactive") is False

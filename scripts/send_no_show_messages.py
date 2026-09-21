@@ -19,7 +19,7 @@ from datetime import datetime, timezone
 from dotenv import load_dotenv
 load_dotenv()
 
-from app.patients import get_contacts_for_patient, drop_manual_hold
+from app.patients import consultation_reminder_contacts
 from app.utils import display_name as _dn
 
 
@@ -51,7 +51,7 @@ async def process(client) -> int:
     result = await (
         client.from_("appointments")
         .select("id, appointment_id, patient_id, status, no_show_message_sent_at, "
-                "start_time, patients(name)")
+                "start_time, contact_id, patients(name)")
         .eq("status", "no_show")
         .is_("no_show_message_sent_at", "null")
         .execute()
@@ -63,8 +63,15 @@ async def process(client) -> int:
         patient_id = appt.get("patient_id")
         name = (appt.get("patients") or {}).get("name") or "paciente"
         first_name = _dn(name) if name else "paciente"
-        contacts = await get_contacts_for_patient(patient_id, "consulta") if patient_id else []
-        contacts = drop_manual_hold(contacts)
+        # Destinatários pela regra da idade (mesma do lembrete de véspera):
+        # adulto com contato próprio → só o próprio; menor → quem agendou.
+        # Nunca faz fan-out cru pra todos os contatos "consulta" (senão o aviso
+        # de falta de uma adulta vaza pra mãe/pai). include_inactive=False mantém
+        # o comportamento antigo de só falar com contato ativo.
+        contacts = (
+            await consultation_reminder_contacts(patient_id, appt, include_inactive=False)
+            if patient_id else []
+        )
         sent_any = False
         for contact in contacts:
             phone = contact.get("phone")

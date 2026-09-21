@@ -13,7 +13,7 @@ from datetime import datetime, timezone, timedelta
 from dotenv import load_dotenv
 load_dotenv()
 
-from app.patients import get_contacts_for_patient, drop_manual_hold
+from app.patients import consultation_reminder_contacts
 
 
 async def send_pos_consulta(phone: str, first_name: str) -> None:
@@ -98,9 +98,14 @@ async def _process_pos_consulta(client, appt: dict, now_iso: str) -> None:
         await _mark_sent()
         return
 
-    # Envia pós-consulta para TODOS os contatos com role 'consulta'.
-    contacts = await get_contacts_for_patient(patient_id, "consulta") if patient_id else []
-    contacts = drop_manual_hold(contacts)
+    # Destinatários pela regra da idade (mesma do lembrete de véspera): adulto
+    # com contato próprio → só o próprio; menor → quem agendou. Evita fan-out
+    # cru pros contatos "consulta" (não vaza pós-consulta de adulto pra família).
+    # include_inactive=False mantém o antigo "só contato ativo".
+    contacts = (
+        await consultation_reminder_contacts(patient_id, appt, include_inactive=False)
+        if patient_id else []
+    )
     if not contacts:
         print(f"Skipping pos_consulta for patient {patient_id} — sem contato de consulta.")
         await _mark_sent()
@@ -134,7 +139,7 @@ async def main():
         client.from_("appointments")
         .select(
             "id, appointment_id, end_time, patient_id, consultation_type, "
-            "confirmed_at, reminder_day_before_sent_at, patients(name)"
+            "confirmed_at, reminder_day_before_sent_at, contact_id, patients(name)"
         )
         .eq("status", "scheduled")
         .is_("pos_consulta_sent_at", "null")
