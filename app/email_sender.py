@@ -28,12 +28,17 @@ def _send_email(
     to_email: str,
     subject: str,
     body: str,
+    html_body: str | None = None,
 ) -> None:
     msg = MIMEMultipart("alternative")
     msg["Subject"] = subject
     msg["From"] = smtp_user
     msg["To"] = to_email
+    # Ordem importa no multipart/alternative: o cliente prefere a última parte
+    # suportada, então o texto vem primeiro (fallback) e o HTML por último.
     msg.attach(MIMEText(body, "plain", "utf-8"))
+    if html_body:
+        msg.attach(MIMEText(html_body, "html", "utf-8"))
 
     with smtplib.SMTP_SSL(smtp_host, smtp_port) as server:
         server.login(smtp_user, smtp_password)
@@ -83,7 +88,8 @@ async def send_clinic_notification_email(subject: str, body: str) -> None:
 
 
 
-async def send_report_email(subject: str, body: str, to_email: str) -> None:
+async def send_report_email(subject: str, body: str, to_email: str,
+                            html_body: str | None = None) -> None:
     """Envia um e-mail de relatório para um destinatário EXPLÍCITO (não usa
     CLINIC_NOTIFY_EMAIL). Usado pelo relatório de funil, que por ora vai só para
     a dona. Falha explícito se faltar SMTP ou o destinatário."""
@@ -106,7 +112,7 @@ async def send_report_email(subject: str, body: str, to_email: str) -> None:
     loop = asyncio.get_running_loop()
     await loop.run_in_executor(
         None, _send_email, smtp_host, smtp_port, smtp_user, smtp_password,
-        to_email, subject, body,
+        to_email, subject, body, html_body,
     )
 
 
