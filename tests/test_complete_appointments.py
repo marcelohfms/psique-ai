@@ -36,7 +36,7 @@ async def test_sends_pos_consulta_for_same_day_booking_without_confirmation():
     # same day never gets a day-before reminder, so confirmed_at is always
     # null even though the patient attended. Must NOT be treated as a no-show.
     client, table = _client()
-    with patch("scripts.complete_appointments.get_contacts_for_patient",
+    with patch("scripts.complete_appointments.consultation_reminder_contacts",
                new_callable=AsyncMock, return_value=[{"phone": "5581996332827"}]), \
          patch("scripts.complete_appointments.send_pos_consulta",
                new_callable=AsyncMock) as mock_send:
@@ -51,7 +51,7 @@ async def test_skips_when_day_before_reminder_sent_and_never_confirmed():
     # confirmation and the patient never replied.
     client, table = _client()
     appt = _appt(reminder_day_before_sent_at="2026-07-21T10:00:00+00:00")
-    with patch("scripts.complete_appointments.get_contacts_for_patient",
+    with patch("scripts.complete_appointments.consultation_reminder_contacts",
                new_callable=AsyncMock) as mock_gcfp, \
          patch("scripts.complete_appointments.send_pos_consulta",
                new_callable=AsyncMock) as mock_send:
@@ -66,7 +66,7 @@ async def test_sends_when_confirmed_regardless_of_reminder():
     client, table = _client()
     appt = _appt(reminder_day_before_sent_at="2026-07-21T10:00:00+00:00",
                  confirmed_at="2026-07-21T12:00:00+00:00")
-    with patch("scripts.complete_appointments.get_contacts_for_patient",
+    with patch("scripts.complete_appointments.consultation_reminder_contacts",
                new_callable=AsyncMock, return_value=[{"phone": "5581111"}]), \
          patch("scripts.complete_appointments.send_pos_consulta",
                new_callable=AsyncMock) as mock_send:
@@ -77,7 +77,7 @@ async def test_sends_when_confirmed_regardless_of_reminder():
 @pytest.mark.asyncio
 async def test_skips_when_future_appointment_exists():
     client, table = _client(future_data=[{"id": "row-2"}])
-    with patch("scripts.complete_appointments.get_contacts_for_patient",
+    with patch("scripts.complete_appointments.consultation_reminder_contacts",
                new_callable=AsyncMock) as mock_gcfp, \
          patch("scripts.complete_appointments.send_pos_consulta",
                new_callable=AsyncMock) as mock_send:
@@ -90,7 +90,7 @@ async def test_skips_when_future_appointment_exists():
 @pytest.mark.asyncio
 async def test_skips_when_no_consulta_contact():
     client, table = _client()
-    with patch("scripts.complete_appointments.get_contacts_for_patient",
+    with patch("scripts.complete_appointments.consultation_reminder_contacts",
                new_callable=AsyncMock, return_value=[]), \
          patch("scripts.complete_appointments.send_pos_consulta",
                new_callable=AsyncMock) as mock_send:
@@ -120,7 +120,7 @@ async def test_skips_when_appointment_classified_as_alta():
     client = MagicMock()
     client.from_.side_effect = lambda t: rr_table if t == "return_reminders" else appt_table
 
-    with patch("scripts.complete_appointments.get_contacts_for_patient",
+    with patch("scripts.complete_appointments.consultation_reminder_contacts",
                new_callable=AsyncMock) as mock_gcfp, \
          patch("scripts.complete_appointments.send_pos_consulta",
                new_callable=AsyncMock) as mock_send:
@@ -151,7 +151,7 @@ async def test_sends_when_alta_row_is_for_a_different_appointment():
     client = MagicMock()
     client.from_.side_effect = lambda t: rr_table if t == "return_reminders" else appt_table
 
-    with patch("scripts.complete_appointments.get_contacts_for_patient",
+    with patch("scripts.complete_appointments.consultation_reminder_contacts",
                new_callable=AsyncMock, return_value=[{"phone": "5581111"}]), \
          patch("scripts.complete_appointments.send_pos_consulta",
                new_callable=AsyncMock) as mock_send:
@@ -160,17 +160,22 @@ async def test_sends_when_alta_row_is_for_a_different_appointment():
 
 
 @pytest.mark.asyncio
-async def test_pos_consulta_pula_contato_em_manual_hold():
+async def test_pos_consulta_usa_regra_da_idade_sem_fan_out():
+    # A escolha de destinatário (idade + manual_hold) é responsabilidade de
+    # consultation_reminder_contacts, que recebe a consulta inteira. O script
+    # não faz fan-out cru pros contatos "consulta": a pós-consulta de um adulto
+    # não vaza pra família.
     client, table = _client()
-    with patch("scripts.complete_appointments.get_contacts_for_patient",
-               new_callable=AsyncMock, return_value=[
-                   {"phone": "5581111", "manual_hold": False},
-                   {"phone": "5581222", "manual_hold": True},
-               ]), \
+    crc = AsyncMock(return_value=[{"phone": "5581111"}])
+    with patch("scripts.complete_appointments.consultation_reminder_contacts", crc), \
          patch("scripts.complete_appointments.send_pos_consulta",
                new_callable=AsyncMock) as mock_send:
-        await ca._process_pos_consulta(client, _appt(), NOW_ISO)
+        await ca._process_pos_consulta(client, _appt(appointment_id="evt-xyz"), NOW_ISO)
     mock_send.assert_awaited_once_with("5581111", "Natalia")
+    args, kwargs = crc.await_args
+    assert args[0] == "p-natalia"
+    assert args[1]["appointment_id"] == "evt-xyz"
+    assert kwargs.get("include_inactive") is False
 
 
 def test_should_skip_unconfirmed():
