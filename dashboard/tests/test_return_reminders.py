@@ -378,6 +378,64 @@ async def test_mark_no_show_tira_da_fila(fake_client):
     assert out == []
 
 
+async def test_mark_no_show_pinta_evento_vermelho(fake_client, monkeypatch):
+    # Ao marcar falta, o evento do médico no Google Calendar é pintado de
+    # vermelho com "❌ [Não compareceu]" (registro visual permanente).
+    fake_client.store["appointments"] = [
+        _appt("evt-1", "p1", "João", status="completed"),
+    ]
+    fake_client.store["doctors"] = [
+        {"doctor_id": JULIO_ID, "agenda_id": "dr.julio@gmail.com"},
+    ]
+    calls = []
+
+    async def fake_paint(calendar_id, event_id):
+        calls.append((calendar_id, event_id))
+
+    monkeypatch.setattr(rr.calendar_client, "mark_event_no_show", fake_paint)
+
+    await rr.mark_no_show(fake_client, "evt-1")
+
+    assert fake_client.store["appointments"][0]["status"] == "no_show"
+    assert calls == [("dr.julio@gmail.com", "evt-1")]
+
+
+async def test_mark_no_show_sobrevive_a_falha_no_calendar(fake_client, monkeypatch):
+    # Uma falha ao pintar o Calendar não pode derrubar a marcação de falta.
+    fake_client.store["appointments"] = [
+        _appt("evt-1", "p1", "João", status="completed"),
+    ]
+    fake_client.store["doctors"] = [
+        {"doctor_id": JULIO_ID, "agenda_id": "dr.julio@gmail.com"},
+    ]
+
+    async def boom(calendar_id, event_id):
+        raise RuntimeError("Calendar fora do ar")
+
+    monkeypatch.setattr(rr.calendar_client, "mark_event_no_show", boom)
+
+    await rr.mark_no_show(fake_client, "evt-1")
+
+    assert fake_client.store["appointments"][0]["status"] == "no_show"
+
+
+async def test_mark_no_show_sem_agenda_do_medico_nao_pinta(fake_client, monkeypatch):
+    # Sem agenda_id do médico (ou sem doctor), não tenta pintar — e não quebra.
+    fake_client.store["appointments"] = [
+        _appt("evt-1", "p1", "João", status="completed"),
+    ]
+    called = []
+    monkeypatch.setattr(
+        rr.calendar_client, "mark_event_no_show",
+        lambda *a, **k: called.append(a),
+    )
+
+    await rr.mark_no_show(fake_client, "evt-1")
+
+    assert fake_client.store["appointments"][0]["status"] == "no_show"
+    assert called == []
+
+
 # ── drop_today_already_pending ──────────────────────────────────────────────
 
 
