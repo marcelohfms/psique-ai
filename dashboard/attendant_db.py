@@ -4,7 +4,8 @@ Autocontida: replica as poucas queries necessárias usando o cliente Supabase
 do dashboard. NÃO importa app/ (a imagem Docker do dashboard não contém app/).
 """
 import unicodedata
-from datetime import datetime
+import uuid
+from datetime import date, datetime
 from zoneinfo import ZoneInfo
 
 from db_client import get_client
@@ -220,6 +221,49 @@ async def link_patient(patient_id: str, contact_id: str, marker: dict) -> None:
         .eq("contact_id", contact_id)
         .execute()
     )
+
+
+def normalize_birth_date(raw: str) -> str:
+    """Aceita dd/mm/aaaa ou aaaa-mm-dd e devolve dd/mm/aaaa, o formato que o
+    fluxo do chat grava em patients.birth_date. ValueError se inválida ou futura."""
+    text = (raw or "").strip()
+    for fmt in ("%d/%m/%Y", "%Y-%m-%d"):
+        try:
+            d = datetime.strptime(text, fmt).date()
+        except ValueError:
+            continue
+        if d > date.today():
+            raise ValueError("Data de nascimento no futuro.")
+        return d.strftime("%d/%m/%Y")
+    raise ValueError("Data de nascimento inválida. Use dd/mm/aaaa.")
+
+
+def _birth_variants(birth_br: str) -> list[str]:
+    d = datetime.strptime(birth_br, "%d/%m/%Y")
+    return [d.strftime("%d/%m/%Y"), d.strftime("%Y-%m-%d")]
+
+
+async def find_patients_by_name_birth(name: str, birth_br: str) -> list[dict]:
+    """Fichas com o mesmo nome (sem acento/caixa/espaços) e o mesmo nascimento,
+    nas duas grafias que convivem no banco. Espelha find_patient_by_name_birth."""
+    client = await get_client()
+    res = await (
+        client.from_("patients")
+        .select("id, name, birth_date")
+        .in_("birth_date", _birth_variants(birth_br))
+        .execute()
+    )
+    target = _norm(name)
+    return [r for r in (res.data or []) if _norm(r.get("name")) == target]
+
+
+async def create_patient(name: str, birth_br: str) -> dict:
+    """Cria a ficha com nome e nascimento. O id é gerado aqui para a resposta
+    não depender do retorno do insert."""
+    row = {"id": str(uuid.uuid4()), "name": " ".join(name.split()), "birth_date": birth_br}
+    client = await get_client()
+    await client.from_("patients").insert(row).execute()
+    return row
 
 
 # ── Escopo por telefone (anti-IDOR) ───────────────────────────────────────────

@@ -442,3 +442,31 @@ async def test_vincular_completa_papeis_faltantes_e_alinha_marcador(patched_clie
     rows = patched_client.store["patient_contacts"]
     assert len(rows) == 3
     assert all(r["is_self"] is True and r["relationship"] is None for r in rows)
+
+
+# ── Ficha nova ────────────────────────────────────────────────────────────────
+
+
+def test_nascimento_aceita_br_e_iso_e_devolve_br():
+    assert attendant_db.normalize_birth_date("06/05/2014") == "06/05/2014"
+    assert attendant_db.normalize_birth_date(" 2014-05-06 ") == "06/05/2014"
+    for ruim in ("", "31/02/2014", "amanhã", "01/01/2999"):
+        with pytest.raises(ValueError):
+            attendant_db.normalize_birth_date(ruim)
+
+
+async def test_duplicada_por_nome_e_nascimento_nas_duas_grafias(patched_client):
+    patched_client.store["patients"] = [
+        {"id": "p1", "name": "João  Menezes", "birth_date": "2014-05-06"},
+        {"id": "p2", "name": "João Menezes", "birth_date": "07/05/2014"},
+    ]
+    out = await attendant_db.find_patients_by_name_birth("joao menezes", "06/05/2014")
+    assert [p["id"] for p in out] == ["p1"]
+
+
+async def test_criar_ficha_grava_nome_limpo_e_devolve_id(patched_client):
+    created = await attendant_db.create_patient("  Ana   Luz ", "01/02/2015")
+    row = patched_client.store["patients"][0]
+    assert row["name"] == "Ana Luz" and row["birth_date"] == "01/02/2015"
+    assert created == {"id": row["id"], "name": "Ana Luz", "birth_date": "01/02/2015"}
+    assert len(created["id"]) == 36
