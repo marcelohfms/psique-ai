@@ -3,6 +3,7 @@
 Autocontida: replica as poucas queries necessárias usando o cliente Supabase
 do dashboard. NÃO importa app/ (a imagem Docker do dashboard não contém app/).
 """
+import unicodedata
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
@@ -121,6 +122,70 @@ async def get_return_reminder(patient_id: str) -> dict | None:
     )
     rows = res.data or []
     return rows[0] if rows else None
+
+
+# ── Busca de paciente (vincular) ──────────────────────────────────────────────
+
+SEARCH_MIN_CHARS = 3
+_ACCENTABLE = set("aeiouc")
+
+
+def _norm(text: str | None) -> str:
+    """Sem acento, minúsculo, espaços colapsados. Espelha normalize_person_name."""
+    stripped = "".join(
+        c for c in unicodedata.normalize("NFKD", text or "") if not unicodedata.combining(c)
+    )
+    return " ".join(stripped.lower().split())
+
+
+def _ilike_pattern(query: str) -> str:
+    """Padrão ILIKE que tolera acento: toda letra que pode ter acento vira `_`
+    (um caractere qualquer). O filtro exato sem acento é feito depois, em Python."""
+    folded = _norm(query)
+    return "%" + "".join("_" if ch in _ACCENTABLE else ch for ch in folded) + "%"
+
+
+async def search_patients(query: str, limit: int = 10) -> list[dict]:
+    """Pacientes cujo nome contém `query` (sem acento e sem caixa).
+
+    Devolve só o necessário para diferenciar homônimos: id, nome, nascimento e
+    os 4 últimos dígitos do número próprio do paciente (phone_hint), se houver.
+    """
+    target = _norm(query)
+    if len(target) < SEARCH_MIN_CHARS:
+        return []
+    client = await get_client()
+    res = await (
+        client.from_("patients")
+        .select("id, name, birth_date")
+        .ilike("name", _ilike_pattern(query))
+        .limit(200)
+        .execute()
+    )
+    hits = [r for r in (res.data or []) if target in _norm(r.get("name"))]
+    hits.sort(key=lambda r: _norm(r.get("name")))
+    hits = hits[:limit]
+    if not hits:
+        return []
+
+    pcs = await (
+        client.from_("patient_contacts")
+        .select("patient_id, is_self, contacts(phone)")
+        .in_("patient_id", [h["id"] for h in hits])
+        .eq("is_self", True)
+        .execute()
+    )
+    hint_by_patient: dict[str, str] = {}
+    for row in (pcs.data or []):
+        phone = (row.get("contacts") or {}).get("phone") or ""
+        if phone and row["patient_id"] not in hint_by_patient:
+            hint_by_patient[row["patient_id"]] = phone[-4:]
+
+    return [
+        {"id": h["id"], "name": h.get("name"), "birth_date": h.get("birth_date"),
+         "phone_hint": hint_by_patient.get(h["id"])}
+        for h in hits
+    ]
 
 
 # ── Escopo por telefone (anti-IDOR) ───────────────────────────────────────────

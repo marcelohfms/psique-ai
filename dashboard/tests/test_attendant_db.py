@@ -388,3 +388,35 @@ async def test_resolve_traz_vinculo_de_cada_paciente_preferindo_agendamento(patc
     assert by_id["p1"]["link"] == {"id": "pc-ag", "is_self": False, "relationship": "mãe"}
     assert by_id["p2"]["link"] == {"id": "pc-2", "is_self": True, "relationship": None}
     assert [p["id"] for p in out["patients"]] == ["p1", "p2"]
+
+
+# ── Busca de paciente ─────────────────────────────────────────────────────────
+
+
+async def test_busca_ignora_acento_e_caixa(patched_client):
+    patched_client.store["patients"] = [
+        {"id": "p1", "name": "João Menezes", "birth_date": "06/05/2014"},
+        {"id": "p2", "name": "Joana Lima", "birth_date": "01/01/1990"},
+        {"id": "p3", "name": "Pedro Alves", "birth_date": "02/02/1980"},
+    ]
+    patched_client.store["patient_contacts"] = [
+        {"patient_id": "p1", "is_self": True, "contacts": {"phone": "5581999995432"}},
+        {"patient_id": "p1", "is_self": False, "contacts": {"phone": "5581911110000"}},
+    ]
+    out = await attendant_db.search_patients("JOAO men")
+    assert out == [{"id": "p1", "name": "João Menezes", "birth_date": "06/05/2014",
+                    "phone_hint": "5432"}]
+
+
+async def test_busca_com_menos_de_3_letras_nao_consulta(patched_client):
+    patched_client.store["patients"] = [{"id": "p1", "name": "Jo"}]
+    assert await attendant_db.search_patients("jo") == []
+
+
+async def test_busca_ordena_por_nome_e_limita(patched_client):
+    patched_client.store["patients"] = [
+        {"id": f"p{i}", "name": f"Ana {chr(90 - i)}", "birth_date": None} for i in range(15)
+    ]
+    out = await attendant_db.search_patients("ana", limit=3)
+    assert [p["name"] for p in out] == ["Ana L", "Ana M", "Ana N"]
+    assert all(p["phone_hint"] is None for p in out)
