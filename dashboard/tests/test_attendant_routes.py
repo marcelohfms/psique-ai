@@ -578,3 +578,140 @@ def test_pagamentos_no_show_marca_falta(client, monkeypatch):
     assert r.status_code == 200
     assert r.json() == {"ok": True}
     assert calls["appointment_id"] == "a1"
+
+
+# ── Vínculo: busca, vincular, ficha nova, desvincular ────────────────────────
+
+T = {"token": "test-token"}
+
+
+def _scope_c1(monkeypatch, patient_ids=("p1",)):
+    async def fake_scope(phone):
+        return "c1", set(patient_ids)
+    monkeypatch.setattr(attendant_db, "scope_for_phone", fake_scope)
+
+
+def _events(monkeypatch):
+    got = []
+    async def fake_log(event_type, phone, metadata=None):
+        got.append((event_type, metadata))
+    monkeypatch.setattr(attendant_db, "log_event", fake_log)
+    return got
+
+
+def test_busca_devolve_resultados(client, monkeypatch):
+    _scope_c1(monkeypatch)
+    async def fake_search(q):
+        assert q == "joao"
+        return [{"id": "p9", "name": "João", "birth_date": None, "phone_hint": None}]
+    monkeypatch.setattr(attendant_db, "search_patients", fake_search)
+    r = client.get("/api/atendente/pacientes/busca", params={**T, "q": "joao", "phone": "5581"})
+    assert r.status_code == 200 and r.json()[0]["id"] == "p9"
+
+
+def test_vincular_usa_o_contato_do_telefone_e_normaliza(client, monkeypatch):
+    _scope_c1(monkeypatch)
+    ev = _events(monkeypatch)
+    calls = []
+    async def fake_get_patient(pid):
+        return {"id": pid}
+    async def fake_link(pid, cid, marker):
+        calls.append((pid, cid, marker))
+    monkeypatch.setattr(attendant_db, "get_patient", fake_get_patient)
+    monkeypatch.setattr(attendant_db, "link_patient", fake_link)
+    r = client.post("/api/atendente/vinculo", params=T, json={
+        "phone": "5581", "patient_id": "p9", "is_self": True, "relationship": "mãe", "agent": "Ana"})
+    assert r.status_code == 200
+    assert calls == [("p9", "c1", {"is_self": True, "relationship": None})]
+    assert ev[0][0] == "attendant_link_patient" and ev[0][1]["agent"] == "Ana"
+
+
+def test_vincular_recusa_parentesco_fora_da_lista(client, monkeypatch):
+    _scope_c1(monkeypatch)
+    r = client.post("/api/atendente/vinculo", params=T, json={
+        "phone": "5581", "patient_id": "p9", "is_self": False, "relationship": "vizinha"})
+    assert r.status_code == 400
+
+
+def test_vincular_paciente_inexistente_404(client, monkeypatch):
+    _scope_c1(monkeypatch)
+    async def fake_get_patient(pid):
+        return None
+    monkeypatch.setattr(attendant_db, "get_patient", fake_get_patient)
+    r = client.post("/api/atendente/vinculo", params=T, json={
+        "phone": "5581", "patient_id": "nope", "is_self": True})
+    assert r.status_code == 404
+
+
+def test_ficha_nova_duplicada_devolve_409_com_a_ficha(client, monkeypatch):
+    _scope_c1(monkeypatch)
+    async def fake_find(name, birth):
+        return [{"id": "p1", "name": "João Menezes", "birth_date": "06/05/2014"}]
+    monkeypatch.setattr(attendant_db, "find_patients_by_name_birth", fake_find)
+    r = client.post("/api/atendente/paciente-novo", params=T, json={
+        "phone": "5581", "name": "joao menezes", "birth_date": "2014-05-06"})
+    assert r.status_code == 409
+    assert r.json()["detail"]["duplicates"][0]["id"] == "p1"
+
+
+def test_ficha_nova_cria(client, monkeypatch):
+    _scope_c1(monkeypatch)
+    ev = _events(monkeypatch)
+    async def fake_find(name, birth):
+        return []
+    async def fake_create(name, birth):
+        assert (name, birth) == ("Ana Luz", "01/02/2015")
+        return {"id": "novo", "name": name, "birth_date": birth}
+    monkeypatch.setattr(attendant_db, "find_patients_by_name_birth", fake_find)
+    monkeypatch.setattr(attendant_db, "create_patient", fake_create)
+    r = client.post("/api/atendente/paciente-novo", params=T, json={
+        "phone": "5581", "name": " Ana  Luz ", "birth_date": "01/02/2015"})
+    assert r.status_code == 200 and r.json()["patient"]["id"] == "novo"
+    assert ev[0][0] == "attendant_create_patient"
+
+
+def test_ficha_nova_nascimento_invalido_400(client, monkeypatch):
+    _scope_c1(monkeypatch)
+    r = client.post("/api/atendente/paciente-novo", params=T, json={
+        "phone": "5581", "name": "Ana Luz", "birth_date": "31/02/2015"})
+    assert r.status_code == 400
+
+
+def test_desvincular_travado_409(client, monkeypatch):
+    _scope_c1(monkeypatch)
+    async def fake_blocker(pid, cid):
+        return "Este é o único número do paciente..."
+    monkeypatch.setattr(attendant_db, "unlink_blocker", fake_blocker)
+    r = client.post("/api/atendente/desvincular", params=T, json={"phone": "5581", "patient_id": "p1"})
+    assert r.status_code == 409 and "único número" in r.json()["detail"]
+
+
+def test_desvincular_ok(client, monkeypatch):
+    _scope_c1(monkeypatch)
+    ev = _events(monkeypatch)
+    async def fake_blocker(pid, cid):
+        return None
+    async def fake_unlink(pid, cid):
+        assert (pid, cid) == ("p1", "c1")
+        return 3
+    monkeypatch.setattr(attendant_db, "unlink_blocker", fake_blocker)
+    monkeypatch.setattr(attendant_db, "unlink_patient", fake_unlink)
+    r = client.post("/api/atendente/desvincular", params=T, json={"phone": "5581", "patient_id": "p1"})
+    assert r.status_code == 200 and r.json()["removed"] == 3
+    assert ev[0][0] == "attendant_unlink_patient"
+
+
+def test_editar_vinculo_normaliza_marcador(client, monkeypatch):
+    got = {}
+    async def fake_update(pc_id, data):
+        got.update(data)
+    async def fake_log(*a, **k):
+        return None
+    monkeypatch.setattr(attendant_db, "update_link", fake_update)
+    monkeypatch.setattr(attendant_db, "log_event", fake_log)
+    r = client.post("/api/atendente/vinculo/pc1", params=T,
+                    json={"phone": "5581", "data": {"is_self": True, "relationship": "mãe"}})
+    assert r.status_code == 200 and got == {"is_self": True, "relationship": None}
+    r = client.post("/api/atendente/vinculo/pc1", params=T,
+                    json={"phone": "5581", "data": {"is_self": False, "relationship": "vizinha"}})
+    assert r.status_code == 400

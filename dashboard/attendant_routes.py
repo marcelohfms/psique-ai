@@ -66,6 +66,35 @@ class ResetBody(BaseModel):
     phone: str
 
 
+class LinkBody(BaseModel):
+    phone: str
+    patient_id: str
+    is_self: bool
+    relationship: str | None = None
+    agent: str = ""
+
+
+class NewPatientBody(BaseModel):
+    phone: str
+    name: str
+    birth_date: str
+    agent: str = ""
+
+
+class UnlinkBody(BaseModel):
+    phone: str
+    patient_id: str
+    agent: str = ""
+
+
+async def _contact_id_for(phone: str) -> str:
+    """Contato da conversa. O vínculo sempre usa este, nunca um id vindo do cliente."""
+    contact_id, _ = await attendant_db.scope_for_phone(phone)
+    if contact_id is None:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=_FORA_DO_ESCOPO)
+    return contact_id
+
+
 # ── Leitura ───────────────────────────────────────────────────────────────────
 
 
@@ -146,10 +175,79 @@ async def update_return_date(patient_id: str, body: UpdateBody, _: None = Depend
 @router.post("/vinculo/{pc_id}")
 async def update_vinculo(pc_id: str, body: UpdateBody, _: None = Depends(verify_token)):
     await _assert_link_scope(body.phone, pc_id)
-    await attendant_db.update_link(pc_id, body.data)
+    data = dict(body.data)
+    if "is_self" in data or "relationship" in data:
+        try:
+            data.update(attendant_db.normalize_marker(data.get("is_self"), data.get("relationship")))
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e))
+    await attendant_db.update_link(pc_id, data)
     await attendant_db.log_event("attendant_edit_link", body.phone,
-                                 {"pc_id": pc_id, "fields": list(body.data.keys())})
+                                 {"pc_id": pc_id, "fields": list(data.keys())})
     return {"ok": True}
+
+
+# ── Vínculo: busca, vincular, ficha nova, desvincular ────────────────────────
+
+
+@router.get("/pacientes/busca")
+async def buscar_pacientes(q: str, phone: str, _: None = Depends(verify_token)):
+    # A busca olha a base toda (é para achar quem ainda não está ligado), então
+    # devolve só nome, nascimento e 4 dígitos. Exige que o número tenha contato.
+    await _contact_id_for(phone)
+    return await attendant_db.search_patients(q)
+
+
+@router.post("/vinculo")
+async def criar_vinculo(body: LinkBody, _: None = Depends(verify_token)):
+    contact_id = await _contact_id_for(body.phone)
+    try:
+        marker = attendant_db.normalize_marker(body.is_self, body.relationship)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    if await attendant_db.get_patient(body.patient_id) is None:
+        raise HTTPException(status_code=404, detail="paciente não encontrado")
+    await attendant_db.link_patient(body.patient_id, contact_id, marker)
+    await attendant_db.log_event("attendant_link_patient", body.phone, {
+        "patient_id": body.patient_id, "contact_id": contact_id, **marker, "agent": body.agent})
+    return {"ok": True}
+
+
+@router.post("/paciente-novo")
+async def criar_paciente(body: NewPatientBody, _: None = Depends(verify_token)):
+    await _contact_id_for(body.phone)
+    name = " ".join(body.name.split())
+    if len(name) < 3:
+        raise HTTPException(status_code=400, detail="Informe o nome completo.")
+    try:
+        birth = attendant_db.normalize_birth_date(body.birth_date)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    dups = await attendant_db.find_patients_by_name_birth(name, birth)
+    if dups:
+        raise HTTPException(status_code=409, detail={
+            "message": "Já existe ficha com este nome e nascimento.",
+            "duplicates": [{"id": d["id"], "name": d.get("name"), "birth_date": d.get("birth_date")}
+                           for d in dups],
+        })
+    patient = await attendant_db.create_patient(name, birth)
+    await attendant_db.log_event("attendant_create_patient", body.phone,
+                                 {"patient_id": patient["id"], "agent": body.agent})
+    return {"ok": True, "patient": patient}
+
+
+@router.post("/desvincular")
+async def desvincular(body: UnlinkBody, _: None = Depends(verify_token)):
+    await _assert_patient_scope(body.phone, body.patient_id)
+    contact_id = await _contact_id_for(body.phone)
+    blocker = await attendant_db.unlink_blocker(body.patient_id, contact_id)
+    if blocker:
+        raise HTTPException(status_code=409, detail=blocker)
+    removed = await attendant_db.unlink_patient(body.patient_id, contact_id)
+    await attendant_db.log_event("attendant_unlink_patient", body.phone, {
+        "patient_id": body.patient_id, "contact_id": contact_id, "removed": removed,
+        "agent": body.agent})
+    return {"ok": True, "removed": removed}
 
 
 @router.post("/reset-checkpoint")
