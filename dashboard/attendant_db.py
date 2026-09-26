@@ -399,7 +399,7 @@ def normalize_marker(is_self, relationship) -> dict:
     parentesco está vazio. Por isso "próprio" sempre grava relationship=None, e
     terceiro exige um parentesco da lista fechada. ValueError quando inválido.
     """
-    if is_self:
+    if is_self is True:
         return {"is_self": True, "relationship": None}
     rel = (relationship or "").strip()
     if rel not in RELATIONSHIPS:

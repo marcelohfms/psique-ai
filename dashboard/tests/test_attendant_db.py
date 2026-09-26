@@ -373,6 +373,12 @@ def test_lista_de_parentesco_tem_acompanhante_e_nao_tem_outro():
     assert attendant_db.RELATIONSHIPS[0] == "mãe"
 
 
+def test_marker_texto_false_nao_vira_proprio():
+    assert attendant_db.normalize_marker("false", "mãe") == {"is_self": False, "relationship": "mãe"}
+    with pytest.raises(ValueError):
+        attendant_db.normalize_marker("true", None)
+
+
 async def test_resolve_traz_vinculo_de_cada_paciente_preferindo_agendamento(patched_client):
     patched_client.store["contacts"] = [{"id": "c1", "phone": "5581999998888"}]
     patched_client.store["patient_contacts"] = [
