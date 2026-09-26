@@ -252,3 +252,53 @@ async def test_fetch_abandoned_ignores_canceled_appointment():
     )
     result = await fetch_abandoned(client, NOW)
     assert [c["phone"] for c in result] == ["5581996993880"]
+
+
+# ── Consulta mantida que já começou (caso Patrícia/Maria José, 25/09/2026) ────
+# A responsável pediu para remarcar na véspera, viu horários e decidiu manter a
+# consulta. A guarda só olhava consultas com início a partir de AGORA; quando a
+# consulta começou, a proteção caiu e o nudge saiu uma hora depois dela.
+
+def _events_offered_at(offered: datetime):
+    return {
+        "slots_offered": [{"phone": "5581982131153", "metadata": {"doctor": "bruna"},
+                           "created_at": offered.isoformat()}],
+        CONVERSION_EVENTS: [],
+        HANDLED_EVENTS: [],
+    }
+
+
+async def test_fetch_abandoned_skips_kept_appointment_already_started():
+    offered = NOW - timedelta(hours=20)
+    client = _TableAwareClient(
+        events=_events_offered_at(offered),
+        contacts=[{"id": "c1", "phone": "5581982131153"}],
+        appointments=[{"contact_id": "c1", "status": "scheduled",
+                       "start_time": (NOW - timedelta(hours=1)).isoformat()}],
+    )
+    assert await fetch_abandoned(client, NOW) == []
+
+
+async def test_fetch_abandoned_skips_kept_appointment_already_completed():
+    offered = NOW - timedelta(hours=20)
+    client = _TableAwareClient(
+        events=_events_offered_at(offered),
+        contacts=[{"id": "c1", "phone": "5581982131153"}],
+        appointments=[{"contact_id": "c1", "status": "completed",
+                       "start_time": (NOW - timedelta(hours=1)).isoformat()}],
+    )
+    assert await fetch_abandoned(client, NOW) == []
+
+
+async def test_fetch_abandoned_old_appointment_before_offer_does_not_protect():
+    """Consulta que aconteceu ANTES da oferta não conta: a pessoa voltou a pedir
+    horário e parou, é abandono de verdade."""
+    offered = NOW - timedelta(hours=20)
+    client = _TableAwareClient(
+        events=_events_offered_at(offered),
+        contacts=[{"id": "c1", "phone": "5581982131153"}],
+        appointments=[{"contact_id": "c1", "status": "completed",
+                       "start_time": (offered - timedelta(days=30)).isoformat()}],
+    )
+    result = await fetch_abandoned(client, NOW)
+    assert [c["phone"] for c in result] == ["5581982131153"]

@@ -111,30 +111,33 @@ async def fetch_abandoned(
 
     abandoned = select_abandoned(latest_offer, booked_at, cutoff, handled)
 
-    # Guarda: quem já tem consulta ativa não está abandonado. É o caso de quem só
-    # pediu horários para adiantar/mudar e manteve a consulta que já tinha — sem
+    # Guarda: quem manteve uma consulta não está abandonado. É o caso de quem só
+    # pediu horários para adiantar/mudar e ficou com a consulta que já tinha — sem
     # gerar appointment_booked/rescheduled, parecia abandono. Uma confirmação
     # (appointment_confirmed) não vira evento de conversão, então filtramos aqui
-    # olhando a agenda de fato.
-    active = await _phones_with_active_appointment(
-        client, [c["phone"] for c in abandoned], now,
+    # olhando a agenda de fato. A referência é a hora da OFERTA, não "agora": a
+    # consulta mantida pode já ter começado ou terminado quando o cron roda (caso
+    # Patrícia/Maria José, 25/09/2026 — nudge saiu 1h depois da consulta).
+    kept = await _phones_with_appointment_after_offer(
+        client, {c["phone"]: c["offered_at"] for c in abandoned},
     )
-    return [c for c in abandoned if c["phone"] not in active]
+    return [c for c in abandoned if c["phone"] not in kept]
 
 
-async def _phones_with_active_appointment(
-    client, phones: list[str], now: datetime,
+async def _phones_with_appointment_after_offer(
+    client, offered_at: dict[str, datetime],
 ) -> set[str]:
-    """Dos telefones dados, devolve os que têm consulta ativa (status scheduled,
-    início a partir de agora). Mapeia telefone → contato → appointments usando o
-    mesmo client, aceitando as variantes com/sem o 9 (contacts guarda a canônica).
+    """Dos telefones dados, devolve os que têm consulta mantida ou realizada
+    (status scheduled/completed) com início a partir da oferta de horários daquele
+    telefone. Mapeia telefone → contato → appointments usando o mesmo client,
+    aceitando as variantes com/sem o 9 (contacts guarda a canônica).
     """
-    if not phones:
+    if not offered_at:
         return set()
     from app.phone import _phone_variants
 
     variant_to_phone: dict[str, str] = {}
-    for ph in set(phones):
+    for ph in offered_at:
         for variant in _phone_variants(ph):
             variant_to_phone[variant] = ph
     if not variant_to_phone:
@@ -158,15 +161,16 @@ async def _phones_with_active_appointment(
         await client.from_("appointments")
         .select("contact_id, status, start_time")
         .in_("contact_id", list(contact_to_phone))
-        .eq("status", "scheduled")
-        .gte("start_time", now.isoformat())
+        .in_("status", ["scheduled", "completed"])
+        .gte("start_time", min(offered_at.values()).isoformat())
         .execute()
     ).data or []
-    return {
-        contact_to_phone[a["contact_id"]]
-        for a in appts
-        if a.get("contact_id") in contact_to_phone
-    }
+    kept: set[str] = set()
+    for a in appts:
+        phone = contact_to_phone.get(a.get("contact_id"))
+        if phone and a.get("start_time") and parse_ts(a["start_time"]) >= offered_at[phone]:
+            kept.add(phone)
+    return kept
 
 
 def is_nudge_eligible(active: bool, window_open: bool) -> bool:
