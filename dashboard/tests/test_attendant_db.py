@@ -371,3 +371,20 @@ def test_lista_de_parentesco_tem_acompanhante_e_nao_tem_outro():
     assert "acompanhante" in attendant_db.RELATIONSHIPS
     assert "outro" not in attendant_db.RELATIONSHIPS
     assert attendant_db.RELATIONSHIPS[0] == "mãe"
+
+
+async def test_resolve_traz_vinculo_de_cada_paciente_preferindo_agendamento(patched_client):
+    patched_client.store["contacts"] = [{"id": "c1", "phone": "5581999998888"}]
+    patched_client.store["patient_contacts"] = [
+        {"id": "pc-fin", "contact_id": "c1", "patient_id": "p1", "role": "financeiro",
+         "is_self": False, "relationship": "pai", "patients": {"id": "p1", "name": "João"}},
+        {"id": "pc-ag", "contact_id": "c1", "patient_id": "p1", "role": "agendamento",
+         "is_self": False, "relationship": "mãe", "patients": {"id": "p1", "name": "João"}},
+        {"id": "pc-2", "contact_id": "c1", "patient_id": "p2", "role": "agendamento",
+         "is_self": True, "relationship": None, "patients": {"id": "p2", "name": "Carla"}},
+    ]
+    out = await attendant_db.resolve_contact_and_patients("5581999998888")
+    by_id = {p["id"]: p for p in out["patients"]}
+    assert by_id["p1"]["link"] == {"id": "pc-ag", "is_self": False, "relationship": "mãe"}
+    assert by_id["p2"]["link"] == {"id": "pc-2", "is_self": True, "relationship": None}
+    assert [p["id"] for p in out["patients"]] == ["p1", "p2"]

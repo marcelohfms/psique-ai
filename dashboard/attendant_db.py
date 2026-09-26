@@ -38,20 +38,31 @@ async def _get_contact_by_phone(client, phone: str) -> dict | None:
 
 
 async def _get_patients_by_contact(client, contact_id: str) -> list[dict]:
+    """Pacientes ligados ao contato, sem repetição, cada um com `link`: o
+    marcador do par (id da linha, is_self, relationship). Prefere a linha
+    `agendamento`, a mesma que get_link devolve ao painel."""
     res = (
         await client.from_("patient_contacts")
-        .select("patient_id, role, is_self, patients(*)")
+        .select("id, patient_id, role, is_self, relationship, patients(*)")
         .eq("contact_id", contact_id)
         .execute()
     )
-    seen: set[str] = set()
-    out: list[dict] = []
+    by_id: dict[str, dict] = {}
     for row in (res.data or []):
         patient = row.get("patients")
-        if patient and patient["id"] not in seen:
-            seen.add(patient["id"])
-            out.append(patient)
-    return out
+        if not patient:
+            continue
+        marker = {
+            "id": row.get("id"),
+            "is_self": bool(row.get("is_self")),
+            "relationship": row.get("relationship"),
+        }
+        entry = by_id.get(patient["id"])
+        if entry is None:
+            by_id[patient["id"]] = {**patient, "link": marker}
+        elif row.get("role") == "agendamento":
+            entry["link"] = marker
+    return list(by_id.values())
 
 
 async def resolve_contact_and_patients(phone: str) -> dict:
