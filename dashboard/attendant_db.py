@@ -286,7 +286,10 @@ async def find_patients_by_name_birth(name: str, birth_br: str) -> list[dict]:
 async def create_patient(name: str, birth_br: str) -> dict:
     """Cria a ficha com nome e nascimento. O id é gerado aqui para a resposta
     não depender do retorno do insert. Grava também `age` (anos completos): a
-    Eva lê `patients.age` para a regra do paciente menor de idade."""
+    Eva lê `patients.age` para a regra do paciente menor de idade.
+
+    `birth_br` já precisa vir normalizado por `normalize_birth_date` (formato
+    dd/mm/aaaa); esta função não valida nem converte a data."""
     clean_name = " ".join(name.split())
     if not clean_name:
         raise ValueError("Nome vazio.")

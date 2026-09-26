@@ -515,6 +515,16 @@ async def test_vincular_duas_vezes_e_idempotente_via_upsert(patched_client):
 # ── Ficha nova ────────────────────────────────────────────────────────────────
 
 
+def _replace_year(d, year):
+    """`date.replace(year=...)` quebra com ValueError quando `d` é 29/02 e o
+    ano alvo não é bissexto. Os testes de idade abaixo sempre partem de "hoje"
+    e voltam anos, então caem no 28/02 nesse caso raro em vez de estourar."""
+    try:
+        return d.replace(year=year)
+    except ValueError:
+        return d.replace(month=2, day=28, year=year)
+
+
 def test_nascimento_aceita_br_e_iso_e_devolve_br():
     assert attendant_db.normalize_birth_date("06/05/2014") == "06/05/2014"
     assert attendant_db.normalize_birth_date(" 2014-05-06 ") == "06/05/2014"
@@ -525,11 +535,11 @@ def test_nascimento_aceita_br_e_iso_e_devolve_br():
 
 def test_nascimento_recusa_idade_acima_de_120_anos():
     today = datetime.now(attendant_db._TZ).date()
-    muito_velho = today.replace(year=today.year - 121)
+    muito_velho = _replace_year(today, today.year - 121)
     with pytest.raises(ValueError):
         attendant_db.normalize_birth_date(muito_velho.strftime("%d/%m/%Y"))
 
-    no_limite = today.replace(year=today.year - 120)
+    no_limite = _replace_year(today, today.year - 120)
     assert attendant_db.normalize_birth_date(no_limite.strftime("%d/%m/%Y")) == (
         no_limite.strftime("%d/%m/%Y")
     )
@@ -559,12 +569,12 @@ async def test_criar_ficha_calcula_idade_com_e_sem_aniversario_no_ano(patched_cl
     America/Recife — precisa considerar o aniversário do ano já passado ou não."""
     today = datetime.now(attendant_db._TZ).date()
 
-    ja_fez_aniversario = today.replace(year=today.year - 8)
+    ja_fez_aniversario = _replace_year(today, today.year - 8)
     created = await attendant_db.create_patient("Já fez", ja_fez_aniversario.strftime("%d/%m/%Y"))
     assert created["age"] == 8
 
     ainda_nao_fez = (today + timedelta(days=1))
-    ainda_nao_fez = ainda_nao_fez.replace(year=ainda_nao_fez.year - 8)
+    ainda_nao_fez = _replace_year(ainda_nao_fez, ainda_nao_fez.year - 8)
     created2 = await attendant_db.create_patient("Ainda não", ainda_nao_fez.strftime("%d/%m/%Y"))
     assert created2["age"] == 7
 
