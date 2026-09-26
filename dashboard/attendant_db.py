@@ -318,6 +318,7 @@ async def unlink_blocker(patient_id: str, contact_id: str) -> str | None:
         .select("contact_id")
         .eq("patient_id", patient_id)
         .neq("contact_id", contact_id)
+        .in_("role", ["agendamento", "consulta"])
         .execute()
     )
     if others.data:
@@ -337,7 +338,7 @@ async def unlink_blocker(patient_id: str, contact_id: str) -> str | None:
     when = datetime.fromisoformat(appts.data[0]["start_time"]).astimezone(_TZ)
     return (
         f"Este é o único número do paciente e ele tem consulta em "
-        f"{when.strftime('%d/%m às %H:%M')}. Vincule outro número antes."
+        f"{when.strftime('%d/%m/%Y às %H:%M')}. Vincule outro número antes."
     )
 
 

@@ -553,7 +553,32 @@ async def test_trava_ultimo_numero_com_consulta_futura(patched_client):
         {"patient_id": "p1", "status": "scheduled", "start_time": "2099-10-02T14:00:00-03:00"},
     ]
     msg = await attendant_db.unlink_blocker("p1", "c1")
-    assert msg is not None and "02/10" in msg and "14:00" in msg
+    assert msg is not None and "02/10/2099" in msg and "14:00" in msg
+
+
+async def test_trava_converte_horario_utc_para_recife(patched_client):
+    patched_client.store["patient_contacts"] = [_pc("p1", "c1"), _pc("p1", "c1", "consulta")]
+    patched_client.store["appointments"] = [
+        {"patient_id": "p1", "status": "scheduled", "start_time": "2099-10-02T17:00:00+00:00"},
+    ]
+    msg = await attendant_db.unlink_blocker("p1", "c1")
+    assert msg is not None and "02/10/2099" in msg and "14:00" in msg
+
+
+async def test_trava_persiste_quando_outro_numero_e_so_financeiro(patched_client):
+    """Um contato ligado só como `financeiro` (legado) não conta como "outro
+    número" de verdade: sem alguém em agendamento/consulta, ainda ficaria sem
+    quem receber lembrete e cobrança."""
+    patched_client.store["patient_contacts"] = [
+        _pc("p1", "c1"), _pc("p1", "c1", "consulta"),
+        {"patient_id": "p1", "contact_id": "c2", "role": "financeiro",
+         "is_self": False, "relationship": "pai"},
+    ]
+    patched_client.store["appointments"] = [
+        {"patient_id": "p1", "status": "scheduled", "start_time": "2099-10-02T14:00:00-03:00"},
+    ]
+    msg = await attendant_db.unlink_blocker("p1", "c1")
+    assert msg is not None
 
 
 async def test_sem_trava_quando_ha_outro_numero(patched_client):
