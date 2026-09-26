@@ -670,6 +670,14 @@ def test_is_guardian_relationship():
     assert _is_guardian_relationship("") is False
 
 
+def test_tutor_a_do_painel_conta_como_responsavel_legal():
+    """O painel grava o parentesco como "tutor(a)" (lista fechada)."""
+    from app.patients import _is_legal_guardian
+    assert _is_guardian_relationship("tutor(a)") is True
+    assert _is_legal_guardian("tutor(a)") is True
+    assert _is_legal_guardian("Tutor(a)") is True
+
+
 # --- _linked_contacts_with_marker ---
 from app.patients import _linked_contacts_with_marker
 

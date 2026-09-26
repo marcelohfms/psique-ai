@@ -307,7 +307,7 @@ def _compute_age(birth_date: str | None) -> int | None:
 
 _SELF_LIKE = {"", "self", "próprio", "proprio", "eu", "mesmo", "a própria", "o próprio"}
 _GUARDIAN_RELATIONSHIPS = {
-    "mãe", "mae", "pai", "tutor", "tutora", "responsável", "responsavel",
+    "mãe", "mae", "pai", "tutor", "tutora", "tutor(a)", "responsável", "responsavel",
     "responsavel legal", "responsável legal", "avó", "avo", "avô",
     "tio", "tia", "irmã", "irma", "irmão", "irmao", "padrasto", "madrasta",
     "guardião", "guardiao",
@@ -336,7 +336,7 @@ def _is_guardian_relationship(rel: str | None) -> bool:
 
 
 _LEGAL_GUARDIAN_RELATIONSHIPS = {
-    "mãe", "mae", "pai", "tutor", "tutora", "responsável", "responsavel",
+    "mãe", "mae", "pai", "tutor", "tutora", "tutor(a)", "responsável", "responsavel",
     "responsavel legal", "responsável legal", "avó", "avo", "avô",
     "guardião", "guardiao",
 }
