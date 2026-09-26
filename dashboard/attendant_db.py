@@ -5,7 +5,7 @@ do dashboard. NÃO importa app/ (a imagem Docker do dashboard não contém app/)
 """
 import unicodedata
 import uuid
-from datetime import date, datetime
+from datetime import datetime
 from zoneinfo import ZoneInfo
 
 from db_client import get_client
@@ -241,17 +241,25 @@ def _age_in_years(born, today) -> int:
     return today.year - born.year - ((today.month, today.day) < (born.month, born.day))
 
 
+_MAX_AGE_YEARS = 120
+
+
 def normalize_birth_date(raw: str) -> str:
     """Aceita dd/mm/aaaa ou aaaa-mm-dd e devolve dd/mm/aaaa, o formato que o
-    fluxo do chat grava em patients.birth_date. ValueError se inválida ou futura."""
+    fluxo do chat grava em patients.birth_date. ValueError se inválida, futura
+    ou implausível (mais de 120 anos). "Hoje" é sempre o dia em
+    America/Recife, não o fuso do servidor."""
     text = (raw or "").strip()
+    today = datetime.now(_TZ).date()
     for fmt in ("%d/%m/%Y", "%Y-%m-%d"):
         try:
             d = datetime.strptime(text, fmt).date()
         except ValueError:
             continue
-        if d > date.today():
+        if d > today:
             raise ValueError("Data de nascimento no futuro.")
+        if _age_in_years(d, today) > _MAX_AGE_YEARS:
+            raise ValueError("Data de nascimento implausível (mais de 120 anos).")
         return d.strftime("%d/%m/%Y")
     raise ValueError("Data de nascimento inválida. Use dd/mm/aaaa.")
 

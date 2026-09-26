@@ -488,6 +488,18 @@ def test_nascimento_aceita_br_e_iso_e_devolve_br():
             attendant_db.normalize_birth_date(ruim)
 
 
+def test_nascimento_recusa_idade_acima_de_120_anos():
+    today = datetime.now(attendant_db._TZ).date()
+    muito_velho = today.replace(year=today.year - 121)
+    with pytest.raises(ValueError):
+        attendant_db.normalize_birth_date(muito_velho.strftime("%d/%m/%Y"))
+
+    no_limite = today.replace(year=today.year - 120)
+    assert attendant_db.normalize_birth_date(no_limite.strftime("%d/%m/%Y")) == (
+        no_limite.strftime("%d/%m/%Y")
+    )
+
+
 async def test_duplicada_por_nome_e_nascimento_nas_duas_grafias(patched_client):
     patched_client.store["patients"] = [
         {"id": "p1", "name": "João  Menezes", "birth_date": "2014-05-06"},
