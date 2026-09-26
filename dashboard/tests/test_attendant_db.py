@@ -534,6 +534,12 @@ async def test_criar_ficha_calcula_idade_com_e_sem_aniversario_no_ano(patched_cl
     assert created2["age"] == 7
 
 
+async def test_criar_ficha_recusa_nome_vazio(patched_client):
+    with pytest.raises(ValueError):
+        await attendant_db.create_patient("   ", "01/02/2015")
+    assert patched_client.store.get("patients", []) == []
+
+
 # ── Desvincular ───────────────────────────────────────────────────────────────
 
 

@@ -288,6 +288,8 @@ async def create_patient(name: str, birth_br: str) -> dict:
     não depender do retorno do insert. Grava também `age` (anos completos): a
     Eva lê `patients.age` para a regra do paciente menor de idade."""
     clean_name = " ".join(name.split())
+    if not clean_name:
+        raise ValueError("Nome vazio.")
     born = datetime.strptime(birth_br, "%d/%m/%Y").date()
     today = datetime.now(_TZ).date()
     row = {
