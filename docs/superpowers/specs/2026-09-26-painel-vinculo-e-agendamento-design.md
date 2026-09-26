@@ -1,6 +1,6 @@
 # Painel da Eva: vínculo de contato e gestão de consultas
 
-Data: 26/09/2026. Status: desenho aprovado na conversa, aguardando revisão do documento.
+Data: 26/09/2026. Status: desenho e visual aprovados na conversa. Protótipo navegável: https://claude.ai/artifact/1PVtfTdPd6rggiR8MLVzH8 (privado).
 
 ## Objetivo
 
@@ -18,6 +18,20 @@ As consultas (partes 2 e 3) passam por endereços internos novos na Eva, no mesm
 
 O motivo de a Eva fazer esse trabalho, e não o painel, é que a mensagem enviada ao paciente precisa entrar na memória da conversa (checkpoint do LangGraph). Assim, quando o paciente responder "paguei" ou mandar comprovante, a Eva sabe do que se trata.
 
+## Interface
+
+O painel vira uma página só, sem trocar de tela. O protótipo navegável é a referência visual. A linha estética é calma e contida: fundo claro morno, tinta escura nas ações normais, uma serifa editorial (Newsreader) para nomes e datas e uma sans discreta (Geist) para o resto. A cor só aparece com significado: azul só no encaixe, âmbar só em prazo ou pendência, vermelho só no gesto irreversível, verde na situação paga. Ícones são desenhados (traço fino), nunca emoji. Toda escolha entre opções é um controle segmentado único, e ligar ou desligar é um interruptor.
+
+O topo aparece em todas as abas e é centrado no número da conversa, porque um número pode ter vários pacientes. Em destaque fica o nome do contato, com o telefone embaixo e um lápis pequeno. O lápis abre a edição de nome e CPF do contato; o CPF não aparece antes disso. Ao lado fica o indicador de Eva ativa. Logo abaixo fica a caixa de paciente: mostra o paciente selecionado e de quem é o número ("Lucas Menezes · número da mãe"). Ao clicar, lista os pacientes ligados ao número, cada um com um ícone de desvincular. Ao lado da caixa, um botão "+" abre o vínculo. Tudo abaixo do topo mostra os dados do paciente selecionado.
+
+As abas passam a ser Consultas (nova, abre primeiro), Financeiro e Cadastro (antiga aba Paciente), com Resetar afastado à direita. A aba Contato deixa de existir: nome e CPF foram para o lápis do topo e o vínculo foi para a caixa de paciente.
+
+A aba Consultas começa pelo paciente em destaque (nome, etiqueta Infantil quando houver, idade, médico e quantidade de consultas) e o botão "Nova consulta". Abaixo, as consultas futuras numa linha do tempo vertical: data grande à esquerda, um ponto na linha com a cor da situação da reserva e um cartão com hora, médico, modalidade, etiquetas discretas (1ª consulta, parte 1 de 2, encaixe, acompanhamento) e dois ícones, alterar e cancelar. Cada cartão mostra reserva e consulta em linhas separadas ("Reserva: paga, pendente ou isenta" e "Consulta: paga, a pagar ou cortesia"), para não haver dúvida sobre qual pagamento está em questão. A pendência de 2ª parte sem horário aparece tracejada no fim da linha, com o botão "Marcar".
+
+Nova consulta, alterar, cancelar e vincular abrem numa folha lateral à direita, que não esconde a lista. O rodapé da folha tem o destinatário da mensagem ("Carla · mãe") com a prévia do texto sob demanda e o botão principal. No encaixe, o primeiro clique mostra o aviso azul com o motivo e troca o botão por "Confirmar encaixe", em azul; só o segundo clique grava. No cancelar, o botão principal é vermelho.
+
+A aba Financeiro mantém as funções de hoje com o visual novo: cada pendência é um cartão com a etiqueta do tipo (taxa de reserva ou consulta), valor, forma de pagamento em controle segmentado (PIX, crédito, débito, dinheiro), anexar comprovante e "Marcar pago", com "Não compareceu" e "Isentar taxa" (esta só na taxa) discretos. Abaixo, o responsável financeiro em modo leitura (CPF parcialmente escondido) com lápis para editar. A aba Cadastro reúne a ficha (dados, médico, modalidade, interruptores de retornante, exceção de idade e taxa sempre isenta, e preço especial), o retorno e o interruptor "Eva para este paciente", que deixa o cartão rosado quando desligado. A aba Resetar ganha confirmação em dois passos, que hoje não existe.
+
 ## Parte 1: vínculo de contato a paciente
 
 ### Marcação "próprio paciente"
@@ -28,7 +42,7 @@ Novo comportamento, usado tanto no vínculo novo quanto na edição do vínculo 
 
 ### Vincular
 
-O botão "Vincular paciente" abre uma busca por nome, a partir de três letras, sem diferenciar acento e maiúscula. Cada resultado mostra nome, data de nascimento e o número principal, para diferenciar homônimos. Escolhido o paciente e respondida a pergunta do "próprio paciente", o painel cria as três linhas em `patient_contacts` (agendamento, financeiro e consulta) com a mesma marcação, de forma idempotente pela chave única `(patient_id, contact_id, role)`. A atendente não escolhe papéis. A regra da idade é aplicada na hora do envio e depende só da marcação.
+O "+" ao lado da caixa de paciente abre, na folha lateral, uma busca por nome, a partir de três letras, sem diferenciar acento e maiúscula. Cada resultado mostra nome, data de nascimento e o número principal, para diferenciar homônimos. Escolhido o paciente e respondida a pergunta do "próprio paciente" (um interruptor; quando desligado aparece o parentesco numa lista suspensa), o painel cria as três linhas em `patient_contacts` (agendamento, financeiro e consulta) com a mesma marcação, de forma idempotente pela chave única `(patient_id, contact_id, role)`. A atendente não escolhe papéis. A regra da idade é aplicada na hora do envio e depende só da marcação.
 
 Efeito conhecido e aceito: com o papel financeiro, a cobrança da taxa vai para quem agendou. Em consulta antiga sem `contact_id`, vai para todos os números financeiros, sem filtro de idade. Isso já é o comportamento atual.
 
@@ -38,7 +52,7 @@ Se a busca não achar ninguém, "Criar ficha nova" pede nome e data de nasciment
 
 ### Desvincular
 
-Cada vínculo ganha "Desvincular", com confirmação, que apaga as três linhas do par. O painel recusa se aquele for o último número de um paciente com consulta futura ativa, com a mensagem "este é o único número de Fulano e ele tem consulta dia X; vincule outro número antes".
+Cada paciente na lista da caixa de paciente tem o ícone de desvincular, com confirmação, que apaga as três linhas do par. O painel recusa se aquele for o último número de um paciente com consulta futura ativa, com a mensagem "este é o único número de Fulano e ele tem consulta dia X; vincule outro número antes".
 
 Toda ação da parte 1 grava um registro em `events` com o nome da atendente (vindo do Chatwoot).
 
@@ -46,7 +60,7 @@ Toda ação da parte 1 grava um registro em `events` com o nome da atendente (vi
 
 ### Lista "Consultas agendadas"
 
-Na seção do paciente aparece a lista das consultas que ainda não aconteceram, com status `scheduled` ou `pending_reschedule`. Cada linha mostra data, hora, médico, modalidade, duração e situação da taxa (paga, pendente, isenta ou cortesia). Há duas etiquetas. "Infantil" aparece sozinha quando o paciente tem menos de 18 anos na data da consulta e não é editável. "1ª consulta" reflete `consultation_type = primeira_consulta` e pode ser ligada ou desligada pela atendente, gravando direto no banco, sem mensagem ao paciente. Se for uma primeira consulta infantil dividida com a segunda parte ainda não marcada, a lista mostra "falta marcar a 2ª parte". Cada linha tem "Editar" e "Cancelar", e embaixo fica "Nova consulta".
+Na seção do paciente aparece a lista das consultas que ainda não aconteceram, com status `scheduled` ou `pending_reschedule`. Cada linha mostra data, hora, médico, modalidade, duração e, em linhas separadas, a situação da reserva (paga, pendente ou isenta) e da consulta (paga, a pagar ou cortesia). Há duas etiquetas. "Infantil" aparece sozinha quando o paciente tem menos de 18 anos na data da consulta e não é editável. "1ª consulta" reflete `consultation_type = primeira_consulta` e pode ser ligada ou desligada pela atendente, gravando direto no banco, sem mensagem ao paciente. Se for uma primeira consulta infantil dividida com a segunda parte ainda não marcada, a lista mostra "falta marcar a 2ª parte". Cada linha tem "Editar" e "Cancelar", e embaixo fica "Nova consulta".
 
 ### Formulário de nova consulta
 
@@ -118,4 +132,4 @@ Criação e aprovação dos três modelos na Meta é tarefa manual da clínica, 
 
 ## Ordem de entrega
 
-A parte 1 (vínculo) sai primeiro e sozinha, porque não depende da Eva. A parte 2 (lista, nova consulta, encaixe, divisão infantil, cortesia por consulta) vem em seguida. A parte 3 (editar e cancelar, com reembolso) fecha. Cada parte é um PR próprio e já pode ser usada ao ficar pronta.
+A parte 1 sai primeiro e sozinha, porque não depende da Eva: a moldura nova (topo com contato e lápis, caixa de paciente, abas renomeadas, fim da aba Contato) e o vínculo. A parte 2 (lista, nova consulta, encaixe, divisão infantil, cortesia por consulta) vem em seguida. A parte 3 (editar e cancelar, com reembolso) vem depois. A parte 4 aplica o visual novo às abas Financeiro, Cadastro e Resetar (com a confirmação em dois passos), sem mudar o que elas fazem. Cada parte é um PR próprio e já pode ser usada ao ficar pronta.
