@@ -207,6 +207,11 @@ let PATIENTS = [];
 let CURRENT_PID = null;
 let LINK_PID = null;
 let SEARCH_TIMER = null;
+let LOAD_SEQ = 0;
+let PATIENT_SEQ = 0;
+let PAG_SEQ = 0;
+let FLASH_TIMER = null;
+let LINK_SHEET_RETURN_FOCUS = null;
 
 const $ = (id) => document.getElementById(id);
 const api = (path, params = {}) => `${path}?${new URLSearchParams({ ...params, token: TOKEN })}`;
@@ -252,7 +257,11 @@ function initPhone() {
 }
 
 function setStatus(t) { $("status").textContent = t; }
-function flash(msg) { setStatus(msg); setTimeout(() => setStatus(""), 1500); }
+function flash(msg) {
+  setStatus(msg);
+  clearTimeout(FLASH_TIMER);
+  FLASH_TIMER = setTimeout(() => setStatus(""), 1500);
+}
 
 function escapeHtml(s) {
   return String(s ?? "")
@@ -278,12 +287,20 @@ function initials(name) {
 
 // ── 2. Contato + pacientes ───────────────────────────────────────────────────
 async function load(selectPid) {
+  const seq = ++LOAD_SEQ;
   setStatus("Buscando contato…");
   const r = await fetch(api("/api/atendente/resolve", { phone: PHONE }));
+  if (seq !== LOAD_SEQ) return;  // uma chamada mais nova já assumiu a tela
   if (!r.ok) { setStatus("Erro ao buscar (token?)."); return; }
   const { contact, patients } = await r.json();
+  if (seq !== LOAD_SEQ) return;
   CONTACT = contact;
-  if (!contact) { setStatus("Nenhum contato encontrado para este número."); return; }
+  if (!contact) {
+    setStatus("Nenhum contato encontrado para este número.");
+    $("contact-header").classList.add("hidden");
+    PATIENTS = [];
+    return;
+  }
   setStatus("");
   $("contact-header").classList.remove("hidden");
   renderContact();
@@ -336,8 +353,8 @@ function selectPatient(pid) {
 
 function renderPatientList() {
   $("patient-list").innerHTML = PATIENTS.map((p) => `
-    <div class="opt" role="option" aria-selected="${p.id === CURRENT_PID}">
-      <button type="button" data-pick="${escapeHtml(p.id)}">
+    <li class="opt">
+      <button type="button" data-pick="${escapeHtml(p.id)}" aria-current="${p.id === CURRENT_PID ? "true" : "false"}">
         <span class="av" style="width:32px;height:32px">${escapeHtml(initials(p.name))}</span>
         <span class="flex flex-col">
           <span class="text-sm font-medium">${escapeHtml(p.name)}</span>
@@ -347,22 +364,33 @@ function renderPatientList() {
       <button type="button" class="ibtn" data-unlink="${escapeHtml(p.id)}" aria-label="Desvincular ${escapeHtml(p.name)}">
         <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M9 17H7a5 5 0 0 1 0-10h2M15 7h2a5 5 0 0 1 0 10h-2M4 20 20 4"/></svg>
       </button>
-    </div>`).join("") || `<p class="text-sm p-3" style="color:var(--muted)">Nenhum paciente vinculado.</p>`;
+    </li>`).join("") || `<li class="text-sm p-3" style="color:var(--muted)">Nenhum paciente vinculado.</li>`;
 }
 
 function setListOpen(open) {
   $("patient-list").classList.toggle("hidden", !open);
   $("patient-box").setAttribute("aria-expanded", String(open));
+  if (open) {
+    const first = $("patient-list").querySelector("[data-pick]");
+    if (first) first.focus();
+  }
 }
 $("patient-box").onclick = () => setListOpen($("patient-list").classList.contains("hidden"));
 $("patient-list").onclick = async (e) => {
   const pick = e.target.closest("[data-pick]");
   const un = e.target.closest("[data-unlink]");
-  if (pick) { setListOpen(false); selectPatient(pick.dataset.pick); }
+  if (pick) { setListOpen(false); $("patient-box").focus(); selectPatient(pick.dataset.pick); }
   if (un) await unlink(un.dataset.unlink);
 };
 document.addEventListener("click", (e) => {
   if (!e.target.closest("#patient-box, #patient-list")) setListOpen(false);
+});
+document.addEventListener("focusout", () => {
+  if ($("patient-list").classList.contains("hidden")) return;
+  setTimeout(() => {
+    const active = document.activeElement;
+    if (!active || !active.closest("#patient-box, #patient-list")) setListOpen(false);
+  }, 0);
 });
 
 async function unlink(pid) {
@@ -378,9 +406,12 @@ async function unlink(pid) {
 
 // ── 4. Paciente selecionado ──────────────────────────────────────────────────
 async function loadPatient(pid) {
+  const seq = ++PATIENT_SEQ;
   const r = await fetch(api(`/api/atendente/paciente/${pid}`, { contact_id: CONTACT.id }));
+  if (seq !== PATIENT_SEQ || pid !== CURRENT_PID) return;
   if (!r.ok) { setStatus("Erro ao carregar paciente."); return; }
   const { patient, link, return_reminder, eva_off } = await r.json();
+  if (seq !== PATIENT_SEQ || pid !== CURRENT_PID) return;
   renderEvaStatus(eva_off);
   renderVinculo(link);
   renderForms(patient, return_reminder, eva_off);
@@ -443,6 +474,7 @@ function openLinkSheet() {
   $("link-q").value = "";
   $("link-results").innerHTML = "";
   $("link-results").classList.add("hidden");
+  $("link-empty").textContent = "Ninguém encontrado.";
   $("link-empty").classList.add("hidden");
   $("new-form").classList.add("hidden");
   $("new-msg").classList.add("hidden");
@@ -452,14 +484,26 @@ function openLinkSheet() {
   $("link-error").classList.add("hidden");
   updateLinkSubmit();
   setListOpen(false);
+  LINK_SHEET_RETURN_FOCUS = document.activeElement;
+  document.querySelector(".eva > .max-w-5xl").inert = true;
   $("link-sheet").classList.remove("hidden");
   $("link-q").focus();
 }
-function closeLinkSheet() { $("link-sheet").classList.add("hidden"); }
+function closeLinkSheet() {
+  $("link-sheet").classList.add("hidden");
+  document.querySelector(".eva > .max-w-5xl").inert = false;
+  if (LINK_SHEET_RETURN_FOCUS && document.body.contains(LINK_SHEET_RETURN_FOCUS)) LINK_SHEET_RETURN_FOCUS.focus();
+  LINK_SHEET_RETURN_FOCUS = null;
+}
 $("link-open").onclick = openLinkSheet;
 document.querySelectorAll("[data-close-sheet]").forEach((el) => { el.onclick = closeLinkSheet; });
 document.addEventListener("keydown", (e) => {
-  if (e.key === "Escape" && !$("link-sheet").classList.contains("hidden")) closeLinkSheet();
+  if (e.key !== "Escape") return;
+  if (!$("link-sheet").classList.contains("hidden")) { closeLinkSheet(); return; }
+  if (!$("patient-list").classList.contains("hidden")) {
+    setListOpen(false);
+    $("patient-box").focus();
+  }
 });
 
 function updateLinkSubmit() {
@@ -479,10 +523,22 @@ async function searchPatients() {
     $("link-empty").classList.add("hidden");
     return;
   }
-  const r = await fetch(api("/api/atendente/pacientes/busca", { q, phone: PHONE, agent: AGENT }));
-  if (!r.ok) return;
-  const hits = await r.json();
+  let r;
+  try {
+    r = await fetch(api("/api/atendente/pacientes/busca", { q, phone: PHONE, agent: AGENT }));
+  } catch (_) {
+    r = null;
+  }
   if (q !== $("link-q").value.trim()) return;  // chegou resposta de uma busca antiga
+  if (!r || !r.ok) {
+    $("link-results").classList.add("hidden");
+    $("link-empty").textContent = "Erro na busca.";
+    $("link-empty").classList.remove("hidden");
+    return;
+  }
+  const hits = await r.json();
+  if (q !== $("link-q").value.trim()) return;
+  $("link-empty").textContent = "Ninguém encontrado.";
   renderResults(hits);
 }
 
@@ -530,12 +586,22 @@ async function createPatient() {
   const body = await r.json().catch(() => ({}));
   msg.classList.remove("hidden");
   if (r.status === 409) {
-    const dups = body.detail.duplicates;
+    const dups = (body.detail && body.detail.duplicates) || [];
+    const linked = new Set(PATIENTS.map((p) => p.id));
+    const free = dups.find((d) => !linked.has(d.id));
     renderResults(dups.map((d) => ({ ...d, phone_hint: null })));
-    pickLinkPatient(dups[0].id);
     $("new-form").classList.add("hidden");
     msg.style.color = "var(--danger)";
-    msg.textContent = "Já existe ficha com este nome e nascimento. Selecionei a ficha existente.";
+    if (free) {
+      pickLinkPatient(free.id);
+      msg.textContent = "Já existe ficha com este nome e nascimento. Selecionei a ficha existente.";
+      return;
+    }
+    // Todas as fichas duplicadas já estão vinculadas a este número: não há o
+    // que oferecer no Vincular, então só levamos a atendente até a ficha.
+    msg.textContent = "Essa ficha já está vinculada a este número.";
+    closeLinkSheet();
+    if (dups[0]) selectPatient(dups[0].id);
     return;
   }
   if (!r.ok) { msg.style.color = "var(--danger)"; msg.textContent = errText(body, "Erro ao criar ficha."); return; }
@@ -566,11 +632,14 @@ async function submitLink() {
 }
 // ── 2b. Pagamentos pendentes ─────────────────────────────────────────────────
 async function loadPagamentos() {
+  const seq = ++PAG_SEQ;
   const box = document.getElementById("pagamentos-box");
   const list = document.getElementById("pagamentos-list");
   const r = await fetch(api("/api/atendente/pagamentos", { phone: PHONE }));
+  if (seq !== PAG_SEQ) return;
   if (!r.ok) return;
   const pendencias = await r.json();
+  if (seq !== PAG_SEQ) return;
   box.classList.remove("hidden");
   if (!pendencias.length) {
     list.innerHTML = `<p class="text-sm text-gray-400 dark:text-gray-500">Nenhum pagamento pendente.</p>`;
