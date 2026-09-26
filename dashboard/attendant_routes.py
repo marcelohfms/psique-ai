@@ -191,11 +191,19 @@ async def update_vinculo(pc_id: str, body: UpdateBody, _: None = Depends(verify_
 
 
 @router.get("/pacientes/busca")
-async def buscar_pacientes(q: str, phone: str, _: None = Depends(verify_token)):
+async def buscar_pacientes(
+    phone: str,
+    q: str = Query(..., max_length=80),
+    agent: str = Query(default="", max_length=80),
+    _: None = Depends(verify_token),
+):
     # A busca olha a base toda (é para achar quem ainda não está ligado), então
     # devolve só nome, nascimento e 4 dígitos. Exige que o número tenha contato.
     await _contact_id_for(phone)
-    return await attendant_db.search_patients(q)
+    results = await attendant_db.search_patients(q)
+    await attendant_db.log_event("attendant_search", phone,
+                                 {"q": q, "agent": agent, "results": len(results)})
+    return results
 
 
 @router.post("/vinculo")

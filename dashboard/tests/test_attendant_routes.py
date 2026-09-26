@@ -609,6 +609,32 @@ def test_busca_devolve_resultados(client, monkeypatch):
     assert r.status_code == 200 and r.json()[0]["id"] == "p9"
 
 
+def test_busca_recusa_q_maior_que_80_caracteres(client, monkeypatch):
+    _scope_c1(monkeypatch)
+    r = client.get("/api/atendente/pacientes/busca",
+                   params={**T, "q": "a" * 81, "phone": "5581"})
+    assert r.status_code == 422
+
+
+def test_busca_recusa_agent_maior_que_80_caracteres(client, monkeypatch):
+    _scope_c1(monkeypatch)
+    r = client.get("/api/atendente/pacientes/busca",
+                   params={**T, "q": "joao", "phone": "5581", "agent": "a" * 81})
+    assert r.status_code == 422
+
+
+def test_busca_audita_com_termo_e_quantidade_de_resultados(client, monkeypatch):
+    _scope_c1(monkeypatch)
+    ev = _events(monkeypatch)
+    async def fake_search(q):
+        return [{"id": "p9"}, {"id": "p10"}]
+    monkeypatch.setattr(attendant_db, "search_patients", fake_search)
+    r = client.get("/api/atendente/pacientes/busca",
+                   params={**T, "q": "joao", "phone": "5581", "agent": "Ana"})
+    assert r.status_code == 200
+    assert ev[0] == ("attendant_search", {"q": "joao", "agent": "Ana", "results": 2})
+
+
 def test_vincular_usa_o_contato_do_telefone_e_normaliza(client, monkeypatch):
     _scope_c1(monkeypatch)
     ev = _events(monkeypatch)
