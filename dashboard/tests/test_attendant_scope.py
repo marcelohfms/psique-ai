@@ -187,3 +187,10 @@ def test_busca_sem_contato_no_numero_recusa(client, monkeypatch):
     _scope(monkeypatch, None, set())
     r = client.get("/api/atendente/pacientes/busca", params={**TOKEN, "q": "joao", "phone": PHONE})
     assert r.status_code == 403
+
+
+def test_ficha_nova_sem_contato_no_numero_recusa(client, monkeypatch):
+    _scope(monkeypatch, None, set())
+    r = client.post("/api/atendente/paciente-novo", params=TOKEN,
+                    json={"phone": PHONE, "name": "Ana Luz", "birth_date": "01/02/2015"})
+    assert r.status_code == 403

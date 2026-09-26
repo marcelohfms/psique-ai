@@ -730,6 +730,13 @@ def test_ficha_nova_nascimento_invalido_400(client, monkeypatch):
     assert r.status_code == 400
 
 
+def test_ficha_nova_nome_com_2_caracteres_400(client, monkeypatch):
+    _scope_c1(monkeypatch)
+    r = client.post("/api/atendente/paciente-novo", params=T, json={
+        "phone": "5581", "name": "Jo", "birth_date": "01/02/2015"})
+    assert r.status_code == 400
+
+
 def test_desvincular_travado_409(client, monkeypatch):
     _scope_c1(monkeypatch)
     async def fake_blocker(pid, cid):
