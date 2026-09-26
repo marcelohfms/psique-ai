@@ -1343,7 +1343,18 @@ const api = (path, params = {}) => `${path}?${new URLSearchParams({ ...params, t
 function postJson(path, body) {
   return fetch(api(path), { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
 }
-const errText = (body, fallback) => (body && typeof body.detail === "string" ? body.detail : fallback);
+// 400/404 trazem detail em texto; 409 traz {message, ...}.
+function errText(body, fallback) {
+  const d = body && body.detail;
+  if (typeof d === "string") return d;
+  return (d && d.message) || fallback;
+}
+// Trava o botão enquanto a requisição roda (evita ficha ou vínculo em dobro no clique duplo).
+async function withBusy(btn, fn) {
+  if (btn.disabled) return;
+  btn.disabled = true;
+  try { return await fn(); } finally { btn.disabled = false; }
+}
 
 // ── 0. Abas ──────────────────────────────────────────────────────────────────
 function showTab(name) {
@@ -1598,7 +1609,7 @@ async function searchPatients() {
     $("link-empty").classList.add("hidden");
     return;
   }
-  const r = await fetch(api("/api/atendente/pacientes/busca", { q, phone: PHONE }));
+  const r = await fetch(api("/api/atendente/pacientes/busca", { q, phone: PHONE, agent: AGENT }));
   if (!r.ok) return;
   const hits = await r.json();
   if (q !== $("link-q").value.trim()) return;  // chegou resposta de uma busca antiga
@@ -1637,8 +1648,11 @@ $("new-open").onclick = () => {
   $("new-name").focus();
 };
 $("new-cancel").onclick = () => $("new-form").classList.add("hidden");
-$("new-form").onsubmit = async (e) => {
+$("new-form").onsubmit = (e) => {
   e.preventDefault();
+  withBusy(e.submitter || $("new-form").querySelector("[type=submit]"), createPatient);
+};
+async function createPatient() {
   const msg = $("new-msg");
   const r = await postJson("/api/atendente/paciente-novo", {
     phone: PHONE, name: val("new-name"), birth_date: val("new-birth"), agent: AGENT,
@@ -1660,9 +1674,10 @@ $("new-form").onsubmit = async (e) => {
   $("new-form").classList.add("hidden");
   msg.style.color = "var(--ok)";
   msg.textContent = "Ficha criada. Agora é só vincular.";
-};
+}
 
-$("link-submit").onclick = async () => {
+$("link-submit").onclick = () => withBusy($("link-submit"), submitLink);
+async function submitLink() {
   const isSelf = $("link-self").getAttribute("aria-checked") === "true";
   const r = await postJson("/api/atendente/vinculo", {
     phone: PHONE, patient_id: LINK_PID, is_self: isSelf,
@@ -1678,7 +1693,7 @@ $("link-submit").onclick = async () => {
   closeLinkSheet();
   flash("Paciente vinculado ✓");
   load(pid);
-};
+}
 ```
 
 - [ ] **Step 4: Copie as funções mantidas, sem mudança**
