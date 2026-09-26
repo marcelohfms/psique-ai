@@ -1,4 +1,5 @@
 import os
+import re
 from datetime import datetime
 
 import pytest
@@ -87,6 +88,10 @@ class FakeQuery:
         self._filters.append(("neq", col, val))
         return self
 
+    def ilike(self, col, pattern):
+        self._filters.append(("ilike", col, pattern))
+        return self
+
     def order(self, col, desc=False):
         self._order_col = col
         self._order_desc = desc
@@ -110,6 +115,12 @@ class FakeQuery:
                 return False
             if kind == "neq" and row.get(col) == val:
                 return False
+            if kind == "ilike":
+                rx = "".join(
+                    ".*" if ch == "%" else "." if ch == "_" else re.escape(ch) for ch in val
+                )
+                if not re.fullmatch(rx, row.get(col) or "", re.IGNORECASE | re.DOTALL):
+                    return False
         return True
 
     async def execute(self):

@@ -336,3 +336,15 @@ async def test_is_patient_eva_off_false_quando_nenhum(patched_client):
         {"patient_id": "p1", "contact_id": "c1", "contacts": {"manual_hold": False}},
     ]
     assert await attendant_db.is_patient_eva_off("p1") is False
+
+
+# ── Banco falso: ilike ────────────────────────────────────────────────────────
+
+
+async def test_fake_ilike_casa_curinga_e_ignora_caixa(fake_client):
+    fake_client.store["patients"] = [
+        {"id": "p1", "name": "João Menezes"},
+        {"id": "p2", "name": "Maria Souza"},
+    ]
+    res = await fake_client.from_("patients").select("id").ilike("name", "%j__o m%").execute()
+    assert [r["id"] for r in res.data] == ["p1"]
