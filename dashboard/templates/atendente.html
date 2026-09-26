@@ -12,12 +12,12 @@
     --soft: #F3ECE2; --accent: #575684; --accent-dk: #3F3E63; --accent-soft: #EDECF4;
     --danger: #B42335; --ok: #2F8F6B; --on-accent: #FFFFFF;
     font-family: 'Geist', system-ui, sans-serif; color: var(--ink); background: var(--bg);
-    -webkit-font-smoothing: antialiased;
+    -webkit-font-smoothing: antialiased; color-scheme: light;
   }
   @media (prefers-color-scheme: dark) {
     .eva { --bg: #17161D; --surface: #211F29; --ink: #ECEAF2; --muted: #A5A3B3; --line: #34313F;
            --soft: #2A2834; --accent: #A9A8D6; --accent-dk: #C4C3E6; --accent-soft: #2E2C40;
-           --danger: #F07A8A; --ok: #5BC49A; --on-accent: #17161D; }
+           --danger: #F07A8A; --ok: #5BC49A; --on-accent: #17161D; color-scheme: dark; }
   }
   .eva .serif { font-family: 'Newsreader', Georgia, serif; font-weight: 400; }
   .eva .num { font-variant-numeric: tabular-nums; }
@@ -42,12 +42,13 @@
   .eva .pbox[aria-expanded="true"] { border-color: var(--accent); }
   .eva .plus { width: 52px; height: 52px; border-radius: 12px; border: 1px dashed var(--accent); background: transparent;
                color: var(--accent); display: inline-flex; align-items: center; justify-content: center; cursor: pointer; }
-  .eva .dropdown { position: absolute; top: 58px; left: 0; width: 420px; max-width: 100%; padding: 6px; z-index: 20;
-                   box-shadow: 0 16px 36px rgba(66,66,74,.14); }
+  .eva .dropdown { position: absolute; top: 58px; left: 0; width: 420px; max-width: 100%; margin: 0; padding: 6px;
+                   z-index: 20; list-style: none; box-shadow: 0 16px 36px rgba(66,66,74,.14); }
   .eva .opt { display: flex; align-items: center; gap: 4px; border-radius: 10px; }
-  .eva .opt[aria-selected="true"] { background: var(--accent-soft); }
   .eva .opt > button:first-child { flex: 1; display: flex; align-items: center; gap: 12px; padding: 8px; border: 0;
-                                   background: transparent; text-align: left; cursor: pointer; color: var(--ink); }
+                                   border-radius: 10px; background: transparent; text-align: left; cursor: pointer; color: var(--ink); }
+  .eva .opt > button:first-child[aria-current="true"] { background: var(--accent-soft); box-shadow: inset 3px 0 0 var(--accent); }
+  .eva .opt > button:first-child[aria-current="true"] .text-sm { color: var(--accent-dk); font-weight: 600; }
   .eva .tabs { display: flex; gap: 26px; border-bottom: 1px solid var(--line); }
   .eva .tab { height: 40px; margin-bottom: -1px; padding: 0; border: 0; border-bottom: 2px solid transparent;
               background: transparent; font-size: 14px; font-weight: 500; color: var(--muted); cursor: pointer; }
@@ -55,23 +56,30 @@
   .eva .tab-reset { margin-left: auto; font-size: 13px; }
   .eva .tab-reset[aria-selected="true"] { border-bottom-color: var(--danger); color: var(--danger); }
   .eva .switch { width: 40px; height: 24px; border-radius: 99px; border: 0; padding: 2px; display: flex;
-                 background: var(--line); justify-content: flex-start; cursor: pointer; flex-shrink: 0; }
+                 background: var(--muted); justify-content: flex-start; cursor: pointer; flex-shrink: 0; }
   .eva .switch[aria-checked="true"] { background: var(--accent); justify-content: flex-end; }
   .eva .switch::after { content: ""; width: 20px; height: 20px; border-radius: 99px; background: #FFFFFF;
                         box-shadow: 0 1px 2px rgba(0,0,0,.2); }
   .eva .scrim { position: fixed; inset: 0; background: rgba(66,66,74,.22); z-index: 40; }
   .eva .sheet { position: fixed; top: 0; right: 0; bottom: 0; width: 440px; max-width: 100vw; background: var(--surface);
                 z-index: 50; box-shadow: -24px 0 48px rgba(66,66,74,.14); display: flex; flex-direction: column; }
-  .eva .row-pick { display: flex; align-items: center; gap: 12px; width: 100%; padding: 12px 14px; border: 0;
-                   border-top: 1px solid var(--soft); background: var(--surface); text-align: left; cursor: pointer; color: var(--ink); }
+  .eva .row-pick { position: relative; display: flex; align-items: center; gap: 12px; width: 100%;
+                   padding: 12px 14px 12px 40px; border: 0; border-top: 1px solid var(--soft); background: var(--surface);
+                   text-align: left; cursor: pointer; color: var(--ink); }
+  .eva .row-pick::before { content: ""; position: absolute; left: 14px; top: 50%; transform: translateY(-50%);
+                            width: 16px; height: 16px; box-sizing: border-box; border-radius: 99px;
+                            border: 1.5px solid var(--muted); background: var(--surface); }
   .eva .row-pick:first-child { border-top: 0; }
-  .eva .row-pick[aria-checked="true"] { background: var(--accent-soft); }
+  .eva .row-pick[aria-checked="true"] { background: var(--accent-soft); box-shadow: inset 3px 0 0 var(--accent); }
+  .eva .row-pick[aria-checked="true"]::before { border: 5px solid var(--accent); }
+  .eva .row-pick[aria-checked="true"] .font-medium { color: var(--accent-dk); font-weight: 600; }
+  .eva .row-pick:not(:disabled):not([aria-checked="true"]):hover { background: var(--soft); }
   .eva .row-pick:disabled { opacity: .5; cursor: default; }
 </style>
 
 <div class="eva min-h-screen">
   <div class="max-w-5xl mx-auto px-6 py-6 flex flex-col gap-6">
-    <div id="status" class="text-sm" style="color: var(--muted)">Carregando contato…</div>
+    <div id="status" class="text-sm" style="color: var(--muted)" aria-live="polite">Carregando contato…</div>
 
     <header id="contact-header" class="hidden flex flex-col gap-4">
       <div class="flex items-start gap-4">
@@ -87,7 +95,7 @@
         <form id="contact-edit" class="hidden card flex-1 p-4 flex flex-col gap-3">
           <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
             <label class="flex flex-col gap-2"><span class="cap">Nome do contato</span><input id="c_name" class="inp"></label>
-            <label class="flex flex-col gap-2"><span class="cap">CPF</span><input id="c_cpf" class="inp num"></label>
+            <label class="flex flex-col gap-2"><span class="cap">CPF</span><input id="c_cpf" class="inp num" inputmode="numeric"></label>
           </div>
           <div class="flex justify-end gap-2">
             <button type="button" id="contact-edit-cancel" class="btn">Cancelar</button>
@@ -98,7 +106,7 @@
       </div>
 
       <div class="flex items-center gap-2 relative">
-        <button id="patient-box" type="button" class="pbox" aria-haspopup="listbox" aria-expanded="false">
+        <button id="patient-box" type="button" class="pbox" aria-expanded="false" aria-controls="patient-list">
           <span id="pbox-av" class="av"></span>
           <span class="flex-1 flex flex-col" style="gap: 2px">
             <span class="cap" style="font-size: 10px">Paciente</span>
@@ -110,7 +118,7 @@
         <button id="link-open" type="button" class="plus" aria-label="Vincular outro paciente a este número">
           <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg>
         </button>
-        <div id="patient-list" role="listbox" class="hidden card dropdown"></div>
+        <ul id="patient-list" class="hidden card dropdown"></ul>
       </div>
     </header>
 
@@ -156,19 +164,19 @@
       </div>
       <div class="flex-1 overflow-auto flex flex-col gap-5" style="padding: 22px 28px">
         <label class="flex flex-col gap-2"><span class="cap">Nome do paciente</span>
-          <input id="link-q" class="inp" autocomplete="off" placeholder="3 letras ou mais"></label>
+          <input id="link-q" class="inp" autocomplete="off" maxlength="80" placeholder="3 letras ou mais"></label>
         <div id="link-results" class="card overflow-hidden hidden" role="radiogroup" aria-label="Pacientes encontrados"></div>
         <p id="link-empty" class="hidden text-sm" style="color: var(--muted)">Ninguém encontrado.</p>
         <button id="new-open" type="button" class="text-sm font-medium text-left" style="color: var(--accent); background: none; border: 0; padding: 0; cursor: pointer">+ Criar ficha nova</button>
         <form id="new-form" class="hidden card p-4 flex flex-col gap-3">
           <label class="flex flex-col gap-2"><span class="cap">Nome completo</span><input id="new-name" class="inp"></label>
-          <label class="flex flex-col gap-2"><span class="cap">Nascimento</span><input id="new-birth" class="inp num" placeholder="dd/mm/aaaa"></label>
+          <label class="flex flex-col gap-2"><span class="cap">Nascimento</span><input id="new-birth" class="inp num" inputmode="numeric" placeholder="dd/mm/aaaa"></label>
           <div class="flex justify-end gap-2">
             <button type="button" id="new-cancel" class="btn">Cancelar</button>
             <button type="submit" class="btn btn-primary">Criar ficha</button>
           </div>
         </form>
-        <p id="new-msg" class="hidden text-sm"></p>
+        <p id="new-msg" class="hidden text-sm" role="alert"></p>
         <div class="card flex items-center gap-3" style="padding: 12px 14px">
           <span class="flex-1 text-sm">Número do próprio paciente</span>
           <button id="link-self" type="button" class="switch" role="switch" aria-checked="false" aria-label="Número do próprio paciente"></button>
@@ -179,7 +187,7 @@
             {% for r in relationships %}<option value="{{ r }}">{{ r }}</option>{% endfor %}
           </select>
         </label>
-        <p id="link-error" class="hidden text-sm" style="color: var(--danger)"></p>
+        <p id="link-error" class="hidden text-sm" style="color: var(--danger)" role="alert"></p>
       </div>
       <div class="flex justify-end" style="padding: 16px 28px 22px; border-top: 1px solid var(--soft)">
         <button id="link-submit" type="button" class="btn btn-primary" disabled>Vincular</button>
