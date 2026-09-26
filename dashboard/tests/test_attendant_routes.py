@@ -683,7 +683,7 @@ def test_desvincular_travado_409(client, monkeypatch):
         return "Este é o único número do paciente..."
     monkeypatch.setattr(attendant_db, "unlink_blocker", fake_blocker)
     r = client.post("/api/atendente/desvincular", params=T, json={"phone": "5581", "patient_id": "p1"})
-    assert r.status_code == 409 and "único número" in r.json()["detail"]
+    assert r.status_code == 409 and "único número" in r.json()["detail"]["message"]
 
 
 def test_desvincular_ok(client, monkeypatch):

@@ -242,7 +242,7 @@ async def desvincular(body: UnlinkBody, _: None = Depends(verify_token)):
     contact_id = await _contact_id_for(body.phone)
     blocker = await attendant_db.unlink_blocker(body.patient_id, contact_id)
     if blocker:
-        raise HTTPException(status_code=409, detail=blocker)
+        raise HTTPException(status_code=409, detail={"message": blocker})
     removed = await attendant_db.unlink_patient(body.patient_id, contact_id)
     await attendant_db.log_event("attendant_unlink_patient", body.phone, {
         "patient_id": body.patient_id, "contact_id": contact_id, "removed": removed,
