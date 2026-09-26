@@ -225,7 +225,9 @@ def test_atendente_page_renders():
     # (senão qualquer visitante anônimo receberia o segredo do painel).
     r = c.get("/atendente", params={"token": "test-token"})
     assert r.status_code == 200
-    assert "Painel da Eva" in r.text
+    # A moldura nova (Task 11) tirou o título "Painel da Eva": o nome do
+    # contato no topo (#contact-name) passou a cumprir esse papel.
+    assert 'id="contact-name"' in r.text
 
 
 import chatwoot_client
