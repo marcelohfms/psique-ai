@@ -101,6 +101,50 @@ def test_get_patient_includes_return_reminder(client, monkeypatch):
 # ── Escrita ───────────────────────────────────────────────────────────────────
 
 
+def test_update_contato_calls_db_e_loga_agent(client, monkeypatch):
+    calls = {}
+    async def fake_update(cid, data):
+        calls["update"] = (cid, data)
+    async def fake_log(event_type, phone, metadata):
+        calls["log"] = (event_type, phone, metadata)
+    monkeypatch.setattr(attendant_db, "update_contact", fake_update)
+    monkeypatch.setattr(attendant_db, "log_event", fake_log)
+    r = client.post("/api/atendente/contato/c1",
+                    params={"token": "test-token"},
+                    json={"phone": "5581999998888", "data": {"name": "Carla"}, "agent": "Ana"})
+    assert r.status_code == 200
+    assert calls["update"] == ("c1", {"name": "Carla"})
+    assert calls["log"][0] == "attendant_edit_contact"
+    assert calls["log"][2]["agent"] == "Ana"
+
+
+def test_update_contato_recusa_nome_vazio_400(client, monkeypatch):
+    async def fake_update(cid, data):
+        raise AssertionError("não deve chamar o db com nome vazio")
+    monkeypatch.setattr(attendant_db, "update_contact", fake_update)
+    r = client.post("/api/atendente/contato/c1",
+                    params={"token": "test-token"},
+                    json={"phone": "5581999998888", "data": {"name": "   "}})
+    assert r.status_code == 400
+
+
+def test_update_contato_sem_campo_name_nao_exige_nome(client, monkeypatch):
+    """O 400 só se aplica quando `name` está no payload; editar só o CPF, por
+    exemplo, não deve exigir o nome junto."""
+    calls = {}
+    async def fake_update(cid, data):
+        calls["update"] = (cid, data)
+    async def fake_log(*a, **k):
+        return None
+    monkeypatch.setattr(attendant_db, "update_contact", fake_update)
+    monkeypatch.setattr(attendant_db, "log_event", fake_log)
+    r = client.post("/api/atendente/contato/c1",
+                    params={"token": "test-token"},
+                    json={"phone": "5581999998888", "data": {"cpf": "12345678900"}})
+    assert r.status_code == 200
+    assert calls["update"] == ("c1", {"cpf": "12345678900"})
+
+
 def test_update_patient_calls_db_and_logs(client, monkeypatch):
     calls = {}
     async def fake_update(pid, data):
@@ -760,14 +804,45 @@ def test_desvincular_ok(client, monkeypatch):
     ev = _events(monkeypatch)
     async def fake_blocker(pid, cid):
         return None
+    async def fake_future_bookings(pid, cid):
+        return 0
     async def fake_unlink(pid, cid):
         assert (pid, cid) == ("p1", "c1")
         return 3
     monkeypatch.setattr(attendant_db, "unlink_blocker", fake_blocker)
+    monkeypatch.setattr(attendant_db, "future_bookings_by_contact", fake_future_bookings)
     monkeypatch.setattr(attendant_db, "unlink_patient", fake_unlink)
     r = client.post("/api/atendente/desvincular", params=T, json={"phone": "5581", "patient_id": "p1"})
-    assert r.status_code == 200 and r.json()["removed"] == 3
+    body = r.json()
+    assert r.status_code == 200 and body["removed"] == 3
+    assert body["still_booking"] == 0
     assert ev[0][0] == "attendant_unlink_patient"
+    assert ev[0][1]["still_booking"] == 0
+
+
+def test_desvincular_avisa_consultas_futuras_ainda_no_numero(client, monkeypatch):
+    """future_bookings_by_contact é chamado ANTES de apagar o vínculo (o dado
+    precisa ser lido antes que unlink_patient rode) e o resultado volta na
+    resposta e no log."""
+    _scope_c1(monkeypatch)
+    ev = _events(monkeypatch)
+    order = []
+    async def fake_blocker(pid, cid):
+        return None
+    async def fake_future_bookings(pid, cid):
+        order.append("future_bookings")
+        return 2
+    async def fake_unlink(pid, cid):
+        order.append("unlink")
+        return 3
+    monkeypatch.setattr(attendant_db, "unlink_blocker", fake_blocker)
+    monkeypatch.setattr(attendant_db, "future_bookings_by_contact", fake_future_bookings)
+    monkeypatch.setattr(attendant_db, "unlink_patient", fake_unlink)
+    r = client.post("/api/atendente/desvincular", params=T, json={"phone": "5581", "patient_id": "p1"})
+    assert r.status_code == 200
+    assert r.json()["still_booking"] == 2
+    assert order == ["future_bookings", "unlink"]
+    assert ev[0][1]["still_booking"] == 2
 
 
 def test_editar_vinculo_normaliza_marcador(client, monkeypatch):
@@ -784,3 +859,19 @@ def test_editar_vinculo_normaliza_marcador(client, monkeypatch):
     r = client.post("/api/atendente/vinculo/pc1", params=T,
                     json={"phone": "5581", "data": {"is_self": False, "relationship": "vizinha"}})
     assert r.status_code == 400
+
+
+def test_editar_vinculo_loga_agent(client, monkeypatch):
+    calls = {}
+    async def fake_update(pc_id, data):
+        return None
+    async def fake_log(event_type, phone, metadata):
+        calls["log"] = (event_type, phone, metadata)
+    monkeypatch.setattr(attendant_db, "update_link", fake_update)
+    monkeypatch.setattr(attendant_db, "log_event", fake_log)
+    r = client.post("/api/atendente/vinculo/pc1", params=T,
+                    json={"phone": "5581", "data": {"is_self": True, "relationship": "mãe"},
+                          "agent": "Ana"})
+    assert r.status_code == 200
+    assert calls["log"][0] == "attendant_edit_link"
+    assert calls["log"][2]["agent"] == "Ana"

@@ -60,6 +60,7 @@ async def _assert_appointment_scope(phone: str, appointment_id: str) -> None:
 class UpdateBody(BaseModel):
     phone: str
     data: dict
+    agent: str = Field(default="", max_length=80)
 
 
 class ResetBody(BaseModel):
@@ -125,9 +126,14 @@ async def paciente(patient_id: str, contact_id: str, _: None = Depends(verify_to
 @router.post("/contato/{contact_id}")
 async def update_contato(contact_id: str, body: UpdateBody, _: None = Depends(verify_token)):
     await _assert_contact_scope(body.phone, contact_id)
+    # "name" vazio travaria o contato sem quem endereçar (cabeçalho do painel,
+    # mensagens de confirmação); só recusa quando o campo está no payload.
+    if "name" in body.data and not str(body.data.get("name") or "").strip():
+        raise HTTPException(status_code=400, detail="Informe o nome.")
     await attendant_db.update_contact(contact_id, body.data)
     await attendant_db.log_event("attendant_edit_contact", body.phone,
-                                 {"contact_id": contact_id, "fields": list(body.data.keys())})
+                                 {"contact_id": contact_id, "fields": list(body.data.keys()),
+                                  "agent": body.agent})
     return {"ok": True}
 
 
@@ -185,7 +191,7 @@ async def update_vinculo(pc_id: str, body: UpdateBody, _: None = Depends(verify_
             raise HTTPException(status_code=400, detail=str(e))
     await attendant_db.update_link(pc_id, data)
     await attendant_db.log_event("attendant_edit_link", body.phone,
-                                 {"pc_id": pc_id, "fields": list(data.keys())})
+                                 {"pc_id": pc_id, "fields": list(data.keys()), "agent": body.agent})
     return {"ok": True}
 
 
@@ -256,11 +262,15 @@ async def desvincular(body: UnlinkBody, _: None = Depends(verify_token)):
     blocker = await attendant_db.unlink_blocker(body.patient_id, contact_id)
     if blocker:
         raise HTTPException(status_code=409, detail={"message": blocker})
+    # Lido ANTES de apagar o vínculo: depois de unlink_patient não dá mais para
+    # saber, pela tabela patient_contacts, quantas consultas este número ainda
+    # "está marcando" (appointments.contact_id não muda com o desvincular).
+    still_booking = await attendant_db.future_bookings_by_contact(body.patient_id, contact_id)
     removed = await attendant_db.unlink_patient(body.patient_id, contact_id)
     await attendant_db.log_event("attendant_unlink_patient", body.phone, {
         "patient_id": body.patient_id, "contact_id": contact_id, "removed": removed,
-        "agent": body.agent})
-    return {"ok": True, "removed": removed}
+        "still_booking": still_booking, "agent": body.agent})
+    return {"ok": True, "removed": removed, "still_booking": still_booking}
 
 
 @router.post("/reset-checkpoint")
