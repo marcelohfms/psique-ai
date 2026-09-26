@@ -10,7 +10,7 @@ from datetime import date as _date
 from secrets import compare_digest
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile, status
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 import attendant_db
 import chatwoot_client
@@ -71,20 +71,20 @@ class LinkBody(BaseModel):
     patient_id: str
     is_self: bool
     relationship: str | None = None
-    agent: str = ""
+    agent: str = Field(default="", max_length=80)
 
 
 class NewPatientBody(BaseModel):
     phone: str
     name: str
     birth_date: str
-    agent: str = ""
+    agent: str = Field(default="", max_length=80)
 
 
 class UnlinkBody(BaseModel):
     phone: str
     patient_id: str
-    agent: str = ""
+    agent: str = Field(default="", max_length=80)
 
 
 async def _contact_id_for(phone: str) -> str:

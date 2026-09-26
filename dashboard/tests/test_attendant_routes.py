@@ -652,6 +652,13 @@ def test_vincular_usa_o_contato_do_telefone_e_normaliza(client, monkeypatch):
     assert ev[0][0] == "attendant_link_patient" and ev[0][1]["agent"] == "Ana"
 
 
+def test_vincular_recusa_agent_maior_que_80_caracteres(client, monkeypatch):
+    _scope_c1(monkeypatch)
+    r = client.post("/api/atendente/vinculo", params=T, json={
+        "phone": "5581", "patient_id": "p9", "is_self": True, "agent": "a" * 81})
+    assert r.status_code == 422
+
+
 def test_vincular_recusa_parentesco_fora_da_lista(client, monkeypatch):
     _scope_c1(monkeypatch)
     r = client.post("/api/atendente/vinculo", params=T, json={
@@ -709,6 +716,13 @@ def test_ficha_nova_create_patient_value_error_vira_400(client, monkeypatch):
     assert r.status_code == 400
 
 
+def test_ficha_nova_recusa_agent_maior_que_80_caracteres(client, monkeypatch):
+    _scope_c1(monkeypatch)
+    r = client.post("/api/atendente/paciente-novo", params=T, json={
+        "phone": "5581", "name": "Ana Luz", "birth_date": "01/02/2015", "agent": "a" * 81})
+    assert r.status_code == 422
+
+
 def test_ficha_nova_nascimento_invalido_400(client, monkeypatch):
     _scope_c1(monkeypatch)
     r = client.post("/api/atendente/paciente-novo", params=T, json={
@@ -723,6 +737,13 @@ def test_desvincular_travado_409(client, monkeypatch):
     monkeypatch.setattr(attendant_db, "unlink_blocker", fake_blocker)
     r = client.post("/api/atendente/desvincular", params=T, json={"phone": "5581", "patient_id": "p1"})
     assert r.status_code == 409 and "único número" in r.json()["detail"]["message"]
+
+
+def test_desvincular_recusa_agent_maior_que_80_caracteres(client, monkeypatch):
+    _scope_c1(monkeypatch)
+    r = client.post("/api/atendente/desvincular", params=T, json={
+        "phone": "5581", "patient_id": "p1", "agent": "a" * 81})
+    assert r.status_code == 422
 
 
 def test_desvincular_ok(client, monkeypatch):
