@@ -348,3 +348,26 @@ async def test_fake_ilike_casa_curinga_e_ignora_caixa(fake_client):
     ]
     res = await fake_client.from_("patients").select("id").ilike("name", "%j__o m%").execute()
     assert [r["id"] for r in res.data] == ["p1"]
+
+
+# ── Marcador do vínculo ───────────────────────────────────────────────────────
+
+
+def test_marker_proprio_zera_parentesco():
+    assert attendant_db.normalize_marker(True, "mãe") == {"is_self": True, "relationship": None}
+
+
+def test_marker_terceiro_exige_parentesco_da_lista():
+    assert attendant_db.normalize_marker(False, "  mãe ") == {"is_self": False, "relationship": "mãe"}
+    with pytest.raises(ValueError):
+        attendant_db.normalize_marker(False, "")
+    with pytest.raises(ValueError):
+        attendant_db.normalize_marker(False, "vizinha")
+    with pytest.raises(ValueError):
+        attendant_db.normalize_marker(None, None)
+
+
+def test_lista_de_parentesco_tem_acompanhante_e_nao_tem_outro():
+    assert "acompanhante" in attendant_db.RELATIONSHIPS
+    assert "outro" not in attendant_db.RELATIONSHIPS
+    assert attendant_db.RELATIONSHIPS[0] == "mãe"

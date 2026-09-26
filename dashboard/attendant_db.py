@@ -177,6 +177,32 @@ def _filter(data: dict, allowed: set[str]) -> dict:
     return {k: v for k, v in data.items() if k in allowed}
 
 
+# ── Marcador do vínculo (próprio paciente x parentesco) ──────────────────────
+
+# Lista fechada: é o que a regra da idade (app/patients.py) sabe interpretar.
+# "tutor(a)" e "responsável legal" contam como responsável legal; "cônjuge" e
+# "acompanhante" contam como terceiros que não são responsáveis.
+RELATIONSHIPS = (
+    "mãe", "pai", "avó", "avô", "tutor(a)", "responsável legal", "tio", "tia",
+    "irmão", "irmã", "padrasto", "madrasta", "cônjuge", "acompanhante",
+)
+
+
+def normalize_marker(is_self, relationship) -> dict:
+    """Valida e normaliza o marcador de um par (paciente, contato).
+
+    A regra da idade só trata o número como "próprio" quando is_self é True E o
+    parentesco está vazio. Por isso "próprio" sempre grava relationship=None, e
+    terceiro exige um parentesco da lista fechada. ValueError quando inválido.
+    """
+    if is_self:
+        return {"is_self": True, "relationship": None}
+    rel = (relationship or "").strip()
+    if rel not in RELATIONSHIPS:
+        raise ValueError("Escolha o parentesco da lista.")
+    return {"is_self": False, "relationship": rel}
+
+
 async def update_contact(contact_id: str, data: dict) -> None:
     payload = _filter(data, _CONTACT_FIELDS)
     if not payload:
