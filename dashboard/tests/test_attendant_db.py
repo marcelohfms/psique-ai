@@ -152,13 +152,16 @@ async def test_update_contact_whitelist(patched_client):
 
 
 async def test_update_link_whitelist(patched_client):
+    """`role` não é mais editável pelo painel (Task 11 review): a UI só edita
+    is_self/relationship, então a whitelist deve ignorar "role" e "patient_id"
+    mesmo quando vêm no payload."""
     patched_client.store["patient_contacts"] = [
         {"id": "pc1", "patient_id": "p1", "contact_id": "c1", "role": "agendamento",
          "is_self": False, "relationship": None},
     ]
     await attendant_db.update_link("pc1", {"role": "consulta", "relationship": "pai", "patient_id": "X"})
     row = patched_client.store["patient_contacts"][0]
-    assert row["role"] == "consulta"
+    assert row["role"] == "agendamento"  # ignorado pela whitelist
     assert row["relationship"] == "pai"
     assert "patient_id" not in row or row.get("patient_id") != "X"
 
@@ -186,20 +189,6 @@ async def test_update_link_propagates_marker_to_all_roles_of_pair(patched_client
     # não vazou para outro paciente
     assert rows["pc-outro"]["is_self"] is True
     assert rows["pc-outro"]["relationship"] is None
-
-
-async def test_update_link_role_field_updates_single_row(patched_client):
-    """`role` é propriedade da LINHA (pc_id), não do par: só a linha alvo muda."""
-    patched_client.store["patient_contacts"] = [
-        {"id": "pc-agen", "patient_id": "p1", "contact_id": "c1", "role": "agendamento",
-         "is_self": True, "relationship": None},
-        {"id": "pc-fin", "patient_id": "p1", "contact_id": "c1", "role": "financeiro",
-         "is_self": True, "relationship": None},
-    ]
-    await attendant_db.update_link("pc-agen", {"role": "consulta"})
-    rows = {r["id"]: r for r in patched_client.store["patient_contacts"]}
-    assert rows["pc-agen"]["role"] == "consulta"
-    assert rows["pc-fin"]["role"] == "financeiro"  # não afetada
 
 
 # ── Escrita da data de retorno ────────────────────────────────────────────────
@@ -642,6 +631,40 @@ async def test_trava_converte_horario_utc_para_recife(patched_client):
     assert msg is not None and "02/10/2099" in msg and "14:00" in msg
 
 
+async def test_trava_trata_horario_sem_fuso_como_utc(patched_client):
+    """start_time sem tzinfo (naive) é tratado como UTC antes do astimezone —
+    sem isso, astimezone() assume o fuso do SERVIDOR (não confiável), o que já
+    causou o card do guard errar o horário em -3h (ver memória)."""
+    patched_client.store["patient_contacts"] = [_pc("p1", "c1"), _pc("p1", "c1", "consulta")]
+    patched_client.store["appointments"] = [
+        {"patient_id": "p1", "status": "scheduled", "start_time": "2099-10-02T17:00:00"},
+    ]
+    msg = await attendant_db.unlink_blocker("p1", "c1")
+    assert msg is not None and "02/10/2099" in msg and "14:00" in msg
+
+
+async def test_trava_inclui_nome_do_paciente(patched_client):
+    patched_client.store["patients"] = [{"id": "p1", "name": "Lucas Menezes"}]
+    patched_client.store["patient_contacts"] = [_pc("p1", "c1"), _pc("p1", "c1", "consulta")]
+    patched_client.store["appointments"] = [
+        {"patient_id": "p1", "status": "scheduled", "start_time": "2099-10-02T14:00:00-03:00"},
+    ]
+    msg = await attendant_db.unlink_blocker("p1", "c1")
+    assert msg is not None and "Lucas Menezes" in msg
+
+
+async def test_trava_sem_ficha_de_paciente_usa_fallback_generico(patched_client):
+    """Sem a linha em `patients` (não deveria acontecer em produção, mas o
+    banco falso dos outros testes desta seção não a povoa), a mensagem não
+    quebra e usa um texto genérico no lugar do nome."""
+    patched_client.store["patient_contacts"] = [_pc("p1", "c1"), _pc("p1", "c1", "consulta")]
+    patched_client.store["appointments"] = [
+        {"patient_id": "p1", "status": "scheduled", "start_time": "2099-10-02T14:00:00-03:00"},
+    ]
+    msg = await attendant_db.unlink_blocker("p1", "c1")
+    assert msg is not None and "deste paciente" in msg
+
+
 async def test_trava_persiste_quando_outro_numero_e_so_financeiro(patched_client):
     """Um contato ligado só como `financeiro` (legado) não conta como "outro
     número" de verdade: sem alguém em agendamento/consulta, ainda ficaria sem
@@ -684,3 +707,33 @@ async def test_desvincular_apaga_so_as_linhas_do_par(patched_client):
     assert sorted((r["patient_id"], r["contact_id"]) for r in patched_client.store["patient_contacts"]) == [
         ("p1", "c2"), ("p2", "c1"),
     ]
+
+
+# ── Aviso de consulta futura ainda "no nome" deste número ────────────────────
+
+
+async def test_future_bookings_by_contact_conta_consultas_ativas_futuras(patched_client):
+    patched_client.store["appointments"] = [
+        {"patient_id": "p1", "contact_id": "c1", "status": "scheduled",
+         "start_time": "2099-10-02T14:00:00-03:00"},
+        {"patient_id": "p1", "contact_id": "c1", "status": "pending_reschedule",
+         "start_time": "2099-11-02T14:00:00-03:00"},
+    ]
+    n = await attendant_db.future_bookings_by_contact("p1", "c1")
+    assert n == 2
+
+
+async def test_future_bookings_by_contact_ignora_outro_contato_status_e_passado(patched_client):
+    patched_client.store["appointments"] = [
+        {"patient_id": "p1", "contact_id": "c2", "status": "scheduled",
+         "start_time": "2099-10-02T14:00:00-03:00"},  # outro contato
+        {"patient_id": "p1", "contact_id": "c1", "status": "canceled",
+         "start_time": "2099-10-02T14:00:00-03:00"},  # status inativo
+        {"patient_id": "p1", "contact_id": "c1", "status": "scheduled",
+         "start_time": "2020-01-01T10:00:00-03:00"},  # já passou
+    ]
+    assert await attendant_db.future_bookings_by_contact("p1", "c1") == 0
+
+
+async def test_future_bookings_by_contact_sem_consultas_e_zero(patched_client):
+    assert await attendant_db.future_bookings_by_contact("p1", "c1") == 0

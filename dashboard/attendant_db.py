@@ -6,7 +6,7 @@ do dashboard. NÃO importa app/ (a imagem Docker do dashboard não contém app/)
 import logging
 import unicodedata
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
 
 from db_client import get_client
@@ -348,11 +348,40 @@ async def unlink_blocker(patient_id: str, contact_id: str) -> str | None:
     )
     if not appts.data:
         return None
-    when = datetime.fromisoformat(appts.data[0]["start_time"]).astimezone(_TZ)
+    dt = datetime.fromisoformat(appts.data[0]["start_time"])
+    if dt.tzinfo is None:
+        # start_time sem fuso: trata como UTC (nunca o fuso do servidor —
+        # ver memória "Horário errado na confirmação (-3h)").
+        dt = dt.replace(tzinfo=timezone.utc)
+    when = dt.astimezone(_TZ)
+    patient = await get_patient(patient_id)
+    quem = f"de {patient['name']}" if patient and patient.get("name") else "deste paciente"
     return (
-        f"Este é o único número do paciente e ele tem consulta em "
+        f"Este é o único número {quem} e ele tem consulta em "
         f"{when.strftime('%d/%m/%Y às %H:%M')}. Vincule outro número antes."
     )
+
+
+async def future_bookings_by_contact(patient_id: str, contact_id: str) -> int:
+    """Quantas consultas futuras ativas deste paciente foram marcadas por este
+    contato (appointments.contact_id) — o número que ainda recebe lembrete e
+    cobrança delas, mesmo depois de desvincular o par em patient_contacts.
+
+    Não bloqueia a desvinculação (isso é `unlink_blocker`); é só um aviso para
+    a atendente saber que a Eva continua falando com este número sobre essas
+    consultas específicas.
+    """
+    client = await get_client()
+    res = await (
+        client.from_("appointments")
+        .select("id")
+        .eq("patient_id", patient_id)
+        .eq("contact_id", contact_id)
+        .in_("status", list(_ACTIVE_APPT_STATUSES))
+        .gt("start_time", datetime.now(_TZ).isoformat())
+        .execute()
+    )
+    return len(res.data or [])
 
 
 async def unlink_patient(patient_id: str, contact_id: str) -> int:
@@ -424,7 +453,7 @@ _PATIENT_FIELDS = {
     "financial_name", "financial_cpf", "financial_email", "social_name",
     "booking_fee_waived",
 }
-_LINK_FIELDS = {"role", "is_self", "relationship"}
+_LINK_FIELDS = {"is_self", "relationship"}  # a UI não edita mais `role` (Task 11 review)
 _RETURN_FIELDS = {"next_return_date"}
 
 

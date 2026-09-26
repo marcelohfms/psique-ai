@@ -1,6 +1,6 @@
 import os
 import re
-from datetime import datetime
+from datetime import datetime, timezone
 
 import pytest
 
@@ -19,13 +19,16 @@ def _comparable(val):
     diferentes (ex: "+00:00" vs "-03:00") mesmo quando representam o mesmo
     instante — não é garantido que a ordem lexicográfica bata com a ordem
     cronológica real. Valores não-string (ou que não são ISO datetime)
-    passam direto.
+    passam direto. Uma string sem fuso (naive) é tratada como UTC, espelhando
+    o que o código de produção assume para start_time sem tzinfo — senão dois
+    datetimes naive/aware misturados no mesmo filtro estouram TypeError.
     """
     if isinstance(val, str):
         try:
-            return datetime.fromisoformat(val)
+            dt = datetime.fromisoformat(val)
         except ValueError:
             return val
+        return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
     return val
 
 
