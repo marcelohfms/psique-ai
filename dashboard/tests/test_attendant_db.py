@@ -470,3 +470,47 @@ async def test_criar_ficha_grava_nome_limpo_e_devolve_id(patched_client):
     assert row["name"] == "Ana Luz" and row["birth_date"] == "01/02/2015"
     assert created == {"id": row["id"], "name": "Ana Luz", "birth_date": "01/02/2015"}
     assert len(created["id"]) == 36
+
+
+# ── Desvincular ───────────────────────────────────────────────────────────────
+
+
+def _pc(pid, cid, role="agendamento"):
+    return {"patient_id": pid, "contact_id": cid, "role": role, "is_self": False, "relationship": "mãe"}
+
+
+async def test_trava_ultimo_numero_com_consulta_futura(patched_client):
+    patched_client.store["patient_contacts"] = [_pc("p1", "c1"), _pc("p1", "c1", "consulta")]
+    patched_client.store["appointments"] = [
+        {"patient_id": "p1", "status": "scheduled", "start_time": "2099-10-02T14:00:00-03:00"},
+    ]
+    msg = await attendant_db.unlink_blocker("p1", "c1")
+    assert msg is not None and "02/10" in msg and "14:00" in msg
+
+
+async def test_sem_trava_quando_ha_outro_numero(patched_client):
+    patched_client.store["patient_contacts"] = [_pc("p1", "c1"), _pc("p1", "c2")]
+    patched_client.store["appointments"] = [
+        {"patient_id": "p1", "status": "scheduled", "start_time": "2099-10-02T14:00:00-03:00"},
+    ]
+    assert await attendant_db.unlink_blocker("p1", "c1") is None
+
+
+async def test_sem_trava_quando_so_ha_consulta_passada_ou_cancelada(patched_client):
+    patched_client.store["patient_contacts"] = [_pc("p1", "c1")]
+    patched_client.store["appointments"] = [
+        {"patient_id": "p1", "status": "scheduled", "start_time": "2020-01-01T10:00:00-03:00"},
+        {"patient_id": "p1", "status": "canceled", "start_time": "2099-01-01T10:00:00-03:00"},
+    ]
+    assert await attendant_db.unlink_blocker("p1", "c1") is None
+
+
+async def test_desvincular_apaga_so_as_linhas_do_par(patched_client):
+    patched_client.store["patient_contacts"] = [
+        _pc("p1", "c1"), _pc("p1", "c1", "financeiro"), _pc("p1", "c2"), _pc("p2", "c1"),
+    ]
+    removed = await attendant_db.unlink_patient("p1", "c1")
+    assert removed == 2
+    assert sorted((r["patient_id"], r["contact_id"]) for r in patched_client.store["patient_contacts"]) == [
+        ("p1", "c2"), ("p2", "c1"),
+    ]

@@ -266,6 +266,56 @@ async def create_patient(name: str, birth_br: str) -> dict:
     return row
 
 
+_ACTIVE_APPT_STATUSES = ("scheduled", "pending_reschedule")
+
+
+async def unlink_blocker(patient_id: str, contact_id: str) -> str | None:
+    """Motivo para NÃO desvincular, ou None se pode.
+
+    Trava só o caso perigoso: é o único número do paciente e ele tem consulta
+    futura ativa (ficaria sem ninguém para receber lembrete e cobrança).
+    """
+    client = await get_client()
+    others = await (
+        client.from_("patient_contacts")
+        .select("contact_id")
+        .eq("patient_id", patient_id)
+        .neq("contact_id", contact_id)
+        .execute()
+    )
+    if others.data:
+        return None
+    appts = await (
+        client.from_("appointments")
+        .select("start_time")
+        .eq("patient_id", patient_id)
+        .in_("status", list(_ACTIVE_APPT_STATUSES))
+        .gt("start_time", datetime.now(_TZ).isoformat())
+        .order("start_time")
+        .limit(1)
+        .execute()
+    )
+    if not appts.data:
+        return None
+    when = datetime.fromisoformat(appts.data[0]["start_time"]).astimezone(_TZ)
+    return (
+        f"Este é o único número do paciente e ele tem consulta em "
+        f"{when.strftime('%d/%m às %H:%M')}. Vincule outro número antes."
+    )
+
+
+async def unlink_patient(patient_id: str, contact_id: str) -> int:
+    """Apaga todas as linhas do par (os três papéis). Retorna quantas saíram."""
+    client = await get_client()
+    res = await (
+        client.from_("patient_contacts").delete()
+        .eq("patient_id", patient_id)
+        .eq("contact_id", contact_id)
+        .execute()
+    )
+    return len(res.data or [])
+
+
 # ── Escopo por telefone (anti-IDOR) ───────────────────────────────────────────
 
 
