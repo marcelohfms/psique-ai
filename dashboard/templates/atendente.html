@@ -97,6 +97,7 @@
             <label class="flex flex-col gap-2"><span class="cap">Nome do contato</span><input id="c_name" class="inp"></label>
             <label class="flex flex-col gap-2"><span class="cap">CPF</span><input id="c_cpf" class="inp num" inputmode="numeric"></label>
           </div>
+          <p id="contact-edit-error" class="hidden text-sm" style="color: var(--danger)" role="alert"></p>
           <div class="flex justify-end gap-2">
             <button type="button" id="contact-edit-cancel" class="btn">Cancelar</button>
             <button type="submit" class="btn btn-primary">Salvar</button>
@@ -257,10 +258,10 @@ function initPhone() {
 }
 
 function setStatus(t) { $("status").textContent = t; }
-function flash(msg) {
+function flash(msg, ms = 1500) {
   setStatus(msg);
   clearTimeout(FLASH_TIMER);
-  FLASH_TIMER = setTimeout(() => setStatus(""), 1500);
+  FLASH_TIMER = setTimeout(() => setStatus(""), ms);
 }
 
 function escapeHtml(s) {
@@ -274,9 +275,16 @@ function escapeHtml(s) {
 
 const FEM = ["mãe", "avó", "tia", "irmã", "madrasta"];
 const MASC = ["pai", "avô", "tio", "irmão", "padrasto"];
+// Vínculos antigos podiam gravar is_self=true junto com um parentesco (ex:
+// migração anterior à Task 3). "" / "self" / "próprio" são os únicos valores
+// que combinam com "próprio paciente"; qualquer outro pede conferência.
+const SELF_LIKE = new Set(["", "self", "próprio"]);
 function relLabel(link) {
   if (!link) return "";
-  if (link.is_self) return "próprio número";
+  if (link.is_self) {
+    const rel = (link.relationship || "").trim();
+    return SELF_LIKE.has(rel) ? "próprio número" : "próprio número (confira)";
+  }
   const r = (link.relationship || "").trim();
   if (!r) return "parentesco não informado";
   return `número ${FEM.includes(r) ? "da" : MASC.includes(r) ? "do" : "de"} ${r}`;
@@ -318,6 +326,7 @@ function renderContact() {
 $("contact-edit-btn").onclick = () => {
   $("c_name").value = CONTACT.name || "";
   $("c_cpf").value = CONTACT.cpf || "";
+  $("contact-edit-error").classList.add("hidden");
   $("contact-view").classList.add("hidden");
   $("contact-edit").classList.remove("hidden");
   $("c_name").focus();
@@ -329,7 +338,14 @@ function closeContactEdit() {
 $("contact-edit-cancel").onclick = closeContactEdit;
 $("contact-edit").onsubmit = async (e) => {
   e.preventDefault();
-  const data = { name: val("c_name").trim(), cpf: val("c_cpf").trim() };
+  const name = val("c_name").trim();
+  if (!name) {
+    $("contact-edit-error").textContent = "Informe o nome.";
+    $("contact-edit-error").classList.remove("hidden");
+    return;
+  }
+  $("contact-edit-error").classList.add("hidden");
+  const data = { name, cpf: val("c_cpf").trim() };
   if (await post(`/api/atendente/contato/${CONTACT.id}`, { data })) {
     CONTACT = { ...CONTACT, ...data };
     renderContact();
@@ -400,7 +416,12 @@ async function unlink(pid) {
   const body = await r.json().catch(() => ({}));
   if (!r.ok) { alert(errText(body, "Erro ao desvincular.")); return; }
   setListOpen(false);
-  flash("Desvinculado ✓");
+  const n = body.still_booking || 0;
+  if (n > 0) {
+    flash(`Desvinculado. Atenção: este número marcou ${n} consulta(s) futura(s) e continua recebendo lembrete e cobrança delas.`, 6000);
+  } else {
+    flash("Desvinculado ✓");
+  }
   load(pid === CURRENT_PID ? null : CURRENT_PID);
 }
 
@@ -440,17 +461,19 @@ function renderVinculo(link) {
   if (!link) { box.innerHTML = ""; return; }
   const isSelf = !!link.is_self;
   const rel = (link.relationship || "").trim();
-  const legacy = !isSelf && rel && !RELATIONSHIPS.includes(rel);
+  const legacyThird = !isSelf && rel && !RELATIONSHIPS.includes(rel);
+  const legacySelfWithRel = isSelf && rel && !SELF_LIKE.has(rel);
   box.innerHTML = `<section class="card p-4 flex flex-col gap-3">
     <span class="cap">Vínculo com este número</span>
     <div class="flex items-center gap-3">
       <span class="flex-1 text-sm">Número do próprio paciente</span>
       <button id="v-self" type="button" class="switch" role="switch" aria-checked="${isSelf}" aria-label="Número do próprio paciente"></button>
     </div>
+    ${legacySelfWithRel ? `<span class="text-xs" style="color:var(--muted)">Antes estava marcado como próprio com parentesco "${escapeHtml(rel)}". Confira e salve.</span>` : ""}
     <label id="v-rel-wrap" class="flex flex-col gap-2 ${isSelf ? "hidden" : ""}">
       <span class="cap">Parentesco</span>
-      <select id="v-rel" class="inp"><option value="">Escolha…</option>${relOptions(legacy ? "acompanhante" : rel)}</select>
-      ${legacy ? `<span class="text-xs" style="color:var(--muted)">Antes estava escrito "${escapeHtml(rel)}". Confira e salve.</span>` : ""}
+      <select id="v-rel" class="inp"><option value="">Escolha…</option>${relOptions(legacyThird ? "acompanhante" : rel)}</select>
+      ${legacyThird ? `<span class="text-xs" style="color:var(--muted)">Antes estava escrito "${escapeHtml(rel)}". Confira e salve.</span>` : ""}
     </label>
     <button type="button" class="btn btn-primary self-end" id="v-save">Salvar vínculo</button>
   </section>`;
@@ -598,10 +621,13 @@ async function createPatient() {
       return;
     }
     // Todas as fichas duplicadas já estão vinculadas a este número: não há o
-    // que oferecer no Vincular, então só levamos a atendente até a ficha.
+    // que oferecer no Vincular, então só levamos a atendente até a ficha. O
+    // aviso vai por flash() (não por msg, que some junto com a folha) para a
+    // atendente realmente ver o que aconteceu.
     msg.textContent = "Essa ficha já está vinculada a este número.";
     closeLinkSheet();
     if (dups[0]) selectPatient(dups[0].id);
+    flash("Essa ficha já está vinculada a este número.", 4000);
     return;
   }
   if (!r.ok) { msg.style.color = "var(--danger)"; msg.textContent = errText(body, "Erro ao criar ficha."); return; }
@@ -830,7 +856,7 @@ function evaBlock(pid, off) {
 async function post(url, body) {
   const r = await fetch(`${url}?token=${encodeURIComponent(TOKEN)}`, {
     method: "POST", headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ phone: PHONE, ...body }),
+    body: JSON.stringify({ phone: PHONE, agent: AGENT, ...body }),
   });
   if (!r.ok) { alert("Erro ao salvar."); return false; }
   return true;
