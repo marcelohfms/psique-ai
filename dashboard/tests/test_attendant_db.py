@@ -420,3 +420,25 @@ async def test_busca_ordena_por_nome_e_limita(patched_client):
     out = await attendant_db.search_patients("ana", limit=3)
     assert [p["name"] for p in out] == ["Ana L", "Ana M", "Ana N"]
     assert all(p["phone_hint"] is None for p in out)
+
+
+# ── Vincular ──────────────────────────────────────────────────────────────────
+
+
+async def test_vincular_cria_os_tres_papeis(patched_client):
+    await attendant_db.link_patient("p1", "c1", {"is_self": False, "relationship": "mãe"})
+    rows = patched_client.store["patient_contacts"]
+    assert sorted(r["role"] for r in rows) == ["agendamento", "consulta", "financeiro"]
+    assert all(r["patient_id"] == "p1" and r["contact_id"] == "c1" for r in rows)
+    assert all(r["is_self"] is False and r["relationship"] == "mãe" for r in rows)
+
+
+async def test_vincular_completa_papeis_faltantes_e_alinha_marcador(patched_client):
+    patched_client.store["patient_contacts"] = [
+        {"id": "pc1", "patient_id": "p1", "contact_id": "c1", "role": "agendamento",
+         "is_self": True, "relationship": "mãe"},
+    ]
+    await attendant_db.link_patient("p1", "c1", {"is_self": True, "relationship": None})
+    rows = patched_client.store["patient_contacts"]
+    assert len(rows) == 3
+    assert all(r["is_self"] is True and r["relationship"] is None for r in rows)

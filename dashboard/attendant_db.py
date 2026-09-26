@@ -188,6 +188,40 @@ async def search_patients(query: str, limit: int = 10) -> list[dict]:
     ]
 
 
+# ── Vincular e desvincular ────────────────────────────────────────────────────
+
+LINK_ROLES = ("agendamento", "financeiro", "consulta")
+
+
+async def link_patient(patient_id: str, contact_id: str, marker: dict) -> None:
+    """Liga o contato ao paciente nos três papéis, com o mesmo marcador.
+
+    Idempotente: cria só os papéis que faltam e depois alinha o marcador em
+    todas as linhas do par. A regra da idade decide na hora do envio quem recebe
+    o quê; aqui o que importa é o marcador estar certo e igual nas três linhas.
+    """
+    client = await get_client()
+    res = await (
+        client.from_("patient_contacts")
+        .select("role")
+        .eq("patient_id", patient_id)
+        .eq("contact_id", contact_id)
+        .execute()
+    )
+    have = {r.get("role") for r in (res.data or [])}
+    for role in LINK_ROLES:
+        if role not in have:
+            await client.from_("patient_contacts").insert({
+                "patient_id": patient_id, "contact_id": contact_id, "role": role, **marker,
+            }).execute()
+    await (
+        client.from_("patient_contacts").update(marker)
+        .eq("patient_id", patient_id)
+        .eq("contact_id", contact_id)
+        .execute()
+    )
+
+
 # ── Escopo por telefone (anti-IDOR) ───────────────────────────────────────────
 
 
