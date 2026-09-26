@@ -176,6 +176,8 @@ async def update_return_date(patient_id: str, body: UpdateBody, _: None = Depend
 async def update_vinculo(pc_id: str, body: UpdateBody, _: None = Depends(verify_token)):
     await _assert_link_scope(body.phone, pc_id)
     data = dict(body.data)
+    # O front sempre manda is_self e relationship juntos (nunca só um dos dois),
+    # então basta checar a presença de qualquer um para normalizar o par inteiro.
     if "is_self" in data or "relationship" in data:
         try:
             data.update(attendant_db.normalize_marker(data.get("is_self"), data.get("relationship")))
