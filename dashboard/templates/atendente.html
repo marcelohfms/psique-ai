@@ -275,15 +275,16 @@ function escapeHtml(s) {
 
 const FEM = ["mãe", "avó", "tia", "irmã", "madrasta"];
 const MASC = ["pai", "avô", "tio", "irmão", "padrasto"];
-// Vínculos antigos podiam gravar is_self=true junto com um parentesco (ex:
-// migração anterior à Task 3). "" / "self" / "próprio" são os únicos valores
-// que combinam com "próprio paciente"; qualquer outro pede conferência.
-const SELF_LIKE = new Set(["", "self", "próprio"]);
+// Vínculos antigos podiam gravar is_self=true junto com um parentesco. Estes
+// valores espelham _SELF_LIKE de app/patients.py (a regra da idade os trata
+// como "próprio"); qualquer outro pede conferência.
+const SELF_LIKE = new Set(["", "self", "próprio", "proprio", "eu", "mesmo", "a própria", "o próprio"]);
+const isSelfLike = (rel) => SELF_LIKE.has(rel.toLowerCase().split(/\s+/).filter(Boolean).join(" "));
 function relLabel(link) {
   if (!link) return "";
   if (link.is_self) {
     const rel = (link.relationship || "").trim();
-    return SELF_LIKE.has(rel) ? "próprio número" : "próprio número (confira)";
+    return isSelfLike(rel) ? "próprio número" : "próprio número (confira)";
   }
   const r = (link.relationship || "").trim();
   if (!r) return "parentesco não informado";
@@ -462,7 +463,7 @@ function renderVinculo(link) {
   const isSelf = !!link.is_self;
   const rel = (link.relationship || "").trim();
   const legacyThird = !isSelf && rel && !RELATIONSHIPS.includes(rel);
-  const legacySelfWithRel = isSelf && rel && !SELF_LIKE.has(rel);
+  const legacySelfWithRel = isSelf && rel && !isSelfLike(rel);
   box.innerHTML = `<section class="card p-4 flex flex-col gap-3">
     <span class="cap">Vínculo com este número</span>
     <div class="flex items-center gap-3">
