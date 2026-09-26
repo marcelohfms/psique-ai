@@ -2,10 +2,12 @@
 
 Autocontido: não importa app/ (a imagem Docker do dashboard não contém app/).
 """
+import logging
 from calendar import monthrange
 from datetime import date, datetime, timedelta
 from zoneinfo import ZoneInfo
 
+import calendar_client
 from payments import DOCTOR_KEY
 
 _TZ = ZoneInfo("America/Recife")
@@ -249,6 +251,41 @@ async def mark_no_show(client, appointment_id: str) -> None:
         .eq("appointment_id", appointment_id)
         .execute()
     )
+    await _paint_no_show_on_calendar(client, appointment_id)
+
+
+async def _paint_no_show_on_calendar(client, appointment_id: str) -> None:
+    """Pinta o evento no Google Calendar de vermelho com "❌ [Não compareceu]".
+
+    Registro visual permanente da falta, pra clínica ver no calendário. Uma
+    falha aqui (evento apagado à mão, Calendar fora do ar) NÃO pode derrubar a
+    marcação de falta em si — só loga. `appointment_id` já é o id do evento no
+    Google Calendar; o `calendar_id` sai do médico da consulta.
+    """
+    try:
+        appt = await (
+            client.from_("appointments")
+            .select("doctor_id")
+            .eq("appointment_id", appointment_id)
+            .execute()
+        )
+        doctor_id = (appt.data or [{}])[0].get("doctor_id") if appt.data else None
+        if not doctor_id:
+            return
+        cal = await (
+            client.from_("doctors")
+            .select("agenda_id")
+            .eq("doctor_id", doctor_id)
+            .execute()
+        )
+        calendar_id = (cal.data or [{}])[0].get("agenda_id") if cal.data else None
+        if not calendar_id:
+            return
+        await calendar_client.mark_event_no_show(calendar_id, appointment_id)
+    except Exception as e:  # noqa: BLE001
+        logging.getLogger(__name__).warning(
+            "MARK_NO_SHOW_CALENDAR_FAILED appt=%s error=%s", appointment_id, e
+        )
 
 
 async def save_discharge(
