@@ -3,6 +3,7 @@
 Autocontida: replica as poucas queries necessárias usando o cliente Supabase
 do dashboard. NÃO importa app/ (a imagem Docker do dashboard não contém app/).
 """
+import logging
 import unicodedata
 import uuid
 from datetime import datetime
@@ -11,6 +12,7 @@ from zoneinfo import ZoneInfo
 from db_client import get_client
 
 _TZ = ZoneInfo("America/Recife")
+logger = logging.getLogger(__name__)
 
 
 def _strip_phone(phone: str) -> str:
@@ -149,6 +151,7 @@ def _ilike_pattern(query: str) -> str:
 
 
 _SEARCH_PAGE_SIZE = 1000
+_SEARCH_MAX_PAGES = 20  # trava de segurança: 20 * 1000 = 20 mil candidatos no máximo
 
 
 async def search_patients(query: str, limit: int = 10) -> list[dict]:
@@ -159,9 +162,12 @@ async def search_patients(query: str, limit: int = 10) -> list[dict]:
 
     O ILIKE é só uma pré-filtragem grosseira (tolera acento trocando vogais por
     `_`), então pode casar muito mais nomes do que o esperado (ex: "ana" vira
-    `%_n_%`). Por isso pagina TODOS os candidatos (sem cap arbitrário) antes de
-    aplicar o filtro exato em Python — um `.limit()` direto no ILIKE poderia
-    cortar a página antes de ela conter o paciente certo.
+    `%_n_%`). Por isso pagina os candidatos (até `_SEARCH_MAX_PAGES` páginas)
+    antes de aplicar o filtro exato em Python — um `.limit()` direto no ILIKE
+    poderia cortar a página antes de ela conter o paciente certo. A trava de
+    páginas é só uma rede de segurança (base muito maior que o esperado, ou um
+    servidor que nunca devolve página vazia); nesse caso a busca loga um aviso
+    e devolve o que já achou até ali, em vez de paginar para sempre.
     """
     target = _norm(query)
     if len(target) < SEARCH_MIN_CHARS:
@@ -170,7 +176,7 @@ async def search_patients(query: str, limit: int = 10) -> list[dict]:
     pattern = _ilike_pattern(query)
     candidates: list[dict] = []
     start = 0
-    while True:
+    for _page_num in range(_SEARCH_MAX_PAGES):
         res = await (
             client.from_("patients")
             .select("id, name, birth_date")
@@ -184,6 +190,10 @@ async def search_patients(query: str, limit: int = 10) -> list[dict]:
             break
         candidates.extend(page)
         start += len(page)
+    else:
+        logger.warning(
+            "SEARCH_PATIENTS_MAX_PAGES atingiu %d páginas na busca; parando por segurança "
+            "(query=%r, candidatos até aqui=%d)", _SEARCH_MAX_PAGES, query, len(candidates))
 
     hits = [r for r in candidates if target in _norm(r.get("name"))]
     hits.sort(key=lambda r: _norm(r.get("name")))

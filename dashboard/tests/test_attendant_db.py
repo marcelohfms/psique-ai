@@ -473,6 +473,38 @@ async def test_busca_pagina_ate_pagina_vazia_mesmo_com_max_rows_menor(monkeypatc
     assert [p["id"] for p in out] == ["zzz_alvo"]
 
 
+async def test_busca_para_apos_20_paginas_e_avisa(monkeypatch, patched_client, caplog):
+    """Trava de segurança: um servidor que nunca devolve página vazia (bug,
+    ou uma base gigante de verdade) não pode deixar a busca paginar para
+    sempre. Para com 20 páginas e loga um warning."""
+    from tests.conftest import FakeQuery, FakeResult
+
+    monkeypatch.setattr(attendant_db, "_ilike_pattern", lambda query: "%")
+
+    calls = {"n": 0}
+
+    async def infinite_execute(self):
+        if self._op != "select" or self._range is None:
+            return FakeResult([])
+        calls["n"] += 1
+        start, _end = self._range
+        # Página sempre cheia (_SEARCH_PAGE_SIZE), nunca vazia: sem a trava,
+        # isso paginaria para sempre.
+        return FakeResult([
+            {"id": f"p{start + i}", "name": "Ana Nunca Acaba", "birth_date": None}
+            for i in range(attendant_db._SEARCH_PAGE_SIZE)
+        ])
+
+    monkeypatch.setattr(FakeQuery, "execute", infinite_execute)
+
+    with caplog.at_level("WARNING"):
+        await attendant_db.search_patients("ana nunca")
+
+    assert calls["n"] == 20
+    assert any("busca" in r.message.lower() or "pagina" in r.message.lower()
+               for r in caplog.records)
+
+
 async def test_busca_casa_nome_com_espaco_duplo_no_banco(patched_client):
     patched_client.store["patients"] = [
         {"id": "p1", "name": "Maria  Souza", "birth_date": None},
