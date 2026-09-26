@@ -1,3 +1,5 @@
+from datetime import datetime, timedelta
+
 import pytest
 
 import attendant_db
@@ -499,8 +501,25 @@ async def test_criar_ficha_grava_nome_limpo_e_devolve_id(patched_client):
     created = await attendant_db.create_patient("  Ana   Luz ", "01/02/2015")
     row = patched_client.store["patients"][0]
     assert row["name"] == "Ana Luz" and row["birth_date"] == "01/02/2015"
-    assert created == {"id": row["id"], "name": "Ana Luz", "birth_date": "01/02/2015"}
-    assert len(created["id"]) == 36
+    assert created["id"] == row["id"] and len(created["id"]) == 36
+    assert created["name"] == "Ana Luz" and created["birth_date"] == "01/02/2015"
+    assert created["age"] == row["age"]
+    assert isinstance(created["age"], int)
+
+
+async def test_criar_ficha_calcula_idade_com_e_sem_aniversario_no_ano(patched_client):
+    """A idade é calculada a partir do nascimento e da data de hoje em
+    America/Recife — precisa considerar o aniversário do ano já passado ou não."""
+    today = datetime.now(attendant_db._TZ).date()
+
+    ja_fez_aniversario = today.replace(year=today.year - 8)
+    created = await attendant_db.create_patient("Já fez", ja_fez_aniversario.strftime("%d/%m/%Y"))
+    assert created["age"] == 8
+
+    ainda_nao_fez = (today + timedelta(days=1))
+    ainda_nao_fez = ainda_nao_fez.replace(year=ainda_nao_fez.year - 8)
+    created2 = await attendant_db.create_patient("Ainda não", ainda_nao_fez.strftime("%d/%m/%Y"))
+    assert created2["age"] == 7
 
 
 # ── Desvincular ───────────────────────────────────────────────────────────────

@@ -236,6 +236,11 @@ async def link_patient(patient_id: str, contact_id: str, marker: dict) -> None:
     )
 
 
+def _age_in_years(born, today) -> int:
+    """Idade em anos completos, considerando se o aniversário do ano já passou."""
+    return today.year - born.year - ((today.month, today.day) < (born.month, born.day))
+
+
 def normalize_birth_date(raw: str) -> str:
     """Aceita dd/mm/aaaa ou aaaa-mm-dd e devolve dd/mm/aaaa, o formato que o
     fluxo do chat grava em patients.birth_date. ValueError se inválida ou futura."""
@@ -272,8 +277,17 @@ async def find_patients_by_name_birth(name: str, birth_br: str) -> list[dict]:
 
 async def create_patient(name: str, birth_br: str) -> dict:
     """Cria a ficha com nome e nascimento. O id é gerado aqui para a resposta
-    não depender do retorno do insert."""
-    row = {"id": str(uuid.uuid4()), "name": " ".join(name.split()), "birth_date": birth_br}
+    não depender do retorno do insert. Grava também `age` (anos completos): a
+    Eva lê `patients.age` para a regra do paciente menor de idade."""
+    clean_name = " ".join(name.split())
+    born = datetime.strptime(birth_br, "%d/%m/%Y").date()
+    today = datetime.now(_TZ).date()
+    row = {
+        "id": str(uuid.uuid4()),
+        "name": clean_name,
+        "birth_date": birth_br,
+        "age": _age_in_years(born, today),
+    }
     client = await get_client()
     await client.from_("patients").insert(row).execute()
     return row
