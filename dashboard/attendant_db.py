@@ -180,10 +180,10 @@ async def search_patients(query: str, limit: int = 10) -> list[dict]:
             .execute()
         )
         page = res.data or []
-        candidates.extend(page)
-        if len(page) < _SEARCH_PAGE_SIZE:
+        if not page:
             break
-        start += _SEARCH_PAGE_SIZE
+        candidates.extend(page)
+        start += len(page)
 
     hits = [r for r in candidates if target in _norm(r.get("name"))]
     hits.sort(key=lambda r: _norm(r.get("name")))

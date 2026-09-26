@@ -438,6 +438,41 @@ async def test_busca_pagina_alem_de_mil_candidatos(patched_client):
     assert [p["id"] for p in out] == ["alvo"]
 
 
+async def test_busca_pagina_ate_pagina_vazia_mesmo_com_max_rows_menor(monkeypatch, patched_client):
+    """Se o servidor Supabase tiver um `max_rows` menor que `_SEARCH_PAGE_SIZE`
+    (ex: 500), o Postgrest devolve páginas menores do que o pedido — mas não
+    vazias — antes do fim dos dados. A paginação não pode parar nesse caso;
+    só quando uma página vem vazia (ver leftover A do Task 9)."""
+    from tests.conftest import FakeQuery
+
+    # Ids em ordem lexicográfica: "p0000".."p1204" ficam todos ANTES de "zzz_alvo"
+    # (a query ordena por `id`), então o alvo só aparece na última página.
+    patched_client.store["patients"] = [
+        {"id": f"p{i:04d}", "name": f"Ana X{i}", "birth_date": None} for i in range(1205)
+    ] + [{"id": "zzz_alvo", "name": "Ana Luísa Prado", "birth_date": None}]
+
+    # O ILIKE de verdade já foi coberto no teste acima; aqui o que importa é a
+    # paginação, então faz o pré-filtro do banco falso casar tudo (como se o
+    # ILIKE real casasse com folga) e deixa o filtro exato em Python separar o
+    # alvo — exatamente como o código de produção faz.
+    monkeypatch.setattr(attendant_db, "_ilike_pattern", lambda query: "%")
+
+    real_execute = FakeQuery.execute
+
+    async def capped_execute(self):
+        """Simula um servidor com max_rows=500: nunca devolve mais que isso
+        por página, mesmo quando o range pedido cobre mais linhas."""
+        result = await real_execute(self)
+        if self._op == "select" and self._range is not None:
+            result.data = (result.data or [])[:500]
+        return result
+
+    monkeypatch.setattr(FakeQuery, "execute", capped_execute)
+
+    out = await attendant_db.search_patients("ana luisa")
+    assert [p["id"] for p in out] == ["zzz_alvo"]
+
+
 async def test_busca_casa_nome_com_espaco_duplo_no_banco(patched_client):
     patched_client.store["patients"] = [
         {"id": "p1", "name": "Maria  Souza", "birth_date": None},
