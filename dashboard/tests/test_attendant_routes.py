@@ -696,6 +696,19 @@ def test_ficha_nova_cria(client, monkeypatch):
     assert ev[0][0] == "attendant_create_patient"
 
 
+def test_ficha_nova_create_patient_value_error_vira_400(client, monkeypatch):
+    _scope_c1(monkeypatch)
+    async def fake_find(name, birth):
+        return []
+    async def fake_create(name, birth):
+        raise ValueError("Nome vazio.")
+    monkeypatch.setattr(attendant_db, "find_patients_by_name_birth", fake_find)
+    monkeypatch.setattr(attendant_db, "create_patient", fake_create)
+    r = client.post("/api/atendente/paciente-novo", params=T, json={
+        "phone": "5581", "name": "Ana Luz", "birth_date": "01/02/2015"})
+    assert r.status_code == 400
+
+
 def test_ficha_nova_nascimento_invalido_400(client, monkeypatch):
     _scope_c1(monkeypatch)
     r = client.post("/api/atendente/paciente-novo", params=T, json={

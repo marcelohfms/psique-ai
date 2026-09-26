@@ -238,7 +238,10 @@ async def criar_paciente(body: NewPatientBody, _: None = Depends(verify_token)):
             "duplicates": [{"id": d["id"], "name": d.get("name"), "birth_date": d.get("birth_date")}
                            for d in dups],
         })
-    patient = await attendant_db.create_patient(name, birth)
+    try:
+        patient = await attendant_db.create_patient(name, birth)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
     await attendant_db.log_event("attendant_create_patient", body.phone,
                                  {"patient_id": patient["id"], "agent": body.agent})
     return {"ok": True, "patient": patient}
