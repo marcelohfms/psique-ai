@@ -428,6 +428,22 @@ async def test_busca_ordena_por_nome_e_limita(patched_client):
     assert all(p["phone_hint"] is None for p in out)
 
 
+async def test_busca_pagina_alem_de_mil_candidatos(patched_client):
+    patched_client.store["patients"] = [
+        {"id": f"p{i}", "name": f"Ana X{i}", "birth_date": None} for i in range(1205)
+    ] + [{"id": "alvo", "name": "Ana Luísa Prado", "birth_date": None}]
+    out = await attendant_db.search_patients("ana luisa")
+    assert [p["id"] for p in out] == ["alvo"]
+
+
+async def test_busca_casa_nome_com_espaco_duplo_no_banco(patched_client):
+    patched_client.store["patients"] = [
+        {"id": "p1", "name": "Maria  Souza", "birth_date": None},
+    ]
+    out = await attendant_db.search_patients("maria souza")
+    assert [p["id"] for p in out] == ["p1"]
+
+
 # ── Vincular ──────────────────────────────────────────────────────────────────
 
 

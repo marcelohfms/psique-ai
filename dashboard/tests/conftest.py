@@ -45,6 +45,8 @@ class FakeQuery:
         self._order_col = None
         self._order_desc = False
         self._limit = None
+        self._range = None
+        self._on_conflict = None
 
     def select(self, *_args, **_kwargs):
         self._op = "select"
@@ -101,6 +103,18 @@ class FakeQuery:
         self._limit = n
         return self
 
+    def range(self, start, end):
+        """Paginação estilo PostgREST: intervalo INCLUSIVO, aplicado depois do
+        order (como o Postgres faz: filtra, ordena, depois corta a página)."""
+        self._range = (start, end)
+        return self
+
+    def upsert(self, payload, on_conflict=None):
+        self._op = "upsert"
+        self._payload = payload if isinstance(payload, list) else [payload]
+        self._on_conflict = on_conflict
+        return self
+
     def _matches(self, row):
         for kind, col, val in self._filters:
             if kind == "eq" and row.get(col) != val:
@@ -129,7 +143,10 @@ class FakeQuery:
             matched = [r for r in rows if self._matches(r)]
             if self._order_col is not None:
                 matched.sort(key=lambda r: r.get(self._order_col), reverse=self._order_desc)
-            if self._limit is not None:
+            if self._range is not None:
+                start, end = self._range
+                matched = matched[start : end + 1]
+            elif self._limit is not None:
                 matched = matched[: self._limit]
             return FakeResult(matched)
         if self._op == "insert":
@@ -137,6 +154,24 @@ class FakeQuery:
             for p in payload:
                 rows.append(dict(p))
             return FakeResult([dict(p) for p in payload])
+        if self._op == "upsert":
+            keys = [c.strip() for c in (self._on_conflict or "").split(",") if c.strip()]
+            result_rows = []
+            for p in self._payload:
+                match = None
+                if keys:
+                    for r in rows:
+                        if all(r.get(k) == p.get(k) for k in keys):
+                            match = r
+                            break
+                if match is not None:
+                    match.update(p)
+                    result_rows.append(dict(match))
+                else:
+                    new_row = dict(p)
+                    rows.append(new_row)
+                    result_rows.append(dict(new_row))
+            return FakeResult(result_rows)
         if self._op == "update":
             changed = []
             for r in rows:

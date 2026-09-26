@@ -141,9 +141,14 @@ def _norm(text: str | None) -> str:
 
 def _ilike_pattern(query: str) -> str:
     """Padrão ILIKE que tolera acento: toda letra que pode ter acento vira `_`
-    (um caractere qualquer). O filtro exato sem acento é feito depois, em Python."""
+    (um caractere qualquer). Espaço vira `%` (tolera espaço duplo gravado no
+    banco). O filtro exato sem acento é feito depois, em Python."""
     folded = _norm(query)
-    return "%" + "".join("_" if ch in _ACCENTABLE else ch for ch in folded) + "%"
+    mapped = "".join("_" if ch in _ACCENTABLE else ch for ch in folded)
+    return "%" + mapped.replace(" ", "%") + "%"
+
+
+_SEARCH_PAGE_SIZE = 1000
 
 
 async def search_patients(query: str, limit: int = 10) -> list[dict]:
@@ -151,19 +156,36 @@ async def search_patients(query: str, limit: int = 10) -> list[dict]:
 
     Devolve só o necessário para diferenciar homônimos: id, nome, nascimento e
     os 4 últimos dígitos do número próprio do paciente (phone_hint), se houver.
+
+    O ILIKE é só uma pré-filtragem grosseira (tolera acento trocando vogais por
+    `_`), então pode casar muito mais nomes do que o esperado (ex: "ana" vira
+    `%_n_%`). Por isso pagina TODOS os candidatos (sem cap arbitrário) antes de
+    aplicar o filtro exato em Python — um `.limit()` direto no ILIKE poderia
+    cortar a página antes de ela conter o paciente certo.
     """
     target = _norm(query)
     if len(target) < SEARCH_MIN_CHARS:
         return []
     client = await get_client()
-    res = await (
-        client.from_("patients")
-        .select("id, name, birth_date")
-        .ilike("name", _ilike_pattern(query))
-        .limit(200)
-        .execute()
-    )
-    hits = [r for r in (res.data or []) if target in _norm(r.get("name"))]
+    pattern = _ilike_pattern(query)
+    candidates: list[dict] = []
+    start = 0
+    while True:
+        res = await (
+            client.from_("patients")
+            .select("id, name, birth_date")
+            .ilike("name", pattern)
+            .order("id")
+            .range(start, start + _SEARCH_PAGE_SIZE - 1)
+            .execute()
+        )
+        page = res.data or []
+        candidates.extend(page)
+        if len(page) < _SEARCH_PAGE_SIZE:
+            break
+        start += _SEARCH_PAGE_SIZE
+
+    hits = [r for r in candidates if target in _norm(r.get("name"))]
     hits.sort(key=lambda r: _norm(r.get("name")))
     hits = hits[:limit]
     if not hits:
