@@ -219,28 +219,19 @@ LINK_ROLES = ("agendamento", "financeiro", "consulta")
 async def link_patient(patient_id: str, contact_id: str, marker: dict) -> None:
     """Liga o contato ao paciente nos três papéis, com o mesmo marcador.
 
-    Idempotente: cria só os papéis que faltam e depois alinha o marcador em
-    todas as linhas do par. A regra da idade decide na hora do envio quem recebe
-    o quê; aqui o que importa é o marcador estar certo e igual nas três linhas.
+    Um único upsert pela UNIQUE(patient_id, contact_id, role): idempotente e
+    atômico — chamar de novo mantém as mesmas 3 linhas e a marcação da última
+    chamada vence em todas. A regra da idade decide na hora do envio quem
+    recebe o quê; aqui o que importa é o marcador estar certo e igual nas três.
     """
     client = await get_client()
-    res = await (
-        client.from_("patient_contacts")
-        .select("role")
-        .eq("patient_id", patient_id)
-        .eq("contact_id", contact_id)
-        .execute()
-    )
-    have = {r.get("role") for r in (res.data or [])}
-    for role in LINK_ROLES:
-        if role not in have:
-            await client.from_("patient_contacts").insert({
-                "patient_id": patient_id, "contact_id": contact_id, "role": role, **marker,
-            }).execute()
+    rows = [
+        {"patient_id": patient_id, "contact_id": contact_id, "role": role, **marker}
+        for role in LINK_ROLES
+    ]
     await (
-        client.from_("patient_contacts").update(marker)
-        .eq("patient_id", patient_id)
-        .eq("contact_id", contact_id)
+        client.from_("patient_contacts")
+        .upsert(rows, on_conflict="patient_id,contact_id,role")
         .execute()
     )
 

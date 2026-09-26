@@ -466,6 +466,15 @@ async def test_vincular_completa_papeis_faltantes_e_alinha_marcador(patched_clie
     assert all(r["is_self"] is True and r["relationship"] is None for r in rows)
 
 
+async def test_vincular_duas_vezes_e_idempotente_via_upsert(patched_client):
+    await attendant_db.link_patient("p1", "c1", {"is_self": False, "relationship": "mãe"})
+    await attendant_db.link_patient("p1", "c1", {"is_self": True, "relationship": None})
+    rows = patched_client.store["patient_contacts"]
+    assert len(rows) == 3
+    assert sorted(r["role"] for r in rows) == ["agendamento", "consulta", "financeiro"]
+    assert all(r["is_self"] is True and r["relationship"] is None for r in rows)
+
+
 # ── Ficha nova ────────────────────────────────────────────────────────────────
 
 
