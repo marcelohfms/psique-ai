@@ -717,13 +717,12 @@ def _fail_on(event_id):
 
 @pytest.mark.asyncio
 async def test_apply_cancel_sibling_failure_becomes_warning_and_uses_done_rows():
-    req = await build_cancel({"both_parts": True, "fee_action": "devolver"}, row=PART1, patient=KID,
+    req = await build_cancel({"both_parts": True, "fee_action": "reter"}, row=PART1, patient=KID,
                              sibling_rows=[PART1, PART2])
     out, m = await run_cancel(req, cancel_event=_fail_on("evt2"))
     assert out["canceled"] == ["evt1"]
     assert len(out["lines"]) == 1 and "05/10" in out["lines"][0]
     assert any("outra parte" in w for w in out["warnings"])
-    m["sheet"].assert_awaited_once()
     notice = m["notify"].call_args[0][1]
     assert "08/10" not in notice
 
@@ -808,3 +807,30 @@ async def test_handle_cancel_reter_text_does_not_mention_fee():
         await pa.handle_cancel({**CANCEL, "fee_action": "reter"})
     text = mock_send.call_args[0][2]({"name": "CARLA MENEZES"})
     assert "taxa" not in text.lower()
+
+
+# ── isenção na remarcação tardia e devolução com parte pendente ────────────
+
+@pytest.mark.asyncio
+async def test_build_edit_late_reschedule_may_waive_new_row():
+    req = await build_edit({"initiated_by": "patient", "billing": "taxa_isenta"}, row=LATE_ROW)
+    assert req["late_fee"] is True
+    assert req["new"]["billing"] == "taxa_isenta"
+
+
+@pytest.mark.asyncio
+async def test_build_edit_waive_paid_fee_still_refused_when_not_late():
+    with pytest.raises(PanelInputError, match="já foi paga"):
+        await build_edit({"billing": "taxa_isenta"}, row=PAID_ROW)
+
+
+@pytest.mark.asyncio
+async def test_apply_cancel_refund_skipped_when_sibling_fails():
+    req = await build_cancel({"both_parts": True, "fee_action": "devolver"}, row=PART1, patient=KID,
+                             sibling_rows=[PART1, PART2])
+    out, m = await run_cancel(req, cancel_event=_fail_on("evt2"))
+    assert out["canceled"] == ["evt1"]
+    m["sheet"].assert_not_called()
+    assert all(c[0][1].get("refund_requested_at") is None for c in m["update_row"].call_args_list)
+    assert any("devolução não foi registrada" in w for w in out["warnings"])
+    assert "refund_requested" not in [c[0][0] for c in m["log_event"].call_args_list]

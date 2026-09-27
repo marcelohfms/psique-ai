@@ -201,9 +201,6 @@ async def build_edit(body: dict) -> dict:
         ctype = None
     if patient.get("custom_price") == 0:
         billing = "cortesia"
-    elif billing in ("taxa_isenta", "cortesia") and fee_really_paid(row, patient):
-        # Isentar por cima de taxa paga apagaria a data real do pagamento numa volta ao normal.
-        raise PanelInputError("a taxa desta consulta já foi paga; para devolver, cancele com devolução")
 
     compare = {
         "start": (start, ctx["start"]), "minutes": (minutes, ctx["minutes"]),
@@ -222,6 +219,11 @@ async def build_edit(body: dict) -> dict:
         # Parte da 1ª consulta dividida: a taxa paga cobre as duas partes (decisão da clínica).
         and not _split_label(row.get("session_note"))
     )
+    # Na remarcação tardia a taxa paga fica retida na linha antiga; a nova pode ser isenta.
+    if (not late_fee and patient.get("custom_price") != 0
+            and billing in ("taxa_isenta", "cortesia") and fee_really_paid(row, patient)):
+        # Isentar por cima de taxa paga apagaria a data real do pagamento numa volta ao normal.
+        raise PanelInputError("a taxa desta consulta já foi paga; para devolver, cancele com devolução")
     return {
         **ctx,
         "new": {"doctor": doctor, "modality": modality, "start": start, "minutes": minutes,
@@ -584,7 +586,12 @@ async def apply_cancel(req: dict) -> dict:
             "fee_action": req["fee_action"], "reason": req["reason"]})
 
     if req["fee_action"] == "devolver":
-        warnings += await _register_refund(req)
+        if len(done) < len(rows):
+            # A taxa cobre as duas partes: sem a outra cancelada, não se devolve.
+            warnings.append("a devolução não foi registrada porque a outra parte continua marcada; "
+                            "cancele a outra parte e peça a devolução")
+        else:
+            warnings += await _register_refund(req)
 
     lines = [_row_line(r) for r in done]
     who = "Clínica" if req["initiated_by"] == "clinic" else "Paciente"
