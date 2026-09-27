@@ -247,6 +247,10 @@
         </button>
       </div>
       <div class="flex-1 overflow-auto flex flex-col gap-5" style="padding: 22px 28px">
+        <div id="appt-pending-notice" class="hidden notice notice-info flex items-center gap-2">
+          <span class="flex-1 text-sm">Falta marcar a 2ª parte da 1ª consulta</span>
+          <button type="button" class="btn" id="appt-pending-notice-btn">Marcar 2ª parte</button>
+        </div>
         <div class="flex flex-col gap-2"><span class="cap">Médico</span>
           <div id="appt-doctor" class="seg" role="radiogroup" aria-label="Médico">
             <button type="button" role="radio" data-v="julio">Dr. Júlio</button>
@@ -327,7 +331,7 @@ let FLASH_TIMER = null;
 let LINK_SHEET_RETURN_FOCUS = null;
 let CONSULTAS_SEQ = 0;
 let CURRENT_PATIENT = null;   // linha de patients do paciente selecionado
-const NO_CONSULTAS = { appointments: [], pending_part2: null, has_completed: false };
+const NO_CONSULTAS = { appointments: [], pending_part2: null, pending_part2_modality: null, has_completed: false };
 let CONSULTAS = NO_CONSULTAS;
 // Mesmos textos de app/panel_booking.py e dashboard/attendant_db.py (SPLIT_PART1/2).
 const SPLIT_PART1 = "1ª consulta · parte 1 de 2";
@@ -633,14 +637,14 @@ function apptCard(a) {
   const first = a.consultation_type === "primeira_consulta";
   const note = a.session_note || "";
   const tags = [];
-  if (!minor && first) tags.push("1ª consulta");
+  if (!minor && first && a.doctor_key === "julio") tags.push("1ª consulta");
   if (note.startsWith(SPLIT_PART1)) tags.push("parte 1 de 2");
   else if (note.startsWith(SPLIT_PART2)) tags.push("parte 2 de 2");
   const extra = note.replace(SPLIT_PART1, "").replace(SPLIT_PART2, "").replace(/^\s*·\s*/, "").trim();
   if (extra) tags.push(extra);
   const status = a.status === "pending_reschedule" ? '<span class="tag" style="background: var(--warn-soft); color: var(--warn)">aguardando remarcação</span>' : "";
   const meta = [DOCTOR_LABEL[a.doctor_key] || "", a.modality === "online" ? "Online" : a.modality === "presencial" ? "Presencial" : "", fmtDur(a.minutes)].filter(Boolean).join(" · ");
-  const hasLine2 = minor || tags.length || status;
+  const hasLine2 = (minor && a.doctor_key === "julio") || tags.length || status;
   return `<li class="tl-row">
     <div class="tl-date"><div class="serif tl-day num">${d}</div><div class="tl-mon">${MONTHS[m - 1]} · ${weekday(a.start_local)}</div></div>
     <div class="tl-rail" aria-hidden="true"><span class="tl-dot"></span></div>
@@ -650,7 +654,7 @@ function apptCard(a) {
         <span class="text-sm" style="color: var(--muted)">${escapeHtml(meta)}</span>
       </div>
       ${hasLine2 ? `<div class="flex items-center gap-2 flex-wrap">
-        ${minor ? `<button type="button" class="switch" role="switch" aria-checked="${first}" aria-label="1ª consulta" data-first="${escapeHtml(a.appointment_id)}"></button><span class="text-xs" style="color: var(--muted)">1ª consulta</span>` : ""}
+        ${minor && a.doctor_key === "julio" ? `<button type="button" class="switch" role="switch" aria-checked="${first}" aria-label="1ª consulta" data-first="${escapeHtml(a.appointment_id)}"></button><span class="text-xs" style="color: var(--muted)">1ª consulta</span>` : ""}
         ${tags.map((t) => `<span class="tag">${escapeHtml(t)}</span>`).join("")}${status}
       </div>` : ""}
     </div></li>`;
@@ -1271,19 +1275,26 @@ function apptSetEncaixe(reasons) {
 }
 
 function apptChanged(source) {
-  // Qualquer mudança desfaz o aviso de encaixe: o horário novo precisa ser checado de novo.
-  APPT_ENCAIXE = false;
-  APPT.previewText = null;
-  APPT_PREVIEW_SEQ++;
-  clearTimeout(APPT_PREVIEW_TIMER);
-  $("appt-encaixe").classList.add("hidden");
-  $("appt-preview").classList.add("hidden");
-  $("appt-preview-btn").setAttribute("aria-expanded", "false");
+  // A observação não muda o horário: não desfaz o aviso de encaixe nem a
+  // prévia já calculada (só data/hora/médico/duração/split/partes mudam o
+  // que seria enviado à Eva para checar).
+  const isNote = source === "appt-note";
+  if (!isNote) {
+    // Qualquer outra mudança desfaz o aviso de encaixe: o horário novo precisa ser checado de novo.
+    APPT_ENCAIXE = false;
+    APPT.previewText = null;
+    APPT_PREVIEW_SEQ++;
+    clearTimeout(APPT_PREVIEW_TIMER);
+    $("appt-encaixe").classList.add("hidden");
+    $("appt-preview").classList.add("hidden");
+    $("appt-preview-btn").setAttribute("aria-expanded", "false");
+  }
   $("appt-error").classList.add("hidden");
   const doctor = segGet("appt-doctor");
   const minor = isMinor(CURRENT_PATIENT, $("appt-date").value || todayIso());
-  $("appt-first-wrap").classList.toggle("hidden", !minor || !!APPT.splitOf);
-  const first = minor && $("appt-first").getAttribute("aria-checked") === "true";
+  // A etiqueta "1ª consulta" só existe para menor com o Dr. Júlio.
+  $("appt-first-wrap").classList.toggle("hidden", !minor || doctor !== "julio" || !!APPT.splitOf);
+  const first = minor && doctor === "julio" && $("appt-first").getAttribute("aria-checked") === "true";
   const canSplit = !APPT.splitOf && first && doctor === "julio";
   $("appt-split-wrap").classList.toggle("hidden", !canSplit);
   const split = canSplit && segGet("appt-split") === "dividir";
@@ -1298,8 +1309,10 @@ function apptChanged(source) {
   if (doctor !== "bruna" && segGet("appt-dur") === "40") segSet("appt-dur", "60");
   const ok = !!($("appt-date").value && $("appt-time").value && segGet("appt-modality") && doctor);
   $("appt-submit").disabled = !ok;
-  $("appt-submit").className = "btn btn-primary";
-  $("appt-submit").textContent = APPT.splitOf ? "Marcar 2ª parte" : "Agendar";
+  if (!isNote) {
+    $("appt-submit").className = "btn btn-primary";
+    $("appt-submit").textContent = APPT.splitOf ? "Marcar 2ª parte" : "Agendar";
+  }
   if (!ok) { $("appt-to").textContent = "—"; return; }
   // Prévia automática: descobre destinatário e encaixe sem a atendente pedir.
   if (source !== "appt-note") APPT_PREVIEW_TIMER = setTimeout(() => apptPreview(false), 600);
@@ -1310,6 +1323,10 @@ function openApptSheet(splitOf) {
   if (!p) return;
   APPT = { splitOf, previewText: null };
   const part1 = splitOf ? CONSULTAS.appointments.find((a) => a.appointment_id === splitOf) : null;
+  // A 1ª parte pode já ter acontecido (completed) e não estar mais na lista de
+  // consultas futuras acima — nesse caso a modalidade vem de pending_part2_modality.
+  const part1Modality = part1 ? part1.modality
+    : (splitOf && splitOf === CONSULTAS.pending_part2 ? CONSULTAS.pending_part2_modality : null);
   $("appt-title").textContent = p.name || "";
   $("appt-cap").textContent = splitOf ? "2ª parte da 1ª consulta" : "Nova consulta";
   const docKey = splitOf ? "julio" : (DOCTOR_KEYS[p.doctor_id] || "julio");
@@ -1318,7 +1335,12 @@ function openApptSheet(splitOf) {
   const restr = p.modality_restriction === "online" || p.modality_restriction === "presencial" ? p.modality_restriction : null;
   segDisable("appt-modality", "online", restr === "presencial");
   segDisable("appt-modality", "presencial", restr === "online");
-  segSet("appt-modality", restr || (part1 && part1.modality) || "presencial");
+  segSet("appt-modality", restr || part1Modality || "presencial");
+  // Abrindo "Nova consulta" (não via "Marcar") com a 2ª parte ainda pendente:
+  // avisa e oferece o atalho, sem forçar a atendente a trocar de aba.
+  const showPendingNotice = !splitOf && !!CONSULTAS.pending_part2;
+  $("appt-pending-notice").classList.toggle("hidden", !showPendingNotice);
+  if (showPendingNotice) $("appt-pending-notice-btn").onclick = () => openApptSheet(CONSULTAS.pending_part2);
   const first = !CONSULTAS.has_completed;
   $("appt-first").setAttribute("aria-checked", String(first));
   segSet("appt-split", "junto");
@@ -1418,6 +1440,14 @@ $("appt-submit").onclick = () => withBusy($("appt-submit"), async () => {
   }
   if (r.status === 409 && body.detail && body.detail.needs_encaixe) {
     apptSetEncaixe(body.detail.reasons || []);
+    return;
+  }
+  if (r.status === 504) {
+    // A Eva pode ter processado mesmo sem responder a tempo: não fecha a
+    // folha (a atendente pode precisar tentar de novo), mas recarrega a
+    // lista para ela conferir antes de decidir.
+    apptError(errText(body, "A Eva demorou a responder. Confira a lista de consultas antes de tentar de novo."));
+    loadConsultas(CURRENT_PID);
     return;
   }
   if (!r.ok) { apptError(errText(body, "Não foi possível agendar. Nada foi alterado.")); return; }
