@@ -10,10 +10,12 @@ import logging
 from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
-from app.booking_texts import DOCTOR_LABELS, format_appt_line
-from app.database import DOCTOR_IDS, get_supabase, log_event
+from app.booking_texts import DOCTOR_LABELS, confirmation_text, format_appt_line
+from app.database import DOCTOR_IDS, get_supabase, log_event, save_message
 from app.google_calendar import grid_violation
+from app.patients import _is_held, _linked_contacts_with_marker, consultation_reminder_contacts
 from app.utils import display_name
+from app.whatsapp import send_text
 
 
 class BookingError(Exception):
@@ -231,3 +233,88 @@ async def create_appointments(req: dict) -> dict:
             for e, s, m, n in created
         ],
     }
+
+
+_PENDING_PART2_LINE = "O horário da 2ª parte da primeira consulta será combinado depois."
+WHATSAPP_WINDOW_HOURS = 24
+
+
+def _thread(phone: str) -> str:
+    p = (phone or "").lstrip("+")
+    return p if p.endswith("@s.whatsapp.net") else f"{p}@s.whatsapp.net"
+
+
+def _text_for(contact: dict, kind: str, lines: list[str], pending_part2: bool) -> str:
+    name = display_name(contact.get("name") or "") or "tudo bem"
+    txt = confirmation_text(kind, "\n".join(lines), name)
+    if pending_part2:
+        txt += f"\n\n{_PENDING_PART2_LINE}"
+    return txt
+
+
+async def _recipients(patient_id: str, contact_id: str) -> tuple[list[dict], list[str]]:
+    recips = await consultation_reminder_contacts(patient_id, {"contact_id": contact_id})
+    linked = await _linked_contacts_with_marker(patient_id, include_inactive=True)
+    held = [lc["contact"].get("name") or "sem nome" for lc in linked if _is_held(lc["contact"])]
+    return recips, held
+
+
+async def message_preview(patient_id: str, contact_id: str, kind: str, lines: list[str],
+                          pending_part2: bool) -> dict:
+    recips, held = await _recipients(patient_id, contact_id)
+    first = recips[0] if recips else {}
+    return {
+        "text": _text_for(first, kind, lines, pending_part2),
+        "recipients": [{"name": c.get("name") or "", "phone_hint": (c.get("phone") or "")[-4:]} for c in recips],
+        "held": held,
+    }
+
+
+async def _window_open(phone: str) -> bool:
+    """Mesma regra de scripts/send_payment_reminders._window_open: fora de 24h da
+    última mensagem do contato, o Meta descarta texto livre em silêncio.
+    Erro na consulta = janela fechada (não finge que entregou)."""
+    from app.phone import _phone_variants
+    cutoff = (datetime.now(timezone.utc) - timedelta(hours=WHATSAPP_WINDOW_HOURS)).isoformat()
+    try:
+        client = await get_supabase()
+        res = await (
+            client.from_("messages").select("created_at")
+            .in_("phone", _phone_variants(phone)).eq("role", "user")
+            .gte("created_at", cutoff).limit(1).execute()
+        )
+        return bool(res.data)
+    except Exception:
+        _logger.exception("panel _window_open falhou phone=%s", phone)
+        return False
+
+
+async def send_booking_message(patient_id: str, contact_id: str, kind: str, lines: list[str],
+                               pending_part2: bool) -> dict:
+    from langchain_core.messages import AIMessage
+    from app.graph import graph as graph_module
+
+    recips, held = await _recipients(patient_id, contact_id)
+    sent, not_delivered = [], []
+    for c in recips:
+        name = c.get("name") or "sem nome"
+        phone = (c.get("phone") or "").lstrip("+")
+        if not phone or not await _window_open(phone):
+            not_delivered.append(name)
+            continue
+        text = _text_for(c, kind, lines, pending_part2)
+        thread = _thread(phone)
+        try:
+            await send_text(thread, text)
+        except Exception:
+            _logger.exception("panel send_text falhou phone=%s", phone)
+            not_delivered.append(name)
+            continue
+        await save_message(thread, "assistant", text)
+        try:
+            cfg = {"configurable": {"thread_id": thread, "phone": thread}}
+            await graph_module.chatbot.aupdate_state(cfg, {"messages": [AIMessage(content=text)]}, as_node="patient_agent")
+        except Exception:
+            _logger.exception("panel checkpoint falhou phone=%s", phone)
+        sent.append(name)
+    return {"sent": sent, "not_delivered": not_delivered, "held": held}

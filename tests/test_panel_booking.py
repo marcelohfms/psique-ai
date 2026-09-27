@@ -185,3 +185,48 @@ async def test_rollback_calls_cancel_event():
         with pytest.raises(pb.BookingError):
             await pb.create_appointments(_req())
     mocks[3].assert_awaited_once_with("cal", "evt1")
+
+
+@pytest.mark.asyncio
+async def test_preview_recipients_follow_age_rule_and_report_held():
+    contacts = [{"id": "c1", "phone": "5581999998888", "name": "Carla Menezes", "manual_hold": False}]
+    linked = [{"contact": {"id": "c2", "name": "Paulo", "phone": "5581911112222", "manual_hold": True},
+               "is_self": False, "relationship": "pai"}]
+    with patch("app.panel_booking.consultation_reminder_contacts", new_callable=AsyncMock, return_value=contacts) as m, \
+         patch("app.panel_booking._linked_contacts_with_marker", new_callable=AsyncMock, return_value=linked):
+        out = await pb.message_preview("p1", "c1", "normal", ["Dr. Júlio — x"], pending_part2=False)
+    m.assert_awaited_once_with("p1", {"contact_id": "c1"})
+    assert out["recipients"] == [{"name": "Carla Menezes", "phone_hint": "8888"}]
+    assert out["held"] == ["Paulo"]
+    assert out["text"].startswith("Consulta registrada! ✅\nDr. Júlio — x")
+
+
+@pytest.mark.asyncio
+async def test_preview_pending_part2_adds_line():
+    with patch("app.panel_booking.consultation_reminder_contacts", new_callable=AsyncMock,
+               return_value=[{"id": "c1", "phone": "5581999998888", "name": "Carla"}]), \
+         patch("app.panel_booking._linked_contacts_with_marker", new_callable=AsyncMock, return_value=[]):
+        out = await pb.message_preview("p1", "c1", "taxa_isenta", ["Dr. Júlio — x"], pending_part2=True)
+    assert "O horário da 2ª parte da primeira consulta será combinado depois." in out["text"]
+
+
+@pytest.mark.asyncio
+async def test_send_skips_closed_window_and_writes_checkpoint_when_open():
+    recips = [{"id": "c1", "phone": "5581999998888", "name": "Carla"},
+              {"id": "c2", "phone": "5581911112222", "name": "Paulo"}]
+    chatbot = MagicMock()
+    chatbot.aupdate_state = AsyncMock()
+    with patch("app.panel_booking.consultation_reminder_contacts", new_callable=AsyncMock, return_value=recips), \
+         patch("app.panel_booking._linked_contacts_with_marker", new_callable=AsyncMock, return_value=[]), \
+         patch("app.panel_booking._window_open", new_callable=AsyncMock, side_effect=[True, False]), \
+         patch("app.panel_booking.send_text", new_callable=AsyncMock) as mock_send, \
+         patch("app.panel_booking.save_message", new_callable=AsyncMock) as mock_save, \
+         patch("app.graph.graph.chatbot", chatbot):
+        out = await pb.send_booking_message("p1", "c1", "normal", ["Dr. Júlio — x"], pending_part2=False)
+    mock_send.assert_awaited_once()
+    assert mock_send.call_args[0][0] == "5581999998888@s.whatsapp.net"
+    mock_save.assert_awaited_once()
+    chatbot.aupdate_state.assert_awaited_once()
+    cfg = chatbot.aupdate_state.call_args[0][0]
+    assert cfg["configurable"]["thread_id"] == "5581999998888@s.whatsapp.net"
+    assert out["sent"] == ["Carla"] and out["not_delivered"] == ["Paulo"]
