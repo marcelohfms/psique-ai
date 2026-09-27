@@ -340,8 +340,13 @@ def _thread(phone: str) -> str:
     return f"{canonical}@s.whatsapp.net"
 
 
+def contact_first_name(contact: dict) -> str:
+    """Nome curto do contato para a saudação ('CARLA MENEZES' -> 'Carla'); '' se não houver."""
+    return display_name(_nice(contact.get("name") or ""))
+
+
 def _text_for(contact: dict, kind: str, lines: list[str], pending_part2: bool) -> str:
-    name = display_name(_nice(contact.get("name") or "")) or "tudo bem"
+    name = contact_first_name(contact) or "tudo bem"
     txt = confirmation_text(kind, "\n".join(lines), name)
     if pending_part2:
         txt += f"\n\n{_PENDING_PART2_LINE}"
@@ -355,15 +360,21 @@ async def _recipients(patient_id: str, contact_id: str) -> tuple[list[dict], lis
     return recips, held
 
 
-async def message_preview(patient_id: str, contact_id: str, kind: str, lines: list[str],
-                          pending_part2: bool) -> dict:
+async def preview_message(patient_id: str, contact_id: str, text_for) -> dict:
+    """Prévia: texto como o 1º destinatário veria, destinatários e quem está com a Eva desligada."""
     recips, held = await _recipients(patient_id, contact_id)
     first = recips[0] if recips else {}
     return {
-        "text": _text_for(first, kind, lines, pending_part2),
+        "text": text_for(first),
         "recipients": [{"name": c.get("name") or "", "phone_hint": (c.get("phone") or "")[-4:]} for c in recips],
         "held": held,
     }
+
+
+async def message_preview(patient_id: str, contact_id: str, kind: str, lines: list[str],
+                          pending_part2: bool) -> dict:
+    return await preview_message(patient_id, contact_id,
+                                 lambda c: _text_for(c, kind, lines, pending_part2))
 
 
 async def _window_open(phone: str) -> bool:
@@ -384,8 +395,7 @@ async def _window_open(phone: str) -> bool:
         return False
 
 
-async def send_booking_message(patient_id: str, contact_id: str, kind: str, lines: list[str],
-                               pending_part2: bool, patient_name: str, doctor: str) -> dict:
+async def deliver_message(patient_id: str, contact_id: str, text_for, patient_name: str, doctor: str) -> dict:
     """Manda a mensagem aos destinatários com janela aberta e grava tudo que a Eva
     precisa saber depois: `messages` (auditoria/lembretes) e o checkpoint do
     LangGraph (senão o paciente responde "ok" e a Eva reconfirma um
@@ -401,7 +411,7 @@ async def send_booking_message(patient_id: str, contact_id: str, kind: str, line
         if not phone or not await _window_open(phone):
             not_delivered.append(name)
             continue
-        text = _text_for(c, kind, lines, pending_part2)
+        text = text_for(c)
         thread = _thread(phone)
         try:
             await send_text(thread, text)
@@ -435,6 +445,13 @@ async def send_booking_message(patient_id: str, contact_id: str, kind: str, line
             _logger.exception("panel checkpoint falhou phone=%s", phone)
         sent.append(name)
     return {"sent": sent, "not_delivered": not_delivered, "held": held}
+
+
+async def send_booking_message(patient_id: str, contact_id: str, kind: str, lines: list[str],
+                               pending_part2: bool, patient_name: str, doctor: str) -> dict:
+    return await deliver_message(patient_id, contact_id,
+                                 lambda c: _text_for(c, kind, lines, pending_part2),
+                                 patient_name, doctor)
 
 
 class PanelInputError(ValueError):

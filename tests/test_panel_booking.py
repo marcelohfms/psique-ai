@@ -557,6 +557,37 @@ async def test_send_each_recipient_gets_own_name_in_text():
 
 
 @pytest.mark.asyncio
+async def test_deliver_message_uses_text_for_per_contact():
+    recips = [{"id": "c1", "phone": "5581999998888", "name": "CARLA MENEZES"}]
+    chatbot = MagicMock()
+    chatbot.aget_state = AsyncMock(return_value=MagicMock(values={"stage": "patient_agent"}))
+    chatbot.aupdate_state = AsyncMock()
+    with patch("app.panel_booking.consultation_reminder_contacts", new_callable=AsyncMock, return_value=recips), \
+         patch("app.panel_booking._linked_contacts_with_marker", new_callable=AsyncMock, return_value=[]), \
+         patch("app.panel_booking._window_open", new_callable=AsyncMock, return_value=True), \
+         patch("app.panel_booking.send_text", new_callable=AsyncMock) as mock_send, \
+         patch("app.panel_booking.save_message", new_callable=AsyncMock), \
+         patch("app.graph.graph.chatbot", chatbot):
+        out = await pb.deliver_message("p1", "c1", lambda c: f"oi {pb.contact_first_name(c)}", "Lucas", "julio")
+    assert mock_send.call_args[0][1] == "oi Carla"
+    assert out == {"sent": ["CARLA MENEZES"], "not_delivered": [], "held": []}
+
+
+@pytest.mark.asyncio
+async def test_preview_message_uses_first_recipient():
+    recips = [{"id": "c1", "phone": "5581999998888", "name": "Carla"}]
+    with patch("app.panel_booking.consultation_reminder_contacts", new_callable=AsyncMock, return_value=recips), \
+         patch("app.panel_booking._linked_contacts_with_marker", new_callable=AsyncMock, return_value=[]):
+        out = await pb.preview_message("p1", "c1", lambda c: f"texto para {c['name']}")
+    assert out["text"] == "texto para Carla"
+    assert out["recipients"] == [{"name": "Carla", "phone_hint": "8888"}]
+
+
+def test_contact_first_name_empty():
+    assert pb.contact_first_name({}) == ""
+
+
+@pytest.mark.asyncio
 async def test_notify_clinic_async_tracks_background_task():
     with patch("app.graph.tools._notify_clinic", new_callable=AsyncMock) as mock_notify:
         pb._notify_clinic_async("assunto", "corpo", "5581999998888@s.whatsapp.net")
