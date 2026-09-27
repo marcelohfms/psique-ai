@@ -234,6 +234,79 @@
       </div>
     </aside>
   </div>
+  <div id="appt-sheet" class="hidden">
+    <div class="scrim" data-close-appt></div>
+    <aside class="sheet" role="dialog" aria-modal="true" aria-labelledby="appt-title">
+      <div class="flex items-start gap-3" style="padding: 24px 28px 18px; border-bottom: 1px solid var(--soft)">
+        <div class="flex-1 flex flex-col gap-1" style="min-width: 0">
+          <span id="appt-cap" class="cap">Nova consulta</span>
+          <h2 id="appt-title" class="serif" style="font-size: 26px; line-height: 1.15; margin: 0"></h2>
+        </div>
+        <button type="button" class="ibtn" data-close-appt aria-label="Fechar">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M6 6l12 12M18 6 6 18"/></svg>
+        </button>
+      </div>
+      <div class="flex-1 overflow-auto flex flex-col gap-5" style="padding: 22px 28px">
+        <div class="flex flex-col gap-2"><span class="cap">Médico</span>
+          <div id="appt-doctor" class="seg" role="radiogroup" aria-label="Médico">
+            <button type="button" role="radio" data-v="julio">Dr. Júlio</button>
+            <button type="button" role="radio" data-v="bruna">Dra. Bruna</button>
+          </div></div>
+        <div class="flex flex-col gap-2"><span class="cap">Modalidade</span>
+          <div id="appt-modality" class="seg" role="radiogroup" aria-label="Modalidade">
+            <button type="button" role="radio" data-v="presencial">Presencial</button>
+            <button type="button" role="radio" data-v="online">Online</button>
+          </div></div>
+        <div id="appt-first-wrap" class="card flex items-center gap-3" style="padding: 12px 14px">
+          <span class="flex-1 text-sm">1ª consulta</span>
+          <button id="appt-first" type="button" class="switch" role="switch" aria-checked="false" aria-label="1ª consulta"></button>
+        </div>
+        <div id="appt-split-wrap" class="hidden flex flex-col gap-2"><span class="cap">Formato</span>
+          <div id="appt-split" class="seg" role="radiogroup" aria-label="Formato da 1ª consulta">
+            <button type="button" role="radio" data-v="junto">2h seguidas</button>
+            <button type="button" role="radio" data-v="dividir">Dois momentos</button>
+          </div></div>
+        <div class="grid grid-cols-2 gap-3">
+          <label class="flex flex-col gap-2 min-w-0"><span id="appt-p1-cap" class="cap">Data</span><input id="appt-date" type="date" class="inp num"></label>
+          <label class="flex flex-col gap-2 min-w-0"><span class="cap">Hora</span><input id="appt-time" type="time" step="600" class="inp num"></label>
+        </div>
+        <div id="appt-dur-wrap" class="flex flex-col gap-2"><span class="cap">Duração</span>
+          <div id="appt-dur" class="seg" role="radiogroup" aria-label="Duração">
+            <button type="button" role="radio" data-v="60">1h</button>
+            <button type="button" role="radio" data-v="120">2h</button>
+            <button type="button" role="radio" data-v="40">40min</button>
+          </div></div>
+        <div id="appt-p2" class="hidden card flex flex-col gap-3" style="padding: 14px">
+          <span class="cap">2ª parte · 1h · pode ficar para depois</span>
+          <div class="grid grid-cols-2 gap-3">
+            <input id="appt-date2" type="date" class="inp num min-w-0" aria-label="Data da 2ª parte">
+            <input id="appt-time2" type="time" step="600" class="inp num min-w-0" aria-label="Hora da 2ª parte">
+          </div>
+        </div>
+        <label class="flex flex-col gap-2"><span class="cap">Observação</span>
+          <input id="appt-note" class="inp" maxlength="60" placeholder="ex.: Domiciliar"></label>
+        <div id="appt-billing-wrap" class="flex flex-col gap-2"><span class="cap">Cobrança</span>
+          <div id="appt-billing" class="seg" role="radiogroup" aria-label="Cobrança">
+            <button type="button" role="radio" data-v="normal">Normal</button>
+            <button type="button" role="radio" data-v="taxa_isenta">Taxa isenta</button>
+            <button type="button" role="radio" data-v="cortesia">Cortesia</button>
+          </div></div>
+      </div>
+      <div class="flex flex-col gap-3" style="padding: 12px 28px 20px; border-top: 1px solid var(--soft)">
+        <div id="appt-encaixe" class="hidden notice notice-info" role="alert"></div>
+        <p id="appt-error" class="hidden text-sm" style="color: var(--danger); margin: 0" role="alert"></p>
+        <div class="flex items-center gap-2 text-sm flex-wrap">
+          <span style="color: var(--muted)">Mensagem para</span>
+          <span id="appt-to" class="flex-1 font-medium num" style="min-width: 0"></span>
+          <button id="appt-preview-btn" type="button" class="link" aria-expanded="false" aria-controls="appt-preview">ver mensagem</button>
+        </div>
+        <pre id="appt-preview" class="hidden text-sm card" style="white-space: pre-wrap; font: inherit; padding: 12px 14px; margin: 0; max-height: 200px; overflow: auto"></pre>
+        <div class="flex justify-end">
+          <button id="appt-submit" type="button" class="btn btn-primary">Agendar</button>
+        </div>
+      </div>
+    </aside>
+  </div>
 </div>
 
 <script>
@@ -696,6 +769,7 @@ $("link-open").onclick = openLinkSheet;
 document.querySelectorAll("[data-close-sheet]").forEach((el) => { el.onclick = closeLinkSheet; });
 document.addEventListener("keydown", (e) => {
   if (e.key !== "Escape") return;
+  if (!$("appt-sheet").classList.contains("hidden")) { closeApptSheet(); return; }
   if (!$("link-sheet").classList.contains("hidden")) { closeLinkSheet(); return; }
   if (!$("patient-list").classList.contains("hidden")) {
     setListOpen(false);
@@ -1117,6 +1191,243 @@ $("reset-btn").onclick = async () => {
   const { deleted } = await r.json();
   flash(`Memória resetada (${deleted} linhas) ✓`);
 };
+
+// ── 7. Folha de nova consulta ────────────────────────────────────────────────
+let APPT = null;                 // { splitOf, previewText }
+let APPT_RETURN_FOCUS = null;
+let APPT_ENCAIXE = false;        // true depois do aviso de encaixe: o próximo clique confirma
+let APPT_PREVIEW_SEQ = 0;
+let APPT_PREVIEW_TIMER = null;
+const APPT_SEGS = ["appt-doctor", "appt-modality", "appt-split", "appt-dur", "appt-billing"];
+const APPT_INPUTS = ["appt-date", "appt-time", "appt-date2", "appt-time2", "appt-note"];
+
+function segButtons(id) {
+  return [...document.querySelectorAll(`#${id} [role=radio]`)];
+}
+function segSet(id, v) {
+  const bs = segButtons(id);
+  bs.forEach((b) => b.setAttribute("aria-checked", String(b.dataset.v === v)));
+  // Tabulação "roving": só a opção marcada entra no Tab; as setas trocam dentro do grupo.
+  const on = bs.find((b) => b.dataset.v === v) || bs.find((b) => !b.disabled);
+  bs.forEach((b) => { b.tabIndex = b === on ? 0 : -1; });
+}
+function segGet(id) {
+  const b = document.querySelector(`#${id} [aria-checked="true"]`);
+  return b ? b.dataset.v : null;
+}
+function segDisable(id, v, off) {
+  const b = document.querySelector(`#${id} [data-v="${v}"]`);
+  if (b) { b.disabled = off; b.classList.toggle("hidden", off && b.dataset.hideWhenOff === "1"); }
+}
+APPT_SEGS.forEach((id) => {
+  segButtons(id).forEach((b) => {
+    b.onclick = () => { if (!b.disabled) { segSet(id, b.dataset.v); apptChanged(id); } };
+  });
+  $(id).addEventListener("keydown", (e) => {
+    const step = { ArrowRight: 1, ArrowDown: 1, ArrowLeft: -1, ArrowUp: -1 }[e.key];
+    if (!step) return;
+    e.preventDefault();
+    const bs = segButtons(id).filter((b) => !b.disabled && !b.classList.contains("hidden"));
+    const i = bs.indexOf(document.activeElement);
+    const next = bs[(i + step + bs.length) % bs.length];
+    if (next) { segSet(id, next.dataset.v); next.focus(); apptChanged(id); }
+  });
+});
+document.querySelector('#appt-dur [data-v="40"]').dataset.hideWhenOff = "1";
+$("appt-first").onclick = () => {
+  const sw = $("appt-first");
+  const on = sw.getAttribute("aria-checked") !== "true";
+  sw.setAttribute("aria-checked", String(on));
+  // Desligando a 1ª consulta, a duração volta para 1h (ligada, o formato decide).
+  if (!on && segGet("appt-dur") === "120") segSet("appt-dur", "60");
+  apptChanged("appt-first");
+};
+APPT_INPUTS.forEach((id) => { $(id).oninput = () => apptChanged(id); });
+
+function apptSplit() {
+  return !APPT.splitOf && !$("appt-split-wrap").classList.contains("hidden") && segGet("appt-split") === "dividir";
+}
+function apptBody(extra = {}) {
+  const split = apptSplit();
+  const parts = [{ start: `${$("appt-date").value}T${$("appt-time").value}`, minutes: Number(segGet("appt-dur")) }];
+  if (split && $("appt-date2").value && $("appt-time2").value) parts.push({ start: `${$("appt-date2").value}T${$("appt-time2").value}`, minutes: 60 });
+  return {
+    phone: PHONE, patient_id: CURRENT_PID, doctor: segGet("appt-doctor"), modality: segGet("appt-modality"),
+    parts, split, split_of: APPT.splitOf, session_note: $("appt-note").value.trim(),
+    first_consultation: APPT.splitOf ? true : ($("appt-first-wrap").classList.contains("hidden") ? false : $("appt-first").getAttribute("aria-checked") === "true"),
+    billing: APPT.splitOf ? "normal" : (segGet("appt-billing") || "normal"),
+    encaixe_confirmed: false, dry_run: false, agent: AGENT, ...extra,
+  };
+}
+
+function apptSetEncaixe(reasons) {
+  APPT_ENCAIXE = true;
+  $("appt-encaixe").innerHTML = `<strong>Encaixe.</strong> ${reasons.map(escapeHtml).join("; ")}.`;
+  $("appt-encaixe").classList.remove("hidden");
+  $("appt-preview").classList.add("hidden");   // abre espaço para o aviso no rodapé
+  $("appt-preview-btn").setAttribute("aria-expanded", "false");
+  $("appt-submit").className = "btn btn-info";
+  $("appt-submit").textContent = "Confirmar encaixe";
+}
+
+function apptChanged(source) {
+  // Qualquer mudança desfaz o aviso de encaixe: o horário novo precisa ser checado de novo.
+  APPT_ENCAIXE = false;
+  APPT.previewText = null;
+  APPT_PREVIEW_SEQ++;
+  clearTimeout(APPT_PREVIEW_TIMER);
+  $("appt-encaixe").classList.add("hidden");
+  $("appt-preview").classList.add("hidden");
+  $("appt-preview-btn").setAttribute("aria-expanded", "false");
+  $("appt-error").classList.add("hidden");
+  const doctor = segGet("appt-doctor");
+  const minor = isMinor(CURRENT_PATIENT, $("appt-date").value || todayIso());
+  $("appt-first-wrap").classList.toggle("hidden", !minor || !!APPT.splitOf);
+  const first = minor && $("appt-first").getAttribute("aria-checked") === "true";
+  const canSplit = !APPT.splitOf && first && doctor === "julio";
+  $("appt-split-wrap").classList.toggle("hidden", !canSplit);
+  const split = canSplit && segGet("appt-split") === "dividir";
+  $("appt-p2").classList.toggle("hidden", !split);
+  $("appt-p1-cap").textContent = split ? "Data da 1ª parte" : "Data";
+  // Com o formato à mostra (1ª consulta de menor com o Dr. Júlio), ele decide a
+  // duração: 2h seguidas ou 1h por parte. Na 2ª parte, sempre 1h.
+  $("appt-dur-wrap").classList.toggle("hidden", canSplit || !!APPT.splitOf);
+  if (split || APPT.splitOf) segSet("appt-dur", "60");
+  else if (canSplit) segSet("appt-dur", "120");
+  segDisable("appt-dur", "40", doctor !== "bruna");
+  if (doctor !== "bruna" && segGet("appt-dur") === "40") segSet("appt-dur", "60");
+  const ok = !!($("appt-date").value && $("appt-time").value && segGet("appt-modality") && doctor);
+  $("appt-submit").disabled = !ok;
+  $("appt-submit").className = "btn btn-primary";
+  $("appt-submit").textContent = APPT.splitOf ? "Marcar 2ª parte" : "Agendar";
+  if (!ok) { $("appt-to").textContent = "—"; return; }
+  // Prévia automática: descobre destinatário e encaixe sem a atendente pedir.
+  if (source !== "appt-note") APPT_PREVIEW_TIMER = setTimeout(() => apptPreview(false), 600);
+}
+
+function openApptSheet(splitOf) {
+  const p = CURRENT_PATIENT;
+  if (!p) return;
+  APPT = { splitOf, previewText: null };
+  const part1 = splitOf ? CONSULTAS.appointments.find((a) => a.appointment_id === splitOf) : null;
+  $("appt-title").textContent = p.name || "";
+  $("appt-cap").textContent = splitOf ? "2ª parte da 1ª consulta" : "Nova consulta";
+  const docKey = splitOf ? "julio" : (DOCTOR_KEYS[p.doctor_id] || "julio");
+  segButtons("appt-doctor").forEach((b) => { b.disabled = !!splitOf && b.dataset.v !== "julio"; });
+  segSet("appt-doctor", docKey);
+  const restr = p.modality_restriction === "online" || p.modality_restriction === "presencial" ? p.modality_restriction : null;
+  segDisable("appt-modality", "online", restr === "presencial");
+  segDisable("appt-modality", "presencial", restr === "online");
+  segSet("appt-modality", restr || (part1 && part1.modality) || "presencial");
+  const first = !CONSULTAS.has_completed;
+  $("appt-first").setAttribute("aria-checked", String(first));
+  segSet("appt-split", "junto");
+  segSet("appt-dur", first && isMinor(p) && docKey === "julio" ? "120" : "60");
+  segSet("appt-billing", p.custom_price === 0 ? "cortesia" : p.booking_fee_waived ? "taxa_isenta" : "normal");
+  $("appt-billing-wrap").classList.toggle("hidden", !!splitOf);
+  APPT_INPUTS.forEach((id) => { $(id).value = ""; });
+  const today = todayIso();
+  $("appt-date").min = today;
+  $("appt-date2").min = today;
+  apptChanged("open");
+  APPT_RETURN_FOCUS = document.activeElement;
+  document.querySelector(".eva > .max-w-5xl").inert = true;
+  $("appt-sheet").classList.remove("hidden");
+  $("appt-date").focus();
+}
+function closeApptSheet() {
+  APPT_PREVIEW_SEQ++;
+  clearTimeout(APPT_PREVIEW_TIMER);
+  $("appt-sheet").classList.add("hidden");
+  document.querySelector(".eva > .max-w-5xl").inert = false;
+  if (APPT_RETURN_FOCUS && document.body.contains(APPT_RETURN_FOCUS)) APPT_RETURN_FOCUS.focus();
+  APPT_RETURN_FOCUS = null;
+}
+document.querySelectorAll("[data-close-appt]").forEach((el) => { el.onclick = closeApptSheet; });
+
+function apptError(msg) {
+  $("appt-error").textContent = msg;
+  $("appt-error").classList.remove("hidden");
+}
+
+// show=false: prévia silenciosa (só destinatário e encaixe). show=true: abre o texto.
+async function apptPreview(show) {
+  const seq = ++APPT_PREVIEW_SEQ;
+  let r, body;
+  try {
+    r = await postJson("/api/atendente/consulta/nova", apptBody({ dry_run: true }));
+    body = await r.json().catch(() => ({}));
+  } catch (_) { r = null; body = {}; }
+  if (seq !== APPT_PREVIEW_SEQ || $("appt-sheet").classList.contains("hidden")) return;
+  if (!r || !r.ok) {
+    $("appt-to").textContent = "—";
+    if (show) apptError(errText(body, "Não foi possível montar a prévia."));
+    return;
+  }
+  const m = body.message || { recipients: [], held: [], text: "" };
+  const held = m.held || [];
+  $("appt-to").textContent = (m.recipients || []).length
+    ? m.recipients.map((c) => `${c.name} · final ${c.phone_hint}`).join(", ")
+    : "ninguém (sem número liberado)";
+  APPT.previewText = (m.text || "") + (held.length ? `\n\n(Eva desligada para ${held.join(", ")}: não recebe.)` : "");
+  $("appt-preview").textContent = APPT.previewText;
+  if ((body.encaixe_reasons || []).length && !APPT_ENCAIXE) apptSetEncaixe(body.encaixe_reasons);
+  if (show) {
+    $("appt-preview").classList.remove("hidden");
+    $("appt-preview-btn").setAttribute("aria-expanded", "true");
+  }
+}
+
+$("appt-preview-btn").onclick = () => {
+  if (!$("appt-preview").classList.contains("hidden")) {
+    $("appt-preview").classList.add("hidden");
+    $("appt-preview-btn").setAttribute("aria-expanded", "false");
+    return;
+  }
+  if (!($("appt-date").value && $("appt-time").value)) { apptError("Preencha data e hora."); return; }
+  if (APPT.previewText !== null) {
+    $("appt-preview").classList.remove("hidden");
+    $("appt-preview-btn").setAttribute("aria-expanded", "true");
+    return;
+  }
+  withBusy($("appt-preview-btn"), () => apptPreview(true));
+};
+
+function bookedMessage(m) {
+  const notDelivered = m.not_delivered || [], held = m.held || [], sent = m.sent || [];
+  const out = [];
+  if (notDelivered.length) out.push(`Consulta registrada, mas a mensagem não foi entregue a ${notDelivered.join(", ")}. Avise o paciente por outro meio.`);
+  if (held.length) out.push(`${notDelivered.length ? "" : "Consulta registrada. "}Eva desligada para ${held.join(", ")}: não recebeu mensagem.`);
+  if (!out.length && !sent.length) out.push("Consulta registrada. Ninguém recebeu a mensagem.");
+  if (out.length) return { text: out.join(" "), warn: true };
+  return { text: "Consulta registrada e paciente avisado ✓", warn: false };
+}
+
+$("appt-submit").onclick = () => withBusy($("appt-submit"), async () => {
+  $("appt-error").classList.add("hidden");
+  // Uma prévia em andamento não pode reescrever o aviso depois deste envio.
+  APPT_PREVIEW_SEQ++;
+  clearTimeout(APPT_PREVIEW_TIMER);
+  let r, body;
+  try {
+    r = await postJson("/api/atendente/consulta/nova", apptBody({ encaixe_confirmed: APPT_ENCAIXE }));
+    body = await r.json().catch(() => ({}));
+  } catch (_) {
+    apptError("Sem conexão com o painel. Confira a agenda antes de tentar de novo.");
+    return;
+  }
+  if (r.status === 409 && body.detail && body.detail.needs_encaixe) {
+    apptSetEncaixe(body.detail.reasons || []);
+    return;
+  }
+  if (!r.ok) { apptError(errText(body, "Não foi possível agendar. Nada foi alterado.")); return; }
+  closeApptSheet();
+  loadConsultas(CURRENT_PID);
+  loadPagamentos();
+  const { text, warn } = bookedMessage(body.message || {});
+  if (warn) flash(text, 10000, "warn");
+  else flash(text, 3000);
+});
 
 initPhone();
 </script>

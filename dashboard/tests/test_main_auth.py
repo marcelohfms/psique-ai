@@ -129,3 +129,4 @@ def test_atendente_page_has_consultas_tab_first():
     # A aba Consultas abre selecionada e o Financeiro começa escondido.
     assert '<button type="button" role="tab" data-tab="consultas" class="tab" aria-selected="true">' in html
     assert 'id="tab-financeiro" class="tab-panel hidden' in html
+    assert 'id="appt-sheet"' in html
