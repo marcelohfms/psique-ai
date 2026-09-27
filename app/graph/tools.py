@@ -1054,72 +1054,31 @@ async def confirm_appointment(
 
     # Reject slots outside the doctor's schedule — skipped for encaixe
     if not force_encaixe:
-        from app.google_calendar import SCHEDULE_EXCEPTIONS, DOCTOR_SCHEDULES
-        _exc_map = SCHEDULE_EXCEPTIONS.get(doctor, {})
-        _date_key = start.date().isoformat()
-        _slot_min = start.hour * 60 + start.minute
-        _doctor_label = {"julio": "Dr. Júlio", "bruna": "Dra. Bruna"}.get(doctor, "médico(a)")
-
-        if _date_key in _exc_map:
-            # Exception day: empty list = blocked; non-empty = use those windows
-            _day_wins = _exc_map[_date_key]
-            if not _day_wins:
-                formatted_blocked = start.strftime("%d/%m/%Y")
-                return (
-                    f"[INSTRUÇÃO INTERNA — NÃO ENVIE AO PACIENTE] "
-                    f"{_doctor_label} não tem atendimento no dia {formatted_blocked}. "
-                    "Avise o paciente com empatia e chame get_available_slots para buscar outro horário disponível."
-                )
-            # Exception overrides schedule but has windows — validate slot falls in one
-            if not any((sh * 60 + sm) <= _slot_min < (eh * 60 + em) for sh, sm, eh, em, _ in _day_wins):
-                formatted_blocked = start.strftime("%d/%m/%Y")
-                return (
-                    f"[INSTRUÇÃO INTERNA — NÃO ENVIE AO PACIENTE] "
-                    f"Este horário não está dentro da disponibilidade de {_doctor_label} no dia {formatted_blocked}. "
-                    "Avise o paciente com empatia e chame get_available_slots para buscar outro horário disponível."
-                )
-        else:
-            # Regular day: check weekday is in DOCTOR_SCHEDULES and slot falls in a window
-            _weekday = start.weekday()
-            _day_wins = DOCTOR_SCHEDULES.get(doctor, {}).get(_weekday)
-            if _day_wins is None:
-                # Doctor does not work on this weekday at all
+        from app.google_calendar import grid_violation
+        _code = grid_violation(doctor, start, slot_duration_minutes)
+        if _code:
+            _doctor_label = {"julio": "Dr. Júlio", "bruna": "Dra. Bruna"}.get(doctor, "médico(a)")
+            _day = start.strftime("%d/%m/%Y")
+            _retry = "Avise o paciente com empatia e chame get_available_slots para buscar outro horário disponível."
+            _prefix = "[INSTRUÇÃO INTERNA — NÃO ENVIE AO PACIENTE] "
+            if _code == "dia_bloqueado":
+                return f"{_prefix}{_doctor_label} não tem atendimento no dia {_day}. {_retry}"
+            if _code == "fora_da_excecao":
+                return f"{_prefix}Este horário não está dentro da disponibilidade de {_doctor_label} no dia {_day}. {_retry}"
+            if _code == "dia_sem_atendimento":
                 _day_name = {0: "segunda-feira", 1: "terça-feira", 2: "quarta-feira",
-                             3: "quinta-feira", 4: "sexta-feira", 5: "sábado", 6: "domingo"}.get(_weekday, "neste dia")
-                return (
-                    f"[INSTRUÇÃO INTERNA — NÃO ENVIE AO PACIENTE] "
-                    f"{_doctor_label} não atende {_day_name}. "
-                    "Avise o paciente com empatia e chame get_available_slots para buscar outro horário disponível."
-                )
-            # Weekday exists — validate slot falls within one of the day's windows
-            if not any((sh * 60 + sm) <= _slot_min < (eh * 60 + em) for sh, sm, eh, em, _ in _day_wins):
-                return (
-                    f"[INSTRUÇÃO INTERNA — NÃO ENVIE AO PACIENTE] "
-                    f"Este horário ({start.strftime('%H:%M')}) está fora da grade de atendimento de {_doctor_label}. "
-                    "Avise o paciente com empatia e chame get_available_slots para buscar outro horário disponível."
-                )
-
-        # Dr. Júlio: além do início, exigir que o slot INTEIRO (início + duração)
-        # caiba numa única janela — senão um bloco de 2h começando no fim da grade
-        # (ex: 19:00 numa quinta que fecha 20:00) seria gravado estourando o
-        # expediente (caso Bernardo/Mônica 5581991320003, 09/07/2026: 1ª consulta
-        # gravada 19:00–21:00). get_available_slots já respeita isso; o confirm não.
-        if doctor == "julio":
-            from app.google_calendar import merge_adjacent_windows
-            _merged_wins = merge_adjacent_windows(_day_wins)
-            _slot_end_min = _slot_min + slot_duration_minutes
-            if not any(
-                (sh * 60 + sm) <= _slot_min and _slot_end_min <= (eh * 60 + em)
-                for sh, sm, eh, em, _ in _merged_wins
-            ):
-                _dur_h = slot_duration_minutes // 60
-                return (
-                    f"[INSTRUÇÃO INTERNA — NÃO ENVIE AO PACIENTE] "
-                    f"Não há bloco de {_dur_h}h seguidas a partir das {start.strftime('%H:%M')} na grade de "
-                    f"{_doctor_label} no dia {start.strftime('%d/%m/%Y')} — o horário ultrapassaria o fim do expediente. "
-                    "Chame get_available_slots novamente para um horário que comporte a duração, ou ofereça "
-                    "agendar os dois momentos da 1ª consulta em sessões separadas de 1h."
-                )
+                             3: "quinta-feira", 4: "sexta-feira", 5: "sábado", 6: "domingo"}[start.weekday()]
+                return f"{_prefix}{_doctor_label} não atende {_day_name}. {_retry}"
+            if _code == "fora_da_grade":
+                return (f"{_prefix}Este horário ({start.strftime('%H:%M')}) está fora da grade de "
+                        f"atendimento de {_doctor_label}. {_retry}")
+            _dur_h = slot_duration_minutes // 60
+            return (
+                f"{_prefix}Não há bloco de {_dur_h}h seguidas a partir das {start.strftime('%H:%M')} na grade de "
+                f"{_doctor_label} no dia {_day} — o horário ultrapassaria o fim do expediente. "
+                "Chame get_available_slots novamente para um horário que comporte a duração, ou ofereça "
+                "agendar os dois momentos da 1ª consulta em sessões separadas de 1h."
+            )
 
     # Guard 0: block if patient already has a future scheduled OR pending_reschedule
     # appointment (different slot). Forces Eva to use mark_reschedule_in_progress →
