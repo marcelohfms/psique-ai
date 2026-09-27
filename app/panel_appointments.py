@@ -327,3 +327,96 @@ async def apply_edit(req: dict) -> dict:
         )
     return {"appointment_id": appointment_id, "old_line": old_line, "new_line": new_line,
             "new_fee": False, "warnings": warnings}
+
+
+async def apply_late_reschedule(req: dict) -> dict:
+    """Paciente pediu para remarcar com menos de 24h e a taxa foi paga: a taxa fica
+    retida na linha antiga (canceled) e nasce uma linha nova com a cobrança escolhida
+    (normal = nova taxa). Mesmo resultado de cancel_appointment + confirm_appointment
+    que reschedule_appointment manda a Eva fazer nesse caso."""
+    from app.google_calendar import cancel_event
+    from app.graph.tools import _get_doctor_calendar_id
+
+    row, new, patient = req["row"], req["new"], req["patient"]
+    booking = {
+        "phone": req["phone"], "contact_id": req["recipient_contact_id"], "patient": patient,
+        "doctor": new["doctor"], "modality": new["modality"],
+        "parts": [{"start": new["start"], "minutes": new["minutes"]}],
+        "split": False, "split_of": None, "session_note": new["note"],
+        "first_consultation": new["ctype"] == "primeira_consulta", "billing": new["billing"],
+        "encaixe": bool(req.get("encaixe")), "agent": req["agent"],
+    }
+    created = await create_appointments(booking)  # tudo ou nada; BookingError sobe
+    new_id = created["appointments"][0]["appointment_id"]
+    now_iso = _now().isoformat()
+    try:
+        await _update_row(row["id"], {"status": "canceled", "updated_at": now_iso})
+    except Exception as exc:
+        _logger.exception("panel late reschedule: falha ao cancelar a linha antiga appt=%s", row["appointment_id"])
+        try:
+            await cancel_event(await _get_doctor_calendar_id(new["doctor"]), new_id)
+            await _delete_row(new_id)
+        except Exception:
+            _logger.exception("panel late reschedule: falha ao desfazer a linha nova %s", new_id)
+        raise BookingError("não foi possível concluir a remarcação; confira a lista de consultas") from exc
+
+    warnings = []
+    try:
+        await cancel_event(await _get_doctor_calendar_id(req["doctor"]), row["appointment_id"])
+    except Exception:
+        _logger.exception("panel late reschedule: evento antigo ficou no Calendar appt=%s", row["appointment_id"])
+        warnings.append("o horário antigo continua na agenda; apague à mão")
+    await log_event("appointment_canceled", req["phone"], {
+        "appointment_id": row["appointment_id"], "preserve_fee": False, "origem": "painel",
+        "atendente": req["agent"], "initiated_by": "patient", "fee_action": "reter",
+        "reason": "remarcação com menos de 24h a pedido do paciente", "replaced_by": new_id,
+    })
+    return {
+        "appointment_id": new_id,
+        "old_line": _line(req["doctor"], req["start"], row.get("session_note") or "", row.get("modality") or "", req["minutes"]),
+        "new_line": _line(new["doctor"], new["start"], new["note"], new["modality"], new["minutes"]),
+        "new_fee": created["kind"] == "normal",
+        "warnings": warnings,
+    }
+
+
+_NO_MESSAGE = {"sent": [], "not_delivered": [], "held": [], "skipped": True}
+
+
+async def handle_edit(body: dict) -> tuple[int, dict]:
+    """Fluxo de POST /admin/panel/appointments/edit. Devolve (status_http, corpo)."""
+    req = await build_edit(body)
+    new, row = req["new"], req["row"]
+    reasons: list[str] = []
+    moves = bool(req["changes"] & _SLOT_FIELDS) or row["status"] == "pending_reschedule"
+    if moves and not body.get("encaixe_confirmed"):
+        reasons = await check_slot(new["doctor"], new["start"], new["minutes"], req["patient"]["id"],
+                                   exclude_appointment_id=row["appointment_id"])
+
+    def text_for(lines: tuple[str, str], new_fee: bool):
+        return lambda c: change_text(req["initiated_by"], contact_first_name(c), lines[0], lines[1], new_fee)
+
+    if body.get("dry_run"):
+        message = None
+        if req["notify"]:
+            old_line = _line(req["doctor"], req["start"], row.get("session_note") or "",
+                             row.get("modality") or "", req["minutes"])
+            new_line = _line(new["doctor"], new["start"], new["note"], new["modality"], new["minutes"])
+            new_fee = req["late_fee"] and new["billing"] == "normal"
+            message = await preview_message(req["patient"]["id"], req["recipient_contact_id"],
+                                            text_for((old_line, new_line), new_fee))
+        return 200, {"encaixe_reasons": reasons, "late_fee": req["late_fee"],
+                     "notify": req["notify"], "message": message}
+
+    if reasons:
+        return 409, {"detail": {"needs_encaixe": True, "reasons": reasons}}
+
+    req["encaixe"] = bool(body.get("encaixe_confirmed"))
+    result = await (apply_late_reschedule if req["late_fee"] else apply_edit)(req)
+    if req["notify"]:
+        msg = await deliver_message(req["patient"]["id"], req["recipient_contact_id"],
+                                    text_for((result["old_line"], result["new_line"]), result["new_fee"]),
+                                    _display(req["patient"]), new["doctor"])
+    else:
+        msg = dict(_NO_MESSAGE)
+    return 200, {"appointment_id": result["appointment_id"], "warnings": result["warnings"], "message": msg}

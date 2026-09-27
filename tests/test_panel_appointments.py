@@ -289,3 +289,111 @@ async def test_apply_edit_calendar_failure_changes_nothing():
         with pytest.raises(BookingError, match="nada foi alterado"):
             await pa.apply_edit(req)
     m["update_row"].assert_not_called()
+
+
+# ── remarcação tardia ──────────────────────────────────────────────────────
+
+LATE_ROW = {**ROW, "start_time": "2026-10-01T20:00:00+00:00", "end_time": "2026-10-01T21:00:00+00:00",
+            "booking_fee_paid_at": "2026-09-30T10:00:00-03:00"}
+
+
+@pytest.mark.asyncio
+async def test_late_reschedule_cancels_old_row_and_creates_new_normal_fee():
+    req = await build_edit({"initiated_by": "patient"}, row=LATE_ROW)
+    created = {"kind": "normal", "lines": ["l"], "pending_part2": False,
+               "appointments": [{"appointment_id": "evt-new"}]}
+    with ExitStack() as st:
+        m = {k: st.enter_context(p) for k, p in cal_patches().items()}
+        st.enter_context(patch("app.panel_appointments._now", return_value=NOW))
+        mock_create = st.enter_context(patch("app.panel_appointments.create_appointments",
+                                             new_callable=AsyncMock, return_value=created))
+        out = await pa.apply_late_reschedule(req)
+    booking = mock_create.call_args[0][0]
+    assert booking["billing"] == "normal" and booking["contact_id"] == "c1"
+    assert booking["parts"] == [{"start": datetime(2026, 10, 6, 9, 0, tzinfo=TZ), "minutes": 60}]
+    assert m["update_row"].call_args[0] == ("uuid-1", {"status": "canceled", "updated_at": NOW.isoformat()})
+    m["cancel_event"].assert_awaited_once_with("cal-julio", "evt1")
+    assert out["appointment_id"] == "evt-new" and out["new_fee"] is True
+
+
+@pytest.mark.asyncio
+async def test_late_reschedule_old_row_failure_rolls_back_new_one():
+    req = await build_edit({"initiated_by": "patient"}, row=LATE_ROW)
+    created = {"kind": "normal", "lines": ["l"], "pending_part2": False,
+               "appointments": [{"appointment_id": "evt-new"}]}
+    with ExitStack() as st:
+        m = {k: st.enter_context(p) for k, p in cal_patches(RuntimeError("db")).items()}
+        st.enter_context(patch("app.panel_appointments._now", return_value=NOW))
+        st.enter_context(patch("app.panel_appointments.create_appointments", new_callable=AsyncMock, return_value=created))
+        mock_del = st.enter_context(patch("app.panel_appointments._delete_row", new_callable=AsyncMock))
+        with pytest.raises(BookingError):
+            await pa.apply_late_reschedule(req)
+    m["cancel_event"].assert_awaited_once_with("cal-julio", "evt-new")
+    mock_del.assert_awaited_once_with("evt-new")
+
+
+# ── handle_edit ────────────────────────────────────────────────────────────
+
+async def run_handle_edit(body, check=(), row=None, patient=None, applied=None):
+    with ExitStack() as st:
+        for p in load_patches(row=row, patient=patient):
+            st.enter_context(p)
+        mock_check = st.enter_context(patch("app.panel_appointments.check_slot", new_callable=AsyncMock, return_value=list(check)))
+        mock_prev = st.enter_context(patch("app.panel_appointments.preview_message", new_callable=AsyncMock,
+                                           return_value={"text": "t", "recipients": [], "held": []}))
+        mock_apply = st.enter_context(patch("app.panel_appointments.apply_edit", new_callable=AsyncMock,
+                                            return_value=applied or {"appointment_id": "evt1", "old_line": "a",
+                                                                     "new_line": "b", "new_fee": False, "warnings": []}))
+        mock_late = st.enter_context(patch("app.panel_appointments.apply_late_reschedule", new_callable=AsyncMock,
+                                           return_value={"appointment_id": "evt-new", "old_line": "a",
+                                                         "new_line": "b", "new_fee": True, "warnings": []}))
+        mock_send = st.enter_context(patch("app.panel_appointments.deliver_message", new_callable=AsyncMock,
+                                           return_value={"sent": ["Ana"], "not_delivered": [], "held": []}))
+        status, payload = await pa.handle_edit({**EDIT, **body})
+    return status, payload, {"check": mock_check, "prev": mock_prev, "apply": mock_apply,
+                             "late": mock_late, "send": mock_send}
+
+
+@pytest.mark.asyncio
+async def test_handle_edit_dry_run_reports_encaixe_and_late_fee():
+    status, payload, m = await run_handle_edit({"dry_run": True, "initiated_by": "patient"},
+                                               check=["dia bloqueado na agenda"], row=LATE_ROW)
+    assert status == 200
+    assert payload["encaixe_reasons"] == ["dia bloqueado na agenda"]
+    assert payload["late_fee"] is True and payload["notify"] is True
+    assert m["check"].call_args.kwargs["exclude_appointment_id"] == "evt1"
+    m["apply"].assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_handle_edit_needs_encaixe_409():
+    status, payload, m = await run_handle_edit({}, check=["fora do horário de atendimento"])
+    assert status == 409 and payload["detail"]["needs_encaixe"] is True
+    m["apply"].assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_handle_edit_encaixe_confirmed_skips_check():
+    status, payload, m = await run_handle_edit({"encaixe_confirmed": True})
+    assert status == 200
+    m["check"].assert_not_called()
+    assert m["apply"].call_args[0][0]["encaixe"] is True
+
+
+@pytest.mark.asyncio
+async def test_handle_edit_note_only_no_check_no_message():
+    status, payload, m = await run_handle_edit({"start": "2026-10-05T09:00", "session_note": "Domiciliar"})
+    assert status == 200
+    m["check"].assert_not_called()
+    m["send"].assert_not_called()
+    assert payload["message"] == {"sent": [], "not_delivered": [], "held": [], "skipped": True}
+
+
+@pytest.mark.asyncio
+async def test_handle_edit_late_goes_to_late_path_and_message_has_new_fee():
+    status, payload, m = await run_handle_edit({"initiated_by": "patient"}, row=LATE_ROW)
+    assert status == 200 and payload["appointment_id"] == "evt-new"
+    m["late"].assert_awaited_once()
+    m["apply"].assert_not_called()
+    text_for = m["send"].call_args[0][2]
+    assert "nova taxa" in text_for({"name": "Ana"})
