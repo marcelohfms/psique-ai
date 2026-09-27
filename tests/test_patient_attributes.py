@@ -48,6 +48,12 @@ def test_fee_status_courtesy_price_zero():
     assert fee_status(_appt(NOW), 0) == "Isenta"
 
 
+def test_fee_status_courtesy_appointment():
+    appt = _appt(NOW)
+    appt["is_courtesy"] = True
+    assert fee_status(appt, None) == "Isenta"
+
+
 def test_fee_status_paid():
     assert fee_status(_appt(NOW, booking_fee_paid_at="2026-09-19T10:00:00Z"), 200) == "Paga"
 

@@ -10,10 +10,12 @@ from datetime import date as _date
 from secrets import compare_digest
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile, status
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
 import attendant_db
 import chatwoot_client
+import eva_client
 import payments
 import return_reminders
 from db_client import get_client
@@ -407,3 +409,76 @@ async def isentar(appointment_id: str, body: AtendenteIsentarBody, _: None = Dep
         "appointment_id": appointment_id,
     })
     return {"ok": True}
+
+
+# ── Consultas ─────────────────────────────────────────────────────────────────
+
+
+class FirstBody(BaseModel):
+    phone: str
+    first: bool
+    agent: str = Field(default="", max_length=80)
+
+
+class NewAppointmentBody(BaseModel):
+    phone: str
+    patient_id: str
+    doctor: str
+    modality: str
+    parts: list[dict] = Field(min_length=1, max_length=2)
+    split: bool = False
+    split_of: str | None = None
+    session_note: str = Field(default="", max_length=80)
+    first_consultation: bool = False
+    billing: str = "normal"
+    encaixe_confirmed: bool = False
+    dry_run: bool = False
+    agent: str = Field(default="", max_length=80)
+
+
+@router.get("/consultas")
+async def get_consultas(phone: str, patient_id: str, _: None = Depends(verify_token)):
+    await _assert_patient_scope(phone, patient_id)
+    return await attendant_db.list_consultas(patient_id)
+
+
+@router.post("/consulta/{appointment_id}/primeira")
+async def set_primeira(appointment_id: str, body: FirstBody, _: None = Depends(verify_token)):
+    await _assert_appointment_scope(body.phone, appointment_id)
+    doctor_id = await attendant_db.get_appointment_doctor_id(appointment_id)
+    if attendant_db._DOCTOR_KEY.get(doctor_id) != "julio":
+        raise HTTPException(status_code=400,
+                            detail="a etiqueta 1ª consulta só vale para menor com o Dr. Júlio")
+    await attendant_db.set_first_consultation(appointment_id, body.first)
+    await attendant_db.log_event("attendant_first_consultation", body.phone,
+                                 {"appointment_id": appointment_id, "first": body.first, "agent": body.agent})
+    return {"ok": True}
+
+
+_DRY_RUN_TIMEOUT = 20.0
+_BOOKING_TIMEOUT = 60.0
+
+
+@router.post("/consulta/nova")
+async def nova_consulta(body: NewAppointmentBody, _: None = Depends(verify_token)):
+    await _assert_patient_scope(body.phone, body.patient_id)
+    timeout = _DRY_RUN_TIMEOUT if body.dry_run else _BOOKING_TIMEOUT
+    try:
+        status_code, payload = await eva_client.post(
+            "/admin/panel/appointments", body.model_dump(), timeout=timeout)
+    except eva_client.EvaTimeout:
+        if body.dry_run:
+            raise HTTPException(status_code=503, detail="A Eva não respondeu. Nada foi alterado.")
+        raise HTTPException(
+            status_code=504,
+            detail="A Eva demorou a responder. Confira a lista de consultas antes de tentar de novo.")
+    except eva_client.EvaUnavailable:
+        raise HTTPException(status_code=503, detail="A Eva não respondeu. Nada foi alterado.")
+    if status_code in (401, 403):
+        raise HTTPException(status_code=503, detail="Painel sem acesso à Eva (configuração). Nada foi alterado.")
+    if status_code == 200 and not body.dry_run:
+        await attendant_db.log_event("attendant_new_appointment", body.phone, {
+            "patient_id": body.patient_id, "agent": body.agent, "encaixe": body.encaixe_confirmed,
+            "appointments": [a.get("appointment_id") for a in payload.get("appointments", [])],
+        })
+    return JSONResponse(status_code=status_code, content=payload)

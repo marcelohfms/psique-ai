@@ -1026,3 +1026,44 @@ async def test_mark_event_confirmed_does_not_duplicate_checkmark():
     body = kwargs["body"]
     assert body["summary"].count("✅") == 1
     assert body["colorId"] == "2"
+
+
+# ── grid_violation ─────────────────────────────────────────────────────────────
+from datetime import datetime as _dt
+from zoneinfo import ZoneInfo as _ZI
+from unittest.mock import patch as _patch
+
+from app.google_calendar import grid_violation
+
+_TZR = _ZI("America/Recife")
+
+
+def test_grid_violation_ok_inside_window():
+    # segunda 09:00 Dr. Júlio (grade seg 9-12)
+    assert grid_violation("julio", _dt(2026, 10, 5, 9, 0, tzinfo=_TZR), 60) is None
+
+
+def test_grid_violation_weekday_off():
+    # terça: Dr. Júlio não atende
+    assert grid_violation("julio", _dt(2026, 10, 6, 9, 0, tzinfo=_TZR), 60) == "dia_sem_atendimento"
+
+
+def test_grid_violation_outside_grid():
+    assert grid_violation("julio", _dt(2026, 10, 5, 13, 0, tzinfo=_TZR), 60) == "fora_da_grade"
+
+
+def test_grid_violation_julio_block_overruns_day():
+    # quinta fecha 20:00; 2h a partir das 19:00 estoura
+    assert grid_violation("julio", _dt(2026, 10, 8, 19, 0, tzinfo=_TZR), 120) == "estoura_expediente"
+
+
+def test_grid_violation_blocked_day():
+    with _patch.dict("app.google_calendar.SCHEDULE_EXCEPTIONS", {"julio": {"2026-10-05": []}}):
+        assert grid_violation("julio", _dt(2026, 10, 5, 9, 0, tzinfo=_TZR), 60) == "dia_bloqueado"
+
+
+def test_grid_violation_exception_window():
+    exc = {"julio": {"2026-10-05": [(15, 0, 17, 0, "escolha")]}}
+    with _patch.dict("app.google_calendar.SCHEDULE_EXCEPTIONS", exc):
+        assert grid_violation("julio", _dt(2026, 10, 5, 9, 0, tzinfo=_TZR), 60) == "fora_da_excecao"
+        assert grid_violation("julio", _dt(2026, 10, 5, 15, 0, tzinfo=_TZR), 60) is None

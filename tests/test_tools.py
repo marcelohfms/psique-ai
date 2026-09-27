@@ -6102,23 +6102,13 @@ async def test_reschedule_appointment_presencial_restriction_on_online_only_slot
 # ── send_pending_payments_reminder filter logic ───────────────────────────────
 
 def test_pending_payments_courtesy_filter():
-    """Courtesy appointments (patients.custom_price == 0) must be excluded from consulta_pendente."""
-    appts = [
-        {"appointment_id": "apt-1", "start_time": "2026-06-01T10:00:00+00:00",
-         "doctor_id": "d5baa58b-a788-4f40-b8c0-512c189150be",
-         "booking_fee_paid_at": None, "paid_at": None, "consultation_type": None,
-         "patients": {"name": "Ana", "custom_price": None, "patient_contacts": []}},
-        {"appointment_id": "apt-2", "start_time": "2026-06-02T10:00:00+00:00",
-         "doctor_id": "d5baa58b-a788-4f40-b8c0-512c189150be",
-         "booking_fee_paid_at": None, "paid_at": None, "consultation_type": None,
-         "patients": {"name": "Cortesia", "custom_price": 0, "patient_contacts": []}},
+    from scripts.send_pending_payments_reminder import _not_courtesy
+    rows = [
+        {"patients": {"custom_price": 0}},
+        {"is_courtesy": True, "patients": {"custom_price": 300}},
+        {"patients": {"custom_price": None}},
     ]
-    consulta_pendente = [
-        appt for appt in appts
-        if (appt.get("patients") or {}).get("custom_price") != 0
-    ]
-    assert len(consulta_pendente) == 1
-    assert consulta_pendente[0]["appointment_id"] == "apt-1"
+    assert [_not_courtesy(r) for r in rows] == [False, False, True]
 
 
 def test_pending_payments_patient_and_contact_extraction():

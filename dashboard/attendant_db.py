@@ -6,7 +6,7 @@ do dashboard. NÃO importa app/ (a imagem Docker do dashboard não contém app/)
 import logging
 import unicodedata
 import uuid
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from zoneinfo import ZoneInfo
 
 from db_client import get_client
@@ -318,6 +318,118 @@ async def create_patient(name: str, birth_br: str) -> dict:
 
 _ACTIVE_APPT_STATUSES = ("scheduled", "pending_reschedule")
 
+# Mesmos textos de app/panel_booking.py (SPLIT_PART1/SPLIT_PART2).
+SPLIT_PART1 = "1ª consulta · parte 1 de 2"
+SPLIT_PART2 = "1ª consulta · parte 2 de 2"
+# Mesmo mapa de dashboard/payments.py DOCTOR_KEY.
+_DOCTOR_KEY = {
+    "d5baa58b-a788-4f40-b8c0-512c189150be": "julio",
+    "18b01f87-eacd-4905-bd4a-a8293991e6fd": "bruna",
+}
+
+
+def age_on(birth_date: str | None, day: date) -> int | None:
+    """Idade em `day`. Aceita dd/mm/aaaa e ISO, como patients.birth_date."""
+    raw = (birth_date or "").strip()
+    for fmt in ("%d/%m/%Y", "%Y-%m-%d"):
+        try:
+            bd = datetime.strptime(raw, fmt).date()
+            break
+        except ValueError:
+            continue
+    else:
+        return None
+    return day.year - bd.year - ((day.month, day.day) < (bd.month, bd.day))
+
+
+def _local(ts: str) -> datetime:
+    dt = datetime.fromisoformat(ts)
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(_TZ)
+
+
+async def _pending_part2(client, patient_id: str) -> tuple[str | None, str | None]:
+    """(appointment_id, modality) da parte 1 pendente mais recente, ou (None, None).
+
+    A parte 1 pode já ter acontecido (status completed) e a parte 2 ainda não
+    ter sido marcada — por isso é uma consulta à parte da lista de
+    `appointments` de `list_consultas`, que só olha o futuro (a parte 1
+    completed já saiu de lá). Só considera pendente se NENHUMA parte 2 do
+    paciente existir em (scheduled, pending_reschedule, completed).
+    """
+    part1_rows = await (
+        client.from_("appointments")
+        .select("appointment_id, start_time, session_note, modality")
+        .eq("patient_id", patient_id)
+        .in_("status", ["scheduled", "completed"])
+        .execute()
+    )
+    part1s = [r for r in (part1_rows.data or []) if (r.get("session_note") or "").startswith(SPLIT_PART1)]
+    if not part1s:
+        return None, None
+    part2_rows = await (
+        client.from_("appointments")
+        .select("session_note")
+        .eq("patient_id", patient_id)
+        .in_("status", ["scheduled", "pending_reschedule", "completed"])
+        .execute()
+    )
+    if any((r.get("session_note") or "").startswith(SPLIT_PART2) for r in (part2_rows.data or [])):
+        return None, None
+    part1s.sort(key=lambda r: r["start_time"], reverse=True)
+    latest = part1s[0]
+    return latest["appointment_id"], latest.get("modality")
+
+
+async def list_consultas(patient_id: str) -> dict:
+    """Consultas que ainda não aconteceram (scheduled/pending_reschedule), sem
+    dados de pagamento, mais: a parte 1 de 1ª consulta dividida cuja parte 2
+    ainda não foi marcada, e se o paciente já teve consulta realizada."""
+    client = await get_client()
+    now_iso = datetime.now(_TZ).isoformat()
+    res = await (
+        client.from_("appointments")
+        .select("appointment_id, start_time, end_time, doctor_id, modality, consultation_type, "
+                "session_note, status")
+        .eq("patient_id", patient_id)
+        .in_("status", list(_ACTIVE_APPT_STATUSES))
+        .gt("start_time", now_iso)
+        .order("start_time")
+        .execute()
+    )
+    appts = []
+    for r in res.data or []:
+        start, end = _local(r["start_time"]), _local(r["end_time"])
+        appts.append({
+            "appointment_id": r["appointment_id"],
+            "start_local": start.strftime("%Y-%m-%dT%H:%M"),
+            "minutes": int((end - start).total_seconds() // 60),
+            "doctor_key": _DOCTOR_KEY.get(r.get("doctor_id"), ""),
+            "modality": r.get("modality") or "",
+            "consultation_type": r.get("consultation_type"),
+            "session_note": r.get("session_note") or "",
+            "status": r["status"],
+        })
+    pending, pending_modality = await _pending_part2(client, patient_id)
+    done = await (
+        client.from_("appointments").select("id").eq("patient_id", patient_id)
+        .eq("status", "completed").limit(1).execute()
+    )
+    return {"appointments": appts, "pending_part2": pending,
+            "pending_part2_modality": pending_modality, "has_completed": bool(done.data)}
+
+
+async def set_first_consultation(appointment_id: str, first: bool) -> None:
+    """Liga/desliga a etiqueta "1ª consulta". Só banco; não avisa o paciente."""
+    client = await get_client()
+    await (
+        client.from_("appointments")
+        .update({"consultation_type": "primeira_consulta" if first else "acompanhamento"})
+        .eq("appointment_id", appointment_id)
+        .execute()
+    )
+
 
 async def unlink_blocker(patient_id: str, contact_id: str) -> str | None:
     """Motivo para NÃO desvincular, ou None se pode.
@@ -424,6 +536,21 @@ async def get_link_by_id(pc_id: str) -> dict | None:
     )
     rows = res.data or []
     return rows[0] if rows else None
+
+
+async def get_appointment_doctor_id(appointment_id: str) -> str | None:
+    """doctor_id da consulta, ou None se não existir. Usado para recusar a
+    etiqueta "1ª consulta" fora do caso menor + Dr. Júlio (ver set_primeira em
+    attendant_routes.py)."""
+    client = await get_client()
+    res = (
+        await client.from_("appointments")
+        .select("doctor_id")
+        .eq("appointment_id", appointment_id)
+        .execute()
+    )
+    rows = res.data or []
+    return rows[0]["doctor_id"] if rows else None
 
 
 async def get_appointment_patient_id(appointment_id: str) -> str | None:

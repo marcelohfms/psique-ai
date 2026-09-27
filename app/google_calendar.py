@@ -129,6 +129,41 @@ def merge_adjacent_windows(
     return merged
 
 
+def grid_violation(doctor: str, start: datetime, slot_minutes: int) -> str | None:
+    """Confere `start` (já em Recife) contra a grade do médico.
+
+    Devolve None se o horário cabe, ou um código:
+    dia_bloqueado | fora_da_excecao | dia_sem_atendimento | fora_da_grade | estoura_expediente.
+    Fonte única da regra usada por confirm_appointment e pelo painel da atendente.
+    """
+    exc_map = SCHEDULE_EXCEPTIONS.get(doctor, {})
+    date_key = start.date().isoformat()
+    slot_min = start.hour * 60 + start.minute
+
+    if date_key in exc_map:
+        day_wins = exc_map[date_key]
+        if not day_wins:
+            return "dia_bloqueado"
+        if not any((sh * 60 + sm) <= slot_min < (eh * 60 + em) for sh, sm, eh, em, _ in day_wins):
+            return "fora_da_excecao"
+    else:
+        day_wins = DOCTOR_SCHEDULES.get(doctor, {}).get(start.weekday())
+        if day_wins is None:
+            return "dia_sem_atendimento"
+        if not any((sh * 60 + sm) <= slot_min < (eh * 60 + em) for sh, sm, eh, em, _ in day_wins):
+            return "fora_da_grade"
+
+    # Dr. Júlio: o bloco inteiro precisa caber numa janela (caso Bernardo/Mônica, 09/07/2026).
+    if doctor == "julio":
+        end_min = slot_min + slot_minutes
+        if not any(
+            (sh * 60 + sm) <= slot_min and end_min <= (eh * 60 + em)
+            for sh, sm, eh, em, _ in merge_adjacent_windows(day_wins)
+        ):
+            return "estoura_expediente"
+    return None
+
+
 _WEEKDAY_NAMES = {0: "Segunda", 1: "Terça", 2: "Quarta", 3: "Quinta", 4: "Sexta", 5: "Sábado", 6: "Domingo"}
 _DOCTOR_LABELS = {"bruna": "Dra. Bruna", "julio": "Dr. Júlio"}
 

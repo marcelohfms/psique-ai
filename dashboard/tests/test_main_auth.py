@@ -115,3 +115,18 @@ def test_atendente_renderiza_moldura_e_lista_de_parentesco():
                   '<option value="tutor(a)">tutor(a)</option>'):
         assert marca in r.text, marca
     assert 'data-tab="contato"' not in r.text
+
+
+# ── Aba Consultas (Parte 2) ─────────────────────────────────────────────────────
+
+def test_atendente_page_has_consultas_tab_first():
+    r = _client().get("/atendente", params={"token": PANEL_TOKEN})
+    assert r.status_code == 200
+    html = r.text
+    assert 'data-tab="consultas"' in html
+    assert html.index('data-tab="consultas"') < html.index('data-tab="financeiro"')
+    assert 'id="tab-consultas"' in html
+    # A aba Consultas abre selecionada e o Financeiro começa escondido.
+    assert '<button type="button" role="tab" data-tab="consultas" class="tab" aria-selected="true">' in html
+    assert 'id="tab-financeiro" class="tab-panel hidden' in html
+    assert 'id="appt-sheet"' in html

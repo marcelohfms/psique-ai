@@ -35,6 +35,14 @@ def _fmt_date(iso: str) -> str:
     return datetime.fromisoformat(iso).astimezone(TZ).strftime("%d/%m/%Y")
 
 
+def _not_courtesy(appt: dict) -> bool:
+    """False para cortesia: da consulta (appointments.is_courtesy) ou da ficha
+    (patients.custom_price == 0). Cortesia não tem saldo a cobrar."""
+    if appt.get("is_courtesy"):
+        return False
+    return (appt.get("patients") or {}).get("custom_price") != 0
+
+
 def _patient_and_contact(appt: dict) -> tuple[str, str, str]:
     """Extrai (nome do paciente, nome do contato responsável, telefone) do join com patients."""
     patient = appt.get("patients") or {}
@@ -68,7 +76,7 @@ async def main() -> None:
     # ── 1. Taxa de reserva pendente (agendadas, futuras, sem booking_fee_paid_at) ──
     r1 = await (
         client.from_("appointments")
-        .select(f"appointment_id, start_time, doctor_id, consultation_type, booking_fee_paid_at, paid_at, {patients_select}")
+        .select(f"appointment_id, start_time, doctor_id, consultation_type, booking_fee_paid_at, paid_at, is_courtesy, {patients_select}")
         .eq("status", "scheduled")
         .eq("booking_fee_waived", False)
         .is_("booking_fee_paid_at", "null")
@@ -76,22 +84,20 @@ async def main() -> None:
         .order("start_time")
         .execute()
     )
-    taxa_pendente = r1.data or []
+    # Exclude courtesy (appointments.is_courtesy or patients.custom_price == 0) — no fee to collect
+    taxa_pendente = [appt for appt in (r1.data or []) if _not_courtesy(appt)]
 
     # ── 2. Pagamento de consulta pendente (realizadas, sem paid_at) ──────────────
     r2 = await (
         client.from_("appointments")
-        .select(f"appointment_id, start_time, doctor_id, consultation_type, booking_fee_paid_at, paid_at, booking_fee_waived, {patients_select}")
+        .select(f"appointment_id, start_time, doctor_id, consultation_type, booking_fee_paid_at, paid_at, booking_fee_waived, is_courtesy, {patients_select}")
         .eq("status", "completed")
         .is_("paid_at", "null")
         .order("start_time", desc=True)
         .execute()
     )
-    # Exclude courtesy patients (custom_price == 0) — they have no balance to collect
-    consulta_pendente = [
-        appt for appt in (r2.data or [])
-        if (appt.get("patients") or {}).get("custom_price") != 0
-    ]
+    # Exclude courtesy (appointments.is_courtesy or patients.custom_price == 0) — they have no balance to collect
+    consulta_pendente = [appt for appt in (r2.data or []) if _not_courtesy(appt)]
 
     # ── Build email ───────────────────────────────────────────────────────────────
     total = len(taxa_pendente) + len(consulta_pendente)

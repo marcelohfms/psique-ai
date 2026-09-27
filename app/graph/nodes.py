@@ -2465,24 +2465,14 @@ async def patient_agent_node(state: ConversationState, config: RunnableConfig) -
                 # Extract doctor/date/time line (2nd line)
                 _lines = _result_body.splitlines()
                 _appt_line = _lines[1] if len(_lines) > 1 else ""
+                from app.booking_texts import confirmation_text as _confirmation_text
                 if _result_body.startswith("AGENDAMENTO_CORTESIA\n"):
-                    _patient_msg = (
-                        f"Perfeito, {_contact_name}! 😊 Consulta confirmada:\n{_appt_line}\n\n"
-                        f"Como combinado, a taxa de reserva está isenta. Até lá!"
-                    )
+                    _kind = "cortesia"
                 elif _result_body.startswith("AGENDAMENTO_TAXA_DISPENSADA\n"):
-                    _patient_msg = (
-                        f"Perfeito, {_contact_name}! 😊 Consulta confirmada:\n{_appt_line}\n\n"
-                        f"A taxa de reserva foi dispensada. Até lá!"
-                    )
+                    _kind = "taxa_isenta"
                 else:
-                    _PIX_KEY = CORRECT_PIX_KEY
-                    _patient_msg = (
-                        f"Consulta registrada! ✅\n{_appt_line}\n\n"
-                        f"Para garantir a vaga, é necessário o pagamento da taxa de reserva de R$ 100,00 em até 2 horas.\n"
-                        f"💳 PIX: {_PIX_KEY}\n\n"
-                        f"Esse valor será abatido do total da consulta. Em caso de cancelamento ou remarcação com menos de 24h de antecedência ou ausência sem justificativa, a taxa não é devolvida."
-                    )
+                    _kind = "normal"
+                _patient_msg = _confirmation_text(_kind, _appt_line, _contact_name)
             elif _result.startswith("[INSTRUÇÃO INTERNA"):
                 _pa_logger.warning("PENDING_APPT_CONFIRM internal error phone=%s result=%.200s", state.get("phone"), _result_body)
                 # Before flagging an error, check if patient already has this appointment

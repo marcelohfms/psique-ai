@@ -519,6 +519,7 @@ async def compute_pendencias(client, patient_ids: list[str] | None = None) -> li
         .select(
             "appointment_id, patient_id, start_time, doctor_id, paid_at, "
             "booking_fee_paid_at, booking_fee_waived, consultation_type, status, "
+            "is_courtesy, "
             "patients(name, birth_date, custom_price, "
             "patient_contacts(is_self, contacts(phone, name)))"
         )
@@ -528,12 +529,19 @@ async def compute_pendencias(client, patient_ids: list[str] | None = None) -> li
         query = query.in_("patient_id", patient_ids)
     result = await query.execute()
 
+    # Cortesia (por consulta ou por paciente inteiro via custom_price==0) não
+    # gera pendência de taxa nem de consulta.
+    rows = [
+        r for r in (result.data or [])
+        if not r.get("is_courtesy") and (r.get("patients") or {}).get("custom_price") != 0
+    ]
+
     # Uma 1ª consulta de menor de idade vira 2 linhas de appointments (1h pais +
     # 1h paciente, datas distintas) mas é uma cobrança só — agrupa pelo mesmo
     # critério que register_payment já usa (app/graph/tools.py) para não exibir
     # nem cobrar em dobro.
     groups: dict = {}
-    for appt in result.data or []:
+    for appt in rows:
         if appt.get("consultation_type") == "primeira_consulta":
             key = (appt.get("patient_id"), "primeira_consulta")
         else:
