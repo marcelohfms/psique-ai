@@ -1,8 +1,10 @@
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 
 import pytest
 
 import attendant_db
+
+JULIO = "d5baa58b-a788-4f40-b8c0-512c189150be"
 
 
 # ── Variantes de telefone ─────────────────────────────────────────────────────
@@ -737,3 +739,55 @@ async def test_future_bookings_by_contact_ignora_outro_contato_status_e_passado(
 
 async def test_future_bookings_by_contact_sem_consultas_e_zero(patched_client):
     assert await attendant_db.future_bookings_by_contact("p1", "c1") == 0
+
+
+# ── Consultas futuras + etiqueta 1ª consulta ─────────────────────────────────
+
+
+async def test_list_consultas_future_active_only(patched_client, fake_client):
+    fake_client.store["appointments"] = [
+        {"appointment_id": "a1", "patient_id": "p1", "status": "scheduled", "doctor_id": JULIO,
+         "start_time": "2099-10-05T12:00:00+00:00", "end_time": "2099-10-05T13:00:00+00:00",
+         "modality": "presencial", "consultation_type": "primeira_consulta",
+         "session_note": "1ª consulta · parte 1 de 2", "is_courtesy": False},
+        {"appointment_id": "a0", "patient_id": "p1", "status": "scheduled", "doctor_id": JULIO,
+         "start_time": "2000-01-01T12:00:00+00:00", "end_time": "2000-01-01T13:00:00+00:00"},
+        {"appointment_id": "a2", "patient_id": "p1", "status": "cancelled", "doctor_id": JULIO,
+         "start_time": "2099-11-05T12:00:00+00:00", "end_time": "2099-11-05T13:00:00+00:00"},
+        {"appointment_id": "c1", "patient_id": "p1", "status": "completed", "doctor_id": JULIO,
+         "start_time": "2020-01-01T12:00:00+00:00", "end_time": "2020-01-01T13:00:00+00:00"},
+    ]
+    out = await attendant_db.list_consultas("p1")
+    assert [a["appointment_id"] for a in out["appointments"]] == ["a1"]
+    a = out["appointments"][0]
+    assert a["start_local"] == "2099-10-05T09:00" and a["minutes"] == 60
+    assert a["doctor_key"] == "julio"
+    assert out["pending_part2"] == "a1"
+    assert out["has_completed"] is True
+
+
+async def test_list_consultas_part2_booked_clears_pending(patched_client, fake_client):
+    base = {"patient_id": "p1", "status": "scheduled", "doctor_id": JULIO}
+    fake_client.store["appointments"] = [
+        {**base, "appointment_id": "a1", "start_time": "2099-10-05T12:00:00+00:00",
+         "end_time": "2099-10-05T13:00:00+00:00", "session_note": "1ª consulta · parte 1 de 2"},
+        {**base, "appointment_id": "a2", "start_time": "2099-10-08T12:00:00+00:00",
+         "end_time": "2099-10-08T13:00:00+00:00", "session_note": "1ª consulta · parte 2 de 2"},
+    ]
+    out = await attendant_db.list_consultas("p1")
+    assert out["pending_part2"] is None
+    assert out["has_completed"] is False
+
+
+async def test_set_first_consultation(patched_client, fake_client):
+    fake_client.store["appointments"] = [{"appointment_id": "a1", "consultation_type": None}]
+    await attendant_db.set_first_consultation("a1", True)
+    assert fake_client.store["appointments"][0]["consultation_type"] == "primeira_consulta"
+    await attendant_db.set_first_consultation("a1", False)
+    assert fake_client.store["appointments"][0]["consultation_type"] == "acompanhamento"
+
+
+def test_age_on():
+    assert attendant_db.age_on("10/02/2016", date(2026, 2, 9)) == 9
+    assert attendant_db.age_on("2016-02-10", date(2026, 2, 10)) == 10
+    assert attendant_db.age_on("", date(2026, 1, 1)) is None
