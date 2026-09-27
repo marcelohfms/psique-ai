@@ -451,13 +451,27 @@ async def set_primeira(appointment_id: str, body: FirstBody, _: None = Depends(v
     return {"ok": True}
 
 
+_DRY_RUN_TIMEOUT = 20.0
+_BOOKING_TIMEOUT = 60.0
+
+
 @router.post("/consulta/nova")
 async def nova_consulta(body: NewAppointmentBody, _: None = Depends(verify_token)):
     await _assert_patient_scope(body.phone, body.patient_id)
+    timeout = _DRY_RUN_TIMEOUT if body.dry_run else _BOOKING_TIMEOUT
     try:
-        status_code, payload = await eva_client.post("/admin/panel/appointments", body.model_dump())
+        status_code, payload = await eva_client.post(
+            "/admin/panel/appointments", body.model_dump(), timeout=timeout)
+    except eva_client.EvaTimeout:
+        if body.dry_run:
+            raise HTTPException(status_code=503, detail="A Eva não respondeu. Nada foi alterado.")
+        raise HTTPException(
+            status_code=504,
+            detail="A Eva demorou a responder. Confira a lista de consultas antes de tentar de novo.")
     except eva_client.EvaUnavailable:
         raise HTTPException(status_code=503, detail="A Eva não respondeu. Nada foi alterado.")
+    if status_code in (401, 403):
+        raise HTTPException(status_code=503, detail="Painel sem acesso à Eva (configuração). Nada foi alterado.")
     if status_code == 200 and not body.dry_run:
         await attendant_db.log_event("attendant_new_appointment", body.phone, {
             "patient_id": body.patient_id, "agent": body.agent, "encaixe": body.encaixe_confirmed,

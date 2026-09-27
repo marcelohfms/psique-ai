@@ -905,8 +905,8 @@ def test_first_consultation_toggle(client, monkeypatch):
 
 def test_nova_consulta_forwards_to_eva(client, monkeypatch):
     seen = {}
-    async def fake_post(path, body):
-        seen["path"], seen["body"] = path, body
+    async def fake_post(path, body, timeout=None):
+        seen["path"], seen["body"], seen["timeout"] = path, body, timeout
         return 200, {"appointments": [{"appointment_id": "e1"}], "message": {"sent": ["Ana"]}}
     async def fake_log(t, phone, meta):
         seen["log"] = t
@@ -919,10 +919,24 @@ def test_nova_consulta_forwards_to_eva(client, monkeypatch):
     assert seen["path"] == "/admin/panel/appointments"
     assert seen["body"]["patient_id"] == "p1" and seen["body"]["phone"] == "5581"
     assert seen["log"] == "attendant_new_appointment"
+    assert seen["timeout"] == attendant_routes._BOOKING_TIMEOUT
+
+
+def test_nova_consulta_dry_run_uses_short_timeout(client, monkeypatch):
+    seen = {}
+    async def fake_post(path, body, timeout=None):
+        seen["timeout"] = timeout
+        return 200, {"encaixe_reasons": [], "message": {}}
+    monkeypatch.setattr(eva_client, "post", fake_post)
+    body = {"phone": "5581", "patient_id": "p1", "doctor": "julio", "modality": "presencial",
+            "parts": [{"start": "2026-10-05T09:00", "minutes": 60}], "dry_run": True}
+    r = client.post("/api/atendente/consulta/nova", params={"token": "test-token"}, json=body)
+    assert r.status_code == 200
+    assert seen["timeout"] == attendant_routes._DRY_RUN_TIMEOUT
 
 
 def test_nova_consulta_passes_409(client, monkeypatch):
-    async def fake_post(path, body):
+    async def fake_post(path, body, timeout=None):
         return 409, {"detail": {"needs_encaixe": True, "reasons": ["dia bloqueado na agenda"]}}
     monkeypatch.setattr(eva_client, "post", fake_post)
     r = client.post("/api/atendente/consulta/nova", params={"token": "test-token"},
@@ -933,7 +947,7 @@ def test_nova_consulta_passes_409(client, monkeypatch):
 
 
 def test_nova_consulta_eva_down(client, monkeypatch):
-    async def fake_post(path, body):
+    async def fake_post(path, body, timeout=None):
         raise eva_client.EvaUnavailable("down")
     monkeypatch.setattr(eva_client, "post", fake_post)
     r = client.post("/api/atendente/consulta/nova", params={"token": "test-token"},
@@ -941,3 +955,46 @@ def test_nova_consulta_eva_down(client, monkeypatch):
                           "parts": [{"start": "2026-10-05T09:00", "minutes": 60}]})
     assert r.status_code == 503
     assert "Nada foi alterado" in r.json()["detail"]
+
+
+def test_nova_consulta_eva_timeout_not_dry_run_returns_504(client, monkeypatch):
+    async def fake_post(path, body, timeout=None):
+        raise eva_client.EvaTimeout("timed out")
+    monkeypatch.setattr(eva_client, "post", fake_post)
+    r = client.post("/api/atendente/consulta/nova", params={"token": "test-token"},
+                    json={"phone": "5581", "patient_id": "p1", "doctor": "julio", "modality": "online",
+                          "parts": [{"start": "2026-10-05T09:00", "minutes": 60}]})
+    assert r.status_code == 504
+    assert "demorou a responder" in r.json()["detail"]
+
+
+def test_nova_consulta_eva_timeout_dry_run_returns_503(client, monkeypatch):
+    async def fake_post(path, body, timeout=None):
+        raise eva_client.EvaTimeout("timed out")
+    monkeypatch.setattr(eva_client, "post", fake_post)
+    body = {"phone": "5581", "patient_id": "p1", "doctor": "julio", "modality": "online",
+            "parts": [{"start": "2026-10-05T09:00", "minutes": 60}], "dry_run": True}
+    r = client.post("/api/atendente/consulta/nova", params={"token": "test-token"}, json=body)
+    assert r.status_code == 503
+    assert "Nada foi alterado" in r.json()["detail"]
+
+
+def test_nova_consulta_eva_forbidden_returns_503_friendly(client, monkeypatch):
+    async def fake_post(path, body, timeout=None):
+        return 403, {"detail": "Forbidden"}
+    monkeypatch.setattr(eva_client, "post", fake_post)
+    r = client.post("/api/atendente/consulta/nova", params={"token": "test-token"},
+                    json={"phone": "5581", "patient_id": "p1", "doctor": "julio", "modality": "online",
+                          "parts": [{"start": "2026-10-05T09:00", "minutes": 60}]})
+    assert r.status_code == 503
+    assert r.json()["detail"] == "Painel sem acesso à Eva (configuração). Nada foi alterado."
+
+
+def test_nova_consulta_eva_unauthorized_returns_503_friendly(client, monkeypatch):
+    async def fake_post(path, body, timeout=None):
+        return 401, {"detail": "Unauthorized"}
+    monkeypatch.setattr(eva_client, "post", fake_post)
+    r = client.post("/api/atendente/consulta/nova", params={"token": "test-token"},
+                    json={"phone": "5581", "patient_id": "p1", "doctor": "julio", "modality": "online",
+                          "parts": [{"start": "2026-10-05T09:00", "minutes": 60}]})
+    assert r.status_code == 503

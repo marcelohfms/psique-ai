@@ -50,3 +50,35 @@ async def test_missing_config_raises(monkeypatch):
     monkeypatch.delenv("EVA_BASE_URL")
     with pytest.raises(eva_client.EvaUnavailable):
         await eva_client.post("/x", {})
+
+
+@pytest.mark.asyncio
+async def test_timeout_raises_eva_timeout(monkeypatch):
+    def handler(req):
+        raise httpx.ReadTimeout("timed out")
+    _mock(monkeypatch, handler)
+    with pytest.raises(eva_client.EvaTimeout):
+        await eva_client.post("/x", {})
+
+
+@pytest.mark.asyncio
+async def test_eva_timeout_is_an_eva_unavailable(monkeypatch):
+    """O chamador que só sabe tratar EvaUnavailable continua funcionando."""
+    def handler(req):
+        raise httpx.ReadTimeout("timed out")
+    _mock(monkeypatch, handler)
+    with pytest.raises(eva_client.EvaUnavailable):
+        await eva_client.post("/x", {})
+
+
+@pytest.mark.asyncio
+async def test_post_forwards_timeout_to_httpx_client(monkeypatch):
+    seen = {}
+    real = eva_client.httpx.AsyncClient
+    def fake_client(**kw):
+        seen["timeout"] = kw.get("timeout")
+        transport = httpx.MockTransport(lambda req: httpx.Response(200, json={"ok": 1}))
+        return real(transport=transport, **kw)
+    monkeypatch.setattr(eva_client.httpx, "AsyncClient", fake_client)
+    await eva_client.post("/x", {}, timeout=60.0)
+    assert seen["timeout"] == 60.0
