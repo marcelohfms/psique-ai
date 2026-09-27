@@ -391,7 +391,7 @@ async def list_consultas(patient_id: str) -> dict:
     res = await (
         client.from_("appointments")
         .select("appointment_id, start_time, end_time, doctor_id, modality, consultation_type, "
-                "session_note, status")
+                "session_note, status, is_courtesy, booking_fee_waived")
         .eq("patient_id", patient_id)
         .in_("status", list(_ACTIVE_APPT_STATUSES))
         .gt("start_time", now_iso)
@@ -410,6 +410,8 @@ async def list_consultas(patient_id: str) -> dict:
             "consultation_type": r.get("consultation_type"),
             "session_note": r.get("session_note") or "",
             "status": r["status"],
+            # Só para pré-marcar a cobrança ao alterar; a aba Consultas não mostra pagamento.
+            "billing": "cortesia" if r.get("is_courtesy") else "taxa_isenta" if r.get("booking_fee_waived") else "normal",
         })
     pending, pending_modality = await _pending_part2(client, patient_id)
     done = await (

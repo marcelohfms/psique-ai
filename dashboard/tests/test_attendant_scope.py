@@ -221,3 +221,17 @@ def test_first_consultation_out_of_scope(client, monkeypatch):
     r = client.post("/api/atendente/consulta/a1/primeira", params={"token": "test-token"},
                     json={"phone": "5581", "first": True})
     assert r.status_code == 403
+
+
+@pytest.mark.parametrize("action,body", [
+    ("alterar", {"phone": "5581", "doctor": "julio", "modality": "online", "start": "2026-10-06T09:00",
+                 "minutes": 60, "initiated_by": "clinic"}),
+    ("cancelar", {"phone": "5581", "initiated_by": "clinic"}),
+])
+def test_alterar_cancelar_out_of_scope(client, monkeypatch, action, body):
+    _scope(monkeypatch, "c1", {"p1"})
+    async def other(aid):
+        return "p9"
+    monkeypatch.setattr(attendant_db, "get_appointment_patient_id", other)
+    r = client.post(f"/api/atendente/consulta/a1/{action}", params={"token": "test-token"}, json=body)
+    assert r.status_code == 403
