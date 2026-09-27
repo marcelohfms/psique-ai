@@ -797,6 +797,50 @@ async def test_collect_info_keeps_unrecognized_relationship_verbatim():
     assert "parentesco" not in mock_send.call_args[0][1].lower()
 
 
+# O passo 6b grava rótulos da lista do painel da atendente, com o gênero tirado
+# da resposta. Antes gravava "avó/avô", "irmão/irmã", "tia/tio", que a regra da
+# idade (app/patients.py) não reconhecia.
+@pytest.mark.parametrize("resposta,esperado", [
+    ("sou a avó dele", "avó"),
+    ("avô", "avô"),
+    ("vovó", "avó"),
+    ("sou a avo", "avó"),
+    ("sou o avo", "avô"),
+    ("avo", "avó/avô"),  # sem acento nem artigo: não dá para escolher
+    ("irma", "irmã"),
+    ("sou irmão dele", "irmão"),
+    ("tia", "tia"),
+    ("tio materno", "tio"),
+    ("madrinha", "madrinha"),
+    ("sou tutora dele", "responsável legal"),
+])
+async def test_collect_info_parentesco_grava_rotulo_do_painel(resposta, esperado):
+    from app.graph.nodes import collect_info_node
+    from langchain_core.messages import HumanMessage, AIMessage
+
+    state = _base_minor_state(
+        user_name="Marta Nunes",
+        patient_name="Pedro Lima",
+        patient_cpf="111.222.333-44",
+        guardian_name="Marta Nunes",
+        is_patient=False,
+        is_returning_patient=False,
+        patient_age=10,
+        birth_date="15/03/2015",
+        messages=[
+            HumanMessage(content="quero agendar uma consulta"),
+            AIMessage(content="E qual o seu parentesco com Pedro? (mãe, pai, avó, responsável legal...)"),
+            HumanMessage(content=resposta),
+        ],
+    )
+    with patch("app.graph.nodes.send_text", new_callable=AsyncMock), \
+         patch("app.graph.nodes.save_message", new_callable=AsyncMock), \
+         patch("app.graph.nodes.get_users_by_phone", new_callable=AsyncMock, return_value=[]):
+        result = await collect_info_node(state, {})
+
+    assert result.get("guardian_relationship") == esperado
+
+
 async def test_collect_info_self_messaging_new_minor_skips_guardian_name_preview():
     """A self-messaging minor (is_patient=True, no guardian contact) answering
     'não' to 'já é paciente?' must be asked about the doctor next, NOT the
@@ -3856,6 +3900,26 @@ async def test_collect_info_completes_normally_when_nothing_is_missing():
     assert result.get("stage") == "patient_agent"
 
 
+@pytest.mark.parametrize("extraido,esperado", [
+    ("avó materna", "avó"),
+    ("mãe ou pai", "mãe/pai"),
+    ("irmã mais velha", "irmã"),
+    ("cuidadora", "cuidadora"),
+])
+async def test_collect_info_normaliza_parentesco_extraido_pela_llm(extraido, esperado):
+    """A LLM escreve o parentesco por conta própria; ele passa pelo mesmo
+    normalizador do passo 6b antes de ir para o cadastro."""
+    from app.graph.schemas import CollectInfoOutput
+
+    result, _ = await _run_collect(
+        _bernardo_state(),
+        CollectInfoOutput(reply="Perfeito, tudo anotado! 😊",
+                          guardian_relationship=extraido, is_complete=True),
+    )
+
+    assert result.get("guardian_relationship") == esperado
+
+
 async def test_collect_info_uses_field_answered_in_this_turn():
     """Se o campo que faltava veio na resposta deste turno, o cadastro fecha
     normalmente — a rede não pode reperguntar algo já respondido."""
@@ -5300,6 +5364,32 @@ async def test_resposta_de_parentesco_continua_valendo():
     ))
 
     assert result.get("is_patient") is False
+    # "minha filha" não diz se é mãe ou pai: grava o rótulo simples do painel,
+    # que a regra da idade lê como responsável legal (antes: "mãe/pai").
+    assert result.get("guardian_relationship") == "responsável legal"
+
+
+@pytest.mark.parametrize("resposta,esperado", [
+    ("Sou a mãe, é para minha filha", "mãe"),
+    ("sou o pai dele, é pro meu filho", "pai"),
+    ("sou a avó, é para minha neta", "avó"),
+    ("Não sou eu, é para minha mãe", "filho(a)"),
+    ("Para meu marido", "cônjuge"),
+    # "meu irmão" não diz se quem fala é irmão ou irmã: fica em branco e o
+    # passo 6b pergunta, se o paciente for menor (antes: "irmão/irmã").
+    ("Para meu irmão", None),
+])
+async def test_resposta_para_outra_pessoa_infere_rotulo_do_painel(resposta, esperado):
+    result, _ = await _run(_mae_state(
+        messages=[
+            HumanMessage(content="Gostaria de agendar uma consulta"),
+            AIMessage(content="A consulta é para você ou para outra pessoa?"),
+            HumanMessage(content=resposta),
+        ],
+    ))
+
+    assert result.get("is_patient") is False
+    assert result.get("guardian_relationship") == esperado
 
 
 async def test_resposta_indecifravel_repergunta_em_vez_de_assumir():

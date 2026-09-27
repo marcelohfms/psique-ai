@@ -670,6 +670,29 @@ def test_is_guardian_relationship():
     assert _is_guardian_relationship("") is False
 
 
+# Rótulos compostos que a Eva gravava antes de usar a lista do painel, mais
+# madrinha/padrinho (sem equivalente no painel) e o "tutor(a)" do painel.
+@pytest.mark.parametrize("rel,guardian,legal", [
+    ("avó/avô", True, True),
+    ("avô/avó", True, True),
+    ("mãe/pai", True, True),
+    ("tutor(a)", True, True),
+    ("tia/tio", True, False),
+    ("irmão/irmã", True, False),
+    ("madrinha", True, False),
+    ("padrinho", True, False),
+    ("filho(a)", False, False),
+    ("cônjuge", False, False),
+    ("acompanhante", False, False),
+    ("mãe/cônjuge", False, False),
+    ("/", False, False),
+])
+def test_relacoes_compostas_e_padrinhos(rel, guardian, legal):
+    from app.patients import _is_legal_guardian
+    assert _is_guardian_relationship(rel) is guardian
+    assert _is_legal_guardian(rel) is legal
+
+
 # --- _linked_contacts_with_marker ---
 from app.patients import _linked_contacts_with_marker
 
@@ -861,6 +884,32 @@ async def test_return_minor_shares_with_extended_when_no_legal_guardian():
     with _patch("app.patients.get_supabase", new=AsyncMock(return_value=client)):
         out = await return_reminder_contacts("p1")
     assert sorted(c["phone"] for c in out) == ["5581777", "5581888"]
+
+
+@pytest.mark.asyncio
+async def test_return_minor_avo_composto_conta_como_responsavel_legal():
+    # único vínculo legal gravado como "avó/avô" (dado antigo da Eva): ela recebe
+    # e a tia, parente não legal, fica de fora
+    rows = [_pcm("c-avo", "5581999", False, "avó/avô", "consulta"),
+            _pcm("c-tia", "5581888", False, "tia/tio", "consulta")]
+    client = _ret_client(rows, "12/08/2015")
+    with _patch("app.patients.get_supabase", new=AsyncMock(return_value=client)):
+        out = await return_reminder_contacts("p1")
+    assert [c["phone"] for c in out] == ["5581999"]
+
+
+@pytest.mark.asyncio
+async def test_return_minor_compostos_nao_legais_compartilham_sem_responsavel():
+    # sem responsável legal: "tia/tio", "irmão/irmã" e "madrinha" recebem, e um
+    # terceiro sem parentesco reconhecido não
+    rows = [_pcm("c-tia", "5581888", False, "tia/tio", "consulta"),
+            _pcm("c-irma", "5581777", False, "irmão/irmã", "consulta"),
+            _pcm("c-mad", "5581666", False, "madrinha", "consulta"),
+            _pcm("c-3p", "5581555", False, "vizinha", "consulta")]
+    client = _ret_client(rows, "12/08/2015")
+    with _patch("app.patients.get_supabase", new=AsyncMock(return_value=client)):
+        out = await return_reminder_contacts("p1")
+    assert sorted(c["phone"] for c in out) == ["5581666", "5581777", "5581888"]
 
 
 # ── manual_hold: silêncio total dos lembretes proativos ──────────────────────

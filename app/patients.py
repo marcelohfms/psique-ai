@@ -330,9 +330,40 @@ def _is_self_like(rel: str | None) -> bool:
     return _norm_rel(rel) in {_norm_rel(s) for s in _SELF_LIKE}
 
 
+# Parentes que não são responsáveis legais e que a Eva grava como vieram (não há
+# equivalente na lista do painel). Contam como tio/tia: recebem o lembrete de
+# retorno só quando o menor não tem responsável legal vinculado.
+_OTHER_RELATIVE_RELATIONSHIPS = {"madrinha", "padrinho"}
+
+
+def _rel_parts(rel: str | None) -> list[str]:
+    """Partes de um parentesco, normalizadas.
+
+    A Eva gravou por um tempo rótulos compostos quando não sabia o gênero
+    ("avó/avô", "irmão/irmã", "tia/tio", "mãe/pai"), e o painel usa "tutor(a)".
+    Cada lado da barra vira uma parte e o sufixo "(a)"/"(o)" cai, para que a
+    regra da idade reconheça esses dados antigos."""
+    parts = []
+    for p in _norm_rel(rel).split("/"):
+        p = p.strip()
+        for suffix in ("(a)", "(o)"):
+            if p.endswith(suffix):
+                p = p[: -len(suffix)].strip()
+        if p:
+            parts.append(p)
+    return parts
+
+
+def _all_parts_in(rel: str | None, allowed: set[str]) -> bool:
+    parts = _rel_parts(rel)
+    norm_allowed = {_norm_rel(s) for s in allowed}
+    return bool(parts) and all(p in norm_allowed for p in parts)
+
+
 def _is_guardian_relationship(rel: str | None) -> bool:
-    """True se a relação é de responsável (mãe/pai/tutor/avó/...)."""
-    return _norm_rel(rel) in {_norm_rel(s) for s in _GUARDIAN_RELATIONSHIPS}
+    """True se a relação é de responsável ou parente (mãe/pai/tutor/avó/tio/...).
+    Aceita os compostos antigos: "tia/tio" e "irmão/irmã" contam aqui."""
+    return _all_parts_in(rel, _GUARDIAN_RELATIONSHIPS | _OTHER_RELATIVE_RELATIONSHIPS)
 
 
 _LEGAL_GUARDIAN_RELATIONSHIPS = {
@@ -344,8 +375,10 @@ _LEGAL_GUARDIAN_RELATIONSHIPS = {
 
 def _is_legal_guardian(rel: str | None) -> bool:
     """True se a relação é de responsável legal (mãe/pai/tutor/avó/guardião).
-    Subconjunto de `_is_guardian_relationship` — exclui tio/tia/irmão/padrasto."""
-    return _norm_rel(rel) in {_norm_rel(s) for s in _LEGAL_GUARDIAN_RELATIONSHIPS}
+    Subconjunto de `_is_guardian_relationship` — exclui tio/tia/irmão/padrasto.
+    Um composto só é legal se todos os lados forem: "avó/avô" e "mãe/pai" são,
+    "tia/tio" não."""
+    return _all_parts_in(rel, _LEGAL_GUARDIAN_RELATIONSHIPS)
 
 
 async def get_patient_by_id(patient_id: str) -> dict | None:
