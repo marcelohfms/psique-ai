@@ -3,6 +3,7 @@ from fastapi import FastAPI
 from starlette.testclient import TestClient
 
 import attendant_routes
+import eva_client
 import attendant_db
 
 
@@ -875,3 +876,68 @@ def test_editar_vinculo_loga_agent(client, monkeypatch):
     assert r.status_code == 200
     assert calls["log"][0] == "attendant_edit_link"
     assert calls["log"][2]["agent"] == "Ana"
+
+
+# ── Consultas ─────────────────────────────────────────────────────────────────
+
+
+def test_consultas_returns_list(client, monkeypatch):
+    async def fake(pid):
+        return {"appointments": [], "pending_part2": None, "has_completed": False, "pid": pid}
+    monkeypatch.setattr(attendant_db, "list_consultas", fake)
+    r = client.get("/api/atendente/consultas", params={"token": "test-token", "phone": "5581", "patient_id": "p1"})
+    assert r.status_code == 200 and r.json()["pid"] == "p1"
+
+
+def test_first_consultation_toggle(client, monkeypatch):
+    calls = {}
+    async def fake_set(aid, first):
+        calls["set"] = (aid, first)
+    async def fake_log(t, phone, meta):
+        calls["log"] = t
+    monkeypatch.setattr(attendant_db, "set_first_consultation", fake_set)
+    monkeypatch.setattr(attendant_db, "log_event", fake_log)
+    r = client.post("/api/atendente/consulta/a1/primeira", params={"token": "test-token"},
+                    json={"phone": "5581", "first": False, "agent": "Maria"})
+    assert r.status_code == 200
+    assert calls == {"set": ("a1", False), "log": "attendant_first_consultation"}
+
+
+def test_nova_consulta_forwards_to_eva(client, monkeypatch):
+    seen = {}
+    async def fake_post(path, body):
+        seen["path"], seen["body"] = path, body
+        return 200, {"appointments": [{"appointment_id": "e1"}], "message": {"sent": ["Ana"]}}
+    async def fake_log(t, phone, meta):
+        seen["log"] = t
+    monkeypatch.setattr(eva_client, "post", fake_post)
+    monkeypatch.setattr(attendant_db, "log_event", fake_log)
+    body = {"phone": "5581", "patient_id": "p1", "doctor": "julio", "modality": "presencial",
+            "parts": [{"start": "2026-10-05T09:00", "minutes": 60}], "billing": "normal", "agent": "Maria"}
+    r = client.post("/api/atendente/consulta/nova", params={"token": "test-token"}, json=body)
+    assert r.status_code == 200
+    assert seen["path"] == "/admin/panel/appointments"
+    assert seen["body"]["patient_id"] == "p1" and seen["body"]["phone"] == "5581"
+    assert seen["log"] == "attendant_new_appointment"
+
+
+def test_nova_consulta_passes_409(client, monkeypatch):
+    async def fake_post(path, body):
+        return 409, {"detail": {"needs_encaixe": True, "reasons": ["dia bloqueado na agenda"]}}
+    monkeypatch.setattr(eva_client, "post", fake_post)
+    r = client.post("/api/atendente/consulta/nova", params={"token": "test-token"},
+                    json={"phone": "5581", "patient_id": "p1", "doctor": "julio", "modality": "online",
+                          "parts": [{"start": "2026-10-05T09:00", "minutes": 60}]})
+    assert r.status_code == 409
+    assert r.json()["detail"]["reasons"] == ["dia bloqueado na agenda"]
+
+
+def test_nova_consulta_eva_down(client, monkeypatch):
+    async def fake_post(path, body):
+        raise eva_client.EvaUnavailable("down")
+    monkeypatch.setattr(eva_client, "post", fake_post)
+    r = client.post("/api/atendente/consulta/nova", params={"token": "test-token"},
+                    json={"phone": "5581", "patient_id": "p1", "doctor": "julio", "modality": "online",
+                          "parts": [{"start": "2026-10-05T09:00", "minutes": 60}]})
+    assert r.status_code == 503
+    assert "Nada foi alterado" in r.json()["detail"]

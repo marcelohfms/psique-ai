@@ -194,3 +194,30 @@ def test_ficha_nova_sem_contato_no_numero_recusa(client, monkeypatch):
     r = client.post("/api/atendente/paciente-novo", params=TOKEN,
                     json={"phone": PHONE, "name": "Ana Luz", "birth_date": "01/02/2015"})
     assert r.status_code == 403
+
+
+# ── consultas ─────────────────────────────────────────────────────────────────
+
+
+def test_consultas_out_of_scope(client, monkeypatch):
+    _scope(monkeypatch, "c1", {"p1"})
+    r = client.get("/api/atendente/consultas", params={"token": "test-token", "phone": "5581", "patient_id": "p9"})
+    assert r.status_code == 403
+
+
+def test_nova_consulta_out_of_scope(client, monkeypatch):
+    _scope(monkeypatch, "c1", {"p1"})
+    r = client.post("/api/atendente/consulta/nova", params={"token": "test-token"},
+                    json={"phone": "5581", "patient_id": "p9", "doctor": "julio", "modality": "online",
+                          "parts": [{"start": "2026-10-05T09:00", "minutes": 60}]})
+    assert r.status_code == 403
+
+
+def test_first_consultation_out_of_scope(client, monkeypatch):
+    _scope(monkeypatch, "c1", {"p1"})
+    async def other(aid):
+        return "p9"
+    monkeypatch.setattr(attendant_db, "get_appointment_patient_id", other)
+    r = client.post("/api/atendente/consulta/a1/primeira", params={"token": "test-token"},
+                    json={"phone": "5581", "first": True})
+    assert r.status_code == 403
