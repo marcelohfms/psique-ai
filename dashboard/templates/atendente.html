@@ -102,6 +102,8 @@
                                           box-shadow: 0 1px 2px rgba(66,66,74,.12); }
   .eva .seg button:disabled { opacity: .4; cursor: default; }
   .eva .btn-info { background: var(--info); color: var(--on-accent); border-color: var(--info); }
+  .eva .btn-danger { background: var(--danger); color: var(--on-accent); border-color: var(--danger); }
+  .eva .tl-actions { display: flex; gap: 2px; margin-left: auto; align-self: center; }
   .eva .notice { border-radius: 12px; padding: 12px 14px; font-size: 13px; line-height: 1.45; }
   .eva .notice-info { background: var(--info-soft); color: var(--info); }
   .eva .notice-warn { background: var(--warn-soft); color: var(--warn); }
@@ -247,6 +249,11 @@
         </button>
       </div>
       <div class="flex-1 overflow-auto flex flex-col gap-5" style="padding: 22px 28px">
+        <div id="appt-who-wrap" class="hidden flex flex-col gap-2"><span class="cap">Quem pediu a mudança</span>
+          <div id="appt-who" class="seg" role="radiogroup" aria-label="Quem pediu a mudança">
+            <button type="button" role="radio" data-v="patient">Paciente</button>
+            <button type="button" role="radio" data-v="clinic">Clínica</button>
+          </div></div>
         <div id="appt-pending-notice" class="hidden notice notice-warn flex items-center gap-2">
           <span class="flex-1 text-sm">Falta marcar a 2ª parte da 1ª consulta</span>
           <button type="button" class="btn" id="appt-pending-notice-btn">Marcar 2ª parte</button>
@@ -297,6 +304,7 @@
           </div></div>
       </div>
       <div class="flex flex-col gap-3" style="padding: 12px 28px 20px; border-top: 1px solid var(--soft)">
+        <div id="appt-late" class="hidden notice notice-warn" role="alert">Remarcação a pedido do paciente com menos de 24h: será cobrada nova taxa.</div>
         <div id="appt-encaixe" class="hidden notice notice-info" role="alert"></div>
         <p id="appt-error" class="hidden text-sm" style="color: var(--danger); margin: 0" role="alert"></p>
         <div class="flex items-center gap-2 text-sm flex-wrap">
@@ -652,6 +660,14 @@ function apptCard(a) {
       <div class="flex items-baseline gap-2 flex-wrap">
         <span class="serif num" style="font-size: 20px">${escapeHtml(a.start_local.slice(11, 16))}</span>
         <span class="text-sm" style="color: var(--muted)">${escapeHtml(meta)}</span>
+        <span class="tl-actions">
+          <button type="button" class="ibtn" data-edit="${escapeHtml(a.appointment_id)}" aria-label="Alterar consulta das ${escapeHtml(a.start_local.slice(11, 16))}">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 20h4L19 9l-4-4L4 16z"/><path d="m13.5 6.5 4 4"/></svg>
+          </button>
+          <button type="button" class="ibtn" data-cancel="${escapeHtml(a.appointment_id)}" aria-label="Cancelar consulta das ${escapeHtml(a.start_local.slice(11, 16))}">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><circle cx="12" cy="12" r="8.5"/><path d="m9 9 6 6M15 9l-6 6"/></svg>
+          </button>
+        </span>
       </div>
       ${hasLine2 ? `<div class="flex items-center gap-2 flex-wrap">
         ${minor && a.doctor_key === "julio" ? `<button type="button" class="switch" role="switch" aria-checked="${first}" aria-label="1ª consulta" data-first="${escapeHtml(a.appointment_id)}"></button><span class="text-xs" style="color: var(--muted)">1ª consulta</span>` : ""}
@@ -686,6 +702,12 @@ function renderConsultas() {
       if (a) a.consultation_type = first ? "primeira_consulta" : "acompanhamento";
       flash("Etiqueta salva ✓");
     });
+  });
+  document.querySelectorAll("[data-edit]").forEach((b) => {
+    b.onclick = () => openApptEdit(CONSULTAS.appointments.find((x) => x.appointment_id === b.dataset.edit));
+  });
+  document.querySelectorAll("[data-cancel]").forEach((b) => {
+    b.onclick = () => openCancelSheet(CONSULTAS.appointments.find((x) => x.appointment_id === b.dataset.cancel));
   });
 }
 
@@ -1202,7 +1224,7 @@ let APPT_RETURN_FOCUS = null;
 let APPT_ENCAIXE = false;        // true depois do aviso de encaixe: o próximo clique confirma
 let APPT_PREVIEW_SEQ = 0;
 let APPT_PREVIEW_TIMER = null;
-const APPT_SEGS = ["appt-doctor", "appt-modality", "appt-split", "appt-dur", "appt-billing"];
+const APPT_SEGS = ["appt-doctor", "appt-modality", "appt-split", "appt-dur", "appt-billing", "appt-who"];
 const APPT_INPUTS = ["appt-date", "appt-time", "appt-date2", "appt-time2", "appt-note"];
 
 function segButtons(id) {
@@ -1248,10 +1270,27 @@ $("appt-first").onclick = () => {
 };
 APPT_INPUTS.forEach((id) => { $(id).oninput = () => apptChanged(id); });
 
+function apptSplitLabel(note) {
+  return (note || "").startsWith(SPLIT_PART1) ? SPLIT_PART1 : (note || "").startsWith(SPLIT_PART2) ? SPLIT_PART2 : "";
+}
+function apptUrl() {
+  return APPT.edit ? `/api/atendente/consulta/${encodeURIComponent(APPT.edit.appointment_id)}/alterar` : "/api/atendente/consulta/nova";
+}
 function apptSplit() {
+  if (APPT.edit) return false;
   return !APPT.splitOf && !$("appt-split-wrap").classList.contains("hidden") && segGet("appt-split") === "dividir";
 }
 function apptBody(extra = {}) {
+  if (APPT.edit) {
+    return {
+      phone: PHONE, doctor: segGet("appt-doctor"), modality: segGet("appt-modality"),
+      start: `${$("appt-date").value}T${$("appt-time").value}`, minutes: Number(segGet("appt-dur")),
+      session_note: $("appt-note").value.trim(),
+      first_consultation: !$("appt-first-wrap").classList.contains("hidden") && $("appt-first").getAttribute("aria-checked") === "true",
+      billing: segGet("appt-billing") || "normal", initiated_by: segGet("appt-who"),
+      encaixe_confirmed: false, dry_run: false, agent: AGENT, ...extra,
+    };
+  }
   const split = apptSplit();
   const parts = [{ start: `${$("appt-date").value}T${$("appt-time").value}`, minutes: Number(segGet("appt-dur")) }];
   if (split && $("appt-date2").value && $("appt-time2").value) parts.push({ start: `${$("appt-date2").value}T${$("appt-time2").value}`, minutes: 60 });
@@ -1278,7 +1317,8 @@ function apptChanged(source) {
   // A observação não muda o horário: não desfaz o aviso de encaixe nem a
   // prévia já calculada (só data/hora/médico/duração/split/partes mudam o
   // que seria enviado à Eva para checar).
-  const isNote = source === "appt-note";
+  // Na alteração a observação entra no texto enviado, então ela também refaz a prévia.
+  const isNote = source === "appt-note" && !APPT.edit;
   if (!isNote) {
     // Qualquer outra mudança desfaz o aviso de encaixe: o horário novo precisa ser checado de novo.
     APPT_ENCAIXE = false;
@@ -1286,6 +1326,7 @@ function apptChanged(source) {
     APPT_PREVIEW_SEQ++;
     clearTimeout(APPT_PREVIEW_TIMER);
     $("appt-encaixe").classList.add("hidden");
+    $("appt-late").classList.add("hidden");
     $("appt-preview").classList.add("hidden");
     $("appt-preview-btn").setAttribute("aria-expanded", "false");
   }
@@ -1293,35 +1334,37 @@ function apptChanged(source) {
   const doctor = segGet("appt-doctor");
   const minor = isMinor(CURRENT_PATIENT, $("appt-date").value || todayIso());
   // A etiqueta "1ª consulta" só existe para menor com o Dr. Júlio.
-  $("appt-first-wrap").classList.toggle("hidden", !minor || doctor !== "julio" || !!APPT.splitOf);
+  const splitPart = APPT.edit ? apptSplitLabel(APPT.edit.session_note) : "";
+  $("appt-first-wrap").classList.toggle("hidden", !minor || doctor !== "julio" || !!APPT.splitOf || !!splitPart);
   const first = minor && doctor === "julio" && $("appt-first").getAttribute("aria-checked") === "true";
-  const canSplit = !APPT.splitOf && first && doctor === "julio";
+  const canSplit = !APPT.splitOf && !APPT.edit && first && doctor === "julio";
   $("appt-split-wrap").classList.toggle("hidden", !canSplit);
   const split = canSplit && segGet("appt-split") === "dividir";
   $("appt-p2").classList.toggle("hidden", !split);
   $("appt-p1-cap").textContent = split ? "Data da 1ª parte" : "Data";
   // Com o formato à mostra (1ª consulta de menor com o Dr. Júlio), ele decide a
   // duração: 2h seguidas ou 1h por parte. Na 2ª parte, sempre 1h.
-  $("appt-dur-wrap").classList.toggle("hidden", canSplit || !!APPT.splitOf);
-  if (split || APPT.splitOf) segSet("appt-dur", "60");
+  $("appt-dur-wrap").classList.toggle("hidden", canSplit || !!APPT.splitOf || !!splitPart);
+  if (split || APPT.splitOf || splitPart) segSet("appt-dur", "60");
   else if (canSplit) segSet("appt-dur", "120");
   segDisable("appt-dur", "40", doctor !== "bruna");
   if (doctor !== "bruna" && segGet("appt-dur") === "40") segSet("appt-dur", "60");
-  const ok = !!($("appt-date").value && $("appt-time").value && segGet("appt-modality") && doctor);
+  const ok = !!($("appt-date").value && $("appt-time").value && segGet("appt-modality") && doctor
+               && segGet("appt-dur") && (!APPT.edit || segGet("appt-who")));
   $("appt-submit").disabled = !ok;
   if (!isNote) {
     $("appt-submit").className = "btn btn-primary";
-    $("appt-submit").textContent = APPT.splitOf ? "Marcar 2ª parte" : "Agendar";
+    $("appt-submit").textContent = APPT.edit ? "Salvar alteração" : APPT.splitOf ? "Marcar 2ª parte" : "Agendar";
   }
-  if (!ok) { $("appt-to").textContent = "—"; return; }
+  if (!ok) { $("appt-to").textContent = APPT.edit && !segGet("appt-who") ? "escolha quem pediu" : "—"; return; }
   // Prévia automática: descobre destinatário e encaixe sem a atendente pedir.
-  if (source !== "appt-note") APPT_PREVIEW_TIMER = setTimeout(() => apptPreview(false), 600);
+  if (!isNote) APPT_PREVIEW_TIMER = setTimeout(() => apptPreview(false), 600);
 }
 
 function openApptSheet(splitOf) {
   const p = CURRENT_PATIENT;
   if (!p) return;
-  APPT = { splitOf, previewText: null };
+  APPT = { splitOf, previewText: null, edit: null };
   const part1 = splitOf ? CONSULTAS.appointments.find((a) => a.appointment_id === splitOf) : null;
   // A 1ª parte pode já ter acontecido (completed) e não estar mais na lista de
   // consultas futuras acima — nesse caso a modalidade vem de pending_part2_modality.
@@ -1351,6 +1394,8 @@ function openApptSheet(splitOf) {
   const today = todayIso();
   $("appt-date").min = today;
   $("appt-date2").min = today;
+  $("appt-who-wrap").classList.add("hidden");
+  $("appt-late").classList.add("hidden");
   apptChanged("open");
   APPT_RETURN_FOCUS = document.activeElement;
   document.querySelector(".eva > .max-w-5xl").inert = true;
@@ -1365,6 +1410,29 @@ function closeApptSheet() {
   if (APPT_RETURN_FOCUS && document.body.contains(APPT_RETURN_FOCUS)) APPT_RETURN_FOCUS.focus();
   APPT_RETURN_FOCUS = null;
 }
+function openApptEdit(a) {
+  const p = CURRENT_PATIENT;
+  if (!p || !a) return;
+  openApptSheet(null);            // monta a folha do jeito normal e depois ajusta para alterar
+  APPT.edit = a;
+  $("appt-cap").textContent = "Alterar consulta";
+  $("appt-pending-notice").classList.add("hidden");
+  const splitPart = apptSplitLabel(a.session_note);
+  segButtons("appt-doctor").forEach((b) => { b.disabled = !!splitPart && b.dataset.v !== "julio"; });
+  segSet("appt-doctor", a.doctor_key || "julio");
+  if (a.modality) segSet("appt-modality", a.modality);
+  $("appt-first").setAttribute("aria-checked", String(a.consultation_type === "primeira_consulta"));
+  segSet("appt-dur", String(a.minutes));
+  segSet("appt-billing", p.custom_price === 0 ? "cortesia" : (a.billing || "normal"));
+  $("appt-billing-wrap").classList.remove("hidden");
+  $("appt-date").value = a.start_local.slice(0, 10);
+  $("appt-time").value = a.start_local.slice(11, 16);
+  $("appt-note").value = (a.session_note || "").replace(SPLIT_PART1, "").replace(SPLIT_PART2, "").replace(/^\s*·\s*/, "").trim();
+  segSet("appt-who", null);
+  $("appt-who-wrap").classList.remove("hidden");
+  apptChanged("open");
+  $("appt-who").querySelector("[role=radio]").focus();
+}
 document.querySelectorAll("[data-close-appt]").forEach((el) => { el.onclick = closeApptSheet; });
 
 function apptError(msg) {
@@ -1377,13 +1445,21 @@ async function apptPreview(show) {
   const seq = ++APPT_PREVIEW_SEQ;
   let r, body;
   try {
-    r = await postJson("/api/atendente/consulta/nova", apptBody({ dry_run: true }));
+    r = await postJson(apptUrl(), apptBody({ dry_run: true }));
     body = await r.json().catch(() => ({}));
   } catch (_) { r = null; body = {}; }
   if (seq !== APPT_PREVIEW_SEQ || $("appt-sheet").classList.contains("hidden")) return;
   if (!r || !r.ok) {
     $("appt-to").textContent = "—";
     if (show) apptError(errText(body, "Não foi possível montar a prévia."));
+    return;
+  }
+  $("appt-late").classList.toggle("hidden", !body.late_fee);
+  if (APPT.edit && body.notify === false) {
+    $("appt-to").textContent = "ninguém (a mudança não gera mensagem)";
+    APPT.previewText = "";
+    $("appt-preview").textContent = "";
+    if ((body.encaixe_reasons || []).length && !APPT_ENCAIXE) apptSetEncaixe(body.encaixe_reasons);
     return;
   }
   const m = body.message || { recipients: [], held: [], text: "" };
@@ -1415,15 +1491,21 @@ $("appt-preview-btn").onclick = () => {
   withBusy($("appt-preview-btn"), () => apptPreview(true));
 };
 
-function bookedMessage(m) {
+function resultMessage(m, done, warnings = []) {
   const notDelivered = m.not_delivered || [], held = m.held || [], sent = m.sent || [];
   const out = [];
-  if (notDelivered.length) out.push(`Consulta registrada, mas a mensagem não foi entregue a ${notDelivered.join(", ")}. Avise o paciente por outro meio.`);
-  if (held.length) out.push(`${notDelivered.length ? "" : "Consulta registrada. "}Eva desligada para ${held.join(", ")}: não recebeu mensagem.`);
-  if (!out.length && !sent.length) out.push("Consulta registrada. Ninguém recebeu a mensagem.");
-  if (out.length) return { text: out.join(" "), warn: true };
-  return { text: "Consulta registrada e paciente avisado ✓", warn: false };
+  if (m.skipped) out.push(`${done} ✓`);
+  else {
+    if (notDelivered.length) out.push(`${done}, mas a mensagem não foi entregue a ${notDelivered.join(", ")}. Avise o paciente por outro meio.`);
+    if (held.length) out.push(`${notDelivered.length ? "" : `${done}. `}Eva desligada para ${held.join(", ")}: não recebeu mensagem.`);
+    if (!out.length && !sent.length) out.push(`${done}. Ninguém recebeu a mensagem.`);
+  }
+  warnings.forEach((w) => out.push(`Atenção: ${w}.`));
+  const warn = warnings.length > 0 || (!m.skipped && (notDelivered.length > 0 || held.length > 0 || !sent.length));
+  if (!warn && !m.skipped) return { text: `${done} e paciente avisado ✓`, warn: false };
+  return { text: out.join(" "), warn };
 }
+function bookedMessage(m) { return resultMessage(m, "Consulta registrada"); }
 
 $("appt-submit").onclick = () => withBusy($("appt-submit"), async () => {
   $("appt-error").classList.add("hidden");
@@ -1432,7 +1514,7 @@ $("appt-submit").onclick = () => withBusy($("appt-submit"), async () => {
   clearTimeout(APPT_PREVIEW_TIMER);
   let r, body;
   try {
-    r = await postJson("/api/atendente/consulta/nova", apptBody({ encaixe_confirmed: APPT_ENCAIXE }));
+    r = await postJson(apptUrl(), apptBody({ encaixe_confirmed: APPT_ENCAIXE }));
     body = await r.json().catch(() => ({}));
   } catch (_) {
     apptError("Sem conexão com o painel. Confira a agenda antes de tentar de novo.");
@@ -1450,11 +1532,17 @@ $("appt-submit").onclick = () => withBusy($("appt-submit"), async () => {
     loadConsultas(CURRENT_PID);
     return;
   }
-  if (!r.ok) { apptError(errText(body, "Não foi possível agendar. Nada foi alterado.")); return; }
+  if (!r.ok) {
+    apptError(errText(body, APPT.edit ? "Não foi possível alterar. Nada foi alterado." : "Não foi possível agendar. Nada foi alterado."));
+    return;
+  }
+  const isEdit = !!APPT.edit;
   closeApptSheet();
   loadConsultas(CURRENT_PID);
   loadPagamentos();
-  const { text, warn } = bookedMessage(body.message || {});
+  const { text, warn } = isEdit
+    ? resultMessage(body.message || {}, "Alteração salva", body.warnings || [])
+    : bookedMessage(body.message || {});
   if (warn) flash(text, 10000, "warn");
   else flash(text, 3000);
 });
