@@ -10,9 +10,14 @@ import logging
 from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
-from app.database import DOCTOR_IDS, get_supabase
+from app.booking_texts import DOCTOR_LABELS, format_appt_line
+from app.database import DOCTOR_IDS, get_supabase, log_event
 from app.google_calendar import grid_violation
 from app.utils import display_name
+
+
+class BookingError(Exception):
+    """Falha ao gravar; nada ficou criado (eventos do Calendar já apagados)."""
 
 _logger = logging.getLogger(__name__)
 TZ = ZoneInfo("America/Recife")
@@ -90,3 +95,139 @@ async def check_slot(doctor: str, start: datetime, minutes: int, patient_id: str
             reasons.append(f"agenda do médico ocupada às {hhmm}")
             clash_starts.add(hhmm)
     return reasons
+
+
+def _notify_clinic_async(subject: str, body: str, phone: str) -> None:
+    from app.graph.tools import _notify_clinic
+    asyncio.create_task(_notify_clinic(body, phone=phone, subject=subject))
+
+
+def _fee_fields(req: dict, now_iso: str) -> tuple[dict, str]:
+    """Campos de taxa da linha e o tipo de mensagem (booking_texts.confirmation_text)."""
+    part1 = req.get("split_of")
+    if part1:
+        # 2ª parte herda a situação da 1ª, como confirm_appointment faz.
+        fields = {
+            "booking_fee_waived": bool(part1.get("booking_fee_waived")),
+            "booking_fee_paid_at": part1.get("booking_fee_paid_at"),
+            "is_courtesy": bool(part1.get("is_courtesy")),
+        }
+        if fields["is_courtesy"]:
+            return fields, "cortesia"
+        if fields["booking_fee_waived"]:
+            return fields, "taxa_isenta"
+        if fields["booking_fee_paid_at"]:
+            return fields, "taxa_paga"
+        return fields, "normal"
+    billing = req["billing"]
+    if billing == "cortesia":
+        # booking_fee_waived também, para todo filtro antigo por taxa já pular a cortesia.
+        return {"booking_fee_waived": True, "booking_fee_paid_at": now_iso, "is_courtesy": True}, "cortesia"
+    if billing == "taxa_isenta":
+        return {"booking_fee_waived": True, "booking_fee_paid_at": now_iso, "is_courtesy": False}, "taxa_isenta"
+    return {"booking_fee_waived": False, "booking_fee_paid_at": None, "is_courtesy": False}, "normal"
+
+
+def _part_notes(req: dict) -> list[str]:
+    extra = (req.get("session_note") or "").strip()
+    if req.get("split_of"):
+        labels = [SPLIT_PART2]
+    elif req.get("split"):
+        labels = [SPLIT_PART1, SPLIT_PART2][: len(req["parts"])]
+    else:
+        labels = [""]
+    return [" · ".join(x for x in (label, extra) if x) for label in labels]
+
+
+def _is_minor_julio(patient: dict, doctor: str) -> bool:
+    from app.patients import _compute_age
+    age = _compute_age(patient.get("birth_date"))
+    return doctor == "julio" and age is not None and age < 18
+
+
+async def create_appointments(req: dict) -> dict:
+    """Cria o(s) evento(s) e a(s) linha(s). Tudo ou nada."""
+    from app.graph.tools import _get_doctor_calendar_id
+    from app.google_calendar import cancel_event, create_event
+
+    doctor = req["doctor"]
+    patient = req["patient"]
+    name = patient.get("name") or ""
+    display = f"{name} ({patient['social_name']})" if patient.get("social_name") else name
+    calendar_id = await _get_doctor_calendar_id(doctor)
+    if not calendar_id:
+        raise BookingError("calendário do médico não encontrado")
+
+    now_iso = datetime.now(TZ).isoformat()
+    fee, kind = _fee_fields(req, now_iso)
+    ctype = "primeira_consulta" if req["first_consultation"] else None
+    if not req["first_consultation"] and _is_minor_julio(patient, doctor):
+        ctype = "acompanhamento"
+
+    created: list[tuple[str, datetime, int, str]] = []
+    try:
+        for part, note in zip(req["parts"], _part_notes(req)):
+            event_id = await create_event(
+                calendar_id=calendar_id, start=part["start"], slot_minutes=part["minutes"],
+                patient_name=display, doctor_name=DOCTOR_LABELS[doctor], session_note=note,
+                modality=req["modality"], patient_email=patient.get("email") or "",
+                patient_number=req["phone"],
+            )
+            created.append((event_id, part["start"], part["minutes"], note))
+        client = await get_supabase()
+        for event_id, start, minutes, note in created:
+            await client.from_("appointments").insert({
+                "patient_id": patient["id"],
+                "contact_id": req["contact_id"],
+                "doctor_id": DOCTOR_IDS[doctor],
+                "appointment_id": event_id,
+                "start_time": start.isoformat(),
+                "end_time": (start + timedelta(minutes=minutes)).isoformat(),
+                "status": "scheduled",
+                "modality": req["modality"],
+                "consultation_type": ctype,
+                "session_note": note or None,
+                **fee,
+            }).execute()
+    except Exception as exc:
+        _logger.exception("panel create_appointments falhou patient=%s", patient.get("id"))
+        for event_id, *_ in created:
+            try:
+                await cancel_event(calendar_id, event_id)
+            except Exception:
+                _logger.exception("rollback: falha ao apagar evento %s", event_id)
+        # Linhas já inseridas antes da falha (split): marcar como canceladas.
+        try:
+            client = await get_supabase()
+            for event_id, *_ in created:
+                await client.from_("appointments").update({"status": "canceled"}).eq("appointment_id", event_id).execute()
+        except Exception:
+            _logger.exception("rollback: falha ao cancelar linhas")
+        raise BookingError("não foi possível gravar a consulta") from exc
+
+    lines = [format_appt_line(doctor, start, note) for _, start, _, note in created]
+    for event_id, start, minutes, note in created:
+        await log_event("appointment_booked", req["phone"], {
+            "doctor": doctor, "datetime": start.replace(tzinfo=None).isoformat(),
+            "duration_minutes": minutes, "patient_name": name, "session_note": note,
+            "origem": "painel", "atendente": req.get("agent") or "", "encaixe": bool(req.get("encaixe")),
+            "appointment_id": event_id,
+        })
+    _notify_clinic_async(
+        f"Agendamento realizado — {display}",
+        "Agendamento realizado pelo painel ✅\n"
+        f"Paciente: {display}\n" + "\n".join(lines) +
+        f"\nModalidade: {req['modality']}\nAtendente: {req.get('agent') or '—'}"
+        + ("\n⚠️ Encaixe fora da grade" if req.get("encaixe") else ""),
+        req["phone"],
+    )
+    return {
+        "kind": kind,
+        "lines": lines,
+        "pending_part2": bool(req.get("split")) and len(created) == 1,
+        "appointments": [
+            {"appointment_id": e, "start": s.isoformat(), "minutes": m, "session_note": n,
+             "contact_id": req["contact_id"]}
+            for e, s, m, n in created
+        ],
+    }
