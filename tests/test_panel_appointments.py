@@ -179,3 +179,113 @@ async def test_build_edit_custom_price_zero_stays_courtesy():
     row = {**ROW, "is_courtesy": True, "booking_fee_waived": True, "booking_fee_paid_at": "x"}
     req = await build_edit({"billing": "normal"}, row=row, patient={**ADULT, "custom_price": 0})
     assert req["new"]["billing"] == "cortesia" and "billing" not in req["changes"]
+
+
+# ── apply_edit ─────────────────────────────────────────────────────────────
+
+def cal_patches(update_row=None):
+    cal = {
+        "cal_id": patch("app.graph.tools._get_doctor_calendar_id", new_callable=AsyncMock,
+                        side_effect=lambda d: f"cal-{d}"),
+        "update_event": patch("app.google_calendar.update_event", new_callable=AsyncMock),
+        "create_event": patch("app.google_calendar.create_event", new_callable=AsyncMock, return_value="evt-new"),
+        "cancel_event": patch("app.google_calendar.cancel_event", new_callable=AsyncMock),
+        "update_row": patch("app.panel_appointments._update_row", new_callable=AsyncMock, side_effect=update_row),
+        "log_event": patch("app.panel_appointments.log_event", new_callable=AsyncMock),
+        "notify": patch("app.panel_appointments._notify_clinic_async"),
+    }
+    return cal
+
+
+async def run_apply(req, update_row=None):
+    with ExitStack() as st:
+        m = {k: st.enter_context(p) for k, p in cal_patches(update_row).items()}
+        st.enter_context(patch("app.panel_appointments._now", return_value=NOW))
+        out = await pa.apply_edit(req)
+    return out, m
+
+
+@pytest.mark.asyncio
+async def test_apply_edit_same_doctor_updates_event_and_resets_confirmations():
+    req = await build_edit()
+    out, m = await run_apply(req)
+    m["update_event"].assert_awaited_once()
+    kw = m["update_event"].call_args.kwargs
+    assert kw["calendar_id"] == "cal-julio" and kw["event_id"] == "evt1"
+    assert kw["new_start"] == datetime(2026, 10, 6, 9, 0, tzinfo=TZ)
+    row_id, fields = m["update_row"].call_args[0]
+    assert row_id == "uuid-1"
+    assert fields["confirmed_at"] is None and fields["reminder_day_before_sent_at"] is None
+    assert fields["reminder_day_of_sent_at"] is None and fields["reschedule_initiated_by"] == "clinic"
+    assert out["appointment_id"] == "evt1"
+    logged = [c[0][0] for c in m["log_event"].call_args_list]
+    assert logged == ["appointment_edited", "appointment_rescheduled"]
+    m["notify"].assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_apply_edit_note_only_keeps_confirmation_and_skips_email():
+    req = await build_edit({"start": "2026-10-05T09:00", "session_note": "Domiciliar"})
+    out, m = await run_apply(req)
+    fields = m["update_row"].call_args[0][1]
+    assert "confirmed_at" not in fields and fields["session_note"] == "Domiciliar"
+    assert m["update_event"].call_args.kwargs["session_note"] == "Domiciliar"
+    assert [c[0][0] for c in m["log_event"].call_args_list] == ["appointment_edited"]
+    m["notify"].assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_apply_edit_doctor_change_creates_new_event_then_deletes_old():
+    req = await build_edit({"doctor": "bruna", "start": "2026-10-05T09:00"})
+    out, m = await run_apply(req)
+    assert m["create_event"].call_args.kwargs["calendar_id"] == "cal-bruna"
+    fields = m["update_row"].call_args[0][1]
+    assert fields["appointment_id"] == "evt-new" and fields["doctor_id"] == BRUNA
+    m["cancel_event"].assert_awaited_once_with("cal-julio", "evt1")
+    assert out["appointment_id"] == "evt-new"
+
+
+@pytest.mark.asyncio
+async def test_apply_edit_pending_reschedule_creates_event_and_schedules():
+    req = await build_edit(row={**ROW, "status": "pending_reschedule"})
+    out, m = await run_apply(req)
+    m["create_event"].assert_awaited_once()
+    m["update_event"].assert_not_called()
+    fields = m["update_row"].call_args[0][1]
+    assert fields["status"] == "scheduled" and fields["reschedule_requested_at"] is None
+    m["cancel_event"].assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_apply_edit_db_failure_reverts_calendar_update():
+    req = await build_edit()
+    with ExitStack() as st:
+        m = {k: st.enter_context(p) for k, p in cal_patches(RuntimeError("db")).items()}
+        st.enter_context(patch("app.panel_appointments._now", return_value=NOW))
+        with pytest.raises(BookingError):
+            await pa.apply_edit(req)
+    assert m["update_event"].await_count == 2
+    assert m["update_event"].call_args.kwargs["new_start"] == datetime(2026, 10, 5, 9, 0, tzinfo=TZ)
+
+
+@pytest.mark.asyncio
+async def test_apply_edit_db_failure_deletes_created_event():
+    req = await build_edit({"doctor": "bruna", "start": "2026-10-05T09:00"})
+    with ExitStack() as st:
+        m = {k: st.enter_context(p) for k, p in cal_patches(RuntimeError("db")).items()}
+        st.enter_context(patch("app.panel_appointments._now", return_value=NOW))
+        with pytest.raises(BookingError):
+            await pa.apply_edit(req)
+    m["cancel_event"].assert_awaited_once_with("cal-bruna", "evt-new")
+
+
+@pytest.mark.asyncio
+async def test_apply_edit_calendar_failure_changes_nothing():
+    req = await build_edit()
+    with ExitStack() as st:
+        m = {k: st.enter_context(p) for k, p in cal_patches().items()}
+        m["update_event"].side_effect = RuntimeError("gcal")
+        st.enter_context(patch("app.panel_appointments._now", return_value=NOW))
+        with pytest.raises(BookingError, match="nada foi alterado"):
+            await pa.apply_edit(req)
+    m["update_row"].assert_not_called()

@@ -225,3 +225,105 @@ async def build_edit(body: dict) -> dict:
         "notify": bool(changes & _NOTIFY_FIELDS) or row["status"] == "pending_reschedule",
         "late_fee": late_fee,
     }
+
+
+def _event_kwargs(req: dict, doctor: str, start: datetime, minutes: int, note: str, modality: str) -> dict:
+    patient = req["patient"]
+    return {
+        "slot_minutes": minutes, "patient_name": _display(patient), "doctor_name": DOCTOR_LABELS[doctor],
+        "session_note": note, "modality": modality, "patient_email": patient.get("email") or "",
+        "patient_number": req["phone"],
+    }
+
+
+async def apply_edit(req: dict) -> dict:
+    """Altera a mesma linha. Calendar primeiro; se o banco falhar, o Calendar volta."""
+    from app.google_calendar import cancel_event, create_event, update_event
+    from app.graph.tools import _get_doctor_calendar_id
+
+    row, new, patient = req["row"], req["new"], req["patient"]
+    old_doctor, new_doctor = req["doctor"], new["doctor"]
+    now_iso = _now().isoformat()
+    try:
+        new_cal = await _get_doctor_calendar_id(new_doctor)
+    except Exception as exc:
+        raise BookingError("calendário do médico não encontrado; nada foi alterado") from exc
+    if not new_cal:
+        raise BookingError("calendário do médico não encontrado; nada foi alterado")
+
+    fields = {
+        "start_time": new["start"].isoformat(),
+        "end_time": (new["start"] + timedelta(minutes=new["minutes"])).isoformat(),
+        "doctor_id": DOCTOR_IDS[new_doctor], "modality": new["modality"],
+        "session_note": new["note"] or None, "consultation_type": new["ctype"],
+        "updated_at": now_iso, **billing_update(row, patient, new["billing"], now_iso),
+    }
+    pending = row["status"] == "pending_reschedule"
+    if pending or req["changes"] & {"start", "doctor"}:
+        # Confirmação e lembretes valem para a data antiga (ver caso Isaac, reschedule_appointment).
+        fields.update({"confirmed_at": None, "reminder_day_before_sent_at": None,
+                       "reminder_day_of_sent_at": None, "reschedule_initiated_by": req["initiated_by"]})
+    if pending:
+        fields.update({"status": "scheduled", "reschedule_requested_at": None})
+
+    ev = _event_kwargs(req, new_doctor, new["start"], new["minutes"], new["note"], new["modality"])
+    created = None
+    try:
+        if pending or new_doctor != old_doctor:
+            created = await create_event(calendar_id=new_cal, start=new["start"], **ev)
+            fields["appointment_id"] = created
+        else:
+            await update_event(calendar_id=new_cal, event_id=row["appointment_id"], new_start=new["start"], **ev)
+    except Exception as exc:
+        _logger.exception("panel edit: Calendar falhou appt=%s", row["appointment_id"])
+        raise BookingError("não foi possível atualizar a agenda; nada foi alterado") from exc
+
+    try:
+        await _update_row(row["id"], fields)
+    except Exception as exc:
+        _logger.exception("panel edit: banco falhou appt=%s", row["appointment_id"])
+        try:
+            if created:
+                await cancel_event(new_cal, created)
+            else:
+                old = _event_kwargs(req, old_doctor, req["start"], req["minutes"],
+                                    row.get("session_note") or "", row.get("modality") or "")
+                await update_event(calendar_id=new_cal, event_id=row["appointment_id"], new_start=req["start"], **old)
+        except Exception:
+            _logger.exception("panel edit: falha ao desfazer o Calendar appt=%s", row["appointment_id"])
+        raise BookingError("não foi possível gravar a alteração; nada foi alterado") from exc
+
+    warnings = []
+    if created and not pending:
+        # Médico trocado: o evento antigo sai do calendário do médico anterior.
+        try:
+            await cancel_event(await _get_doctor_calendar_id(old_doctor), row["appointment_id"])
+        except Exception:
+            _logger.exception("panel edit: evento antigo ficou no Calendar appt=%s", row["appointment_id"])
+            warnings.append("o horário antigo continua na agenda do médico anterior; apague à mão")
+
+    appointment_id = fields.get("appointment_id", row["appointment_id"])
+    meta = {"origem": "painel", "atendente": req["agent"], "encaixe": bool(req.get("encaixe")),
+            "initiated_by": req["initiated_by"]}
+    await log_event("appointment_edited", req["phone"], {
+        "appointment_id": appointment_id, "changes": sorted(req["changes"]), **meta})
+    if pending or req["changes"] & {"start", "doctor"}:
+        # Mesmo evento que reschedule_appointment grava: a política de 1 remarcação conta por ele.
+        await log_event("appointment_rescheduled", req["phone"], {
+            "appointment_id": appointment_id, "new_datetime": new["start"].replace(tzinfo=None).isoformat(),
+            "fee_paid": bool(row.get("booking_fee_paid_at") or row.get("booking_fee_waived")), **meta})
+
+    old_line = _line(old_doctor, req["start"], row.get("session_note") or "", row.get("modality") or "", req["minutes"])
+    new_line = _line(new_doctor, new["start"], new["note"], new["modality"], new["minutes"])
+    if req["notify"]:
+        who = "Clínica" if req["initiated_by"] == "clinic" else "Paciente"
+        _notify_clinic_async(
+            f"Agendamento alterado — {_display(patient)}",
+            "Agendamento alterado pelo painel 🔄\n"
+            f"Paciente: {_display(patient)}\nHorário anterior: {old_line}\nNovo horário: {new_line}\n"
+            f"Quem pediu: {who}\nAtendente: {req['agent'] or '—'}"
+            + ("\n⚠️ Encaixe fora da grade" if req.get("encaixe") else ""),
+            req["phone"],
+        )
+    return {"appointment_id": appointment_id, "old_line": old_line, "new_line": new_line,
+            "new_fee": False, "warnings": warnings}
