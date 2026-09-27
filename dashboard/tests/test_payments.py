@@ -55,6 +55,27 @@ async def test_compute_pendencias_sem_filtro_retorna_tudo(fake_client):
     assert a2_consulta["realizada"] is True
 
 
+async def test_compute_pendencias_ignora_cortesia(fake_client):
+    fake_client.store["appointments"] = [
+        _appt("a1", "p1", "Ana", "5581999990000", is_courtesy=True),
+        _appt("a2", "p2", "Bia", "5581999991111",
+              patients={
+                  "name": "Bia",
+                  "birth_date": "1990-01-01",
+                  "custom_price": 0,
+                  "patient_contacts": [
+                      {"is_self": True, "contacts": {"phone": "5581999991111", "name": "Bia"}},
+                  ],
+              }),
+        _appt("a3", "p3", "Carla", "5581999992222"),
+    ]
+    out = await payments.compute_pendencias(fake_client, ["p1", "p2", "p3"])
+    assert not any(p["patient_id"] in ("p1", "p2") for p in out)
+    # Controle: paciente normal (não cortesia) continua gerando pendências,
+    # senão o teste passaria mesmo se compute_pendencias descartasse tudo.
+    assert {p["patient_id"] for p in out} == {"p3"}
+
+
 async def test_compute_pendencias_filtra_por_patient_ids(fake_client):
     fake_client.store["appointments"] = [
         _appt("a1", "p1", "João", "5581999990000"),
