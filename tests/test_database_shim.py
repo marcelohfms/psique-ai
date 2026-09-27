@@ -230,6 +230,35 @@ async def test_upsert_user_routes_guardian_to_contact():
 
 
 @pytest.mark.asyncio
+async def test_upsert_user_null_patient_name_does_not_break_the_save():
+    """patients.name é NOT NULL. Quando o collect_info apaga o nome do paciente
+    (descobriu que a consulta é para outra pessoa), o upsert_user mandava
+    name=None e o update falhava inteiro: is_patient=False e o responsável nunca
+    eram gravados (casos de 27/09/2026, vínculo is_self=False sem parentesco)."""
+    contact = {"id": "c1", "phone": "5581991393132", "active": True}
+    captured = {}
+
+    async def fake_upsert_patient(data, patient_id=None):
+        captured["patient_data"] = data
+        return patient_id or "p-new"
+
+    async def fake_link(patient_id, contact_id, role, is_self=False, relationship=None):
+        captured.setdefault("links", []).append({"is_self": is_self})
+
+    with patch("app.database.get_contact_by_phone", new_callable=AsyncMock, return_value=contact), \
+         patch("app.database.upsert_contact", new_callable=AsyncMock, return_value="c1"), \
+         patch("app.database.upsert_patient", side_effect=fake_upsert_patient), \
+         patch("app.database.link_patient_contact", side_effect=fake_link):
+        await database.upsert_user(
+            "5581991393132",
+            {"is_patient": False, "guardian_name": "Leila Menezes", "patient_name": None},
+            user_id="p1",
+        )
+    assert "name" not in captured.get("patient_data", {})
+    assert captured["links"] and all(link["is_self"] is False for link in captured["links"])
+
+
+@pytest.mark.asyncio
 async def test_upsert_user_patient_only_field_does_not_wipe_contact_name():
     """Regression: updating a patient-only field (e.g. email, patient_name) with no
     contact fields in the payload must NOT overwrite contacts.name with NULL.
