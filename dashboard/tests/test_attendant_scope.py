@@ -166,3 +166,31 @@ async def test_get_link_by_id_usa_coluna_id(monkeypatch, fake_client):
     monkeypatch.setattr(attendant_db, "get_client", fake_get_client)
     link = await attendant_db.get_link_by_id("pc-1")
     assert link and link["patient_id"] == "p-1" and link["contact_id"] == "c-1"
+
+
+# ── vínculo ─────────────────────────────────────────────────────────────────
+
+def test_desvincular_paciente_de_outro_numero_recusa(client, monkeypatch):
+    _scope(monkeypatch, "c1", {"p1"})
+    r = client.post("/api/atendente/desvincular", params=TOKEN, json={"phone": PHONE, "patient_id": "p2"})
+    assert r.status_code == 403
+
+
+def test_vincular_sem_contato_no_numero_recusa(client, monkeypatch):
+    _scope(monkeypatch, None, set())
+    r = client.post("/api/atendente/vinculo", params=TOKEN,
+                    json={"phone": PHONE, "patient_id": "p1", "is_self": True})
+    assert r.status_code == 403
+
+
+def test_busca_sem_contato_no_numero_recusa(client, monkeypatch):
+    _scope(monkeypatch, None, set())
+    r = client.get("/api/atendente/pacientes/busca", params={**TOKEN, "q": "joao", "phone": PHONE})
+    assert r.status_code == 403
+
+
+def test_ficha_nova_sem_contato_no_numero_recusa(client, monkeypatch):
+    _scope(monkeypatch, None, set())
+    r = client.post("/api/atendente/paciente-novo", params=TOKEN,
+                    json={"phone": PHONE, "name": "Ana Luz", "birth_date": "01/02/2015"})
+    assert r.status_code == 403

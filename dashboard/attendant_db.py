@@ -3,12 +3,16 @@
 Autocontida: replica as poucas queries necessárias usando o cliente Supabase
 do dashboard. NÃO importa app/ (a imagem Docker do dashboard não contém app/).
 """
-from datetime import datetime
+import logging
+import unicodedata
+import uuid
+from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
 
 from db_client import get_client
 
 _TZ = ZoneInfo("America/Recife")
+logger = logging.getLogger(__name__)
 
 
 def _strip_phone(phone: str) -> str:
@@ -38,20 +42,31 @@ async def _get_contact_by_phone(client, phone: str) -> dict | None:
 
 
 async def _get_patients_by_contact(client, contact_id: str) -> list[dict]:
+    """Pacientes ligados ao contato, sem repetição, cada um com `link`: o
+    marcador do par (id da linha, is_self, relationship). Prefere a linha
+    `agendamento`, a mesma que get_link devolve ao painel."""
     res = (
         await client.from_("patient_contacts")
-        .select("patient_id, role, is_self, patients(*)")
+        .select("id, patient_id, role, is_self, relationship, patients(*)")
         .eq("contact_id", contact_id)
         .execute()
     )
-    seen: set[str] = set()
-    out: list[dict] = []
+    by_id: dict[str, dict] = {}
     for row in (res.data or []):
         patient = row.get("patients")
-        if patient and patient["id"] not in seen:
-            seen.add(patient["id"])
-            out.append(patient)
-    return out
+        if not patient:
+            continue
+        marker = {
+            "id": row.get("id"),
+            "is_self": bool(row.get("is_self")),
+            "relationship": row.get("relationship"),
+        }
+        entry = by_id.get(patient["id"])
+        if entry is None:
+            by_id[patient["id"]] = {**patient, "link": marker}
+        elif row.get("role") == "agendamento":
+            entry["link"] = marker
+    return list(by_id.values())
 
 
 async def resolve_contact_and_patients(phone: str) -> dict:
@@ -112,6 +127,275 @@ async def get_return_reminder(patient_id: str) -> dict | None:
     return rows[0] if rows else None
 
 
+# ── Busca de paciente (vincular) ──────────────────────────────────────────────
+
+SEARCH_MIN_CHARS = 3
+_ACCENTABLE = set("aeiouc")
+
+
+def _norm(text: str | None) -> str:
+    """Sem acento, minúsculo, espaços colapsados. Espelha normalize_person_name."""
+    stripped = "".join(
+        c for c in unicodedata.normalize("NFKD", text or "") if not unicodedata.combining(c)
+    )
+    return " ".join(stripped.lower().split())
+
+
+def _ilike_pattern(query: str) -> str:
+    """Padrão ILIKE que tolera acento: toda letra que pode ter acento vira `_`
+    (um caractere qualquer). Espaço vira `%` (tolera espaço duplo gravado no
+    banco). O filtro exato sem acento é feito depois, em Python."""
+    folded = _norm(query)
+    mapped = "".join("_" if ch in _ACCENTABLE else ch for ch in folded)
+    return "%" + mapped.replace(" ", "%") + "%"
+
+
+_SEARCH_PAGE_SIZE = 1000
+_SEARCH_MAX_PAGES = 20  # trava de segurança: 20 * 1000 = 20 mil candidatos no máximo
+
+
+async def search_patients(query: str, limit: int = 10) -> list[dict]:
+    """Pacientes cujo nome contém `query` (sem acento e sem caixa).
+
+    Devolve só o necessário para diferenciar homônimos: id, nome, nascimento e
+    os 4 últimos dígitos do número próprio do paciente (phone_hint), se houver.
+
+    O ILIKE é só uma pré-filtragem grosseira (tolera acento trocando vogais por
+    `_`), então pode casar muito mais nomes do que o esperado (ex: "ana" vira
+    `%_n_%`). Por isso pagina os candidatos (até `_SEARCH_MAX_PAGES` páginas)
+    antes de aplicar o filtro exato em Python — um `.limit()` direto no ILIKE
+    poderia cortar a página antes de ela conter o paciente certo. A trava de
+    páginas é só uma rede de segurança (base muito maior que o esperado, ou um
+    servidor que nunca devolve página vazia); nesse caso a busca loga um aviso
+    e devolve o que já achou até ali, em vez de paginar para sempre.
+    """
+    target = _norm(query)
+    if len(target) < SEARCH_MIN_CHARS:
+        return []
+    client = await get_client()
+    pattern = _ilike_pattern(query)
+    candidates: list[dict] = []
+    start = 0
+    for _page_num in range(_SEARCH_MAX_PAGES):
+        res = await (
+            client.from_("patients")
+            .select("id, name, birth_date")
+            .ilike("name", pattern)
+            .order("id")
+            .range(start, start + _SEARCH_PAGE_SIZE - 1)
+            .execute()
+        )
+        page = res.data or []
+        if not page:
+            break
+        candidates.extend(page)
+        start += len(page)
+    else:
+        logger.warning(
+            "SEARCH_PATIENTS_MAX_PAGES atingiu %d páginas na busca; parando por segurança "
+            "(query=%r, candidatos até aqui=%d)", _SEARCH_MAX_PAGES, query, len(candidates))
+
+    hits = [r for r in candidates if target in _norm(r.get("name"))]
+    hits.sort(key=lambda r: _norm(r.get("name")))
+    hits = hits[:limit]
+    if not hits:
+        return []
+
+    pcs = await (
+        client.from_("patient_contacts")
+        .select("patient_id, is_self, contacts(phone)")
+        .in_("patient_id", [h["id"] for h in hits])
+        .eq("is_self", True)
+        .execute()
+    )
+    hint_by_patient: dict[str, str] = {}
+    for row in (pcs.data or []):
+        phone = (row.get("contacts") or {}).get("phone") or ""
+        if phone and row["patient_id"] not in hint_by_patient:
+            hint_by_patient[row["patient_id"]] = phone[-4:]
+
+    return [
+        {"id": h["id"], "name": h.get("name"), "birth_date": h.get("birth_date"),
+         "phone_hint": hint_by_patient.get(h["id"])}
+        for h in hits
+    ]
+
+
+# ── Vincular e desvincular ────────────────────────────────────────────────────
+
+LINK_ROLES = ("agendamento", "financeiro", "consulta")
+
+
+async def link_patient(patient_id: str, contact_id: str, marker: dict) -> None:
+    """Liga o contato ao paciente nos três papéis, com o mesmo marcador.
+
+    Um único upsert pela UNIQUE(patient_id, contact_id, role): idempotente e
+    atômico — chamar de novo mantém as mesmas 3 linhas e a marcação da última
+    chamada vence em todas. A regra da idade decide na hora do envio quem
+    recebe o quê; aqui o que importa é o marcador estar certo e igual nas três.
+    """
+    client = await get_client()
+    rows = [
+        {"patient_id": patient_id, "contact_id": contact_id, "role": role, **marker}
+        for role in LINK_ROLES
+    ]
+    await (
+        client.from_("patient_contacts")
+        .upsert(rows, on_conflict="patient_id,contact_id,role")
+        .execute()
+    )
+
+
+def _age_in_years(born, today) -> int:
+    """Idade em anos completos, considerando se o aniversário do ano já passou."""
+    return today.year - born.year - ((today.month, today.day) < (born.month, born.day))
+
+
+_MAX_AGE_YEARS = 120
+
+
+def normalize_birth_date(raw: str) -> str:
+    """Aceita dd/mm/aaaa ou aaaa-mm-dd e devolve dd/mm/aaaa, o formato que o
+    fluxo do chat grava em patients.birth_date. ValueError se inválida, futura
+    ou implausível (mais de 120 anos). "Hoje" é sempre o dia em
+    America/Recife, não o fuso do servidor."""
+    text = (raw or "").strip()
+    today = datetime.now(_TZ).date()
+    for fmt in ("%d/%m/%Y", "%Y-%m-%d"):
+        try:
+            d = datetime.strptime(text, fmt).date()
+        except ValueError:
+            continue
+        if d > today:
+            raise ValueError("Data de nascimento no futuro.")
+        if _age_in_years(d, today) > _MAX_AGE_YEARS:
+            raise ValueError("Data de nascimento implausível (mais de 120 anos).")
+        return d.strftime("%d/%m/%Y")
+    raise ValueError("Data de nascimento inválida. Use dd/mm/aaaa.")
+
+
+def _birth_variants(birth_br: str) -> list[str]:
+    d = datetime.strptime(birth_br, "%d/%m/%Y")
+    return [d.strftime("%d/%m/%Y"), d.strftime("%Y-%m-%d")]
+
+
+async def find_patients_by_name_birth(name: str, birth_br: str) -> list[dict]:
+    """Fichas com o mesmo nome (sem acento/caixa/espaços) e o mesmo nascimento,
+    nas duas grafias que convivem no banco. Espelha find_patient_by_name_birth."""
+    client = await get_client()
+    res = await (
+        client.from_("patients")
+        .select("id, name, birth_date")
+        .in_("birth_date", _birth_variants(birth_br))
+        .execute()
+    )
+    target = _norm(name)
+    return [r for r in (res.data or []) if _norm(r.get("name")) == target]
+
+
+async def create_patient(name: str, birth_br: str) -> dict:
+    """Cria a ficha com nome e nascimento. O id é gerado aqui para a resposta
+    não depender do retorno do insert. Grava também `age` (anos completos): a
+    Eva lê `patients.age` para a regra do paciente menor de idade.
+
+    `birth_br` já precisa vir normalizado por `normalize_birth_date` (formato
+    dd/mm/aaaa); esta função não valida nem converte a data."""
+    clean_name = " ".join(name.split())
+    if not clean_name:
+        raise ValueError("Nome vazio.")
+    born = datetime.strptime(birth_br, "%d/%m/%Y").date()
+    today = datetime.now(_TZ).date()
+    row = {
+        "id": str(uuid.uuid4()),
+        "name": clean_name,
+        "birth_date": birth_br,
+        "age": _age_in_years(born, today),
+    }
+    client = await get_client()
+    await client.from_("patients").insert(row).execute()
+    return row
+
+
+_ACTIVE_APPT_STATUSES = ("scheduled", "pending_reschedule")
+
+
+async def unlink_blocker(patient_id: str, contact_id: str) -> str | None:
+    """Motivo para NÃO desvincular, ou None se pode.
+
+    Trava só o caso perigoso: é o único número do paciente e ele tem consulta
+    futura ativa (ficaria sem ninguém para receber lembrete e cobrança).
+    """
+    client = await get_client()
+    others = await (
+        client.from_("patient_contacts")
+        .select("contact_id")
+        .eq("patient_id", patient_id)
+        .neq("contact_id", contact_id)
+        .in_("role", ["agendamento", "consulta"])
+        .execute()
+    )
+    if others.data:
+        return None
+    appts = await (
+        client.from_("appointments")
+        .select("start_time")
+        .eq("patient_id", patient_id)
+        .in_("status", list(_ACTIVE_APPT_STATUSES))
+        .gt("start_time", datetime.now(_TZ).isoformat())
+        .order("start_time")
+        .limit(1)
+        .execute()
+    )
+    if not appts.data:
+        return None
+    dt = datetime.fromisoformat(appts.data[0]["start_time"])
+    if dt.tzinfo is None:
+        # start_time sem fuso: trata como UTC (nunca o fuso do servidor —
+        # ver memória "Horário errado na confirmação (-3h)").
+        dt = dt.replace(tzinfo=timezone.utc)
+    when = dt.astimezone(_TZ)
+    patient = await get_patient(patient_id)
+    quem = f"de {patient['name']}" if patient and patient.get("name") else "deste paciente"
+    return (
+        f"Este é o único número {quem} e ele tem consulta em "
+        f"{when.strftime('%d/%m/%Y às %H:%M')}. Vincule outro número antes."
+    )
+
+
+async def future_bookings_by_contact(patient_id: str, contact_id: str) -> int:
+    """Quantas consultas futuras ativas deste paciente foram marcadas por este
+    contato (appointments.contact_id) — o número que ainda recebe lembrete e
+    cobrança delas, mesmo depois de desvincular o par em patient_contacts.
+
+    Não bloqueia a desvinculação (isso é `unlink_blocker`); é só um aviso para
+    a atendente saber que a Eva continua falando com este número sobre essas
+    consultas específicas.
+    """
+    client = await get_client()
+    res = await (
+        client.from_("appointments")
+        .select("id")
+        .eq("patient_id", patient_id)
+        .eq("contact_id", contact_id)
+        .in_("status", list(_ACTIVE_APPT_STATUSES))
+        .gt("start_time", datetime.now(_TZ).isoformat())
+        .execute()
+    )
+    return len(res.data or [])
+
+
+async def unlink_patient(patient_id: str, contact_id: str) -> int:
+    """Apaga todas as linhas do par (os três papéis). Retorna quantas saíram."""
+    client = await get_client()
+    res = await (
+        client.from_("patient_contacts").delete()
+        .eq("patient_id", patient_id)
+        .eq("contact_id", contact_id)
+        .execute()
+    )
+    return len(res.data or [])
+
+
 # ── Escopo por telefone (anti-IDOR) ───────────────────────────────────────────
 
 
@@ -169,12 +453,38 @@ _PATIENT_FIELDS = {
     "financial_name", "financial_cpf", "financial_email", "social_name",
     "booking_fee_waived",
 }
-_LINK_FIELDS = {"role", "is_self", "relationship"}
+_LINK_FIELDS = {"is_self", "relationship"}  # a UI não edita mais `role` (Task 11 review)
 _RETURN_FIELDS = {"next_return_date"}
 
 
 def _filter(data: dict, allowed: set[str]) -> dict:
     return {k: v for k, v in data.items() if k in allowed}
+
+
+# ── Marcador do vínculo (próprio paciente x parentesco) ──────────────────────
+
+# Lista fechada: é o que a regra da idade (app/patients.py) sabe interpretar.
+# "tutor(a)" e "responsável legal" contam como responsável legal; "cônjuge" e
+# "acompanhante" contam como terceiros que não são responsáveis.
+RELATIONSHIPS = (
+    "mãe", "pai", "avó", "avô", "tutor(a)", "responsável legal", "tio", "tia",
+    "irmão", "irmã", "padrasto", "madrasta", "cônjuge", "acompanhante",
+)
+
+
+def normalize_marker(is_self, relationship) -> dict:
+    """Valida e normaliza o marcador de um par (paciente, contato).
+
+    A regra da idade só trata o número como "próprio" quando is_self é True E o
+    parentesco está vazio. Por isso "próprio" sempre grava relationship=None, e
+    terceiro exige um parentesco da lista fechada. ValueError quando inválido.
+    """
+    if is_self is True:
+        return {"is_self": True, "relationship": None}
+    rel = (relationship or "").strip()
+    if rel not in RELATIONSHIPS:
+        raise ValueError("Escolha o parentesco da lista.")
+    return {"is_self": False, "relationship": rel}
 
 
 async def update_contact(contact_id: str, data: dict) -> None:
