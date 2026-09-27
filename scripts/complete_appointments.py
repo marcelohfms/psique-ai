@@ -13,21 +13,74 @@ from datetime import datetime, timezone, timedelta
 from dotenv import load_dotenv
 load_dotenv()
 
-from app.patients import consultation_reminder_contacts
+from app.database import get_events_by_type, log_event
+from app.patients import consultation_reminder_contacts, own_contact_ids
 
 
-async def send_pos_consulta(phone: str, first_name: str) -> None:
+# Templates Meta de pós-consulta com pedido de avaliação no Google (o link
+# fica no botão do template). {{1}} = primeiro nome do paciente. A versão de
+# "retorno" vai quando aquele telefone já recebeu o pedido para esse paciente.
+AVALIACAO_EVENT = "avaliacao_google_sent"
+
+_ASK_PRIMEIRA = (
+    "Se você tiver um minutinho, sua avaliação seria muito bem-vinda. "
+    "É rápido e ajuda bastante o nosso trabalho.\n\n"
+    "Muito obrigada!"
+)
+_ASK_RETORNO = (
+    "Passando para lembrar da avaliação no Google. Se ainda não conseguiu "
+    "deixar a sua, ela ajuda bastante o nosso trabalho e ajuda também outras "
+    "pessoas que buscam um cuidado com segurança.\n\n"
+    "Se você já avaliou, muito obrigada! 💜"
+)
+
+# (third_party, returning) -> (template, abertura com {nome})
+_POS_CONSULTA = {
+    (False, False): (
+        "avaliacao_google",
+        "Oi, {nome}! 😊\n\nEspero que sua consulta na Psiquê tenha corrido "
+        "tudo bem. Agradecemos a confiança!\n\n",
+    ),
+    (True, False): (
+        "avaliacao_google_terceiro",
+        "Oi! 😊\n\nEspero que a consulta de {nome} na Psiquê tenha corrido "
+        "tudo bem. Agradecemos a confiança!\n\n",
+    ),
+    (False, True): (
+        "avaliacao_google_retorno",
+        "Oi, {nome}! 😊\n\nEspero que mais essa consulta na Psiquê tenha "
+        "corrido tudo bem. Obrigada por seguir com a gente!\n\n",
+    ),
+    (True, True): (
+        "avaliacao_google_retorno_terceiro",
+        "Oi! 😊\n\nEspero que mais essa consulta de {nome} na Psiquê tenha "
+        "corrido tudo bem. Obrigada por seguirem com a gente!\n\n",
+    ),
+}
+
+
+def _pos_consulta_template(first_name: str, third_party: bool, returning: bool) -> tuple[str, str]:
+    """(nome do template Meta, texto espelhado no Chatwoot)."""
+    template, opening = _POS_CONSULTA[(third_party, returning)]
+    ask = _ASK_RETORNO if returning else _ASK_PRIMEIRA
+    return template, opening.format(nome=first_name) + ask
+
+
+async def _already_asked(phone: str, patient_id: str | None) -> bool:
+    events = await get_events_by_type(phone, AVALIACAO_EVENT)
+    return any((e.get("metadata") or {}).get("patient_id") == patient_id for e in events)
+
+
+async def send_pos_consulta(
+    phone: str, first_name: str, third_party: bool = False, returning: bool = False
+) -> None:
     from app.chatwoot import find_or_create_conversation, send_template_message
     phone_wpp = phone if "@s.whatsapp.net" in phone else f"{phone}@s.whatsapp.net"
     conv_id = await find_or_create_conversation(phone_wpp)
-    content = (
-        f"Olá! Esperamos que a consulta de {first_name} tenha sido boa! "
-        f"Aproveite para agendar a próxima — a continuidade do tratamento faz toda a diferença. "
-        f"Fique à vontade para responder pelo WhatsApp quando quiser."
-    )
+    template, content = _pos_consulta_template(first_name, third_party, returning)
     await send_template_message(
         conv_id,
-        template_name="pos_consulta",
+        template_name=template,
         language="pt_BR",
         category="MARKETING",
         body_params={"1": first_name},
@@ -62,7 +115,7 @@ async def _process_pos_consulta(client, appt: dict, now_iso: str) -> None:
         }).eq("id", appt["id"]).execute()
 
     # Alta: se esta consulta já foi classificada como alta pelo médico, não
-    # mande "agende a próxima" — seria contraditório.
+    # manda a pós-consulta.
     appt_id = appt.get("appointment_id")
     if patient_id and appt_id:
         rr = await (
@@ -111,13 +164,27 @@ async def _process_pos_consulta(client, appt: dict, now_iso: str) -> None:
         await _mark_sent()
         return
 
+    # Contato que não é do próprio paciente (pais de menor, cônjuge que agendou)
+    # recebe a versão "a consulta de {nome}".
+    own_ids = await own_contact_ids(patient_id)
+
     sent_any = False
     for contact in contacts:
         phone = contact.get("phone")
         if not phone:
             continue
         try:
-            await send_pos_consulta(phone, first_name)
+            returning = await _already_asked(phone, patient_id)
+            await send_pos_consulta(
+                phone, first_name,
+                third_party=contact.get("id") not in own_ids,
+                returning=returning,
+            )
+            await log_event(AVALIACAO_EVENT, phone, {
+                "patient_id": patient_id,
+                "appointment_id": appt.get("appointment_id"),
+                "returning": returning,
+            })
             sent_any = True
             print(f"Message sent to {phone} for appointment {appt['appointment_id']}")
         except Exception as e:

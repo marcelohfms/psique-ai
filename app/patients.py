@@ -161,6 +161,16 @@ async def _linked_contacts_with_marker(patient_id: str, include_inactive: bool =
     return list(by_contact.values())
 
 
+async def own_contact_ids(patient_id: str) -> set[str]:
+    """IDs dos contatos que são do próprio paciente (is_self + relação self-like).
+    Qualquer outro contato vinculado é terceiro (mãe, pai, cônjuge...)."""
+    linked = await _linked_contacts_with_marker(patient_id, include_inactive=True)
+    return {
+        lc["contact"]["id"] for lc in linked
+        if lc["is_self"] and _is_self_like(lc["relationship"])
+    }
+
+
 async def consultation_reminder_contacts(
     patient_id: str, appointment: dict, include_inactive: bool = True
 ) -> list[dict]:
