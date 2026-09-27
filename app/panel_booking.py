@@ -97,7 +97,8 @@ async def _calendar_busy(doctor: str, start: datetime, end: datetime) -> list[di
         return []
 
 
-async def check_slot(doctor: str, start: datetime, minutes: int, patient_id: str) -> list[str]:
+async def check_slot(doctor: str, start: datetime, minutes: int, patient_id: str,
+                     exclude_appointment_id: str | None = None) -> list[str]:
     """Motivos pelos quais o horário é encaixe. Lista vazia = horário livre na grade.
 
     `patient_id` é mantido na assinatura só por compatibilidade com o chamador
@@ -106,7 +107,10 @@ async def check_slot(doctor: str, start: datetime, minutes: int, patient_id: str
     mesmo horário também são um conflito real (evita duplicidade por engano), e
     os intervalos [start, end) vindos do banco já não se sobrepõem por causa do
     `lt`/`gt` estritos — então a 2ª parte da 1ª consulta infantil, que só encosta
-    (não sobrepõe) na 1ª, nunca dependeu dessa exclusão."""
+    (não sobrepõe) na 1ª, nunca dependeu dessa exclusão.
+
+    `exclude_appointment_id`: na edição, a própria consulta não conta como
+    conflito (nem no banco nem no Calendar)."""
     del patient_id  # não usado para exclusão (ver docstring)
     start = _ensure_tz(start)
     reasons: list[str] = []
@@ -116,15 +120,17 @@ async def check_slot(doctor: str, start: datetime, minutes: int, patient_id: str
 
     end = start + timedelta(minutes=minutes)
     client = await get_supabase()
-    res = await (
+    query = (
         client.from_("appointments")
         .select("patient_id, start_time, patients(name)")
         .eq("doctor_id", DOCTOR_IDS[doctor])
         .eq("status", "scheduled")
         .lt("start_time", end.isoformat())
         .gt("end_time", start.isoformat())
-        .execute()
     )
+    if exclude_appointment_id:
+        query = query.neq("appointment_id", exclude_appointment_id)
+    res = await query.execute()
     clash_starts = set()
     for row in res.data or []:
         other = _nice(display_name((row.get("patients") or {}).get("name") or "")) or "outro paciente"
@@ -134,6 +140,8 @@ async def check_slot(doctor: str, start: datetime, minutes: int, patient_id: str
 
     # Calendar pega também o que foi marcado à mão pela clínica (evento "Consulta ...").
     for ev in await _calendar_busy(doctor, start, end):
+        if exclude_appointment_id and ev.get("id") == exclude_appointment_id:
+            continue
         hhmm = _to_local(ev["start"]).strftime("%H:%M")
         if hhmm not in clash_starts:
             reasons.append(f"agenda do médico ocupada às {hhmm}")

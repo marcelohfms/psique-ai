@@ -119,6 +119,26 @@ async def test_check_slot_accepts_utc_datetime_converts_to_recife():
     assert reasons == []
 
 
+@pytest.mark.asyncio
+async def test_check_slot_excludes_appointment_being_edited():
+    client, q = _sb([])
+    with patch("app.panel_booking.get_supabase", new_callable=AsyncMock, return_value=client), \
+         patch("app.panel_booking._calendar_busy", new_callable=AsyncMock,
+               return_value=[{"id": "evt-self", "start": "2026-10-05T09:00:00-03:00"}]):
+        reasons = await pb.check_slot("julio", MON_9, 60, patient_id="p1", exclude_appointment_id="evt-self")
+    assert reasons == []
+    q.neq.assert_called_with("appointment_id", "evt-self")
+
+
+@pytest.mark.asyncio
+async def test_check_slot_without_exclusion_does_not_call_neq():
+    client, q = _sb([])
+    with patch("app.panel_booking.get_supabase", new_callable=AsyncMock, return_value=client), \
+         patch("app.panel_booking._calendar_busy", new_callable=AsyncMock, return_value=[]):
+        await pb.check_slot("julio", MON_9, 60, patient_id="p1")
+    q.neq.assert_not_called()
+
+
 # ── create_appointments ──────────────────────────────────────────────────────
 
 def _req(**kw):
