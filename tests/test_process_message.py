@@ -6701,3 +6701,135 @@ async def test_internal_note_with_transfer_phrase_does_not_leak_or_handoff():
     assert sent == [], f"nada deve ir ao paciente; foi: {sent!r}"
     assert len(notes) == 1 and "vou transferir" in notes[0]
     transfer_mock.assert_not_called()
+
+
+# ── Retomada após queda passageira de rede (caso Gabriela, 27/09/2026) ─────────
+
+def _transient_graph(fail_times: int, calls: list):
+    """Grafo real (MemorySaver) cujo nó levanta httpx.ReadTimeout nas primeiras
+    `fail_times` execuções, como o patient_agent no caso Gabriela."""
+    import httpx
+    from typing import Annotated, TypedDict
+    from langgraph.graph import StateGraph, START, END
+    from langgraph.graph.message import add_messages
+    from langgraph.checkpoint.memory import MemorySaver
+
+    class S(TypedDict):
+        messages: Annotated[list, add_messages]
+
+    async def agent(state):
+        calls.append(len(state["messages"]))
+        if len(calls) <= fail_times:
+            raise httpx.ReadTimeout("")
+        return {"messages": [AIMessage(content="Recebemos seu comprovante!")]}
+
+    g = StateGraph(S)
+    g.add_node("patient_agent", agent)
+    g.add_edge(START, "patient_agent")
+    g.add_edge("patient_agent", END)
+    return g.compile(checkpointer=MemorySaver())
+
+
+def _clean_db(mock_supabase):
+    _, _, execute = mock_supabase
+    execute.return_value = MagicMock(data=[])
+    return execute
+
+
+@pytest.mark.asyncio
+async def test_transient_readtimeout_resumes_pending_task_once(mock_supabase):
+    import app.main as main
+    calls: list = []
+    graph = _transient_graph(fail_times=1, calls=calls)
+    _clean_db(mock_supabase)
+    config = {"configurable": {"thread_id": PHONE}}
+    with patch.object(main.graph_module, "chatbot", graph), \
+         patch.object(main, "_TRANSIENT_RESUME_DELAY_SECONDS", 0), \
+         patch.object(main, "log_event", new_callable=AsyncMock) as ev:
+        await main._ainvoke_resuming_transient(
+            {"messages": [HumanMessage(content="[imagem]: COMPROVANTE")]}, config, PHONE,
+        )
+        state = await graph.aget_state(config)
+    msgs = state.values["messages"]
+    assert [type(m).__name__ for m in msgs] == ["HumanMessage", "AIMessage"]  # sem duplicar a msg
+    assert len(calls) == 2
+    assert not state.next
+    ev.assert_awaited_once()
+    assert ev.await_args.args[0] == "graph_transient_resume"
+
+
+@pytest.mark.asyncio
+async def test_transient_error_twice_propagates(mock_supabase):
+    import httpx
+    import app.main as main
+    calls: list = []
+    graph = _transient_graph(fail_times=2, calls=calls)
+    _clean_db(mock_supabase)
+    with patch.object(main.graph_module, "chatbot", graph), \
+         patch.object(main, "_TRANSIENT_RESUME_DELAY_SECONDS", 0), \
+         patch.object(main, "log_event", new_callable=AsyncMock):
+        with pytest.raises(httpx.ReadTimeout):
+            await main._ainvoke_resuming_transient(
+                {"messages": [HumanMessage(content="oi")]},
+                {"configurable": {"thread_id": PHONE}}, PHONE,
+            )
+    assert len(calls) == 2  # uma retomada só
+
+
+@pytest.mark.asyncio
+async def test_transient_no_resume_when_eva_already_sent_something(mock_supabase):
+    """Se já saiu resposta (ou evento) no run, retomar poderia duplicar: não retoma."""
+    import httpx
+    import app.main as main
+    calls: list = []
+    graph = _transient_graph(fail_times=1, calls=calls)
+    _, _, execute = mock_supabase
+    execute.return_value = MagicMock(data=[{"id": 1}])
+    with patch.object(main.graph_module, "chatbot", graph), \
+         patch.object(main, "_TRANSIENT_RESUME_DELAY_SECONDS", 0):
+        with pytest.raises(httpx.ReadTimeout):
+            await main._ainvoke_resuming_transient(
+                {"messages": [HumanMessage(content="oi")]},
+                {"configurable": {"thread_id": PHONE}}, PHONE,
+            )
+    assert len(calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_non_transient_error_is_not_resumed(mock_supabase):
+    import app.main as main
+    chatbot = MagicMock()
+    chatbot.ainvoke = AsyncMock(side_effect=ValueError("bug"))
+    with patch.object(main.graph_module, "chatbot", chatbot):
+        with pytest.raises(ValueError):
+            await main._ainvoke_resuming_transient({}, {"configurable": {"thread_id": PHONE}}, PHONE)
+    assert chatbot.ainvoke.await_count == 1
+
+
+@pytest.mark.asyncio
+async def test_no_resume_when_last_message_is_not_from_patient(mock_supabase):
+    """Run morreu depois da Eva pedir uma tool: a tool pode ter rodado. Não retoma."""
+    import app.main as main
+    _clean_db(mock_supabase)
+    snap = MagicMock(next=("tools",), values={"messages": [
+        HumanMessage(content="Sim"), AIMessage(content="", tool_calls=[{"name": "x", "args": {}, "id": "1"}]),
+    ]})
+    chatbot = MagicMock(aget_state=AsyncMock(return_value=snap))
+    with patch.object(main.graph_module, "chatbot", chatbot):
+        from datetime import datetime, timezone
+        ok = await main._safe_to_resume_after_failure(PHONE, {}, datetime.now(timezone.utc))
+    assert ok is False
+
+
+def test_is_transient_network_error():
+    import httpx
+    import openai
+    from app.main import _is_transient_network_error
+    req = httpx.Request("POST", "https://x")
+    assert _is_transient_network_error(httpx.ReadTimeout(""))
+    assert _is_transient_network_error(httpx.ConnectError("dns"))
+    assert _is_transient_network_error(openai.APITimeoutError(request=req))
+    assert not _is_transient_network_error(ValueError("x"))
+    assert not _is_transient_network_error(
+        httpx.HTTPStatusError("500", request=req, response=httpx.Response(500, request=req))
+    )
