@@ -39,7 +39,7 @@ def pick_next_appointment(appts: list[dict], now: datetime) -> dict | None:
 
 def fee_status(next_appt: dict, custom_price) -> str:
     """Paga / Pendente / Isenta para a taxa de reserva da próxima consulta."""
-    if next_appt.get("booking_fee_waived") or custom_price == 0:
+    if next_appt.get("booking_fee_waived") or next_appt.get("is_courtesy") or custom_price == 0:
         return "Isenta"
     if next_appt.get("booking_fee_paid_at"):
         return "Paga"

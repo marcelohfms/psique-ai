@@ -429,12 +429,15 @@ async def _block_cancel_receipt_found(client, appt: dict, receipt: dict,
 
 
 def _is_courtesy(appt: dict) -> bool:
-    """Paciente cortesia (patients.custom_price == 0): a consulta é inteiramente
-    gratuita e NÃO deve nenhuma taxa de reserva. Diferente de booking_fee_waived
-    (taxa dispensada numa consulta que ainda tem preço), a cortesia não deveria nem
-    ser cobrada nem auto-cancelada por falta de pagamento — independentemente de
-    como o agendamento foi criado (bot, dashboard ou atendente). Caso Lucas Raphael
-    (contato Silvana, 5581973460726, 11/08/2026)."""
+    """Cortesia não deve taxa nenhuma: a desta consulta (appointments.is_courtesy,
+    marcada pelo painel) ou a da ficha (patients.custom_price == 0). A cortesia não
+    deveria nem ser cobrada nem auto-cancelada por falta de pagamento —
+    independentemente de como o agendamento foi criado (bot, dashboard ou
+    atendente). Caso Lucas Raphael (contato Silvana, 5581973460726, 11/08/2026).
+    Diferente de booking_fee_waived, que isenta só a taxa de reserva de uma
+    consulta que ainda tem preço."""
+    if appt.get("is_courtesy"):
+        return True
     return (appt.get("patients") or {}).get("custom_price") == 0
 
 
@@ -657,7 +660,7 @@ async def main():
 
     _appt_select = (
         "appointment_id, start_time, doctor_id, created_at, payment_reminder_sent_at, "
-        "contact_id, patient_id, patients(name, custom_price)"
+        "contact_id, patient_id, is_courtesy, patients(name, custom_price)"
     )
 
     # ── Step 1: 1st reminder (not yet reminded, booked >= 2h ago) ─────────────

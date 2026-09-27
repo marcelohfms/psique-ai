@@ -455,7 +455,7 @@ async def get_upcoming_appointments(phone: str) -> list[dict]:
     now_iso = now.isoformat()
     cutoff_recent = (now - timedelta(hours=48)).isoformat()
 
-    _appt_fields = "appointment_id, patient_id, start_time, end_time, status, reschedule_requested_at, booking_fee_paid_at, booking_fee_waived, paid_at, modality"
+    _appt_fields = "appointment_id, patient_id, start_time, end_time, status, reschedule_requested_at, booking_fee_paid_at, booking_fee_waived, paid_at, modality, is_courtesy"
 
     # Future + ongoing (end_time has not yet passed)
     future_result = (

@@ -443,6 +443,37 @@ async def test_cancel_skipped_for_courtesy_patient():
 
 
 @pytest.mark.asyncio
+async def test_reminder_skipped_for_courtesy_appointment():
+    """Cortesia só desta consulta (appointments.is_courtesy), ficha com preço normal."""
+    client, table = _client()
+    now = datetime(2026, 8, 11, 12, 55, tzinfo=TZ)
+    appt = _appt(is_courtesy=True, patients={"name": "Ana", "custom_price": None})
+    with patch("scripts.send_payment_reminders.get_financial_contacts", new_callable=AsyncMock) as mock_contacts, \
+         patch("scripts.send_payment_reminders.send_whatsapp", new_callable=AsyncMock) as mock_wpp:
+        await spr._send_payment_reminder(client, appt, None, now)
+    mock_contacts.assert_not_awaited()
+    mock_wpp.assert_not_awaited()
+    table.update.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_cancel_skipped_for_courtesy_appointment():
+    client, table = _client()
+    now = datetime(2026, 8, 11, 15, 0, tzinfo=TZ)
+    appt = _appt(is_courtesy=True, patients={"name": "Ana", "custom_price": None})
+    with patch("scripts.send_payment_reminders.cancel_calendar_event", new_callable=AsyncMock) as mock_cancel, \
+         patch("scripts.send_payment_reminders.send_whatsapp", new_callable=AsyncMock):
+        await spr._cancel_unpaid_appointment(client, appt, None, now)
+    mock_cancel.assert_not_awaited()
+    table.update.assert_not_called()
+
+
+def test_appt_select_includes_is_courtesy():
+    import inspect
+    assert "is_courtesy" in inspect.getsource(spr.main)
+
+
+@pytest.mark.asyncio
 async def test_reminder_deferred_when_receipt_lookup_fails():
     """Se a busca pelo comprovante falhar, o lembrete é adiado para a próxima
     execução (sem e-mail — diferente do cancelamento, adiar uma cobrança em 30min
