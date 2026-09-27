@@ -14,6 +14,7 @@ from app.booking_texts import DOCTOR_LABELS, confirmation_text, format_appt_line
 from app.database import DOCTOR_IDS, get_supabase, log_event, save_message
 from app.google_calendar import grid_violation
 from app.patients import _is_held, _linked_contacts_with_marker, consultation_reminder_contacts
+from app.phone import _phone_variants
 from app.utils import display_name
 from app.whatsapp import send_text
 
@@ -35,6 +36,25 @@ _GRID_REASONS = {
     "fora_da_grade": "fora do horário de atendimento",
     "estoura_expediente": "passa do fim do expediente",
 }
+
+# Tasks de _notify_clinic_async precisam de uma referência forte enquanto rodam —
+# senão o garbage collector pode derrubar a task no meio (asyncio só guarda uma
+# referência fraca em create_task). O callback tira a task do set quando termina.
+_background_tasks: set[asyncio.Task] = set()
+
+
+def _nice(name: str) -> str:
+    """Nome em CAIXA ALTA vira Title Case antes de aparecer numa mensagem/aviso
+    ('RAFAEL LIMA' -> 'Rafael Lima'); nomes já normais não são tocados."""
+    return name.title() if name and name.isupper() else name
+
+
+def _ensure_tz(dt: datetime) -> datetime:
+    """Garante que `dt` está em America/Recife. Aceita naive (assume Recife) ou
+    aware em qualquer fuso (converte)."""
+    if dt.tzinfo is None:
+        return dt.replace(tzinfo=TZ)
+    return dt.astimezone(TZ)
 
 
 def _to_local(ts: str) -> datetime:
@@ -63,8 +83,15 @@ async def _calendar_busy(doctor: str, start: datetime, end: datetime) -> list[di
 async def check_slot(doctor: str, start: datetime, minutes: int, patient_id: str) -> list[str]:
     """Motivos pelos quais o horário é encaixe. Lista vazia = horário livre na grade.
 
-    Consultas do próprio paciente não contam como conflito (a 2ª parte da 1ª
-    consulta infantil pode encostar na 1ª)."""
+    `patient_id` é mantido na assinatura só por compatibilidade com o chamador
+    (o endpoint do painel sempre passa o paciente sendo agendado), mas NÃO exclui
+    mais os conflitos do próprio paciente: duas consultas do mesmo paciente no
+    mesmo horário também são um conflito real (evita duplicidade por engano), e
+    os intervalos [start, end) vindos do banco já não se sobrepõem por causa do
+    `lt`/`gt` estritos — então a 2ª parte da 1ª consulta infantil, que só encosta
+    (não sobrepõe) na 1ª, nunca dependeu dessa exclusão."""
+    del patient_id  # não usado para exclusão (ver docstring)
+    start = _ensure_tz(start)
     reasons: list[str] = []
     code = grid_violation(doctor, start, minutes)
     if code:
@@ -83,9 +110,7 @@ async def check_slot(doctor: str, start: datetime, minutes: int, patient_id: str
     )
     clash_starts = set()
     for row in res.data or []:
-        if row.get("patient_id") == patient_id:
-            continue
-        other = display_name((row.get("patients") or {}).get("name") or "") or "outro paciente"
+        other = _nice(display_name((row.get("patients") or {}).get("name") or "")) or "outro paciente"
         hhmm = _to_local(row["start_time"]).strftime("%H:%M")
         clash_starts.add(hhmm)
         reasons.append(f"bate com a consulta de {other} às {hhmm}")
@@ -101,28 +126,42 @@ async def check_slot(doctor: str, start: datetime, minutes: int, patient_id: str
 
 def _notify_clinic_async(subject: str, body: str, phone: str) -> None:
     from app.graph.tools import _notify_clinic
-    asyncio.create_task(_notify_clinic(body, phone=phone, subject=subject))
+    task = asyncio.create_task(_notify_clinic(body, phone=phone, subject=subject))
+    _background_tasks.add(task)
+    task.add_done_callback(_background_tasks.discard)
 
 
 def _fee_fields(req: dict, now_iso: str) -> tuple[dict, str]:
-    """Campos de taxa da linha e o tipo de mensagem (booking_texts.confirmation_text)."""
+    """Campos de taxa da linha e o tipo de mensagem (booking_texts.confirmation_text).
+
+    Cortesia por ficha (`patients.custom_price == 0`) vale para qualquer consulta
+    do paciente, então entra na conta mesmo quando a atendente escolheu outra
+    cobrança no painel — igual à regra de `send_payment_reminders`/`patient_attributes`
+    (Task 4). Ao completar a 2ª parte de uma 1ª consulta dividida, os campos da 1ª
+    parte se somam (OR) com a cobrança escolhida agora para a 2ª — nunca "perdem"
+    uma cortesia/isenção já concedida, do mesmo jeito que `confirm_appointment` faz
+    ao herdar `booking_fee_waived`/`booking_fee_paid_at` do `_split_sibling`."""
+    patient = req["patient"]
+    custom_price_zero = patient.get("custom_price") == 0
     part1 = req.get("split_of")
     if part1:
-        # 2ª parte herda a situação da 1ª, como confirm_appointment faz.
-        fields = {
-            "booking_fee_waived": bool(part1.get("booking_fee_waived")),
-            "booking_fee_paid_at": part1.get("booking_fee_paid_at"),
-            "is_courtesy": bool(part1.get("is_courtesy")),
-        }
-        if fields["is_courtesy"]:
-            return fields, "cortesia"
-        if fields["booking_fee_waived"]:
-            return fields, "taxa_isenta"
-        if fields["booking_fee_paid_at"]:
-            return fields, "taxa_paga"
-        return fields, "normal"
+        is_courtesy = bool(part1.get("is_courtesy")) or req["billing"] == "cortesia" or custom_price_zero
+        waived = is_courtesy or bool(part1.get("booking_fee_waived")) or req["billing"] in ("taxa_isenta", "cortesia")
+        paid_at = part1.get("booking_fee_paid_at") or (now_iso if waived else None)
+        fields = {"booking_fee_waived": waived, "booking_fee_paid_at": paid_at, "is_courtesy": is_courtesy}
+        if is_courtesy:
+            kind = "cortesia"
+        elif waived:
+            kind = "taxa_isenta"
+        elif paid_at:
+            kind = "taxa_paga"
+        else:
+            kind = "normal"
+        return fields, kind
+
     billing = req["billing"]
-    if billing == "cortesia":
+    is_courtesy = billing == "cortesia" or custom_price_zero
+    if is_courtesy:
         # booking_fee_waived também, para todo filtro antigo por taxa já pular a cortesia.
         return {"booking_fee_waived": True, "booking_fee_paid_at": now_iso, "is_courtesy": True}, "cortesia"
     if billing == "taxa_isenta":
@@ -156,19 +195,32 @@ async def create_appointments(req: dict) -> dict:
     patient = req["patient"]
     name = patient.get("name") or ""
     display = f"{name} ({patient['social_name']})" if patient.get("social_name") else name
-    calendar_id = await _get_doctor_calendar_id(doctor)
+    try:
+        calendar_id = await _get_doctor_calendar_id(doctor)
+    except Exception as exc:
+        raise BookingError("calendário do médico não encontrado") from exc
     if not calendar_id:
         raise BookingError("calendário do médico não encontrado")
 
+    parts = [{"start": _ensure_tz(p["start"]), "minutes": p["minutes"]} for p in req["parts"]]
+    notes = _part_notes(req)
+    if len(notes) != len(parts):
+        raise BookingError("parts e session_note incompatíveis (split malformado)")
+
     now_iso = datetime.now(TZ).isoformat()
     fee, kind = _fee_fields(req, now_iso)
-    ctype = "primeira_consulta" if req["first_consultation"] else None
-    if not req["first_consultation"] and _is_minor_julio(patient, doctor):
+    # Split (1ª consulta infantil em duas sessões) é sempre primeira_consulta,
+    # mesmo que a atendente esqueça de marcar a caixinha.
+    if req["first_consultation"] or req.get("split") or req.get("split_of"):
+        ctype = "primeira_consulta"
+    elif _is_minor_julio(patient, doctor):
         ctype = "acompanhamento"
+    else:
+        ctype = None
 
     created: list[tuple[str, datetime, int, str]] = []
     try:
-        for part, note in zip(req["parts"], _part_notes(req)):
+        for part, note in zip(parts, notes):
             event_id = await create_event(
                 calendar_id=calendar_id, start=part["start"], slot_minutes=part["minutes"],
                 patient_name=display, doctor_name=DOCTOR_LABELS[doctor], session_note=note,
@@ -176,9 +228,9 @@ async def create_appointments(req: dict) -> dict:
                 patient_number=req["phone"],
             )
             created.append((event_id, part["start"], part["minutes"], note))
-        client = await get_supabase()
-        for event_id, start, minutes, note in created:
-            await client.from_("appointments").insert({
+
+        rows = [
+            {
                 "patient_id": patient["id"],
                 "contact_id": req["contact_id"],
                 "doctor_id": DOCTOR_IDS[doctor],
@@ -190,7 +242,11 @@ async def create_appointments(req: dict) -> dict:
                 "consultation_type": ctype,
                 "session_note": note or None,
                 **fee,
-            }).execute()
+            }
+            for event_id, start, minutes, note in created
+        ]
+        client = await get_supabase()
+        await client.from_("appointments").insert(rows).execute()
     except Exception as exc:
         _logger.exception("panel create_appointments falhou patient=%s", patient.get("id"))
         for event_id, *_ in created:
@@ -198,13 +254,6 @@ async def create_appointments(req: dict) -> dict:
                 await cancel_event(calendar_id, event_id)
             except Exception:
                 _logger.exception("rollback: falha ao apagar evento %s", event_id)
-        # Linhas já inseridas antes da falha (split): marcar como canceladas.
-        try:
-            client = await get_supabase()
-            for event_id, *_ in created:
-                await client.from_("appointments").update({"status": "canceled"}).eq("appointment_id", event_id).execute()
-        except Exception:
-            _logger.exception("rollback: falha ao cancelar linhas")
         raise BookingError("não foi possível gravar a consulta") from exc
 
     lines = [format_appt_line(doctor, start, note) for _, start, _, note in created]
@@ -215,11 +264,12 @@ async def create_appointments(req: dict) -> dict:
             "origem": "painel", "atendente": req.get("agent") or "", "encaixe": bool(req.get("encaixe")),
             "appointment_id": event_id,
         })
+    modality_label = "Online" if req["modality"] == "online" else "Presencial"
     _notify_clinic_async(
         f"Agendamento realizado — {display}",
         "Agendamento realizado pelo painel ✅\n"
         f"Paciente: {display}\n" + "\n".join(lines) +
-        f"\nModalidade: {req['modality']}\nAtendente: {req.get('agent') or '—'}"
+        f"\nModalidade: {modality_label}\nAtendente: {req.get('agent') or '—'}"
         + ("\n⚠️ Encaixe fora da grade" if req.get("encaixe") else ""),
         req["phone"],
     )
@@ -240,12 +290,17 @@ WHATSAPP_WINDOW_HOURS = 24
 
 
 def _thread(phone: str) -> str:
-    p = (phone or "").lstrip("+")
-    return p if p.endswith("@s.whatsapp.net") else f"{p}@s.whatsapp.net"
+    """Forma canônica '<dígitos-com-9>@s.whatsapp.net', igual ao que app/main.py usa
+    para o thread_id do checkpoint — não basta tirar o '+', porque a mesma pessoa
+    pode mandar o número com ou sem o 9º dígito (ver app/phone.py)."""
+    digits = (phone or "").lstrip("+").replace("@s.whatsapp.net", "")
+    variants = _phone_variants(digits)
+    canonical = variants[0] if variants else digits
+    return f"{canonical}@s.whatsapp.net"
 
 
 def _text_for(contact: dict, kind: str, lines: list[str], pending_part2: bool) -> str:
-    name = display_name(contact.get("name") or "") or "tudo bem"
+    name = display_name(_nice(contact.get("name") or "")) or "tudo bem"
     txt = confirmation_text(kind, "\n".join(lines), name)
     if pending_part2:
         txt += f"\n\n{_PENDING_PART2_LINE}"
@@ -274,7 +329,6 @@ async def _window_open(phone: str) -> bool:
     """Mesma regra de scripts/send_payment_reminders._window_open: fora de 24h da
     última mensagem do contato, o Meta descarta texto livre em silêncio.
     Erro na consulta = janela fechada (não finge que entregou)."""
-    from app.phone import _phone_variants
     cutoff = (datetime.now(timezone.utc) - timedelta(hours=WHATSAPP_WINDOW_HOURS)).isoformat()
     try:
         client = await get_supabase()
@@ -290,7 +344,11 @@ async def _window_open(phone: str) -> bool:
 
 
 async def send_booking_message(patient_id: str, contact_id: str, kind: str, lines: list[str],
-                               pending_part2: bool) -> dict:
+                               pending_part2: bool, patient_name: str, doctor: str) -> dict:
+    """Manda a mensagem aos destinatários com janela aberta e grava tudo que a Eva
+    precisa saber depois: `messages` (auditoria/lembretes) e o checkpoint do
+    LangGraph (senão o paciente responde "ok" e a Eva reconfirma um
+    `pending_appointment` velho — ver nodes.py _PENDING_AFFIRMATIVE)."""
     from langchain_core.messages import AIMessage
     from app.graph import graph as graph_module
 
@@ -313,7 +371,25 @@ async def send_booking_message(patient_id: str, contact_id: str, kind: str, line
         await save_message(thread, "assistant", text)
         try:
             cfg = {"configurable": {"thread_id": thread, "phone": thread}}
-            await graph_module.chatbot.aupdate_state(cfg, {"messages": [AIMessage(content=text)]}, as_node="patient_agent")
+            snapshot = await graph_module.chatbot.aget_state(cfg)
+            update: dict = {
+                "messages": [AIMessage(content=text)],
+                # pending_appointment velho não pode sobreviver: um "ok" do
+                # paciente à próxima mensagem não pode reconfirmar um horário antigo.
+                "pending_appointment": None,
+                "phone": thread,
+            }
+            if not snapshot.values:
+                # Thread nova (nunca conversou com a Eva): semeia o mínimo, igual
+                # scripts/send_payment_reminders.save_to_checkpoint.
+                update.update({
+                    "stage": "patient_agent",
+                    "user_name": patient_name,
+                    "patient_name": patient_name,
+                    "is_patient": True,
+                    "preferred_doctor": doctor,
+                })
+            await graph_module.chatbot.aupdate_state(cfg, update, as_node="patient_agent")
         except Exception:
             _logger.exception("panel checkpoint falhou phone=%s", phone)
         sent.append(name)
