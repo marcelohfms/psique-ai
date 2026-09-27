@@ -468,6 +468,11 @@ async def build_cancel(body: dict) -> dict:
     sibling = await _split_sibling(row)
     fee_action = body.get("fee_action") if paid else None
     reason = (body.get("reason") or "").strip()[:200]
+    both_parts = bool(body.get("both_parts")) and sibling is not None
+    # pending_reschedule já saiu da agenda: a regra das 24h não se aplica a ela.
+    late = row["status"] == "scheduled" and hours < 24
+    if row["status"] == "scheduled" and hours < 0:
+        raise PanelInputError("essa consulta já passou; marque como realizada ou falta na aba Financeiro")
     if not body.get("dry_run"):
         if ctx["initiated_by"] is None:
             raise PanelInputError("informe quem pediu o cancelamento: paciente ou clínica")
@@ -477,11 +482,12 @@ async def build_cancel(body: dict) -> dict:
             raise PanelInputError("a taxa desta consulta já está guardada como crédito")
         if fee_action == "devolver" and row.get("refund_requested_at"):
             raise PanelInputError("a devolução desta taxa já foi pedida")
-        if fee_action == "devolver" and hours < 24 and not reason:
+        if fee_action == "devolver" and sibling is not None and not both_parts:
+            raise PanelInputError("a taxa cobre as duas partes da 1ª consulta; para devolver, cancele as duas")
+        if fee_action == "devolver" and late and not reason:
             raise PanelInputError("com menos de 24h, informe o motivo da devolução")
-    return {**ctx, "fee_paid": paid, "hours_until": hours, "policy_late": hours < 24,
-            "sibling": sibling, "fee_action": fee_action, "reason": reason,
-            "both_parts": bool(body.get("both_parts")) and sibling is not None}
+    return {**ctx, "fee_paid": paid, "hours_until": hours, "policy_late": late,
+            "sibling": sibling, "fee_action": fee_action, "reason": reason, "both_parts": both_parts}
 
 
 def _already_gone(exc: Exception) -> bool:
@@ -560,23 +566,27 @@ def _row_line(row: dict) -> str:
 async def apply_cancel(req: dict) -> dict:
     rows = [req["row"]] + ([req["sibling"]] if req["both_parts"] else [])
     new_status = "pending_reschedule" if req["fee_action"] == "credito" else "canceled"
-    done: list[str] = []
+    done: list[dict] = []
+    warnings: list[str] = []
     for r in rows:
         try:
             await _cancel_row(r, new_status)
         except BookingError:
-            if done:
-                raise BookingError("a 1ª parte foi cancelada, mas a outra não; confira a lista de consultas")
-            raise
-        done.append(r["appointment_id"])
+            if not done:
+                raise
+            # A 1ª já foi cancelada: segue só com ela e avisa da outra parte.
+            warnings.append("a outra parte da 1ª consulta não foi cancelada; cancele à mão")
+            continue
+        done.append(r)
         await log_event("appointment_canceled", req["phone"], {
             "appointment_id": r["appointment_id"], "preserve_fee": new_status == "pending_reschedule",
             "origem": "painel", "atendente": req["agent"], "initiated_by": req["initiated_by"],
             "fee_action": req["fee_action"], "reason": req["reason"]})
 
-    warnings = await _register_refund(req) if req["fee_action"] == "devolver" else []
+    if req["fee_action"] == "devolver":
+        warnings += await _register_refund(req)
 
-    lines = [_row_line(r) for r in rows]
+    lines = [_row_line(r) for r in done]
     who = "Clínica" if req["initiated_by"] == "clinic" else "Paciente"
     fee_note = {"devolver": "Taxa: devolver ao paciente (ver planilha de Solicitações)",
                 "credito": "Taxa: guardada para remarcar", "reter": "Taxa: retida"}.get(req["fee_action"] or "", "")
@@ -588,7 +598,7 @@ async def apply_cancel(req: dict) -> dict:
         + (f"\nMotivo: {req['reason']}" if req["reason"] else "") + f"\nAtendente: {req['agent'] or '—'}",
         req["phone"],
     )
-    return {"canceled": done, "lines": lines, "warnings": warnings}
+    return {"canceled": [r["appointment_id"] for r in done], "lines": lines, "warnings": warnings}
 
 
 async def handle_cancel(body: dict) -> tuple[int, dict]:
@@ -606,7 +616,8 @@ async def handle_cancel(body: dict) -> tuple[int, dict]:
             message = await preview_message(req["patient"]["id"], req["recipient_contact_id"], text_for(lines))
         return 200, {
             "fee_paid": req["fee_paid"], "status": req["row"]["status"],
-            "hours_until": round(req["hours_until"], 1), "policy_late": req["policy_late"],
+            "hours_until": round(req["hours_until"], 1) if req["row"]["status"] == "scheduled" else None,
+            "policy_late": req["policy_late"],
             "sibling": {"appointment_id": sib["appointment_id"], "line": _row_line(sib)} if sib else None,
             "message": message,
         }

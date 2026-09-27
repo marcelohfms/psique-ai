@@ -699,3 +699,112 @@ async def test_apply_edit_doctor_only_change_not_logged_as_reschedule():
     assert [c[0][0] for c in m["log_event"].call_args_list] == ["appointment_edited"]
     fields = m["update_row"].call_args[0][1]
     assert fields["confirmed_at"] is None
+
+
+# ── cancelar: ajustes da revisão ───────────────────────────────────────────
+
+PART1 = {**PAID_ROW, "session_note": "1ª consulta · parte 1 de 2"}
+PART2 = {**PAID_ROW, "id": "uuid-2", "appointment_id": "evt2", "session_note": "1ª consulta · parte 2 de 2",
+         "start_time": "2026-10-08T12:00:00+00:00", "end_time": "2026-10-08T13:00:00+00:00"}
+
+
+def _fail_on(event_id):
+    async def side(cal, evt):
+        if evt == event_id:
+            raise RuntimeError("gcal")
+    return side
+
+
+@pytest.mark.asyncio
+async def test_apply_cancel_sibling_failure_becomes_warning_and_uses_done_rows():
+    req = await build_cancel({"both_parts": True, "fee_action": "devolver"}, row=PART1, patient=KID,
+                             sibling_rows=[PART1, PART2])
+    out, m = await run_cancel(req, cancel_event=_fail_on("evt2"))
+    assert out["canceled"] == ["evt1"]
+    assert len(out["lines"]) == 1 and "05/10" in out["lines"][0]
+    assert any("outra parte" in w for w in out["warnings"])
+    m["sheet"].assert_awaited_once()
+    notice = m["notify"].call_args[0][1]
+    assert "08/10" not in notice
+
+
+@pytest.mark.asyncio
+async def test_apply_cancel_first_row_failure_still_raises():
+    req = await build_cancel({"both_parts": True, "fee_action": "devolver"}, row=PART1, patient=KID,
+                             sibling_rows=[PART1, PART2])
+    with ExitStack() as st:
+        m = {k: st.enter_context(p) for k, p in cancel_patches(cancel_event=_fail_on("evt1")).items()}
+        with pytest.raises(BookingError):
+            await pa.apply_cancel(req)
+    m["sheet"].assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_build_cancel_pending_reschedule_is_never_late():
+    pend = {**PAID_ROW, "status": "pending_reschedule",
+            "start_time": "2026-09-20T12:00:00+00:00", "end_time": "2026-09-20T13:00:00+00:00"}
+    req = await build_cancel({"fee_action": "devolver"}, row=pend)
+    assert req["policy_late"] is False
+
+
+@pytest.mark.asyncio
+async def test_handle_cancel_dry_run_pending_reschedule_hours_none():
+    pend = {**PAID_ROW, "status": "pending_reschedule",
+            "start_time": "2026-09-20T12:00:00+00:00", "end_time": "2026-09-20T13:00:00+00:00"}
+    with ExitStack() as st:
+        for p in load_patches(row=pend):
+            st.enter_context(p)
+        status, payload = await pa.handle_cancel({**CANCEL, "initiated_by": None, "dry_run": True})
+    assert status == 200
+    assert payload["hours_until"] is None and payload["policy_late"] is False
+
+
+@pytest.mark.asyncio
+async def test_build_cancel_split_refund_requires_both_parts():
+    with pytest.raises(PanelInputError, match="cancele as duas"):
+        await build_cancel({"fee_action": "devolver"}, row=PART1, patient=KID, sibling_rows=[PART1, PART2])
+    req = await build_cancel({"fee_action": "credito"}, row=PART1, patient=KID, sibling_rows=[PART1, PART2])
+    assert req["both_parts"] is False and req["fee_action"] == "credito"
+
+
+@pytest.mark.asyncio
+async def test_build_cancel_past_scheduled_row_rejected():
+    past = {**ROW, "start_time": "2026-09-30T12:00:00+00:00", "end_time": "2026-09-30T13:00:00+00:00"}
+    with pytest.raises(PanelInputError, match="já passou"):
+        await build_cancel(row=past)
+    with pytest.raises(PanelInputError, match="já passou"):
+        await build_cancel({"dry_run": True}, row=past)
+
+
+@pytest.mark.asyncio
+async def test_apply_cancel_pending_reschedule_row_skips_calendar():
+    pend = {**PAID_ROW, "status": "pending_reschedule"}
+    req = await build_cancel({"fee_action": "reter"}, row=pend)
+    out, m = await run_cancel(req)
+    m["cancel_event"].assert_not_called()
+    assert out["canceled"] == ["evt1"]
+    assert m["update_row"].call_args_list[0][0][1]["status"] == "canceled"
+
+
+@pytest.mark.asyncio
+async def test_apply_cancel_pair_with_pending_sibling_only_scheduled_hits_calendar():
+    sib = {**PART2, "status": "pending_reschedule"}
+    req = await build_cancel({"both_parts": True, "fee_action": "reter"}, row=PART1, patient=KID,
+                             sibling_rows=[PART1, sib])
+    out, m = await run_cancel(req)
+    m["cancel_event"].assert_awaited_once_with("cal-julio", "evt1")
+    assert out["canceled"] == ["evt1", "evt2"]
+
+
+@pytest.mark.asyncio
+async def test_handle_cancel_reter_text_does_not_mention_fee():
+    with ExitStack() as st:
+        for p in load_patches(row=PAID_ROW):
+            st.enter_context(p)
+        st.enter_context(patch("app.panel_appointments.apply_cancel", new_callable=AsyncMock,
+                               return_value={"canceled": ["evt1"], "lines": ["l1"], "warnings": []}))
+        mock_send = st.enter_context(patch("app.panel_appointments.deliver_message", new_callable=AsyncMock,
+                                           return_value={"sent": ["Carla"], "not_delivered": [], "held": []}))
+        await pa.handle_cancel({**CANCEL, "fee_action": "reter"})
+    text = mock_send.call_args[0][2]({"name": "CARLA MENEZES"})
+    assert "taxa" not in text.lower()
