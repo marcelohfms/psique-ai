@@ -305,15 +305,16 @@ async def create_appointments(req: dict) -> dict:
             "origem": "painel", "atendente": req.get("agent") or "", "encaixe": bool(req.get("encaixe")),
             "appointment_id": event_id,
         })
-    modality_label = "Online" if req["modality"] == "online" else "Presencial"
-    _notify_clinic_async(
-        f"Agendamento realizado — {display}",
-        "Agendamento realizado pelo painel ✅\n"
-        f"Paciente: {display}\n" + "\n".join(lines) +
-        f"\nModalidade: {modality_label}\nAtendente: {req.get('agent') or '—'}"
-        + ("\n⚠️ Encaixe fora da grade" if req.get("encaixe") else ""),
-        req["phone"],
-    )
+    if req.get("notify_clinic", True):  # remarcação tardia manda o próprio aviso
+        modality_label = "Online" if req["modality"] == "online" else "Presencial"
+        _notify_clinic_async(
+            f"Agendamento realizado — {display}",
+            "Agendamento realizado pelo painel ✅\n"
+            f"Paciente: {display}\n" + "\n".join(lines) +
+            f"\nModalidade: {modality_label}\nAtendente: {req.get('agent') or '—'}"
+            + ("\n⚠️ Encaixe fora da grade" if req.get("encaixe") else ""),
+            req["phone"],
+        )
     return {
         "kind": kind,
         "lines": lines,

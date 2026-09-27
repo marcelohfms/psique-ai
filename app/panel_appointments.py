@@ -43,7 +43,7 @@ BOOKING_FEE = "100,00"
 _APPT_COLS = (
     "id, appointment_id, patient_id, contact_id, doctor_id, start_time, end_time, status, "
     "modality, consultation_type, session_note, booking_fee_paid_at, booking_fee_waived, "
-    "is_courtesy, refund_requested_at, confirmed_at"
+    "is_courtesy, refund_requested_at, confirmed_at, paid_at"
 )
 
 
@@ -100,7 +100,9 @@ def billing_update(row: dict, patient: dict, billing: str, now_iso: str) -> dict
         return {"is_courtesy": billing == "cortesia", "booking_fee_waived": True,
                 "booking_fee_paid_at": row.get("booking_fee_paid_at") or now_iso}
     # Volta ao normal: a data de isenção/cortesia era artificial, a taxa volta a ser devida.
-    return {"is_courtesy": False, "booking_fee_waived": False, "booking_fee_paid_at": None}
+    # build_edit recusa essa volta; o lembrete zerado é só por segurança.
+    return {"is_courtesy": False, "booking_fee_waived": False, "booking_fee_paid_at": None,
+            "payment_reminder_sent_at": None}
 
 
 # ── apoio ──────────────────────────────────────────────────────────────────
@@ -224,6 +226,10 @@ async def build_edit(body: dict) -> dict:
             and billing in ("taxa_isenta", "cortesia") and fee_really_paid(row, patient)):
         # Isentar por cima de taxa paga apagaria a data real do pagamento numa volta ao normal.
         raise PanelInputError("a taxa desta consulta já foi paga; para devolver, cancele com devolução")
+    if not late_fee and billing == "normal" and current_billing(row, patient) != "normal":
+        # O cron de cobrança conta o prazo por created_at/payment_reminder_sent_at e
+        # cancelaria a consulta na hora. Na remarcação tardia a linha é nova: pode.
+        raise PanelInputError("para voltar a cobrar a taxa, cancele esta consulta e agende de novo")
     return {
         **ctx,
         "new": {"doctor": doctor, "modality": modality, "start": start, "minutes": minutes,
@@ -235,12 +241,15 @@ async def build_edit(body: dict) -> dict:
     }
 
 
-def _event_kwargs(req: dict, doctor: str, start: datetime, minutes: int, note: str, modality: str) -> dict:
+def _event_kwargs(req: dict, doctor: str, start: datetime, minutes: int, note: str, modality: str,
+                  ctype: str | None) -> dict:
     patient = req["patient"]
     return {
         "slot_minutes": minutes, "patient_name": _display(patient), "doctor_name": DOCTOR_LABELS[doctor],
         "session_note": note, "modality": modality, "patient_email": patient.get("email") or "",
         "patient_number": req["phone"],
+        # 1ª consulta de menor em 2h sem observação: descrição "1ª hora pais / 2ª hora paciente".
+        "is_minor_first": ctype == "primeira_consulta" and minutes == 120,
     }
 
 
@@ -275,7 +284,7 @@ async def apply_edit(req: dict) -> dict:
     if pending:
         fields.update({"status": "scheduled", "reschedule_requested_at": None})
 
-    ev = _event_kwargs(req, new_doctor, new["start"], new["minutes"], new["note"], new["modality"])
+    ev = _event_kwargs(req, new_doctor, new["start"], new["minutes"], new["note"], new["modality"], new["ctype"])
     created = None
     try:
         if pending or new_doctor != old_doctor:
@@ -298,7 +307,8 @@ async def apply_edit(req: dict) -> dict:
                 await cancel_event(new_cal, created)
             else:
                 old = _event_kwargs(req, old_doctor, req["start"], req["minutes"],
-                                    row.get("session_note") or "", row.get("modality") or "")
+                                    row.get("session_note") or "", row.get("modality") or "",
+                                    row.get("consultation_type"))
                 await update_event(calendar_id=new_cal, event_id=row["appointment_id"], new_start=req["start"],
                                    confirmed=bool(row.get("confirmed_at")), **old)
         except Exception:
@@ -357,6 +367,7 @@ async def apply_late_reschedule(req: dict) -> dict:
         "split": False, "split_of": None, "session_note": new["note"],
         "first_consultation": new["ctype"] == "primeira_consulta", "billing": new["billing"],
         "encaixe": bool(req.get("encaixe")), "agent": req["agent"],
+        "notify_clinic": False,  # a clínica recebe só o aviso da remarcação <24h
     }
     created = await create_appointments(booking)  # tudo ou nada; BookingError sobe
     new_id = created["appointments"][0]["appointment_id"]
@@ -554,6 +565,9 @@ async def _register_refund(req: dict) -> list[str]:
     except Exception:
         _logger.exception("panel cancel: planilha de Solicitações falhou appt=%s", row["appointment_id"])
         warnings.append("a devolução não entrou na planilha de Solicitações; registre à mão")
+    if row.get("paid_at"):
+        warnings.append("a consulta já estava paga por inteiro; a devolução registrada é só a taxa "
+                        f"de R$ {BOOKING_FEE} — confira o valor com a equipe")
     await log_event("refund_requested", req["phone"], {
         "appointment_id": row["appointment_id"], "amount": BOOKING_FEE, "reason": reason,
         "origem": "painel", "atendente": req["agent"]})

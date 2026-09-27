@@ -782,3 +782,17 @@ async def test_build_request_split_of_rejects_when_part2_already_exists():
             st.enter_context(p)
         with pytest.raises(pb.PanelInputError, match="já foi marcada"):
             await pb.build_request(_br_body(split_of="evtX", first_consultation=True))
+
+
+@pytest.mark.asyncio
+async def test_create_notify_clinic_false_skips_email():
+    client, _ = _sb([])
+    _, mocks = await _run(_req(notify_clinic=False), client)
+    mocks[5].assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_create_notify_clinic_default_emails():
+    client, _ = _sb([])
+    _, mocks = await _run(_req(), client)
+    mocks[5].assert_called_once()

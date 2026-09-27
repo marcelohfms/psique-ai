@@ -65,7 +65,8 @@ def test_fee_really_paid_ignores_waiver_timestamp():
 def test_billing_update_back_to_normal_clears_artificial_paid_at():
     row = {**ROW, "booking_fee_waived": True, "booking_fee_paid_at": "x"}
     assert pa.billing_update(row, ADULT, "normal", "now") == {
-        "is_courtesy": False, "booking_fee_waived": False, "booking_fee_paid_at": None}
+        "is_courtesy": False, "booking_fee_waived": False, "booking_fee_paid_at": None,
+        "payment_reminder_sent_at": None}
 
 
 def test_billing_update_to_courtesy_keeps_real_payment_date():
@@ -837,3 +838,62 @@ async def test_apply_cancel_refund_skipped_when_sibling_fails():
     notice = m["notify"].call_args[0][1]
     assert "Taxa: devolução NÃO registrada (a outra parte continua marcada)" in notice
     assert "ver planilha" not in notice
+
+
+# ── revisão final ──────────────────────────────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_build_edit_refuses_back_to_normal_billing():
+    for row in ({**ROW, "booking_fee_waived": True, "booking_fee_paid_at": "x"},
+                {**ROW, "is_courtesy": True, "booking_fee_waived": True, "booking_fee_paid_at": "x"}):
+        with pytest.raises(PanelInputError, match="voltar a cobrar"):
+            await build_edit({"billing": "normal"}, row=row)
+
+
+@pytest.mark.asyncio
+async def test_late_reschedule_does_not_email_clinic_twice():
+    req = await build_edit({"initiated_by": "patient"}, row=LATE_ROW)
+    created = {"kind": "normal", "lines": ["l"], "pending_part2": False,
+               "appointments": [{"appointment_id": "evt-new"}]}
+    with ExitStack() as st:
+        st.enter_context(patch("app.panel_appointments._now", return_value=NOW))
+        for p in cal_patches().values():
+            st.enter_context(p)
+        mock_create = st.enter_context(patch("app.panel_appointments.create_appointments",
+                                             new_callable=AsyncMock, return_value=created))
+        await pa.apply_late_reschedule(req)
+    assert mock_create.call_args[0][0]["notify_clinic"] is False
+
+
+@pytest.mark.asyncio
+async def test_register_refund_warns_when_consultation_fully_paid():
+    req = await build_cancel({"fee_action": "devolver"}, row={**PAID_ROW, "paid_at": "2026-09-30T11:00:00-03:00"})
+    out, m = await run_cancel(req)
+    assert any("paga por inteiro" in w for w in out["warnings"])
+    m["sheet"].assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_register_refund_no_full_payment_warning_by_default():
+    req = await build_cancel({"fee_action": "devolver"}, row=PAID_ROW)
+    out, _ = await run_cancel(req)
+    assert not any("paga por inteiro" in w for w in out["warnings"])
+
+
+def test_appt_cols_include_paid_at():
+    assert "paid_at" in [c.strip() for c in pa._APPT_COLS.split(",")]
+
+
+@pytest.mark.asyncio
+async def test_apply_edit_minor_first_2h_keeps_description_flag():
+    row = {**ROW, "consultation_type": "primeira_consulta", "end_time": "2026-10-05T14:00:00+00:00"}
+    req = await build_edit({"minutes": 120, "first_consultation": True}, row=row, patient=KID)
+    _, m = await run_apply(req)
+    assert m["update_event"].call_args.kwargs["is_minor_first"] is True
+
+
+@pytest.mark.asyncio
+async def test_apply_edit_adult_1h_not_minor_first():
+    req = await build_edit()
+    _, m = await run_apply(req)
+    assert m["update_event"].call_args.kwargs["is_minor_first"] is False
