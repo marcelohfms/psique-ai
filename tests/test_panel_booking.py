@@ -545,3 +545,189 @@ async def test_notify_clinic_async_tracks_background_task():
         await asyncio.sleep(0)  # done_callback roda no próximo tick após a task terminar
     mock_notify.assert_awaited_once()
     assert len(pb._background_tasks) == 0
+
+
+# ── build_request ─────────────────────────────────────────────────────────────
+
+_BR_CONTACT = {"id": "c1"}
+_BR_PATIENT = {
+    "id": "p1", "name": "Lucas Menezes", "birth_date": "10/02/1990", "modality_restriction": None,
+    "custom_price": None, "booking_fee_waived": False, "social_name": None, "email": "l@x.com",
+}
+TUE_9 = datetime(2026, 10, 6, 9, 0, tzinfo=TZ)
+
+
+def _br_body(**kw):
+    base = {
+        "phone": "5581999998888", "patient_id": "p1", "doctor": "julio", "modality": "presencial",
+        "parts": [{"start": "2026-10-05T09:00", "minutes": 60}], "split": False, "split_of": None,
+        "session_note": "", "first_consultation": False, "billing": "normal", "agent": "Maria",
+    }
+    base.update(kw)
+    return base
+
+
+def _br_patches(patient=None, split_of_row=None, part2_rows=None):
+    """Patches padrão para build_request: contato, paciente, e (se usado) as
+    duas consultas ao Supabase do fluxo split_of (busca da parte 1 e checagem
+    de parte 2 já existente), na ordem em que build_request as chama."""
+    patches = [
+        patch("app.panel_booking.get_contact_by_phone", new_callable=AsyncMock, return_value=_BR_CONTACT),
+        patch("app.panel_booking.get_patient_by_id", new_callable=AsyncMock, return_value=patient or _BR_PATIENT),
+    ]
+    if split_of_row is not None or part2_rows is not None:
+        client = MagicMock()
+        table = MagicMock()
+        table.select.return_value = table
+        table.eq.return_value = table
+        table.in_.return_value = table
+        table.limit.return_value = table
+        table.execute = AsyncMock(side_effect=[
+            MagicMock(data=[split_of_row] if split_of_row else []),
+            MagicMock(data=part2_rows or []),
+        ])
+        client.from_.return_value = table
+        patches.append(patch("app.panel_booking.get_supabase", new_callable=AsyncMock, return_value=client))
+    return patches
+
+
+@pytest.mark.asyncio
+async def test_build_request_rejects_past_start():
+    with ExitStack() as st:
+        for p in _br_patches():
+            st.enter_context(p)
+        st.enter_context(patch("app.panel_booking._now", return_value=MON_9 + timedelta(days=1)))
+        with pytest.raises(pb.PanelInputError, match="já passou"):
+            await pb.build_request(_br_body())
+
+
+@pytest.mark.asyncio
+async def test_build_request_accepts_future_start():
+    with ExitStack() as st:
+        for p in _br_patches():
+            st.enter_context(p)
+        st.enter_context(patch("app.panel_booking._now", return_value=MON_9 - timedelta(days=1)))
+        req = await pb.build_request(_br_body())
+    assert req["parts"][0]["start"] == MON_9
+
+
+@pytest.mark.asyncio
+async def test_build_request_non_dict_part_raises():
+    with ExitStack() as st:
+        for p in _br_patches():
+            st.enter_context(p)
+        with pytest.raises(pb.PanelInputError):
+            await pb.build_request(_br_body(parts=["2026-10-05T09:00"]))
+
+
+@pytest.mark.asyncio
+async def test_build_request_non_numeric_minutes_raises():
+    with ExitStack() as st:
+        for p in _br_patches():
+            st.enter_context(p)
+        with pytest.raises(pb.PanelInputError):
+            await pb.build_request(_br_body(parts=[{"start": "2026-10-05T09:00", "minutes": "abc"}]))
+
+
+@pytest.mark.asyncio
+async def test_build_request_split_parts_overlap_raises():
+    minor = {**_BR_PATIENT, "birth_date": "10/02/2016"}
+    with ExitStack() as st:
+        for p in _br_patches(patient=minor):
+            st.enter_context(p)
+        body = _br_body(split=True, first_consultation=True, parts=[
+            {"start": "2026-10-05T09:00", "minutes": 60},
+            {"start": "2026-10-05T09:30", "minutes": 60},  # começa antes do fim da 1ª parte
+        ])
+        with pytest.raises(pb.PanelInputError, match="depois da 1ª"):
+            await pb.build_request(body)
+
+
+@pytest.mark.asyncio
+async def test_build_request_split_parts_touching_is_allowed():
+    """A 2ª parte pode começar exatamente quando a 1ª termina (não é sobreposição)."""
+    minor = {**_BR_PATIENT, "birth_date": "10/02/2016"}
+    with ExitStack() as st:
+        for p in _br_patches(patient=minor):
+            st.enter_context(p)
+        body = _br_body(split=True, first_consultation=True, parts=[
+            {"start": "2026-10-05T09:00", "minutes": 60},
+            {"start": "2026-10-05T10:00", "minutes": 60},
+        ])
+        req = await pb.build_request(body)
+    assert req["split"] is True
+
+
+@pytest.mark.asyncio
+async def test_build_request_first_consultation_false_for_adult_even_if_flag_true():
+    """A etiqueta 1ª consulta só é efetiva para menor + Dr. Júlio — mesmo que a
+    atendente marque a caixinha, um adulto não pode virar primeira_consulta."""
+    with ExitStack() as st:
+        for p in _br_patches():
+            st.enter_context(p)
+        req = await pb.build_request(_br_body(first_consultation=True))
+    assert req["first_consultation"] is False
+
+
+@pytest.mark.asyncio
+async def test_build_request_first_consultation_false_for_bruna_even_if_minor():
+    minor = {**_BR_PATIENT, "birth_date": "10/02/2016"}
+    with ExitStack() as st:
+        for p in _br_patches(patient=minor):
+            st.enter_context(p)
+        req = await pb.build_request(_br_body(doctor="bruna", first_consultation=True))
+    assert req["first_consultation"] is False
+
+
+@pytest.mark.asyncio
+async def test_build_request_first_consultation_true_for_minor_julio():
+    minor = {**_BR_PATIENT, "birth_date": "10/02/2016"}
+    with ExitStack() as st:
+        for p in _br_patches(patient=minor):
+            st.enter_context(p)
+        req = await pb.build_request(_br_body(first_consultation=True))
+    assert req["first_consultation"] is True
+
+
+@pytest.mark.asyncio
+async def test_build_request_age_uses_appointment_date_not_today():
+    """Nasceu 01/10/2008: 17 anos hoje (2026-09-27), mas já fez 18 no dia da
+    consulta (2026-10-05, depois do aniversário) — a divisão infantil não pode
+    valer para quem já é adulto NA DATA da consulta."""
+    patient = {**_BR_PATIENT, "birth_date": "01/10/2008"}
+    with ExitStack() as st:
+        for p in _br_patches(patient=patient):
+            st.enter_context(p)
+        body = _br_body(split=True, first_consultation=True, parts=[
+            {"start": "2026-10-05T09:00", "minutes": 60},
+            {"start": "2026-10-05T10:00", "minutes": 60},
+        ])
+        with pytest.raises(pb.PanelInputError, match="menor com o Dr. Júlio"):
+            await pb.build_request(body)
+
+
+@pytest.mark.asyncio
+async def test_build_request_split_of_accepts_completed_part1():
+    row = {"appointment_id": "evtX", "patient_id": "p1", "booking_fee_paid_at": None,
+           "booking_fee_waived": False, "is_courtesy": False,
+           "session_note": "1ª consulta · parte 1 de 2", "status": "completed"}
+    minor = {**_BR_PATIENT, "birth_date": "10/02/2016"}
+    with ExitStack() as st:
+        for p in _br_patches(patient=minor, split_of_row=row, part2_rows=[]):
+            st.enter_context(p)
+        req = await pb.build_request(_br_body(split_of="evtX", first_consultation=True))
+    assert req["split_of"]["appointment_id"] == "evtX"
+
+
+@pytest.mark.asyncio
+async def test_build_request_split_of_rejects_when_part2_already_exists():
+    row = {"appointment_id": "evtX", "patient_id": "p1", "booking_fee_paid_at": None,
+           "booking_fee_waived": False, "is_courtesy": False,
+           "session_note": "1ª consulta · parte 1 de 2", "status": "scheduled"}
+    part2 = {"session_note": "1ª consulta · parte 2 de 2"}
+    minor = {**_BR_PATIENT, "birth_date": "10/02/2016"}
+    with ExitStack() as st:
+        for p in _br_patches(patient=minor, split_of_row=row, part2_rows=[part2]):
+            st.enter_context(p)
+        with pytest.raises(pb.PanelInputError, match="já foi marcada"):
+            await pb.build_request(_br_body(split_of="evtX", first_consultation=True))

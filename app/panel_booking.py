@@ -14,7 +14,6 @@ from app.booking_texts import DOCTOR_LABELS, confirmation_text, format_appt_line
 from app.database import DOCTOR_IDS, get_supabase, log_event, save_message
 from app.google_calendar import grid_violation
 from app.patients import (
-    _compute_age,
     _is_held,
     _linked_contacts_with_marker,
     consultation_reminder_contacts,
@@ -198,8 +197,25 @@ def _part_notes(req: dict) -> list[str]:
     return [" · ".join(x for x in (label, extra) if x) for label in labels]
 
 
-def _is_minor_julio(patient: dict, doctor: str) -> bool:
-    age = _compute_age(patient.get("birth_date"))
+def _age_on(birth_date: str | None, day) -> int | None:
+    """Idade em `day` (um date), aceitando dd/mm/aaaa e ISO — mesmos formatos
+    de app.patients._compute_age, mas calculada numa data arbitrária (a da
+    consulta), não em date.today(): a idade que importa para a regra do menor
+    é a que o paciente tinha (ou vai ter) no dia da consulta, não hoje."""
+    raw = (birth_date or "").strip()
+    for fmt in ("%d/%m/%Y", "%Y-%m-%d"):
+        try:
+            bd = datetime.strptime(raw, fmt).date()
+            break
+        except ValueError:
+            continue
+    else:
+        return None
+    return day.year - bd.year - ((day.month, day.day) < (bd.month, bd.day))
+
+
+def _is_minor_julio(patient: dict, doctor: str, day) -> bool:
+    age = _age_on(patient.get("birth_date"), day)
     return doctor == "julio" and age is not None and age < 18
 
 
@@ -230,7 +246,7 @@ async def create_appointments(req: dict) -> dict:
     # mesmo que a atendente esqueça de marcar a caixinha.
     if req["first_consultation"] or req.get("split") or req.get("split_of"):
         ctype = "primeira_consulta"
-    elif _is_minor_julio(patient, doctor):
+    elif _is_minor_julio(patient, doctor, parts[0]["start"].date()):
         ctype = "acompanhamento"
     else:
         ctype = None
@@ -417,6 +433,12 @@ class PanelInputError(ValueError):
     """Corpo do endpoint inválido — vira 400 em app/main.py."""
 
 
+def _now() -> datetime:
+    """Agora em America/Recife — função à parte para os testes poderem
+    substituir sem mexer no relógio real (ex.: checar horário no passado)."""
+    return datetime.now(TZ)
+
+
 def _parse_start(raw: str) -> datetime:
     try:
         return datetime.fromisoformat(raw).replace(tzinfo=TZ)
@@ -452,18 +474,32 @@ async def build_request(body: dict) -> dict:
     if not 1 <= len(raw_parts) <= 2:
         raise PanelInputError("informe um ou dois horários")
     parts = []
+    now = _now()
     for p in raw_parts:
-        minutes = int(p.get("minutes") or 0)
+        if not isinstance(p, dict):
+            raise PanelInputError("horário inválido")
+        try:
+            minutes = int(p.get("minutes") or 0)
+        except (TypeError, ValueError):
+            raise PanelInputError("duração inválida")
         if minutes not in (40, 60, 120) or (minutes == 40 and doctor != "bruna"):
             raise PanelInputError("duração inválida")
-        parts.append({"start": _parse_start(p.get("start")), "minutes": minutes})
+        start = _parse_start(p.get("start"))
+        if start < now:
+            raise PanelInputError("esse horário já passou")
+        parts.append({"start": start, "minutes": minutes})
+
+    if len(parts) == 2:
+        end1 = parts[0]["start"] + timedelta(minutes=parts[0]["minutes"])
+        if parts[1]["start"] < end1:
+            raise PanelInputError("a 2ª parte precisa ser depois da 1ª")
 
     split = bool(body.get("split"))
     split_of_id = body.get("split_of")
     split_of = None
+    minor_julio = _is_minor_julio(patient, doctor, parts[0]["start"].date())
     if split or split_of_id:
-        age = _compute_age(patient.get("birth_date"))
-        if not (doctor == "julio" and age is not None and age < 18 and body.get("first_consultation")):
+        if not (minor_julio and body.get("first_consultation")):
             raise PanelInputError("divisão só vale para a 1ª consulta de menor com o Dr. Júlio")
         if any(p["minutes"] != 60 for p in parts):
             raise PanelInputError("cada parte da 1ª consulta dividida tem 1h")
@@ -479,15 +515,29 @@ async def build_request(body: dict) -> dict:
             .eq("appointment_id", split_of_id).limit(1).execute()
         )
         split_of = (res.data or [None])[0]
-        if not split_of or split_of["patient_id"] != patient["id"] or split_of.get("status") != "scheduled" \
+        if not split_of or split_of["patient_id"] != patient["id"] \
+                or split_of.get("status") not in ("scheduled", "completed") \
                 or not (split_of.get("session_note") or "").startswith(SPLIT_PART1):
             raise PanelInputError("parte 1 pendente não encontrada")
+        # A 2ª parte pode já ter sido marcada noutra sessão (ou reagendada) —
+        # sem isto, dois cliques em "Marcar 2ª parte" criariam duas partes 2.
+        part2_check = await (
+            client.from_("appointments")
+            .select("session_note")
+            .eq("patient_id", patient["id"])
+            .in_("status", ["scheduled", "pending_reschedule", "completed"])
+            .execute()
+        )
+        if any((r.get("session_note") or "").startswith(SPLIT_PART2) for r in (part2_check.data or [])):
+            raise PanelInputError("a 2ª parte já foi marcada")
+
+    effective_first = bool(body.get("first_consultation")) and minor_julio
 
     return {
         "phone": phone, "contact_id": contact["id"], "patient": patient, "doctor": doctor,
         "modality": modality, "parts": parts, "split": split and not split_of_id, "split_of": split_of,
         "session_note": (body.get("session_note") or "").strip()[:80],
-        "first_consultation": bool(body.get("first_consultation")), "billing": billing,
+        "first_consultation": effective_first, "billing": billing,
         "encaixe": False, "agent": (body.get("agent") or "").strip()[:80],
     }
 
