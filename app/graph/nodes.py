@@ -486,26 +486,73 @@ _RELATIONSHIP_KEYWORDS: list[tuple[tuple[str, ...], str]] = [
     (("madrinha",), "madrinha"),
     (("padrinho",), "padrinho"),
     (("responsável legal", "responsavel legal", "tutor", "tutora", "guarda"), "responsável legal"),
-    (("mãe", "mae", "genitora"), "mãe"),
-    (("pai", "genitor"), "pai"),
-    (("avó", "avo", "avô"), "avó/avô"),
-    (("irmã", "irma", "irmão", "irmao"), "irmão/irmã"),
-    (("tia", "tio"), "tia/tio"),
+    (("mãe", "mae", "mamãe", "mamae", "genitora"), "mãe"),
+    (("pai", "papai", "genitor"), "pai"),
+    (("avó", "vó", "vovó"), "avó"),
+    # "vô" fica de fora: no WhatsApp também é "vou" ("vô ver com ele").
+    (("avô", "vovô"), "avô"),
+    (("irmã", "irma"), "irmã"),
+    (("irmão", "irmao"), "irmão"),
+    (("tia",), "tia"),
+    (("tio",), "tio"),
 ]
+
+# Sem acento, "avo" não diz se é avó ou avô. O artigo desempata ("sou a avo");
+# sem artigo fica o composto, que a regra da idade lê como responsável legal.
+_AMBIGUOUS_GRANDPARENT = ("avo", "vovo")
+
+
+def _has_word(low: str, needle: str) -> bool:
+    return bool(_re_mod.search(r'(?<!\w)' + _re_mod.escape(needle) + r'(?!\w)', low))
 
 
 def _normalize_relationship(text: str) -> str:
     """Extrai o parentesco de uma resposta livre ("sou a mãe dele" → "mãe").
 
+    Devolve, sempre que dá, um rótulo da lista do painel da atendente (mãe, pai,
+    avó, avô, tio, tia, irmão, irmã, padrasto, madrasta, responsável legal...),
+    com o gênero tirado da própria palavra. Os compostos "avó/avô", "tia/tio" e
+    "irmão/irmã" que eram gravados antes confundiam a regra da idade.
+
     Nunca devolve vazio: se nada for reconhecido, guarda a resposta do paciente
     como veio. Um retorno vazio faria o passo do cadastro repetir a mesma pergunta
     indefinidamente — o modo de falha que este campo já causou uma vez."""
     raw = (text or "").strip()
-    low = raw.lower()
-    for needles, label in _RELATIONSHIP_KEYWORDS:
-        if any(_re_mod.search(r'(?<!\w)' + _re_mod.escape(n) + r'(?!\w)', low) for n in needles):
-            return label
-    return raw
+    return _match_relationship(raw.lower()) or raw
+
+
+def _match_relationship(low: str) -> str | None:
+    """Rótulo reconhecido em `low` (já em minúsculas), ou None."""
+    matched = [
+        label for needles, label in _RELATIONSHIP_KEYWORDS
+        if any(_has_word(low, n) for n in needles)
+    ]
+    # "mãe ou pai" (a LLM às vezes escreve assim para "minha filha"): não há
+    # como escolher. O composto vale como responsável legal na regra da idade.
+    if "mãe" in matched and "pai" in matched:
+        return "mãe/pai"
+    if matched:
+        return matched[0]
+    for n in _AMBIGUOUS_GRANDPARENT:
+        if _has_word(low, n):
+            if _re_mod.search(r'(?<!\w)a\s+' + n + r'(?!\w)', low):
+                return "avó"
+            if _re_mod.search(r'(?<!\w)o\s+' + n + r'(?!\w)', low):
+                return "avô"
+            return "avó/avô"
+    return None
+
+
+def _speaker_relationship(text: str) -> str | None:
+    """Parentesco que a própria pessoa declara ("sou a mãe", "sou o tio dela").
+
+    Diferente de _normalize_relationship, só olha a palavra logo depois de "sou":
+    em "não sou eu, é para minha mãe" a palavra "mãe" descreve o paciente, não
+    quem fala."""
+    m = _re_mod.search(r'(?<!\w)sou\s+((?:[ao]\s+)?\w+)', (text or "").lower())
+    if not m:
+        return None
+    return _match_relationship(m.group(1))
 
 
 _NOT_PATIENT_KWS = (
@@ -517,6 +564,17 @@ _NOT_PATIENT_KWS = (
 # Precisam de limite de palavra: "eu" está dentro de "meu", e "meu" aparece em
 # "para meu filho", que significa exatamente o contrário.
 _SELF_PATIENT_KWS = ("sim", "eu", "mim", "comigo", "minha consulta", "própria", "propria")
+
+
+def _same_name(a: str | None, b: str | None) -> bool:
+    """Mesmo nome, ignorando caixa, acentos e espaços extras."""
+    import unicodedata
+
+    def _norm(s: str | None) -> str:
+        s = unicodedata.normalize("NFKD", (s or "").strip().lower())
+        return " ".join("".join(c for c in s if not unicodedata.combining(c)).split())
+
+    return bool(_norm(a)) and _norm(a) == _norm(b)
 
 
 def _classify_is_patient_answer(text: str, user_name: str) -> tuple[bool | None, str | None]:
@@ -747,6 +805,18 @@ async def collect_info_node(state: ConversationState, config: RunnableConfig) ->
             }
             if is_registration_complete(u):
                 return {**loaded, "stage": "patient_agent", "messages": []}
+            # Cadastro incompleto de terceiro com o paciente batizado com o nome do
+            # contato: é a cópia implícita do upsert_user no passo do nome, feita
+            # antes de sabermos para quem é a consulta. Não é um nome de paciente
+            # confirmado. Recarregá-lo pulava a pergunta do nome do paciente e o
+            # filho herdava o nome da mãe (caso Leila Menezes, 5581991393132,
+            # 19/08/2026).
+            if (
+                not u.get("is_patient")
+                and loaded.get("patient_name")
+                and _same_name(loaded["patient_name"], loaded.get("user_name"))
+            ):
+                loaded["patient_name"] = None
             # Incomplete: merge DB values into state so systematic questions use
             # fresh data. DB wins over any stale checkpoint values.
             for k, v in loaded.items():
@@ -917,6 +987,11 @@ async def collect_info_node(state: ConversationState, config: RunnableConfig) ->
     _NAME_Q = "Pode me informar o seu nome completo?"
     _IS_PATIENT_Q = "A consulta é para você ou para outra pessoa?"
     _PATIENT_NAME_Q = "Qual o nome completo do paciente?"
+    # Precisa conter _NAME_Q: é por ele que o Step 2 reconhece a resposta.
+    _CONTACT_NAME_AGAIN_Q = (
+        "Anotei o nome do paciente. 😊 E você, que está conversando comigo? "
+        + _NAME_Q
+    )
 
     _CPF_Q = "Qual o CPF do paciente?"
     _BIRTH_Q = "Qual a data de nascimento do paciente? (formato dd/mm/aaaa)"
@@ -1069,6 +1144,12 @@ async def collect_info_node(state: ConversationState, config: RunnableConfig) ->
                     return await _ask(
                         "Não consegui identificar o nome. Pode me informar o seu nome completo?"
                     )
+                # Já sabemos que a consulta é para outra pessoa e a resposta é o
+                # nome do paciente de novo: não é o nome de quem está falando.
+                if state.get("is_patient") is False and _same_name(
+                    last_human, state.get("patient_name")
+                ):
+                    return await _ask(_CONTACT_NAME_AGAIN_Q)
                 _s2_extracted: dict = {"user_name": last_human}
                 if state.get("preferred_doctor"):
                     _s2_extracted["preferred_doctor"] = state["preferred_doctor"]
@@ -1083,6 +1164,7 @@ async def collect_info_node(state: ConversationState, config: RunnableConfig) ->
             _asked_confirm = (
                 "para você ou" in last_ai.lower()
                 or "para outra pessoa" in last_ai.lower()
+                or "agendando em nome" in last_ai.lower()
                 or _IS_PATIENT_Q in last_ai
             )
             if _asked_confirm and last_human:
@@ -1122,10 +1204,14 @@ async def collect_info_node(state: ConversationState, config: RunnableConfig) ->
             return await _ask(_IS_PATIENT_CONFIRM_Q)
 
         if state.get("is_patient") is None:
+            # "agendando em nome" é a repergunta de _REGISTRATION_QUESTIONS. Sem
+            # ela aqui, a resposta à repergunta era descartada ("Sou a mãe", caso
+            # Leila Menezes, 19/08/2026) e a pergunta se repetia.
             _asked_is_patient = (
                 _IS_PATIENT_Q in last_ai
                 or "para você ou" in last_ai.lower()
                 or "para outra pessoa" in last_ai.lower()
+                or "agendando em nome" in last_ai.lower()
             )
             if _asked_is_patient and last_human:
                 h = last_human.lower()
@@ -1145,19 +1231,27 @@ async def collect_info_node(state: ConversationState, config: RunnableConfig) ->
                     )
                 else:
                     # Infer guardian relationship and name from the same message.
-                    # e.g. "minha filha" → relationship="mãe", guardian=contact name.
+                    # e.g. "minha filha" → relationship="responsável legal", guardian=contact name.
+                    #
+                    # "Minha filha" / "meu irmão" concordam com o paciente, não com
+                    # quem fala: não dizem se é mãe ou pai, irmão ou irmã. Só "sou a
+                    # mãe" diz. Sem isso, pai/mãe vira "responsável legal" (rótulo do
+                    # painel que a regra da idade já lê como legal) e irmão fica em
+                    # branco, para o passo 6b perguntar quando for menor. Os compostos
+                    # "mãe/pai" e "irmão/irmã" gravados antes não estavam no painel.
                     _rel_map = [
-                        (["filha", "filho"],        "mãe/pai"),
+                        (["filha", "filho"],        "responsável legal"),
                         (["mãe", "mae", "mamãe"],   "filho(a)"),
                         (["pai", "papai"],           "filho(a)"),
                         (["esposa", "marido", "esposo", "cônjuge", "conjuge"], "cônjuge"),
-                        (["irmã", "irma", "irmão", "irmao"], "irmão/irmã"),
+                        (["irmã", "irma", "irmão", "irmao"], None),
                     ]
-                    _inferred_rel = None
-                    for _kws, _rel in _rel_map:
-                        if any(kw in h for kw in _kws):
-                            _inferred_rel = _rel
-                            break
+                    _inferred_rel = _speaker_relationship(h)
+                    if _inferred_rel is None:
+                        for _kws, _rel in _rel_map:
+                            if any(kw in h for kw in _kws):
+                                _inferred_rel = _rel
+                                break
                     _not_patient_update: dict = {"is_patient": False, "_is_patient_confirmed": True}
                     # Pre-populate guardian info from the contact's own name
                     _uname = state.get("user_name") or ""
@@ -1184,6 +1278,18 @@ async def collect_info_node(state: ConversationState, config: RunnableConfig) ->
         # Step 2c: patient name (only when contact is scheduling for someone else)
         if state.get("is_patient") is False and not state.get("patient_name"):
             if last_ai and _PATIENT_NAME_Q in last_ai and last_human:
+                if looks_like_name(last_human) and _same_name(last_human, state.get("user_name")):
+                    # O nome do paciente é o mesmo que a pessoa deu como o PRÓPRIO
+                    # nome. Quem agenda para outra pessoa e repete o nome respondeu
+                    # a pergunta do nome com o nome do paciente ("O meu ou do meu
+                    # filho?"). Casos Vani/Lucas (5581999793073), Mairlane/Pedro
+                    # Heitor (5587999070405) e Jossele/Rafael (5581998801009): o
+                    # contato ficou com o nome do filho. Guarda o nome no paciente,
+                    # apaga o do contato e pergunta de novo quem está falando.
+                    return await _extract_and_ask(
+                        {"patient_name": last_human, "user_name": None, "guardian_name": None},
+                        _CONTACT_NAME_AGAIN_Q,
+                    )
                 if looks_like_name(last_human):
                     return await _extract_and_ask(
                         {"patient_name": last_human}, _nq(patient_name=last_human)
@@ -1550,6 +1656,11 @@ async def collect_info_node(state: ConversationState, config: RunnableConfig) ->
                 field, val[:120], state["phone"],
             )
             continue
+        # A LLM também escreve o parentesco por conta própria ("avó materna",
+        # "mãe ou pai"). Passa pelo mesmo normalizador do passo 6b para gravar um
+        # rótulo do painel que a regra da idade reconhece.
+        if field == "guardian_relationship" and isinstance(val, str) and val.strip():
+            val = _normalize_relationship(val)
         update[field] = val
 
     # is_patient must ONLY be set via programmatic steps (Step 4 for minors, Step 4d for adults).

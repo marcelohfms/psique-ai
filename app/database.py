@@ -166,6 +166,12 @@ async def upsert_user(phone: str, data: dict, user_id: str | None = None) -> str
     # 'name' é ambíguo: nome do contato; nome do paciente é patient_name.
     if "patient_name" in patient_data:
         patient_data["name"] = patient_data.pop("patient_name")
+        # patients.name é NOT NULL. Apagar o nome (o collect_info faz isso quando
+        # descobre que a consulta é para outra pessoa) derrubava o save inteiro:
+        # is_patient=False e o responsável nunca chegavam ao banco, e o vínculo
+        # ficava is_self=False com relationship vazio (casos de 27/09/2026).
+        if patient_data["name"] is None:
+            patient_data.pop("name")
     elif "name" in data and user_id is None:
         # Esta cópia implícita (contato → paciente, para quem agenda para si) é
         # o que transformava UM nome ruim em DOIS prontuários errados. O texto

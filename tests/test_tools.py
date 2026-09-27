@@ -4099,7 +4099,10 @@ def _make_supabase_client_with_appointment(start_time="2026-03-23T09:00:00+00:00
         "end_time": end_time,
         "paid_at": None,
         "booking_fee_paid_at": None,
-        "status": "scheduled",
+        # Consulta que já passou vira completed pelo cron complete_appointments
+        # (24h após o fim). Uma "scheduled" antiga não existe na vida real e
+        # _pick_appointment_to_pay a descarta pela janela de 15 dias.
+        "status": "completed" if datetime.fromisoformat(start_time) < datetime.now(TZ) else "scheduled",
         "consultation_type": "retorno",
     }])
     empty = MagicMock(data=[])
@@ -4834,16 +4837,14 @@ def _make_supabase_client_self_path_old_completed():
         `seen_users` empty, so Eva asked "Para qual paciente é este comprovante?"
         even though the phone has a single, unambiguous patient (caso Danniela,
         5581991950147, same root as the override-path double-fee bug);
-      - PRIORITY 3 (`completed_raw`) — hiding it made expected_remaining the full
-        price instead of price-100.
+      - the candidate query (`_candidates_raw`, scheduled + completed) — hiding it
+        made expected_remaining the full price instead of price-100.
 
     Call order (client.from_):
-      1. appts_result   — resolution (appointments + patients join)
-      2. scheduled_raw  — empty (no active appointment)         [PRIORITY 1]
-      3. future_canceled — empty (nothing to reactivate)        [PRIORITY 2]
-      4. completed_raw  — the old completed appt, iff window includes it [PRIORITY 3]
-      5. patients custom_price → None
-      6+. updates / misc → empty
+      1. appts_result     — resolution (appointments + patients join)
+      2. _candidates_raw  — the old completed appt, iff window includes it
+      3. patients custom_price → None
+      4+. updates / misc → empty
     """
     now = datetime.now(TZ)
     consult_start = now - timedelta(days=35)      # consultation already happened, >15d ago
@@ -4885,13 +4886,10 @@ def _make_supabase_client_self_path_old_completed():
             hidden = _hidden()
             captured["start_gte"] = None
             return empty if hidden else MagicMock(data=[resolution_appt])   # appts_result
-        if n in (2, 3):
-            captured["start_gte"] = None
-            return empty                                                    # PRIORITY 1 / 2
-        if n == 4:
+        if n == 2:
             hidden = _hidden()
             captured["start_gte"] = None
-            return empty if hidden else MagicMock(data=[completed_appt])    # PRIORITY 3
+            return empty if hidden else MagicMock(data=[completed_appt])    # candidatas
         captured["start_gte"] = None
         return empty
 
@@ -5087,11 +5085,9 @@ def _make_supabase_client_with_old_completed_appointment():
 
     Call order (client.from_):
       1. patients ilike  → the single candidate (name-override resolution)
-      2. scheduled_raw   → empty (no active appointment)
-      3. future_canceled → empty (nothing to reactivate)
-      4. completed_raw   → the old completed appt, IFF the query's date window includes it
-      5. patients custom_price → empty → None
-      6+. updates / misc → empty
+      2. _candidates_raw → the old completed appt, IFF the query's date window includes it
+      3. patients custom_price → empty → None
+      4+. updates / misc → empty
     """
     now = datetime.now(TZ)
     consult_start = now - timedelta(days=35)      # consultation already happened, >15d ago
@@ -5127,14 +5123,8 @@ def _make_supabase_client_with_old_completed_appointment():
             captured["start_gte"] = None
             return MagicMock(data=[candidate])          # ilike patients
         if n == 2:
-            captured["start_gte"] = None
-            return empty                                # scheduled_raw (PRIORITY 1)
-        if n == 3:
-            captured["start_gte"] = None
-            return empty                                # future_canceled (PRIORITY 2)
-        if n == 4:
-            # completed_raw (PRIORITY 3): a start_time lower bound after the consult
-            # date hides it — reproducing the 15-day-window bug.
+            # _candidates_raw: a start_time lower bound after the consult date
+            # hides it — reproducing the 15-day-window bug.
             lb = captured["start_gte"]
             captured["start_gte"] = None
             hidden = lb is not None and datetime.fromisoformat(lb) > consult_start
@@ -5626,7 +5616,7 @@ def _make_supabase_client_with_appointment_waived(booking_fee_waived=True, custo
         "end_time": "2026-06-15T11:00:00+00:00",
         "paid_at": None,
         "booking_fee_paid_at": None,
-        "status": "scheduled",
+        "status": "completed",  # já passou: o cron complete_appointments a marcaria
         "consultation_type": None,
         "booking_fee_waived": booking_fee_waived,
     }])
@@ -6740,3 +6730,150 @@ async def test_receipt_already_registered_returns_false_on_db_error():
     client = MagicMock()
     client.from_.return_value = events_table
     assert await _receipt_already_registered(client, "5581999999999", "https://drive/x") is False
+
+
+# ── Escolha da consulta que recebe o comprovante ─────────────────────────────
+# Caso Rafael Carvalho (5581989822725, 26/09/2026): consulta de 18/09 realizada
+# com saldo de R$550 em aberto e consulta de 30/09 agendada, cortesia, já
+# quitada pela atendente. O PIX de R$550 caiu na de 30/09 (agendada mais
+# recente), bateu na guarda de "já estava registrado" e nada foi gravado.
+
+def _appt(aid, days, status, paid=False, fee_paid=False, fee_waived=False, fee_paid_at=None):
+    now = datetime.now(TZ)
+    start = now + timedelta(days=days)
+    return {
+        "appointment_id": aid,
+        "start_time": start.isoformat(),
+        "end_time": (start + timedelta(hours=1)).isoformat(),
+        "doctor_id": "18b01f87-eacd-4905-bd4a-a8293991e6fd",
+        "paid_at": (now - timedelta(days=1)).isoformat() if paid else None,
+        "booking_fee_paid_at": fee_paid_at or ((now - timedelta(days=20)).isoformat() if fee_paid else None),
+        "status": status,
+        "consultation_type": None,
+        "booking_fee_waived": fee_waived,
+    }
+
+
+def test_pick_payment_appt_prefers_open_completed_over_paid_courtesy():
+    from app.graph.tools import _pick_appointment_to_pay
+    rows = [
+        _appt("apt-18-09", -9, "completed", fee_paid=True),
+        _appt("apt-30-09", 3, "scheduled", paid=True, fee_paid=True, fee_waived=True),
+    ]
+    assert _pick_appointment_to_pay(rows, 550.0, datetime.now(TZ))["appointment_id"] == "apt-18-09"
+
+
+def test_pick_payment_appt_oldest_open_completed_first():
+    from app.graph.tools import _pick_appointment_to_pay
+    rows = [
+        _appt("apt-recente", -5, "completed", fee_paid=True),
+        _appt("apt-antiga", -40, "completed", fee_paid=True),
+        _appt("apt-futura", 7, "scheduled", fee_paid=True),
+    ]
+    assert _pick_appointment_to_pay(rows, 550.0, datetime.now(TZ))["appointment_id"] == "apt-antiga"
+
+
+def test_pick_payment_appt_future_when_no_past_open():
+    from app.graph.tools import _pick_appointment_to_pay
+    rows = [
+        _appt("apt-passada-paga", -10, "completed", paid=True, fee_paid=True),
+        _appt("apt-futura-2", 20, "scheduled", fee_paid=True),
+        _appt("apt-futura-1", 5, "scheduled", fee_paid=True),
+    ]
+    assert _pick_appointment_to_pay(rows, 550.0, datetime.now(TZ))["appointment_id"] == "apt-futura-1"
+
+
+def test_pick_payment_appt_booking_fee_goes_to_future_appt_owing_fee():
+    """R$100 com consulta futura ainda sem taxa: é a taxa dela. Jogar numa consulta
+    antiga em aberto deixaria a futura sem taxa e o cron a cancelaria."""
+    from app.graph.tools import _pick_appointment_to_pay
+    rows = [
+        _appt("apt-antiga", -30, "completed", fee_paid=True),
+        _appt("apt-nova", 6, "scheduled"),
+    ]
+    assert _pick_appointment_to_pay(rows, 100.0, datetime.now(TZ))["appointment_id"] == "apt-nova"
+
+
+def test_pick_payment_appt_booking_fee_resend_stays_on_same_appt():
+    """Reenvio do R$100 logo após a taxa: continua na mesma consulta futura, para a
+    guarda de reenvio reconhecer, e não vira pagamento parcial da antiga."""
+    from app.graph.tools import _pick_appointment_to_pay
+    recent = (datetime.now(TZ) - timedelta(minutes=5)).isoformat()
+    rows = [
+        _appt("apt-antiga", -30, "completed", fee_paid=True),
+        _appt("apt-nova", 6, "scheduled", fee_paid_at=recent),
+    ]
+    assert _pick_appointment_to_pay(rows, 100.0, datetime.now(TZ))["appointment_id"] == "apt-nova"
+
+
+def test_pick_payment_appt_ignores_stale_scheduled():
+    """Agendada com mais de 15 dias que nunca virou completed não entra (mesma
+    janela da antiga PRIORITY 1)."""
+    from app.graph.tools import _pick_appointment_to_pay
+    rows = [
+        _appt("apt-velha-agendada", -40, "scheduled"),
+        _appt("apt-futura", 5, "scheduled", fee_paid=True),
+    ]
+    assert _pick_appointment_to_pay(rows, 550.0, datetime.now(TZ))["appointment_id"] == "apt-futura"
+
+
+def test_pick_payment_appt_all_paid_returns_none():
+    from app.graph.tools import _pick_appointment_to_pay
+    rows = [
+        _appt("apt-a", -10, "completed", paid=True, fee_paid=True),
+        _appt("apt-b", 5, "scheduled", paid=True, fee_paid=True),
+    ]
+    assert _pick_appointment_to_pay(rows, 550.0, datetime.now(TZ)) is None
+
+
+async def test_register_payment_saldo_goes_to_open_completed_not_paid_courtesy():
+    """Ponta a ponta do caso Rafael: R$550 quita a consulta realizada de 18/09 em
+    vez de responder 'já estava registrado' pela cortesia de 30/09."""
+    from app.graph.tools import register_payment
+    rows = [
+        _appt("apt-30-09", 3, "scheduled", paid=True, fee_paid=True, fee_waived=True),
+        _appt("apt-18-09", -9, "completed", fee_paid=True),
+    ]
+    resolution = MagicMock(data=[{
+        "appointment_id": "apt-30-09", "start_time": rows[0]["start_time"],
+        "doctor_id": rows[0]["doctor_id"], "status": "scheduled",
+        "patients": {"id": "rafael-id", "name": "Rafael Carvalho De Castro E Silva"},
+    }])
+    results = [resolution, MagicMock(data=rows)]
+
+    async def _exec(*_a, **_kw):
+        return results.pop(0) if results else MagicMock(data=[])
+
+    table = MagicMock()
+    for m in ("select", "eq", "in_", "limit", "single", "maybe_single", "gte", "gt", "lt",
+              "neq", "order", "insert", "update", "upsert", "is_", "ilike"):
+        getattr(table, m).return_value = table
+    table.execute = AsyncMock(side_effect=_exec)
+    events_table = MagicMock()
+    for m in ("select", "eq", "in_", "limit", "gte", "order"):
+        getattr(events_table, m).return_value = events_table
+    events_table.execute = AsyncMock(return_value=MagicMock(data=[]))
+    client = MagicMock()
+    client.from_.side_effect = lambda name: events_table if name == "events" else table
+
+    with patch("app.graph.tools.get_supabase", new_callable=AsyncMock, return_value=client), \
+         patch("app.graph.tools.get_users_by_phone", new_callable=AsyncMock,
+               return_value=[{"id": "rafael-id", "patient_name": "Rafael Carvalho De Castro E Silva"}]), \
+         patch("app.graph.tools.log_event", new_callable=AsyncMock), \
+         patch("app.graph.tools.send_text", new_callable=AsyncMock), \
+         patch("app.google_drive.rename_file", new_callable=AsyncMock), \
+         patch("app.google_sheets.append_payment_receipt", new_callable=AsyncMock) as mock_sheets, \
+         patch("app.graph.tools._notify_clinic", new_callable=AsyncMock):
+        result = await register_payment.coroutine(
+            amount="550,00",
+            drive_link="https://drive.google.com/file/d/abc/view",
+            state=_make_state(preferred_doctor="bruna"),
+            config=CONFIG,
+        )
+
+    assert "já estava registrado" not in result
+    assert "QUITADA" in result
+    mock_sheets.assert_awaited_once()
+    assert mock_sheets.call_args.kwargs["payment_type"] == "Consulta"
+    paid_updates = [c for c in table.eq.call_args_list if c.args == ("appointment_id", "apt-18-09")]
+    assert paid_updates, "o pagamento deveria ser gravado na consulta de 18/09"

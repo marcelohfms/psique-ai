@@ -797,6 +797,50 @@ async def test_collect_info_keeps_unrecognized_relationship_verbatim():
     assert "parentesco" not in mock_send.call_args[0][1].lower()
 
 
+# O passo 6b grava rótulos da lista do painel da atendente, com o gênero tirado
+# da resposta. Antes gravava "avó/avô", "irmão/irmã", "tia/tio", que a regra da
+# idade (app/patients.py) não reconhecia.
+@pytest.mark.parametrize("resposta,esperado", [
+    ("sou a avó dele", "avó"),
+    ("avô", "avô"),
+    ("vovó", "avó"),
+    ("sou a avo", "avó"),
+    ("sou o avo", "avô"),
+    ("avo", "avó/avô"),  # sem acento nem artigo: não dá para escolher
+    ("irma", "irmã"),
+    ("sou irmão dele", "irmão"),
+    ("tia", "tia"),
+    ("tio materno", "tio"),
+    ("madrinha", "madrinha"),
+    ("sou tutora dele", "responsável legal"),
+])
+async def test_collect_info_parentesco_grava_rotulo_do_painel(resposta, esperado):
+    from app.graph.nodes import collect_info_node
+    from langchain_core.messages import HumanMessage, AIMessage
+
+    state = _base_minor_state(
+        user_name="Marta Nunes",
+        patient_name="Pedro Lima",
+        patient_cpf="111.222.333-44",
+        guardian_name="Marta Nunes",
+        is_patient=False,
+        is_returning_patient=False,
+        patient_age=10,
+        birth_date="15/03/2015",
+        messages=[
+            HumanMessage(content="quero agendar uma consulta"),
+            AIMessage(content="E qual o seu parentesco com Pedro? (mãe, pai, avó, responsável legal...)"),
+            HumanMessage(content=resposta),
+        ],
+    )
+    with patch("app.graph.nodes.send_text", new_callable=AsyncMock), \
+         patch("app.graph.nodes.save_message", new_callable=AsyncMock), \
+         patch("app.graph.nodes.get_users_by_phone", new_callable=AsyncMock, return_value=[]):
+        result = await collect_info_node(state, {})
+
+    assert result.get("guardian_relationship") == esperado
+
+
 async def test_collect_info_self_messaging_new_minor_skips_guardian_name_preview():
     """A self-messaging minor (is_patient=True, no guardian contact) answering
     'não' to 'já é paciente?' must be asked about the doctor next, NOT the
@@ -1242,6 +1286,137 @@ async def test_collect_info_stale_db_record_still_asks_patient_name():
     assert result.get("patient_name") is None
     sent = mock_send.call_args[0][1]
     assert "nome completo do paciente" in sent.lower()
+
+
+def _db_user_named_after_contact(name: str) -> dict:
+    """Cadastro parcial como o passo do nome deixa: o upsert_user copia o nome do
+    contato para um paciente novo, com vínculo is_self=False (padrão do banco)."""
+    return {
+        "id": "p-copia", "name": name, "patient_name": name, "is_patient": False,
+        "age": None, "birth_date": None, "is_returning_patient": None,
+        "doctor_id": None, "email": None, "guardian_name": name,
+        "guardian_cpf": None, "guardian_relationship": None, "patient_cpf": None,
+        "modality_restriction": None, "age_exception": None, "active": True,
+    }
+
+
+async def test_collect_info_db_copy_of_contact_name_does_not_skip_patient_name():
+    """Caso Leila Menezes (5581991393132, 19/08/2026). O paciente nasceu no banco
+    com o nome da mãe (cópia do passo do nome). Recarregado a cada turno, esse
+    nome pulava a pergunta do nome do paciente e "Rafaela Menezes" nunca era
+    gravado; a data de nascimento do filho caiu na ficha "Leila Menezes"."""
+    from app.graph.nodes import collect_info_node
+
+    state = _base_minor_state(
+        user_name="Leila Menezes",
+        patient_name=None,
+        is_patient=False,
+        _is_patient_confirmed=True,
+        messages=[
+            HumanMessage(content="Para quando ele teria disponibilidade da consulta?"),
+            AIMessage(content="Qual o nome completo do paciente?"),
+            HumanMessage(content="Rafaela Menezes"),
+        ],
+    )
+    with patch("app.graph.nodes.send_text", new_callable=AsyncMock) as mock_send, \
+         patch("app.graph.nodes.save_message", new_callable=AsyncMock), \
+         patch("app.graph.nodes.get_users_by_phone", new_callable=AsyncMock,
+               return_value=[_db_user_named_after_contact("Leila Menezes")]), \
+         patch("app.graph.nodes.upsert_user", new_callable=AsyncMock, return_value="p-copia") as mock_upsert:
+        result = await collect_info_node(state, {})
+
+    assert result.get("patient_name") == "Rafaela Menezes"
+    assert mock_upsert.call_args[0][1].get("patient_name") == "Rafaela Menezes"
+    assert "nascimento" in mock_send.call_args[0][1].lower()
+
+
+@pytest.mark.parametrize("is_patient,confirmed", [(None, True), (False, False)])
+async def test_collect_info_answer_to_is_patient_reprompt_is_accepted(is_patient, confirmed):
+    """Caso Leila Menezes: "Sou a mãe" veio depois da repergunta ("...agendando em
+    nome de outra pessoa?"), que o passo não reconhecia. A resposta era
+    descartada e a pergunta se repetia."""
+    from app.graph.nodes import collect_info_node, _REGISTRATION_QUESTIONS
+
+    state = _base_minor_state(
+        user_name="Leila Menezes",
+        patient_name=None,
+        is_patient=is_patient,
+        _is_patient_confirmed=confirmed,
+        messages=[
+            HumanMessage(content="quero agendar uma consulta"),
+            AIMessage(content=_REGISTRATION_QUESTIONS["is_patient"]),
+            HumanMessage(content="Sou a mãe"),
+        ],
+    )
+    with patch("app.graph.nodes.send_text", new_callable=AsyncMock) as mock_send, \
+         patch("app.graph.nodes.save_message", new_callable=AsyncMock), \
+         patch("app.graph.nodes.get_users_by_phone", new_callable=AsyncMock, return_value=[]), \
+         patch("app.graph.nodes.upsert_user", new_callable=AsyncMock, return_value="new-id"):
+        result = await collect_info_node(state, {})
+
+    assert result.get("is_patient") is False
+    assert "nome completo do paciente" in mock_send.call_args[0][1].lower()
+
+
+async def test_collect_info_patient_name_equal_to_contact_name_reasks_contact_name():
+    """Casos Vani/Lucas (5581999793073), Mairlane/Pedro Heitor (5587999070405) e
+    Jossele/Rafael (5581998801009): a mãe respondeu "seu nome completo" com o nome
+    do filho e depois repetiu o mesmo nome como paciente. O nome é do paciente;
+    o do contato precisa ser apagado e perguntado de novo."""
+    from app.graph.nodes import collect_info_node
+
+    state = _base_minor_state(
+        user_name="Lucas Lira de Arruda Menezes",
+        guardian_name="Lucas Lira de Arruda Menezes",
+        patient_name=None,
+        is_patient=False,
+        messages=[
+            HumanMessage(content="Gostaria de marcar uma consulta"),
+            AIMessage(content="Qual o nome completo do paciente?"),
+            HumanMessage(content="Lucas Lira de Arruda Menezes"),
+        ],
+    )
+    with patch("app.graph.nodes.send_text", new_callable=AsyncMock) as mock_send, \
+         patch("app.graph.nodes.save_message", new_callable=AsyncMock), \
+         patch("app.graph.nodes.get_users_by_phone", new_callable=AsyncMock, return_value=[]), \
+         patch("app.graph.nodes.upsert_user", new_callable=AsyncMock, return_value="new-id") as mock_upsert:
+        result = await collect_info_node(state, {})
+
+    assert result.get("patient_name") == "Lucas Lira de Arruda Menezes"
+    assert "user_name" in result and result["user_name"] is None
+    assert "guardian_name" in result and result["guardian_name"] is None
+    payload = mock_upsert.call_args[0][1]
+    assert payload.get("patient_name") == "Lucas Lira de Arruda Menezes"
+    assert "name" in payload and payload["name"] is None
+    assert "Pode me informar o seu nome completo?" in mock_send.call_args[0][1]
+
+
+@pytest.mark.parametrize("answer,accepted", [
+    ("Lucas Lira de Arruda Menezes", False),
+    ("Vani Lira", True),
+])
+async def test_collect_info_contact_name_reask_rejects_patient_name(answer, accepted):
+    """Depois de apagar o nome do contato, repetir o nome do paciente não conta
+    como o nome de quem está falando."""
+    from app.graph.nodes import collect_info_node
+
+    state = _base_minor_state(
+        user_name=None,
+        patient_name="Lucas Lira de Arruda Menezes",
+        is_patient=False,
+        messages=[
+            HumanMessage(content="Gostaria de marcar uma consulta"),
+            AIMessage(content="Anotei o nome do paciente. 😊 E você, que está conversando comigo? Pode me informar o seu nome completo?"),
+            HumanMessage(content=answer),
+        ],
+    )
+    with patch("app.graph.nodes.send_text", new_callable=AsyncMock), \
+         patch("app.graph.nodes.save_message", new_callable=AsyncMock), \
+         patch("app.graph.nodes.get_users_by_phone", new_callable=AsyncMock, return_value=[]), \
+         patch("app.graph.nodes.upsert_user", new_callable=AsyncMock, return_value="new-id"):
+        result = await collect_info_node(state, {})
+
+    assert (result.get("user_name") == answer) is accepted
 
 
 async def test_collect_info_patient_name_step_saves_patient_name():
@@ -3856,6 +4031,26 @@ async def test_collect_info_completes_normally_when_nothing_is_missing():
     assert result.get("stage") == "patient_agent"
 
 
+@pytest.mark.parametrize("extraido,esperado", [
+    ("avó materna", "avó"),
+    ("mãe ou pai", "mãe/pai"),
+    ("irmã mais velha", "irmã"),
+    ("cuidadora", "cuidadora"),
+])
+async def test_collect_info_normaliza_parentesco_extraido_pela_llm(extraido, esperado):
+    """A LLM escreve o parentesco por conta própria; ele passa pelo mesmo
+    normalizador do passo 6b antes de ir para o cadastro."""
+    from app.graph.schemas import CollectInfoOutput
+
+    result, _ = await _run_collect(
+        _bernardo_state(),
+        CollectInfoOutput(reply="Perfeito, tudo anotado! 😊",
+                          guardian_relationship=extraido, is_complete=True),
+    )
+
+    assert result.get("guardian_relationship") == esperado
+
+
 async def test_collect_info_uses_field_answered_in_this_turn():
     """Se o campo que faltava veio na resposta deste turno, o cadastro fecha
     normalmente — a rede não pode reperguntar algo já respondido."""
@@ -5300,6 +5495,32 @@ async def test_resposta_de_parentesco_continua_valendo():
     ))
 
     assert result.get("is_patient") is False
+    # "minha filha" não diz se é mãe ou pai: grava o rótulo simples do painel,
+    # que a regra da idade lê como responsável legal (antes: "mãe/pai").
+    assert result.get("guardian_relationship") == "responsável legal"
+
+
+@pytest.mark.parametrize("resposta,esperado", [
+    ("Sou a mãe, é para minha filha", "mãe"),
+    ("sou o pai dele, é pro meu filho", "pai"),
+    ("sou a avó, é para minha neta", "avó"),
+    ("Não sou eu, é para minha mãe", "filho(a)"),
+    ("Para meu marido", "cônjuge"),
+    # "meu irmão" não diz se quem fala é irmão ou irmã: fica em branco e o
+    # passo 6b pergunta, se o paciente for menor (antes: "irmão/irmã").
+    ("Para meu irmão", None),
+])
+async def test_resposta_para_outra_pessoa_infere_rotulo_do_painel(resposta, esperado):
+    result, _ = await _run(_mae_state(
+        messages=[
+            HumanMessage(content="Gostaria de agendar uma consulta"),
+            AIMessage(content="A consulta é para você ou para outra pessoa?"),
+            HumanMessage(content=resposta),
+        ],
+    ))
+
+    assert result.get("is_patient") is False
+    assert result.get("guardian_relationship") == esperado
 
 
 async def test_resposta_indecifravel_repergunta_em_vez_de_assumir():

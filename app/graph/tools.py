@@ -3368,6 +3368,59 @@ async def _receipt_already_registered(client, phone: str, drive_link: str) -> bo
         return False
 
 
+_SCHEDULED_PAYMENT_LOOKBACK_DAYS = 15
+
+
+def _pick_appointment_to_pay(rows: list[dict], amount: float, now: datetime) -> dict | None:
+    """Escolhe, entre as consultas scheduled/completed do paciente, a que recebe o
+    comprovante. Devolve None quando nenhuma está com pagamento em aberto.
+
+    Regra da clínica (caso Rafael Carvalho, 5581989822725, 26/09/2026): o comum é
+    pagar consulta que JÁ ACONTECEU. Então, entre as em aberto (paid_at nulo), vence
+    a realizada mais antiga; só sem nenhuma realizada em aberto vale a futura mais
+    próxima. Antes a agendada mais recente sempre vencia, mesmo já quitada: o saldo
+    de R$550 da consulta de 18/09 caiu na cortesia de 30/09 e virou "já estava
+    registrado", sem gravar nada.
+
+    Exceção: R$100 com consulta futura ainda devendo a taxa de reserva (ou com a
+    taxa paga há instantes, para a guarda de reenvio reconhecer) é a taxa dela. Se
+    fosse para uma consulta antiga, a futura ficaria sem taxa e o cron a cancelaria.
+
+    Agendada com mais de _SCHEDULED_PAYMENT_LOOKBACK_DAYS dias que nunca virou
+    completed fica de fora, como na antiga PRIORITY 1."""
+    lookback = now - timedelta(days=_SCHEDULED_PAYMENT_LOOKBACK_DAYS)
+
+    def _start(r: dict) -> datetime:
+        return datetime.fromisoformat(r["start_time"])
+
+    rows = [r for r in rows if not (r.get("status") == "scheduled" and _start(r) < lookback)]
+    open_rows = [r for r in rows if not r.get("paid_at")]
+    if not open_rows:
+        return None
+
+    if abs(amount - 100) < 1:
+        fee_window = timedelta(minutes=_BOOKING_FEE_RESEND_WINDOW_MINUTES)
+
+        def _fee_pending_or_just_paid(r: dict) -> bool:
+            fee_at = r.get("booking_fee_paid_at")
+            if not fee_at:
+                return not r.get("booking_fee_waived")
+            try:
+                return now - datetime.fromisoformat(fee_at) <= fee_window
+            except (ValueError, TypeError):
+                return False
+
+        fee_due = [
+            r for r in open_rows
+            if r.get("status") == "scheduled" and _start(r) >= now and _fee_pending_or_just_paid(r)
+        ]
+        if fee_due:
+            return min(fee_due, key=_start)
+
+    past = [r for r in open_rows if r.get("status") == "completed" or _start(r) < now]
+    return min(past or open_rows, key=_start)
+
+
 @tool
 async def register_payment(
     amount: str,
@@ -3674,31 +3727,47 @@ async def register_payment(
     appt_already_occurred = False  # True when the consultation has already happened
 
     # Appointment resolution order (critical — must follow this exact priority):
-    #   1. An active SCHEDULED appointment always wins. It is the one awaiting the
-    #      booking fee, so the payment must land on it — never on a canceled slot.
-    #   2. If there is NO scheduled appointment, try to reactivate a future canceled
-    #      one (patient paid after the slot was auto-canceled).
-    #   3. Only then fall back to a completed past appointment (late full payment).
-    # Looking at canceled appointments before scheduled ones caused payments to be
-    # applied to the wrong (canceled) appointment, wrongly auto-canceling the active one.
+    #   1. An appointment with payment still OPEN (paid_at null), chosen by
+    #      _pick_appointment_to_pay: oldest already-occurred one first, R$100 goes
+    #      to the booking fee of a future one that still owes it.
+    #   2. Nothing open but an active SCHEDULED appointment exists: use the most
+    #      recent one (the paid_at guard below answers "já estava registrado").
+    #      Never fall through to a canceled slot while a scheduled one exists —
+    #      that applied payments to the wrong (canceled) appointment and wrongly
+    #      auto-canceled the active one.
+    #   3. No scheduled appointment: try to reactivate a future canceled one
+    #      (patient paid after the slot was auto-canceled).
+    #   4. Only then the most recent completed appointment (already settled → guard).
     now_iso = datetime.now(TZ).isoformat()
-    lookback_iso = (datetime.now(TZ) - timedelta(days=15)).isoformat()
     _appt_fields = (
         "appointment_id, start_time, end_time, doctor_id, paid_at, "
         "booking_fee_paid_at, status, consultation_type, booking_fee_waived"
     )
 
-    # PRIORITY 1: active scheduled appointment.
-    scheduled_raw = await client.from_("appointments").select(_appt_fields).eq(
+    # No start_time window in the query: a patient may settle the saldo weeks or
+    # months after the consultation. Bounding completed appointments to a recent
+    # lookback hid the one carrying booking_fee_paid_at, so Eva stopped recognizing
+    # the already-paid R$100 fee and charged it twice (caso Danniela Azevedo,
+    # 5581991950147, 2026-08-12). The stale-scheduled cutoff lives in the picker.
+    _candidates_raw = await client.from_("appointments").select(_appt_fields).eq(
         "patient_id", user_id
-    ).eq("status", "scheduled").gte("start_time", lookback_iso).order(
-        "start_time", desc=True
-    ).limit(1).execute()
+    ).in_("status", ["scheduled", "completed"]).order("start_time").execute()
+    _candidates = _candidates_raw.data or []
+    _now_dt = datetime.now(TZ)
+    _open_pick = _pick_appointment_to_pay(_candidates, _parse_brl_amount(amount), _now_dt)
+    _lookback_dt = _now_dt - timedelta(days=_SCHEDULED_PAYMENT_LOOKBACK_DAYS)
+    _recent_scheduled = [
+        a for a in _candidates
+        if a.get("status") == "scheduled"
+        and datetime.fromisoformat(a["start_time"]) >= _lookback_dt
+    ]
 
-    if scheduled_raw.data:
-        appt_result_data = scheduled_raw.data
+    if _open_pick:
+        appt_result_data = [_open_pick]
+    elif _recent_scheduled:
+        appt_result_data = [max(_recent_scheduled, key=lambda a: datetime.fromisoformat(a["start_time"]))]
     else:
-        # PRIORITY 2: future canceled appointment that can be reactivated.
+        # PRIORITY 3: future canceled appointment that can be reactivated.
         future_canceled = await client.from_("appointments").select(
             "appointment_id, start_time, end_time, doctor_id, booking_fee_paid_at, booking_fee_waived"
         ).eq("patient_id", user_id).eq("status", "canceled").eq("booking_fee_waived", False).is_(
@@ -3709,19 +3778,14 @@ async def register_payment(
             # Defer to the reactivation branch below by returning no active appointment.
             appt_result_data = []
         else:
-            # PRIORITY 3: completed past appointment (late full payment).
-            # No date window: a patient may settle the saldo weeks or months after
-            # the consultation. Bounding this to a recent lookback hid the completed
-            # appointment carrying booking_fee_paid_at, so Eva stopped recognizing the
-            # already-paid R$100 booking fee and charged it a second time (caso Danniela
-            # Azevedo, 5581991950147, 2026-08-12: consult 08/07, saldo pago 12/08).
-            # The paid_at guard below still blocks a duplicate on an already-settled one.
-            completed_raw = await client.from_("appointments").select(_appt_fields).eq(
-                "patient_id", user_id
-            ).eq("status", "completed").order(
-                "start_time", desc=True
-            ).limit(1).execute()
-            appt_result_data = completed_raw.data
+            # PRIORITY 4: most recent completed appointment. Every one is already
+            # settled here (otherwise _pick_appointment_to_pay would have chosen it),
+            # so the paid_at guard below answers "já estava registrado".
+            _completed = [a for a in _candidates if a.get("status") == "completed"]
+            appt_result_data = (
+                [max(_completed, key=lambda a: datetime.fromisoformat(a["start_time"]))]
+                if _completed else []
+            )
 
     # Wrap in a simple object so the rest of the function works unchanged
     class _ApptResult:
