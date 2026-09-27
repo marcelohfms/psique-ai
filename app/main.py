@@ -521,6 +521,81 @@ async def admin_panel_appointments(request: Request, x_admin_secret: str | None 
 
 # ── Core message processing ───────────────────────────────────────────────────
 
+def _is_transient_network_error(exc: BaseException) -> bool:
+    """Queda passageira de rede: timeout/conexão do httpx (Supabase, Chatwoot, Drive)
+    ou da OpenAI. Não inclui erros HTTP com resposta (4xx/5xx) nem erros de código."""
+    import httpx
+    import openai
+    return isinstance(exc, (httpx.TimeoutException, httpx.NetworkError, openai.APIConnectionError))
+
+
+async def _safe_to_resume_after_failure(phone: str, config: dict, started_at: datetime) -> bool:
+    """O run morreu sem deixar efeito nenhum? Só então é seguro retomá-lo.
+
+    Exige: (1) o checkpoint ainda tem uma task pendente (`next`); (2) a última
+    mensagem persistida é a do paciente, ou seja, a Eva nem chegou a pedir tool; e
+    (3) nada foi enviado nem registrado desde o início do run: nenhuma resposta da
+    Eva em `messages` e nenhum evento em `events`. Qualquer dúvida (inclusive falha
+    ao consultar o banco) responde False: melhor ficar sem resposta do que duplicar.
+    """
+    try:
+        snapshot = await graph_module.chatbot.aget_state(config)
+        if not snapshot.next:
+            return False
+        msgs = (snapshot.values or {}).get("messages") or []
+        if not msgs or not isinstance(msgs[-1], HumanMessage):
+            return False
+        from app.database import get_supabase
+        from app.phone import _strip_phone
+        client = await get_supabase()
+        since = started_at.isoformat()
+        stripped = _strip_phone(phone)
+        sent = await client.from_("messages").select("id").eq("phone", stripped) \
+            .eq("role", "assistant").gte("created_at", since).limit(1).execute()
+        if sent.data:
+            return False
+        events = await client.from_("events").select("id").eq("phone", stripped) \
+            .gte("created_at", since).limit(1).execute()
+        return not events.data
+    except Exception:
+        logger.exception("TRANSIENT_RESUME safety check failed phone=%s", phone)
+        return False
+
+
+_TRANSIENT_RESUME_DELAY_SECONDS = 3.0
+
+
+async def _ainvoke_resuming_transient(state_update: dict, config: dict, phone: str) -> None:
+    """Roda o grafo e, se uma queda passageira de rede matar o run ANTES de qualquer
+    efeito, retoma a task pendente uma vez (`ainvoke(None)`).
+
+    Sem isso o paciente fica sem resposta até escrever de novo. Caso Gabriela
+    (5581987521923, 27/09/2026): comprovante lido e salvo no Drive, mas um
+    httpx.ReadTimeout cru dentro do patient_agent matou o run antes do
+    register_payment. O _with_transient_retry dos nós só cobre a chamada do LLM
+    (openai.APIConnectionError); um timeout do Supabase/Chatwoot dentro do nó
+    escapava. A retomada fica AQUI, e não no nó, e só acontece quando
+    _safe_to_resume_after_failure garante que nada foi enviado nem registrado.
+    """
+    started_at = datetime.now(timezone.utc)
+    try:
+        await graph_module.chatbot.ainvoke(state_update, config=config)
+        return
+    except Exception as exc:
+        if not _is_transient_network_error(exc):
+            raise
+        first_exc = exc
+
+    if not await _safe_to_resume_after_failure(phone, config, started_at):
+        logger.warning("TRANSIENT_RESUME skipped (não é seguro) phone=%s error=%r", phone, first_exc)
+        raise first_exc
+
+    logger.warning("TRANSIENT_RESUME retomando run phone=%s error=%r", phone, first_exc)
+    await asyncio.sleep(_TRANSIENT_RESUME_DELAY_SECONDS)
+    await graph_module.chatbot.ainvoke(None, config=config)
+    await log_event("graph_transient_resume", phone, {"error": repr(first_exc)[:200]})
+
+
 async def _eva_paused_for_phone(phone: str) -> bool:
     """True quando a Eva deve permanecer em silêncio para este número.
 
@@ -763,7 +838,7 @@ async def process_message(phone: str, text: str) -> None:
             "langfuse_session_id": phone,
         }
         config["tags"] = ["whatsapp", "production"]
-        await graph_module.chatbot.ainvoke(state_update, config=config)
+        await _ainvoke_resuming_transient(state_update, config, phone)
 
 
 async def _reset_conversation(phone: str) -> None:
