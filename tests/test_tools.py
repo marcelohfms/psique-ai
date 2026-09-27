@@ -5599,7 +5599,7 @@ async def test_consultar_data_past_explicit_date_ha_n_dias():
     assert "atrás" not in result
 
 
-def _make_supabase_client_with_appointment_waived(booking_fee_waived=True, custom_price=None):
+def _make_supabase_client_with_appointment_waived(booking_fee_waived=True, custom_price=None, is_courtesy=False):
     """Like _make_supabase_client_with_appointment but with booking_fee_waived in the appointment row.
     Call 3 returns custom_price data instead of empty."""
     appts_with_users = MagicMock(data=[{
@@ -5619,6 +5619,7 @@ def _make_supabase_client_with_appointment_waived(booking_fee_waived=True, custo
         "status": "completed",  # já passou: o cron complete_appointments a marcaria
         "consultation_type": None,
         "booking_fee_waived": booking_fee_waived,
+        "is_courtesy": is_courtesy,
     }])
     custom_price_data = MagicMock(data={"custom_price": custom_price})
     empty = MagicMock(data=[])
@@ -5687,6 +5688,29 @@ async def test_register_payment_courtesy_zero_price():
     from app.graph.tools import register_payment
     client, table, execute = _make_supabase_client_with_appointment_waived(
         booking_fee_waived=True, custom_price=0
+    )
+    with patch("app.graph.tools.get_supabase", new_callable=AsyncMock, return_value=client), \
+         patch("app.graph.tools.get_users_by_phone", new_callable=AsyncMock, return_value=[{"id": "user-123", "patient_name": "Maria"}]), \
+         patch("app.graph.tools.log_event", new_callable=AsyncMock), \
+         patch("app.graph.tools._notify_clinic", new_callable=AsyncMock), \
+         patch("app.google_drive.rename_file", new_callable=AsyncMock), \
+         patch("app.google_sheets.append_payment_receipt", new_callable=AsyncMock), \
+         patch("app.graph.tools.send_text", new_callable=AsyncMock):
+        result = await register_payment.coroutine(
+            amount="0,00",
+            drive_link="",
+            state=_make_state(preferred_doctor="julio", patient_age=35),
+            config=CONFIG,
+        )
+    assert "QUITADA" in result
+    assert "cortesia" in result.lower()
+
+
+async def test_register_payment_courtesy_per_appointment():
+    """Cortesia marcada na consulta (painel), com a ficha sem preço zero, também é QUITADA."""
+    from app.graph.tools import register_payment
+    client, table, execute = _make_supabase_client_with_appointment_waived(
+        booking_fee_waived=True, custom_price=None, is_courtesy=True
     )
     with patch("app.graph.tools.get_supabase", new_callable=AsyncMock, return_value=client), \
          patch("app.graph.tools.get_users_by_phone", new_callable=AsyncMock, return_value=[{"id": "user-123", "patient_name": "Maria"}]), \
