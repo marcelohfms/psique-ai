@@ -349,6 +349,39 @@ def _local(ts: str) -> datetime:
     return dt.astimezone(_TZ)
 
 
+async def _pending_part2(client, patient_id: str) -> tuple[str | None, str | None]:
+    """(appointment_id, modality) da parte 1 pendente mais recente, ou (None, None).
+
+    A parte 1 pode já ter acontecido (status completed) e a parte 2 ainda não
+    ter sido marcada — por isso é uma consulta à parte da lista de
+    `appointments` de `list_consultas`, que só olha o futuro (a parte 1
+    completed já saiu de lá). Só considera pendente se NENHUMA parte 2 do
+    paciente existir em (scheduled, pending_reschedule, completed).
+    """
+    part1_rows = await (
+        client.from_("appointments")
+        .select("appointment_id, start_time, session_note, modality")
+        .eq("patient_id", patient_id)
+        .in_("status", ["scheduled", "completed"])
+        .execute()
+    )
+    part1s = [r for r in (part1_rows.data or []) if (r.get("session_note") or "").startswith(SPLIT_PART1)]
+    if not part1s:
+        return None, None
+    part2_rows = await (
+        client.from_("appointments")
+        .select("session_note")
+        .eq("patient_id", patient_id)
+        .in_("status", ["scheduled", "pending_reschedule", "completed"])
+        .execute()
+    )
+    if any((r.get("session_note") or "").startswith(SPLIT_PART2) for r in (part2_rows.data or [])):
+        return None, None
+    part1s.sort(key=lambda r: r["start_time"], reverse=True)
+    latest = part1s[0]
+    return latest["appointment_id"], latest.get("modality")
+
+
 async def list_consultas(patient_id: str) -> dict:
     """Consultas que ainda não aconteceram (scheduled/pending_reschedule), sem
     dados de pagamento, mais: a parte 1 de 1ª consulta dividida cuja parte 2
@@ -358,7 +391,7 @@ async def list_consultas(patient_id: str) -> dict:
     res = await (
         client.from_("appointments")
         .select("appointment_id, start_time, end_time, doctor_id, modality, consultation_type, "
-                "session_note, status, is_courtesy")
+                "session_note, status")
         .eq("patient_id", patient_id)
         .in_("status", list(_ACTIVE_APPT_STATUSES))
         .gt("start_time", now_iso)
@@ -378,16 +411,13 @@ async def list_consultas(patient_id: str) -> dict:
             "session_note": r.get("session_note") or "",
             "status": r["status"],
         })
-    notes = [a["session_note"] for a in appts]
-    pending = None
-    if not any(n.startswith(SPLIT_PART2) for n in notes):
-        pending = next((a["appointment_id"] for a in appts
-                        if a["session_note"].startswith(SPLIT_PART1) and a["status"] == "scheduled"), None)
+    pending, pending_modality = await _pending_part2(client, patient_id)
     done = await (
         client.from_("appointments").select("id").eq("patient_id", patient_id)
         .eq("status", "completed").limit(1).execute()
     )
-    return {"appointments": appts, "pending_part2": pending, "has_completed": bool(done.data)}
+    return {"appointments": appts, "pending_part2": pending,
+            "pending_part2_modality": pending_modality, "has_completed": bool(done.data)}
 
 
 async def set_first_consultation(appointment_id: str, first: bool) -> None:
@@ -506,6 +536,21 @@ async def get_link_by_id(pc_id: str) -> dict | None:
     )
     rows = res.data or []
     return rows[0] if rows else None
+
+
+async def get_appointment_doctor_id(appointment_id: str) -> str | None:
+    """doctor_id da consulta, ou None se não existir. Usado para recusar a
+    etiqueta "1ª consulta" fora do caso menor + Dr. Júlio (ver set_primeira em
+    attendant_routes.py)."""
+    client = await get_client()
+    res = (
+        await client.from_("appointments")
+        .select("doctor_id")
+        .eq("appointment_id", appointment_id)
+        .execute()
+    )
+    rows = res.data or []
+    return rows[0]["doctor_id"] if rows else None
 
 
 async def get_appointment_patient_id(appointment_id: str) -> str | None:

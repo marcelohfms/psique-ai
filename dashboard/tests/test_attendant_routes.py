@@ -891,16 +891,29 @@ def test_consultas_returns_list(client, monkeypatch):
 
 def test_first_consultation_toggle(client, monkeypatch):
     calls = {}
+    async def fake_doctor_id(aid):
+        return "d5baa58b-a788-4f40-b8c0-512c189150be"  # Dr. Júlio
     async def fake_set(aid, first):
         calls["set"] = (aid, first)
     async def fake_log(t, phone, meta):
         calls["log"] = t
+    monkeypatch.setattr(attendant_db, "get_appointment_doctor_id", fake_doctor_id)
     monkeypatch.setattr(attendant_db, "set_first_consultation", fake_set)
     monkeypatch.setattr(attendant_db, "log_event", fake_log)
     r = client.post("/api/atendente/consulta/a1/primeira", params={"token": "test-token"},
                     json={"phone": "5581", "first": False, "agent": "Maria"})
     assert r.status_code == 200
     assert calls == {"set": ("a1", False), "log": "attendant_first_consultation"}
+
+
+def test_first_consultation_toggle_rejects_non_julio_doctor(client, monkeypatch):
+    async def fake_doctor_id(aid):
+        return "18b01f87-eacd-4905-bd4a-a8293991e6fd"  # Dra. Bruna
+    monkeypatch.setattr(attendant_db, "get_appointment_doctor_id", fake_doctor_id)
+    r = client.post("/api/atendente/consulta/a1/primeira", params={"token": "test-token"},
+                    json={"phone": "5581", "first": True, "agent": "Maria"})
+    assert r.status_code == 400
+    assert "Dr. Júlio" in r.json()["detail"]
 
 
 def test_nova_consulta_forwards_to_eva(client, monkeypatch):

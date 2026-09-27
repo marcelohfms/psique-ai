@@ -445,6 +445,10 @@ async def get_consultas(phone: str, patient_id: str, _: None = Depends(verify_to
 @router.post("/consulta/{appointment_id}/primeira")
 async def set_primeira(appointment_id: str, body: FirstBody, _: None = Depends(verify_token)):
     await _assert_appointment_scope(body.phone, appointment_id)
+    doctor_id = await attendant_db.get_appointment_doctor_id(appointment_id)
+    if attendant_db._DOCTOR_KEY.get(doctor_id) != "julio":
+        raise HTTPException(status_code=400,
+                            detail="a etiqueta 1ª consulta só vale para menor com o Dr. Júlio")
     await attendant_db.set_first_consultation(appointment_id, body.first)
     await attendant_db.log_event("attendant_first_consultation", body.phone,
                                  {"appointment_id": appointment_id, "first": body.first, "agent": body.agent})

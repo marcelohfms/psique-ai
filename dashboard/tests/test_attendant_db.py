@@ -749,7 +749,7 @@ async def test_list_consultas_future_active_only(patched_client, fake_client):
         {"appointment_id": "a1", "patient_id": "p1", "status": "scheduled", "doctor_id": JULIO,
          "start_time": "2099-10-05T12:00:00+00:00", "end_time": "2099-10-05T13:00:00+00:00",
          "modality": "presencial", "consultation_type": "primeira_consulta",
-         "session_note": "1ª consulta · parte 1 de 2", "is_courtesy": False},
+         "session_note": "1ª consulta · parte 1 de 2"},
         {"appointment_id": "a0", "patient_id": "p1", "status": "scheduled", "doctor_id": JULIO,
          "start_time": "2000-01-01T12:00:00+00:00", "end_time": "2000-01-01T13:00:00+00:00"},
         {"appointment_id": "a2", "patient_id": "p1", "status": "cancelled", "doctor_id": JULIO,
@@ -763,6 +763,7 @@ async def test_list_consultas_future_active_only(patched_client, fake_client):
     assert a["start_local"] == "2099-10-05T09:00" and a["minutes"] == 60
     assert a["doctor_key"] == "julio"
     assert out["pending_part2"] == "a1"
+    assert out["pending_part2_modality"] == "presencial"
     assert out["has_completed"] is True
 
 
@@ -776,7 +777,36 @@ async def test_list_consultas_part2_booked_clears_pending(patched_client, fake_c
     ]
     out = await attendant_db.list_consultas("p1")
     assert out["pending_part2"] is None
+    assert out["pending_part2_modality"] is None
     assert out["has_completed"] is False
+
+
+async def test_list_consultas_pending_part2_survives_part1_completed(patched_client, fake_client):
+    """A 1ª parte pode já ter acontecido (completed, no passado) e sair da
+    lista de consultas futuras — a pendência da 2ª parte não pode desaparecer
+    só por isso (regressão: era calculada só a partir da lista futura)."""
+    fake_client.store["appointments"] = [
+        {"appointment_id": "a1", "patient_id": "p1", "status": "completed", "doctor_id": JULIO,
+         "start_time": "2020-01-01T12:00:00+00:00", "end_time": "2020-01-01T13:00:00+00:00",
+         "modality": "online", "session_note": "1ª consulta · parte 1 de 2"},
+    ]
+    out = await attendant_db.list_consultas("p1")
+    assert out["appointments"] == []  # não aparece na lista futura
+    assert out["pending_part2"] == "a1"
+    assert out["pending_part2_modality"] == "online"
+    assert out["has_completed"] is True
+
+
+async def test_list_consultas_pending_part2_picks_most_recent_part1(patched_client, fake_client):
+    base = {"patient_id": "p1", "doctor_id": JULIO, "session_note": "1ª consulta · parte 1 de 2"}
+    fake_client.store["appointments"] = [
+        {**base, "appointment_id": "old", "status": "completed",
+         "start_time": "2020-01-01T12:00:00+00:00", "end_time": "2020-01-01T13:00:00+00:00"},
+        {**base, "appointment_id": "new", "status": "scheduled",
+         "start_time": "2099-01-01T12:00:00+00:00", "end_time": "2099-01-01T13:00:00+00:00"},
+    ]
+    out = await attendant_db.list_consultas("p1")
+    assert out["pending_part2"] == "new"
 
 
 async def test_set_first_consultation(patched_client, fake_client):
@@ -785,6 +815,15 @@ async def test_set_first_consultation(patched_client, fake_client):
     assert fake_client.store["appointments"][0]["consultation_type"] == "primeira_consulta"
     await attendant_db.set_first_consultation("a1", False)
     assert fake_client.store["appointments"][0]["consultation_type"] == "acompanhamento"
+
+
+async def test_get_appointment_doctor_id(patched_client, fake_client):
+    fake_client.store["appointments"] = [{"appointment_id": "a1", "doctor_id": JULIO}]
+    assert await attendant_db.get_appointment_doctor_id("a1") == JULIO
+
+
+async def test_get_appointment_doctor_id_missing(patched_client, fake_client):
+    assert await attendant_db.get_appointment_doctor_id("nope") is None
 
 
 def test_age_on():
