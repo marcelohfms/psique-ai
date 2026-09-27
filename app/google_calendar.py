@@ -615,7 +615,7 @@ def _get_busy(service, calendar_id: str, window_start: datetime, window_end: dat
         )
         if not _is_bot_event:
             continue
-        busy.append({"start": start_raw["dateTime"], "end": end_raw["dateTime"]})
+        busy.append({"id": evt.get("id"), "start": start_raw["dateTime"], "end": end_raw["dateTime"]})
 
     _logger.warning("EVENTS_BUSY calendar=%s window=%s→%s found=%d events=%s",
                     calendar_id, window_start, window_end, len(busy), busy)
@@ -999,6 +999,7 @@ async def update_event(
     modality: str = "",
     patient_email: str = "",
     patient_number: str = "",
+    session_note: str = "",
 ) -> None:
     """Patch an existing Google Calendar event with a new start/end time."""
     new_end = new_start + timedelta(minutes=slot_minutes)
@@ -1011,11 +1012,15 @@ async def update_event(
         description += f"\nNúmero: {number_clean}"
     if patient_email:
         description += f"\nE-mail: {patient_email}"
-    if is_minor_first:
+    if session_note:
+        description += f"\n\n{session_note}"
+    elif is_minor_first:
         description += "\n\n1ª hora: conversa com os pais/responsáveis\n2ª hora: consulta com o paciente"
 
     modality_label = "Online" if modality == "online" else "Presencial"
     new_summary = f"Consulta — {patient_name} [{modality_label}]"
+    if session_note:
+        new_summary += f" ({session_note})"
 
     patch = {
         "summary": new_summary,
