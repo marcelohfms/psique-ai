@@ -1,5 +1,6 @@
 import os
-from datetime import datetime
+import re
+from datetime import datetime, timezone
 
 import pytest
 
@@ -18,13 +19,16 @@ def _comparable(val):
     diferentes (ex: "+00:00" vs "-03:00") mesmo quando representam o mesmo
     instante — não é garantido que a ordem lexicográfica bata com a ordem
     cronológica real. Valores não-string (ou que não são ISO datetime)
-    passam direto.
+    passam direto. Uma string sem fuso (naive) é tratada como UTC, espelhando
+    o que o código de produção assume para start_time sem tzinfo — senão dois
+    datetimes naive/aware misturados no mesmo filtro estouram TypeError.
     """
     if isinstance(val, str):
         try:
-            return datetime.fromisoformat(val)
+            dt = datetime.fromisoformat(val)
         except ValueError:
             return val
+        return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
     return val
 
 
@@ -44,6 +48,8 @@ class FakeQuery:
         self._order_col = None
         self._order_desc = False
         self._limit = None
+        self._range = None
+        self._on_conflict = None
 
     def select(self, *_args, **_kwargs):
         self._op = "select"
@@ -87,6 +93,10 @@ class FakeQuery:
         self._filters.append(("neq", col, val))
         return self
 
+    def ilike(self, col, pattern):
+        self._filters.append(("ilike", col, pattern))
+        return self
+
     def order(self, col, desc=False):
         self._order_col = col
         self._order_desc = desc
@@ -94,6 +104,18 @@ class FakeQuery:
 
     def limit(self, n):
         self._limit = n
+        return self
+
+    def range(self, start, end):
+        """Paginação estilo PostgREST: intervalo INCLUSIVO, aplicado depois do
+        order (como o Postgres faz: filtra, ordena, depois corta a página)."""
+        self._range = (start, end)
+        return self
+
+    def upsert(self, payload, on_conflict=None):
+        self._op = "upsert"
+        self._payload = payload if isinstance(payload, list) else [payload]
+        self._on_conflict = on_conflict
         return self
 
     def _matches(self, row):
@@ -110,6 +132,12 @@ class FakeQuery:
                 return False
             if kind == "neq" and row.get(col) == val:
                 return False
+            if kind == "ilike":
+                rx = "".join(
+                    ".*" if ch == "%" else "." if ch == "_" else re.escape(ch) for ch in val
+                )
+                if not re.fullmatch(rx, row.get(col) or "", re.IGNORECASE | re.DOTALL):
+                    return False
         return True
 
     async def execute(self):
@@ -118,7 +146,10 @@ class FakeQuery:
             matched = [r for r in rows if self._matches(r)]
             if self._order_col is not None:
                 matched.sort(key=lambda r: r.get(self._order_col), reverse=self._order_desc)
-            if self._limit is not None:
+            if self._range is not None:
+                start, end = self._range
+                matched = matched[start : end + 1]
+            elif self._limit is not None:
                 matched = matched[: self._limit]
             return FakeResult(matched)
         if self._op == "insert":
@@ -126,6 +157,24 @@ class FakeQuery:
             for p in payload:
                 rows.append(dict(p))
             return FakeResult([dict(p) for p in payload])
+        if self._op == "upsert":
+            keys = [c.strip() for c in (self._on_conflict or "").split(",") if c.strip()]
+            result_rows = []
+            for p in self._payload:
+                match = None
+                if keys:
+                    for r in rows:
+                        if all(r.get(k) == p.get(k) for k in keys):
+                            match = r
+                            break
+                if match is not None:
+                    match.update(p)
+                    result_rows.append(dict(match))
+                else:
+                    new_row = dict(p)
+                    rows.append(new_row)
+                    result_rows.append(dict(new_row))
+            return FakeResult(result_rows)
         if self._op == "update":
             changed = []
             for r in rows:

@@ -155,6 +155,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(title="Psique Dashboard", lifespan=lifespan)
 templates = Jinja2Templates(directory="templates")
 
+import attendant_db
 import attendant_routes
 import payments
 import return_reminders
@@ -207,7 +208,10 @@ async def atendente_page(request: Request, token: str = ""):
     # receba o segredo de graça.
     if not _valid_panel_token(token):
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="token inválido")
-    return templates.TemplateResponse(request, "atendente.html", {"token": ATTENDANT_PANEL_TOKEN})
+    return templates.TemplateResponse(request, "atendente.html", {
+        "token": ATTENDANT_PANEL_TOKEN,
+        "relationships": attendant_db.RELATIONSHIPS,
+    })
 
 
 @app.get("/api/conversations")

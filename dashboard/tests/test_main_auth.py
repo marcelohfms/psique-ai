@@ -102,3 +102,16 @@ def test_cabecalhos_de_seguranca_presentes():
     # O Chatwoot precisa continuar podendo embutir o painel no iframe.
     assert "frame-ancestors" in r.headers["Content-Security-Policy"]
     assert "x-frame-options" not in {k.lower() for k in r.headers}
+
+
+# ── Moldura nova + lista de parentesco ──────────────────────────────────────────
+
+def test_atendente_renderiza_moldura_e_lista_de_parentesco():
+    r = _client().get("/atendente", params={"token": PANEL_TOKEN})
+    assert r.status_code == 200
+    for marca in ('id="contact-name"', 'id="patient-box"', 'id="link-sheet"',
+                  'data-tab="financeiro"', 'data-tab="cadastro"', 'data-tab="reset"',
+                  '<option value="acompanhante">acompanhante</option>',
+                  '<option value="tutor(a)">tutor(a)</option>'):
+        assert marca in r.text, marca
+    assert 'data-tab="contato"' not in r.text
