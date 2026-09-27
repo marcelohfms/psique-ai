@@ -586,3 +586,116 @@ async def test_handle_cancel_sends_message_with_fee_line():
     text = mock_send.call_args[0][2]({"name": "CARLA MENEZES"})
     assert text.startswith("Olá, Carla! Conforme combinado, sua consulta foi cancelada:\nl1")
     assert "fica guardado" in text
+
+
+# ── ajustes da revisão ─────────────────────────────────────────────────────
+
+PAID_ROW = {**ROW, "booking_fee_paid_at": "2026-09-30T10:00:00-03:00"}
+
+
+@pytest.mark.asyncio
+async def test_build_edit_refuses_waiving_really_paid_fee():
+    for billing in ("taxa_isenta", "cortesia"):
+        with pytest.raises(PanelInputError, match="já foi paga"):
+            await build_edit({"billing": billing}, row=PAID_ROW)
+
+
+@pytest.mark.asyncio
+async def test_build_edit_paid_fee_custom_price_zero_still_courtesy():
+    req = await build_edit({"billing": "normal"}, row=PAID_ROW, patient={**ADULT, "custom_price": 0})
+    assert req["new"]["billing"] == "cortesia"
+
+
+@pytest.mark.asyncio
+async def test_apply_edit_keeps_confirmation_mark_when_time_unchanged():
+    row = {**ROW, "confirmed_at": "2026-09-30T10:00:00-03:00"}
+    req = await build_edit({"start": "2026-10-05T09:00", "session_note": "Domiciliar"}, row=row)
+    _, m = await run_apply(req)
+    assert m["update_event"].call_args.kwargs["confirmed"] is True
+
+
+@pytest.mark.asyncio
+async def test_apply_edit_time_change_drops_confirmation_mark():
+    row = {**ROW, "confirmed_at": "2026-09-30T10:00:00-03:00"}
+    req = await build_edit(row=row)
+    _, m = await run_apply(req)
+    assert m["update_event"].call_args.kwargs["confirmed"] is False
+
+
+@pytest.mark.asyncio
+async def test_apply_edit_rollback_restores_confirmation_mark():
+    row = {**ROW, "confirmed_at": "2026-09-30T10:00:00-03:00"}
+    req = await build_edit(row=row)
+    with ExitStack() as st:
+        m = {k: st.enter_context(p) for k, p in cal_patches(RuntimeError("db")).items()}
+        st.enter_context(patch("app.panel_appointments._now", return_value=NOW))
+        with pytest.raises(BookingError):
+            await pa.apply_edit(req)
+    assert m["update_event"].call_args.kwargs["confirmed"] is True
+
+
+def test_appt_cols_include_confirmed_at():
+    assert "confirmed_at" in pa._APPT_COLS
+
+
+@pytest.mark.asyncio
+async def test_build_edit_pending_reschedule_same_past_time_refused():
+    row = {**ROW, "status": "pending_reschedule", "start_time": "2026-09-30T12:00:00+00:00",
+           "end_time": "2026-09-30T13:00:00+00:00"}
+    with pytest.raises(PanelInputError, match="já passou"):
+        await build_edit({"start": "2026-09-30T09:00"}, row=row)
+
+
+@pytest.mark.asyncio
+async def test_late_reschedule_notifies_clinic():
+    req = await build_edit({"initiated_by": "patient"}, row=LATE_ROW)
+    created = {"kind": "normal", "lines": ["l"], "pending_part2": False,
+               "appointments": [{"appointment_id": "evt-new"}]}
+    with ExitStack() as st:
+        m = {k: st.enter_context(p) for k, p in cal_patches().items()}
+        st.enter_context(patch("app.panel_appointments._now", return_value=NOW))
+        st.enter_context(patch("app.panel_appointments.create_appointments", new_callable=AsyncMock, return_value=created))
+        await pa.apply_late_reschedule(req)
+    m["notify"].assert_called_once()
+    subject, body, phone = m["notify"].call_args[0]
+    assert subject == "Agendamento alterado — Ana Souza"
+    assert "menos de 24h" in body and "A taxa anterior fica retida; nova taxa de reserva cobrada" in body
+    assert "Atendente: Maria" in body
+
+
+@pytest.mark.asyncio
+async def test_late_reschedule_failure_does_not_notify():
+    req = await build_edit({"initiated_by": "patient"}, row=LATE_ROW)
+    created = {"kind": "normal", "lines": ["l"], "pending_part2": False,
+               "appointments": [{"appointment_id": "evt-new"}]}
+    with ExitStack() as st:
+        m = {k: st.enter_context(p) for k, p in cal_patches(RuntimeError("db")).items()}
+        st.enter_context(patch("app.panel_appointments._now", return_value=NOW))
+        st.enter_context(patch("app.panel_appointments.create_appointments", new_callable=AsyncMock, return_value=created))
+        st.enter_context(patch("app.panel_appointments._delete_row", new_callable=AsyncMock))
+        with pytest.raises(BookingError):
+            await pa.apply_late_reschedule(req)
+    m["notify"].assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_build_edit_split_part_never_late_fee():
+    row = {**LATE_ROW, "session_note": "1ª consulta · parte 1 de 2", "consultation_type": "primeira_consulta"}
+    req = await build_edit({"initiated_by": "patient"}, row=row, patient=KID)
+    assert req["late_fee"] is False
+
+
+@pytest.mark.asyncio
+async def test_build_edit_legacy_null_modality_note_only_does_not_notify():
+    req = await build_edit({"start": "2026-10-05T09:00", "session_note": "Domiciliar"},
+                           row={**ROW, "modality": None})
+    assert req["changes"] == {"note"} and req["notify"] is False
+
+
+@pytest.mark.asyncio
+async def test_apply_edit_doctor_only_change_not_logged_as_reschedule():
+    req = await build_edit({"doctor": "bruna", "start": "2026-10-05T09:00"})
+    _, m = await run_apply(req)
+    assert [c[0][0] for c in m["log_event"].call_args_list] == ["appointment_edited"]
+    fields = m["update_row"].call_args[0][1]
+    assert fields["confirmed_at"] is None

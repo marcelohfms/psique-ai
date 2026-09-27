@@ -1118,3 +1118,35 @@ def test_get_busy_includes_event_id():
     }]}
     busy = _get_busy(service, "cal", datetime(2026, 10, 5, 8, tzinfo=tz), datetime(2026, 10, 5, 12, tzinfo=tz))
     assert busy == [{"id": "evt9", "start": "2026-10-05T09:00:00-03:00", "end": "2026-10-05T10:00:00-03:00"}]
+
+
+async def test_update_event_confirmed_keeps_mark_and_color():
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+    from app import google_calendar as gc
+    start = datetime(2026, 10, 5, 9, 0, tzinfo=ZoneInfo("America/Recife"))
+    with patch("app.google_calendar._credentials", return_value=MagicMock()), \
+         patch("app.google_calendar.build", return_value=MagicMock()), \
+         patch("app.google_calendar._update_event") as mock_upd:
+        await gc.update_event(
+            calendar_id="cal", event_id="evt1", new_start=start, slot_minutes=60,
+            patient_name="Lucas", doctor_name="Dr. Júlio", modality="online", confirmed=True,
+        )
+    body = mock_upd.call_args[0][3]
+    assert body["summary"] == f"{gc.CONFIRMED_PREFIX}Consulta — Lucas [Online]"
+    assert body["colorId"] == gc.CONFIRMED_COLOR_ID
+
+
+async def test_update_event_not_confirmed_has_no_color():
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+    from app import google_calendar as gc
+    start = datetime(2026, 10, 5, 9, 0, tzinfo=ZoneInfo("America/Recife"))
+    with patch("app.google_calendar._credentials", return_value=MagicMock()), \
+         patch("app.google_calendar.build", return_value=MagicMock()), \
+         patch("app.google_calendar._update_event") as mock_upd:
+        await gc.update_event(
+            calendar_id="cal", event_id="evt1", new_start=start, slot_minutes=60,
+            patient_name="Lucas", doctor_name="Dr. Júlio", modality="online",
+        )
+    assert "colorId" not in mock_upd.call_args[0][3]

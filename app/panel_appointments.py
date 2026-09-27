@@ -43,7 +43,7 @@ BOOKING_FEE = "100,00"
 _APPT_COLS = (
     "id, appointment_id, patient_id, contact_id, doctor_id, start_time, end_time, status, "
     "modality, consultation_type, session_note, booking_fee_paid_at, booking_fee_waived, "
-    "is_courtesy, refund_requested_at"
+    "is_courtesy, refund_requested_at, confirmed_at"
 )
 
 
@@ -184,7 +184,8 @@ async def build_edit(body: dict) -> dict:
     if minutes not in (40, 60, 120) or (minutes == 40 and doctor != "bruna"):
         raise PanelInputError("duração inválida")
     start = _parse_start(body.get("start"))
-    if start != ctx["start"] and start < _now():
+    # pending_reschedule não tem horário vigente: mesmo "sem mudar" o horário, ele não pode estar no passado.
+    if (start != ctx["start"] or row["status"] == "pending_reschedule") and start < _now():
         raise PanelInputError("esse horário já passou")
 
     label = _split_label(row.get("session_note"))
@@ -200,10 +201,13 @@ async def build_edit(body: dict) -> dict:
         ctype = None
     if patient.get("custom_price") == 0:
         billing = "cortesia"
+    elif billing in ("taxa_isenta", "cortesia") and fee_really_paid(row, patient):
+        # Isentar por cima de taxa paga apagaria a data real do pagamento numa volta ao normal.
+        raise PanelInputError("a taxa desta consulta já foi paga; para devolver, cancele com devolução")
 
     compare = {
         "start": (start, ctx["start"]), "minutes": (minutes, ctx["minutes"]),
-        "doctor": (doctor, ctx["doctor"]), "modality": (modality, row.get("modality")),
+        "doctor": (doctor, ctx["doctor"]), "modality": (modality, row.get("modality") or modality),  # linha antiga sem modalidade
         "note": (note, row.get("session_note") or ""),
         "consultation_type": (ctype, row.get("consultation_type")),
         "billing": (billing, current_billing(row, patient)),
@@ -215,6 +219,8 @@ async def build_edit(body: dict) -> dict:
     late_fee = (
         ctx["initiated_by"] == "patient" and "start" in changes and row["status"] == "scheduled"
         and fee_really_paid(row, patient) and _now() >= ctx["start"] - timedelta(hours=24)
+        # Parte da 1ª consulta dividida: a taxa paga cobre as duas partes (decisão da clínica).
+        and not _split_label(row.get("session_note"))
     )
     return {
         **ctx,
@@ -259,7 +265,8 @@ async def apply_edit(req: dict) -> dict:
         "updated_at": now_iso, **billing_update(row, patient, new["billing"], now_iso),
     }
     pending = row["status"] == "pending_reschedule"
-    if pending or req["changes"] & {"start", "doctor"}:
+    reset_confirmation = pending or bool(req["changes"] & {"start", "doctor"})
+    if reset_confirmation:
         # Confirmação e lembretes valem para a data antiga (ver caso Isaac, reschedule_appointment).
         fields.update({"confirmed_at": None, "reminder_day_before_sent_at": None,
                        "reminder_day_of_sent_at": None, "reschedule_initiated_by": req["initiated_by"]})
@@ -273,7 +280,9 @@ async def apply_edit(req: dict) -> dict:
             created = await create_event(calendar_id=new_cal, start=new["start"], **ev)
             fields["appointment_id"] = created
         else:
-            await update_event(calendar_id=new_cal, event_id=row["appointment_id"], new_start=new["start"], **ev)
+            # O patch reescreve o título: sem isto o ✅ verde da confirmação sumiria.
+            await update_event(calendar_id=new_cal, event_id=row["appointment_id"], new_start=new["start"],
+                               confirmed=bool(row.get("confirmed_at")) and not reset_confirmation, **ev)
     except Exception as exc:
         _logger.exception("panel edit: Calendar falhou appt=%s", row["appointment_id"])
         raise BookingError("não foi possível atualizar a agenda; nada foi alterado") from exc
@@ -288,7 +297,8 @@ async def apply_edit(req: dict) -> dict:
             else:
                 old = _event_kwargs(req, old_doctor, req["start"], req["minutes"],
                                     row.get("session_note") or "", row.get("modality") or "")
-                await update_event(calendar_id=new_cal, event_id=row["appointment_id"], new_start=req["start"], **old)
+                await update_event(calendar_id=new_cal, event_id=row["appointment_id"], new_start=req["start"],
+                                   confirmed=bool(row.get("confirmed_at")), **old)
         except Exception:
             _logger.exception("panel edit: falha ao desfazer o Calendar appt=%s", row["appointment_id"])
         raise BookingError("não foi possível gravar a alteração; nada foi alterado") from exc
@@ -307,7 +317,7 @@ async def apply_edit(req: dict) -> dict:
             "initiated_by": req["initiated_by"]}
     await log_event("appointment_edited", req["phone"], {
         "appointment_id": appointment_id, "changes": sorted(req["changes"]), **meta})
-    if pending or req["changes"] & {"start", "doctor"}:
+    if pending or "start" in req["changes"]:
         # Mesmo evento que reschedule_appointment grava: a política de 1 remarcação conta por ele.
         await log_event("appointment_rescheduled", req["phone"], {
             "appointment_id": appointment_id, "new_datetime": new["start"].replace(tzinfo=None).isoformat(),
@@ -360,6 +370,18 @@ async def apply_late_reschedule(req: dict) -> dict:
             _logger.exception("panel late reschedule: falha ao desfazer a linha nova %s", new_id)
         raise BookingError("não foi possível concluir a remarcação; confira a lista de consultas") from exc
 
+    old_line = _line(req["doctor"], req["start"], row.get("session_note") or "", row.get("modality") or "", req["minutes"])
+    new_line = _line(new["doctor"], new["start"], new["note"], new["modality"], new["minutes"])
+    new_fee = created["kind"] == "normal"
+    _notify_clinic_async(
+        f"Agendamento alterado — {_display(patient)}",
+        "Remarcação a pedido do paciente com menos de 24h 🔄\n"
+        f"Paciente: {_display(patient)}\nHorário anterior: {old_line}\nNovo horário: {new_line}\n"
+        "A taxa anterior fica retida" + ("; nova taxa de reserva cobrada" if new_fee else "")
+        + f"\nAtendente: {req['agent'] or '—'}",
+        req["phone"],
+    )
+
     warnings = []
     try:
         await cancel_event(await _get_doctor_calendar_id(req["doctor"]), row["appointment_id"])
@@ -373,9 +395,9 @@ async def apply_late_reschedule(req: dict) -> dict:
     })
     return {
         "appointment_id": new_id,
-        "old_line": _line(req["doctor"], req["start"], row.get("session_note") or "", row.get("modality") or "", req["minutes"]),
-        "new_line": _line(new["doctor"], new["start"], new["note"], new["modality"], new["minutes"]),
-        "new_fee": created["kind"] == "normal",
+        "old_line": old_line,
+        "new_line": new_line,
+        "new_fee": new_fee,
         "warnings": warnings,
     }
 
