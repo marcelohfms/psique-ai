@@ -420,3 +420,176 @@ async def handle_edit(body: dict) -> tuple[int, dict]:
     else:
         msg = dict(_NO_MESSAGE)
     return 200, {"appointment_id": result["appointment_id"], "warnings": result["warnings"], "message": msg}
+
+
+_FEE_ACTIONS = ("devolver", "credito", "reter")
+
+
+async def _split_sibling(row: dict) -> dict | None:
+    """A outra parte ativa da 1ª consulta dividida, se houver."""
+    label = _split_label(row.get("session_note"))
+    if not label:
+        return None
+    other = SPLIT_PART2 if label == SPLIT_PART1 else SPLIT_PART1
+    for r in await _fetch_active_rows(row["patient_id"]):
+        if r["appointment_id"] != row["appointment_id"] and (r.get("session_note") or "").startswith(other):
+            return r
+    return None
+
+
+async def build_cancel(body: dict) -> dict:
+    """Valida o cancelamento. Em dry_run só lê: quem pediu e a taxa podem faltar."""
+    ctx = await _load(body)
+    row, patient = ctx["row"], ctx["patient"]
+    paid = fee_really_paid(row, patient)
+    hours = (ctx["start"] - _now()).total_seconds() / 3600
+    sibling = await _split_sibling(row)
+    fee_action = body.get("fee_action") if paid else None
+    reason = (body.get("reason") or "").strip()[:200]
+    if not body.get("dry_run"):
+        if ctx["initiated_by"] is None:
+            raise PanelInputError("informe quem pediu o cancelamento: paciente ou clínica")
+        if paid and fee_action not in _FEE_ACTIONS:
+            raise PanelInputError("escolha o que fazer com a taxa paga")
+        if fee_action == "credito" and row["status"] == "pending_reschedule":
+            raise PanelInputError("a taxa desta consulta já está guardada como crédito")
+        if fee_action == "devolver" and row.get("refund_requested_at"):
+            raise PanelInputError("a devolução desta taxa já foi pedida")
+        if fee_action == "devolver" and hours < 24 and not reason:
+            raise PanelInputError("com menos de 24h, informe o motivo da devolução")
+    return {**ctx, "fee_paid": paid, "hours_until": hours, "policy_late": hours < 24,
+            "sibling": sibling, "fee_action": fee_action, "reason": reason,
+            "both_parts": bool(body.get("both_parts")) and sibling is not None}
+
+
+def _already_gone(exc: Exception) -> bool:
+    """Evento já apagado à mão no Calendar (404/410): o cancelamento segue."""
+    return getattr(getattr(exc, "resp", None), "status", None) in (404, 410)
+
+
+async def _cancel_row(row: dict, new_status: str) -> None:
+    """Banco primeiro, depois Calendar. Se o Calendar falhar, o status volta."""
+    from app.google_calendar import cancel_event
+    from app.graph.tools import _get_doctor_calendar_id
+
+    now_iso = _now().isoformat()
+    try:
+        await _update_row(row["id"], {"status": new_status, "updated_at": now_iso})
+    except Exception as exc:
+        _logger.exception("panel cancel: banco falhou appt=%s", row["appointment_id"])
+        raise BookingError("não foi possível gravar o cancelamento; nada foi alterado") from exc
+    if row["status"] != "scheduled":
+        return  # pending_reschedule: o evento já saiu do Calendar
+    try:
+        cal = await _get_doctor_calendar_id(_DOCTOR_BY_ID.get(row["doctor_id"], ""))
+        await cancel_event(cal, row["appointment_id"])
+    except Exception as exc:
+        if _already_gone(exc):
+            return
+        _logger.exception("panel cancel: Calendar falhou appt=%s", row["appointment_id"])
+        try:
+            await _update_row(row["id"], {"status": row["status"], "updated_at": now_iso})
+        except Exception:
+            _logger.exception("panel cancel: falha ao restaurar status appt=%s", row["appointment_id"])
+        raise BookingError("não foi possível tirar a consulta da agenda; nada foi alterado") from exc
+
+
+async def _register_refund(req: dict) -> list[str]:
+    """Mesma gravação de register_refund_request: refund_requested_at e linha
+    "Solicitação de Reembolso" na planilha de Solicitações. A baixa depois segue
+    confirm_refund_completed. Falhas aqui viram aviso: a consulta já foi cancelada."""
+    from app.google_sheets import append_document_request
+
+    row, patient = req["row"], req["patient"]
+    warnings = []
+    now_iso = _now().isoformat()
+    try:
+        await _update_row(row["id"], {"refund_requested_at": now_iso, "updated_at": now_iso})
+    except Exception:
+        _logger.exception("panel cancel: refund_requested_at falhou appt=%s", row["appointment_id"])
+        warnings.append("o pedido de devolução não foi marcado na consulta; avise a equipe")
+    when = req["start"].strftime("%d/%m/%Y às %H:%M")
+    reason = req["reason"] or "cancelamento pelo painel"
+    try:
+        await append_document_request(
+            patient_name=_display(patient),
+            patient_age=_age_on(patient.get("birth_date"), _now().date()),
+            phone=req["phone"],
+            patient_email=patient.get("email") or "",
+            document_type="Solicitação de Reembolso",
+            medication_note=f"Valor: R$ {BOOKING_FEE} | Consulta: {when} | Motivo: {reason}",
+            doctor_name=DOCTOR_LABELS.get(req["doctor"], "médico(a)"),
+            patient_cpf=patient.get("patient_cpf") or "",
+        )
+    except Exception:
+        _logger.exception("panel cancel: planilha de Solicitações falhou appt=%s", row["appointment_id"])
+        warnings.append("a devolução não entrou na planilha de Solicitações; registre à mão")
+    await log_event("refund_requested", req["phone"], {
+        "appointment_id": row["appointment_id"], "amount": BOOKING_FEE, "reason": reason,
+        "origem": "painel", "atendente": req["agent"]})
+    return warnings
+
+
+def _row_line(row: dict) -> str:
+    start = _to_local(row["start_time"])
+    return format_appt_line(_DOCTOR_BY_ID.get(row["doctor_id"], ""), start, row.get("session_note") or "")
+
+
+async def apply_cancel(req: dict) -> dict:
+    rows = [req["row"]] + ([req["sibling"]] if req["both_parts"] else [])
+    new_status = "pending_reschedule" if req["fee_action"] == "credito" else "canceled"
+    done: list[str] = []
+    for r in rows:
+        try:
+            await _cancel_row(r, new_status)
+        except BookingError:
+            if done:
+                raise BookingError("a 1ª parte foi cancelada, mas a outra não; confira a lista de consultas")
+            raise
+        done.append(r["appointment_id"])
+        await log_event("appointment_canceled", req["phone"], {
+            "appointment_id": r["appointment_id"], "preserve_fee": new_status == "pending_reschedule",
+            "origem": "painel", "atendente": req["agent"], "initiated_by": req["initiated_by"],
+            "fee_action": req["fee_action"], "reason": req["reason"]})
+
+    warnings = await _register_refund(req) if req["fee_action"] == "devolver" else []
+
+    lines = [_row_line(r) for r in rows]
+    who = "Clínica" if req["initiated_by"] == "clinic" else "Paciente"
+    fee_note = {"devolver": "Taxa: devolver ao paciente (ver planilha de Solicitações)",
+                "credito": "Taxa: guardada para remarcar", "reter": "Taxa: retida"}.get(req["fee_action"] or "", "")
+    title = "Consulta liberada para remarcação 🔄" if new_status == "pending_reschedule" else "Agendamento cancelado pelo painel ❌"
+    _notify_clinic_async(
+        f"{'Consulta liberada para remarcação' if new_status == 'pending_reschedule' else 'Agendamento cancelado'} — {_display(req['patient'])}",
+        f"{title}\nPaciente: {_display(req['patient'])}\n" + "\n".join(lines)
+        + f"\nQuem pediu: {who}" + (f"\n{fee_note}" if fee_note else "")
+        + (f"\nMotivo: {req['reason']}" if req["reason"] else "") + f"\nAtendente: {req['agent'] or '—'}",
+        req["phone"],
+    )
+    return {"canceled": done, "lines": lines, "warnings": warnings}
+
+
+async def handle_cancel(body: dict) -> tuple[int, dict]:
+    """Fluxo de POST /admin/panel/appointments/cancel. Devolve (status_http, corpo)."""
+    req = await build_cancel(body)
+
+    def text_for(lines: list[str]):
+        return lambda c: cancel_text(req["initiated_by"], contact_first_name(c), lines, req["fee_action"])
+
+    if body.get("dry_run"):
+        sib = req["sibling"]
+        lines = [_row_line(req["row"])] + ([_row_line(sib)] if req["both_parts"] else [])
+        message = None
+        if req["initiated_by"]:
+            message = await preview_message(req["patient"]["id"], req["recipient_contact_id"], text_for(lines))
+        return 200, {
+            "fee_paid": req["fee_paid"], "status": req["row"]["status"],
+            "hours_until": round(req["hours_until"], 1), "policy_late": req["policy_late"],
+            "sibling": {"appointment_id": sib["appointment_id"], "line": _row_line(sib)} if sib else None,
+            "message": message,
+        }
+
+    result = await apply_cancel(req)
+    msg = await deliver_message(req["patient"]["id"], req["recipient_contact_id"], text_for(result["lines"]),
+                                _display(req["patient"]), req["doctor"])
+    return 200, {"canceled": result["canceled"], "warnings": result["warnings"], "message": msg}

@@ -397,3 +397,192 @@ async def test_handle_edit_late_goes_to_late_path_and_message_has_new_fee():
     m["apply"].assert_not_called()
     text_for = m["send"].call_args[0][2]
     assert "nova taxa" in text_for({"name": "Ana"})
+
+
+# ── cancelar ───────────────────────────────────────────────────────────────
+
+PAID_ROW = {**ROW, "booking_fee_paid_at": "2026-09-30T10:00:00-03:00"}   # consulta 05/10, NOW 01/10: > 24h
+CANCEL = {"phone": "5581999998888", "appointment_id": "evt1", "initiated_by": "patient",
+          "fee_action": None, "reason": "", "both_parts": False, "agent": "Maria"}
+
+
+async def build_cancel(body=None, **kw):
+    with ExitStack() as st:
+        for p in load_patches(**kw):
+            st.enter_context(p)
+        return await pa.build_cancel({**CANCEL, **(body or {})})
+
+
+@pytest.mark.asyncio
+async def test_build_cancel_requires_initiated_by_unless_dry_run():
+    with pytest.raises(PanelInputError, match="quem pediu"):
+        await build_cancel({"initiated_by": None})
+    req = await build_cancel({"initiated_by": None, "dry_run": True})
+    assert req["initiated_by"] is None
+
+
+@pytest.mark.asyncio
+async def test_build_cancel_paid_fee_requires_choice():
+    with pytest.raises(PanelInputError, match="taxa"):
+        await build_cancel(row=PAID_ROW)
+    req = await build_cancel({"fee_action": "devolver"}, row=PAID_ROW)
+    assert req["fee_paid"] is True and req["policy_late"] is False
+
+
+@pytest.mark.asyncio
+async def test_build_cancel_fee_action_ignored_when_not_paid():
+    req = await build_cancel({"fee_action": "devolver"})
+    assert req["fee_paid"] is False and req["fee_action"] is None
+
+
+@pytest.mark.asyncio
+async def test_build_cancel_late_refund_needs_reason():
+    late = {**PAID_ROW, "start_time": "2026-10-01T20:00:00+00:00", "end_time": "2026-10-01T21:00:00+00:00"}
+    with pytest.raises(PanelInputError, match="motivo"):
+        await build_cancel({"fee_action": "devolver"}, row=late)
+    req = await build_cancel({"fee_action": "devolver", "reason": "exceção aprovada pelo Dr. Júlio"}, row=late)
+    assert req["policy_late"] is True
+
+
+@pytest.mark.asyncio
+async def test_build_cancel_credit_not_allowed_on_pending_reschedule():
+    with pytest.raises(PanelInputError, match="crédito"):
+        await build_cancel({"fee_action": "credito"}, row={**PAID_ROW, "status": "pending_reschedule"})
+
+
+@pytest.mark.asyncio
+async def test_build_cancel_refund_already_requested():
+    with pytest.raises(PanelInputError, match="já foi pedida"):
+        await build_cancel({"fee_action": "devolver"}, row={**PAID_ROW, "refund_requested_at": "x"})
+
+
+@pytest.mark.asyncio
+async def test_build_cancel_finds_split_sibling():
+    part1 = {**ROW, "session_note": "1ª consulta · parte 1 de 2"}
+    part2 = {**ROW, "id": "uuid-2", "appointment_id": "evt2", "session_note": "1ª consulta · parte 2 de 2",
+             "start_time": "2026-10-08T12:00:00+00:00", "end_time": "2026-10-08T13:00:00+00:00"}
+    req = await build_cancel({"both_parts": True}, row=part1, patient=KID, sibling_rows=[part1, part2])
+    assert req["sibling"]["appointment_id"] == "evt2" and req["both_parts"] is True
+
+
+def cancel_patches(update_row=None, cancel_event=None, sheet=None):
+    return {
+        "cal_id": patch("app.graph.tools._get_doctor_calendar_id", new_callable=AsyncMock, return_value="cal-julio"),
+        "cancel_event": patch("app.google_calendar.cancel_event", new_callable=AsyncMock, side_effect=cancel_event),
+        "update_row": patch("app.panel_appointments._update_row", new_callable=AsyncMock, side_effect=update_row),
+        "log_event": patch("app.panel_appointments.log_event", new_callable=AsyncMock),
+        "notify": patch("app.panel_appointments._notify_clinic_async"),
+        "sheet": patch("app.google_sheets.append_document_request", new_callable=AsyncMock, side_effect=sheet),
+        "now": patch("app.panel_appointments._now", return_value=NOW),
+    }
+
+
+async def run_cancel(req, **kw):
+    with ExitStack() as st:
+        m = {k: st.enter_context(p) for k, p in cancel_patches(**kw).items()}
+        out = await pa.apply_cancel(req)
+    return out, m
+
+
+@pytest.mark.asyncio
+async def test_apply_cancel_db_first_then_calendar():
+    req = await build_cancel()
+    out, m = await run_cancel(req)
+    assert m["update_row"].call_args_list[0][0] == ("uuid-1", {"status": "canceled", "updated_at": NOW.isoformat()})
+    m["cancel_event"].assert_awaited_once_with("cal-julio", "evt1")
+    assert out["canceled"] == ["evt1"]
+    assert m["log_event"].call_args[0][0] == "appointment_canceled"
+
+
+@pytest.mark.asyncio
+async def test_apply_cancel_calendar_failure_restores_status():
+    req = await build_cancel()
+    with ExitStack() as st:
+        m = {k: st.enter_context(p) for k, p in cancel_patches(cancel_event=RuntimeError("gcal")).items()}
+        with pytest.raises(BookingError, match="nada foi alterado"):
+            await pa.apply_cancel(req)
+    assert m["update_row"].call_args_list[1][0][1]["status"] == "scheduled"
+
+
+@pytest.mark.asyncio
+async def test_apply_cancel_event_already_gone_is_success():
+    gone = Exception("gone")
+    gone.resp = MagicMock(status=410)
+    req = await build_cancel()
+    out, m = await run_cancel(req, cancel_event=gone)
+    assert out["canceled"] == ["evt1"]
+    assert len(m["update_row"].call_args_list) == 1
+
+
+@pytest.mark.asyncio
+async def test_apply_cancel_credit_keeps_fee_as_pending_reschedule():
+    req = await build_cancel({"fee_action": "credito"}, row=PAID_ROW)
+    out, m = await run_cancel(req)
+    assert m["update_row"].call_args_list[0][0][1]["status"] == "pending_reschedule"
+    m["sheet"].assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_apply_cancel_refund_marks_and_writes_sheet():
+    req = await build_cancel({"fee_action": "devolver", "reason": "mudou de cidade"}, row=PAID_ROW)
+    out, m = await run_cancel(req)
+    refund_fields = m["update_row"].call_args_list[1][0][1]
+    assert refund_fields["refund_requested_at"] == NOW.isoformat()
+    kw = m["sheet"].call_args.kwargs
+    assert kw["document_type"] == "Solicitação de Reembolso"
+    assert kw["medication_note"] == "Valor: R$ 100,00 | Consulta: 05/10/2026 às 09:00 | Motivo: mudou de cidade"
+    assert kw["patient_cpf"] == "123"
+    logged = [c[0][0] for c in m["log_event"].call_args_list]
+    assert "refund_requested" in logged
+
+
+@pytest.mark.asyncio
+async def test_apply_cancel_sheet_failure_becomes_warning():
+    req = await build_cancel({"fee_action": "devolver"}, row=PAID_ROW)
+    out, m = await run_cancel(req, sheet=RuntimeError("sheets"))
+    assert out["canceled"] == ["evt1"]
+    assert any("planilha" in w for w in out["warnings"])
+
+
+@pytest.mark.asyncio
+async def test_apply_cancel_both_parts_refund_once():
+    part1 = {**PAID_ROW, "session_note": "1ª consulta · parte 1 de 2"}
+    part2 = {**PAID_ROW, "id": "uuid-2", "appointment_id": "evt2", "session_note": "1ª consulta · parte 2 de 2"}
+    req = await build_cancel({"both_parts": True, "fee_action": "devolver"}, row=part1, patient=KID,
+                             sibling_rows=[part1, part2])
+    out, m = await run_cancel(req)
+    assert out["canceled"] == ["evt1", "evt2"]
+    m["sheet"].assert_awaited_once()
+
+
+# ── handle_cancel ──────────────────────────────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_handle_cancel_dry_run_info_without_initiated_by():
+    with ExitStack() as st:
+        for p in load_patches(row=PAID_ROW):
+            st.enter_context(p)
+        mock_prev = st.enter_context(patch("app.panel_appointments.preview_message", new_callable=AsyncMock))
+        status, payload = await pa.handle_cancel({**CANCEL, "initiated_by": None, "dry_run": True})
+    assert status == 200
+    assert payload["fee_paid"] is True and payload["policy_late"] is False
+    assert payload["status"] == "scheduled" and payload["sibling"] is None
+    assert payload["message"] is None
+    mock_prev.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_handle_cancel_sends_message_with_fee_line():
+    with ExitStack() as st:
+        for p in load_patches(row=PAID_ROW):
+            st.enter_context(p)
+        st.enter_context(patch("app.panel_appointments.apply_cancel", new_callable=AsyncMock,
+                               return_value={"canceled": ["evt1"], "lines": ["l1"], "warnings": []}))
+        mock_send = st.enter_context(patch("app.panel_appointments.deliver_message", new_callable=AsyncMock,
+                                           return_value={"sent": ["Ana"], "not_delivered": [], "held": []}))
+        status, payload = await pa.handle_cancel({**CANCEL, "fee_action": "credito"})
+    assert status == 200 and payload["canceled"] == ["evt1"]
+    # "Ana Souza" ficaria inteiro (display_name mantém nomes compostos com Ana); use um nome simples.
+    text = mock_send.call_args[0][2]({"name": "CARLA MENEZES"})
+    assert text.startswith("Olá, Carla! Conforme combinado, sua consulta foi cancelada:\nl1")
+    assert "fica guardado" in text
