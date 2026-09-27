@@ -7,7 +7,7 @@ import logging
 import time
 import os
 import pytest
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 from tests.conftest import PHONE
 
@@ -1990,3 +1990,198 @@ async def test_note_command_pending_false_when_never_suppressed():
 
     with patch("app.database.get_events_by_type", side_effect=fake_events):
         assert await _note_command_pending("5581999@s.whatsapp.net", "Eva, agende 24/09") is False
+
+
+# ── POST /admin/panel/appointments ────────────────────────────────────────────
+
+_PANEL_BODY = {
+    "phone": "5581999998888", "patient_id": "p1", "doctor": "julio", "modality": "presencial",
+    "parts": [{"start": "2026-10-05T09:00", "minutes": 60}], "split": False, "split_of": None,
+    "session_note": "", "first_consultation": False, "billing": "normal",
+    "encaixe_confirmed": False, "dry_run": False, "agent": "Maria",
+}
+_PANEL_PATIENT = {
+    "id": "p1", "name": "Ana Souza", "birth_date": "01/01/1990", "modality_restriction": None,
+    "custom_price": None, "booking_fee_waived": False, "social_name": None, "email": None,
+}
+_PANEL_CREATED = {
+    "kind": "normal", "lines": ["l"], "pending_part2": False,
+    "appointments": [{"appointment_id": "e1"}],
+}
+_PANEL_SENT = {"sent": ["Ana"], "not_delivered": [], "held": []}
+
+
+def _panel_patches(check=(), created=None, patient=None):
+    return [
+        patch("app.panel_booking.get_contact_by_phone", new_callable=AsyncMock, return_value={"id": "c1"}),
+        patch("app.panel_booking.get_patient_by_id", new_callable=AsyncMock, return_value=patient or _PANEL_PATIENT),
+        patch("app.panel_booking.check_slot", new_callable=AsyncMock, return_value=list(check)),
+        patch("app.panel_booking.create_appointments", new_callable=AsyncMock, return_value=created or _PANEL_CREATED),
+        patch("app.panel_booking.send_booking_message", new_callable=AsyncMock, return_value=_PANEL_SENT),
+        patch("app.panel_booking.message_preview", new_callable=AsyncMock,
+              return_value={"text": "t", "recipients": [], "held": []}),
+    ]
+
+
+def _post_panel(http_client, monkeypatch, body, secret="s3cr3t", check=(), created=None, patient=None):
+    from contextlib import ExitStack
+    monkeypatch.setenv("ADMIN_SECRET", "s3cr3t")
+    with ExitStack() as st:
+        mocks = [st.enter_context(p) for p in _panel_patches(check=check, created=created, patient=patient)]
+        r = http_client.post("/admin/panel/appointments", json=body, headers={"X-Admin-Secret": secret})
+    return r, mocks
+
+
+def test_panel_requires_secret(http_client, monkeypatch):
+    r, _ = _post_panel(http_client, monkeypatch, _PANEL_BODY, secret="errado")
+    assert r.status_code == 403
+
+
+def test_panel_creates_when_slot_free(http_client, monkeypatch):
+    r, mocks = _post_panel(http_client, monkeypatch, _PANEL_BODY)
+    assert r.status_code == 200
+    assert r.json()["message"]["sent"] == ["Ana"]
+    mocks[3].assert_awaited_once()
+
+
+def test_panel_send_booking_message_called_with_display_name_and_doctor(http_client, monkeypatch):
+    """A mensagem tem que ir com o nome do paciente (não do contato) e o médico
+    do pedido — se o `handle` chamar send_booking_message errado, um mock solto
+    não pegaria; a asserção nos argumentos exatos pega."""
+    r, mocks = _post_panel(http_client, monkeypatch, _PANEL_BODY)
+    assert r.status_code == 200
+    send_mock = mocks[4]
+    send_mock.assert_awaited_once_with(
+        "p1", "c1", "normal", ["l"], False, "Ana Souza", "julio",
+    )
+
+
+def test_panel_encaixe_needs_confirmation(http_client, monkeypatch):
+    r, mocks = _post_panel(http_client, monkeypatch, _PANEL_BODY, check=["fora do horário de atendimento"])
+    assert r.status_code == 409
+    assert r.json()["detail"] == {"needs_encaixe": True, "reasons": ["fora do horário de atendimento"]}
+    mocks[3].assert_not_awaited()
+
+
+def test_panel_encaixe_confirmed_skips_check(http_client, monkeypatch):
+    r, mocks = _post_panel(http_client, monkeypatch, {**_PANEL_BODY, "encaixe_confirmed": True},
+                            check=["fora do horário de atendimento"])
+    assert r.status_code == 200
+    mocks[2].assert_not_awaited()
+    assert mocks[3].call_args[0][0]["encaixe"] is True
+
+
+def test_panel_dry_run_writes_nothing(http_client, monkeypatch):
+    r, mocks = _post_panel(http_client, monkeypatch, {**_PANEL_BODY, "dry_run": True})
+    assert r.status_code == 200
+    assert set(r.json()) == {"encaixe_reasons", "message"}
+    mocks[3].assert_not_awaited()
+    mocks[4].assert_not_awaited()
+
+
+def test_panel_rejects_40min_for_julio(http_client, monkeypatch):
+    body = {**_PANEL_BODY, "parts": [{"start": "2026-10-05T09:00", "minutes": 40}]}
+    r, _ = _post_panel(http_client, monkeypatch, body)
+    assert r.status_code == 400
+
+
+def test_panel_rejects_split_for_adult(http_client, monkeypatch):
+    body = {**_PANEL_BODY, "split": True, "first_consultation": True}
+    r, _ = _post_panel(http_client, monkeypatch, body)
+    assert r.status_code == 400
+
+
+def test_panel_rejects_modality_against_restriction(http_client, monkeypatch):
+    r, _ = _post_panel(http_client, monkeypatch, _PANEL_BODY,
+                        patient={**_PANEL_PATIENT, "modality_restriction": "online"})
+    assert r.status_code == 400
+
+
+def test_panel_rejects_two_parts_without_split(http_client, monkeypatch):
+    body = {**_PANEL_BODY, "parts": [
+        {"start": "2026-10-05T09:00", "minutes": 60},
+        {"start": "2026-10-08T09:00", "minutes": 60},
+    ]}
+    r, _ = _post_panel(http_client, monkeypatch, body)
+    assert r.status_code == 400
+
+
+def test_panel_split_of_not_found_rejected(http_client, monkeypatch):
+    body = {**_PANEL_BODY, "split_of": "evtX"}
+    with patch("app.panel_booking.get_supabase", new_callable=AsyncMock) as mock_sb:
+        client = MagicMock()
+        table = MagicMock()
+        table.select.return_value = table
+        table.eq.return_value = table
+        table.limit.return_value = table
+        table.execute = AsyncMock(return_value=MagicMock(data=[]))
+        client.from_.return_value = table
+        mock_sb.return_value = client
+        r, _ = _post_panel(http_client, monkeypatch, body)
+    assert r.status_code == 400
+
+
+def test_panel_split_of_other_patient_rejected(http_client, monkeypatch):
+    body = {**_PANEL_BODY, "split_of": "evtX"}
+    row = {"appointment_id": "evtX", "patient_id": "p9", "booking_fee_paid_at": None,
+           "booking_fee_waived": False, "is_courtesy": False,
+           "session_note": "1ª consulta · parte 1 de 2", "status": "scheduled"}
+    with patch("app.panel_booking.get_supabase", new_callable=AsyncMock) as mock_sb:
+        client = MagicMock()
+        table = MagicMock()
+        table.select.return_value = table
+        table.eq.return_value = table
+        table.limit.return_value = table
+        table.execute = AsyncMock(return_value=MagicMock(data=[row]))
+        client.from_.return_value = table
+        mock_sb.return_value = client
+        r, _ = _post_panel(http_client, monkeypatch, body)
+    assert r.status_code == 400
+
+
+def test_panel_split_of_not_part1_note_rejected(http_client, monkeypatch):
+    body = {**_PANEL_BODY, "split_of": "evtX"}
+    row = {"appointment_id": "evtX", "patient_id": "p1", "booking_fee_paid_at": None,
+           "booking_fee_waived": False, "is_courtesy": False,
+           "session_note": "Domiciliar", "status": "scheduled"}
+    with patch("app.panel_booking.get_supabase", new_callable=AsyncMock) as mock_sb:
+        client = MagicMock()
+        table = MagicMock()
+        table.select.return_value = table
+        table.eq.return_value = table
+        table.limit.return_value = table
+        table.execute = AsyncMock(return_value=MagicMock(data=[row]))
+        client.from_.return_value = table
+        mock_sb.return_value = client
+        r, _ = _post_panel(http_client, monkeypatch, body)
+    assert r.status_code == 400
+
+
+def test_panel_booking_error_returns_502(http_client, monkeypatch):
+    from app import panel_booking
+    monkeypatch.setenv("ADMIN_SECRET", "s3cr3t")
+    from contextlib import ExitStack
+    with ExitStack() as st:
+        for p in _panel_patches():
+            st.enter_context(p)
+        st.enter_context(patch("app.panel_booking.create_appointments", new_callable=AsyncMock,
+                                side_effect=panel_booking.BookingError("falhou")))
+        r = http_client.post("/admin/panel/appointments", json=_PANEL_BODY,
+                              headers={"X-Admin-Secret": "s3cr3t"})
+    assert r.status_code == 502
+
+
+def test_panel_unexpected_exception_returns_502_with_friendly_detail(http_client, monkeypatch):
+    """Uma exceção que não é PanelInputError nem BookingError (ex.: Supabase caiu
+    dentro de check_slot) não pode virar 500 opaco."""
+    monkeypatch.setenv("ADMIN_SECRET", "s3cr3t")
+    from contextlib import ExitStack
+    with ExitStack() as st:
+        for p in _panel_patches():
+            st.enter_context(p)
+        st.enter_context(patch("app.panel_booking.check_slot", new_callable=AsyncMock,
+                                side_effect=RuntimeError("db down")))
+        r = http_client.post("/admin/panel/appointments", json=_PANEL_BODY,
+                              headers={"X-Admin-Secret": "s3cr3t"})
+    assert r.status_code == 502
+    assert r.json()["detail"] == "A Eva não conseguiu concluir. Confira a agenda antes de tentar de novo."

@@ -13,7 +13,14 @@ from zoneinfo import ZoneInfo
 from app.booking_texts import DOCTOR_LABELS, confirmation_text, format_appt_line
 from app.database import DOCTOR_IDS, get_supabase, log_event, save_message
 from app.google_calendar import grid_violation
-from app.patients import _is_held, _linked_contacts_with_marker, consultation_reminder_contacts
+from app.patients import (
+    _compute_age,
+    _is_held,
+    _linked_contacts_with_marker,
+    consultation_reminder_contacts,
+    get_contact_by_phone,
+    get_patient_by_id,
+)
 from app.phone import _phone_variants
 from app.utils import display_name
 from app.whatsapp import send_text
@@ -43,10 +50,21 @@ _GRID_REASONS = {
 _background_tasks: set[asyncio.Task] = set()
 
 
+_LOWERCASE_CONNECTORS = {"de", "da", "do", "das", "dos", "e"}
+
+
 def _nice(name: str) -> str:
     """Nome em CAIXA ALTA vira Title Case antes de aparecer numa mensagem/aviso
-    ('RAFAEL LIMA' -> 'Rafael Lima'); nomes já normais não são tocados."""
-    return name.title() if name and name.isupper() else name
+    ('MARIA DE FÁTIMA' -> 'Maria de Fátima'); conectores portugueses (de/da/do/
+    das/dos/e) ficam em minúsculo, exceto na primeira palavra. Nomes já normais
+    não são tocados."""
+    if not (name and name.isupper()):
+        return name
+    words = name.title().split(" ")
+    return " ".join(
+        w.lower() if i > 0 and w.lower() in _LOWERCASE_CONNECTORS else w
+        for i, w in enumerate(words)
+    )
 
 
 def _ensure_tz(dt: datetime) -> datetime:
@@ -181,7 +199,6 @@ def _part_notes(req: dict) -> list[str]:
 
 
 def _is_minor_julio(patient: dict, doctor: str) -> bool:
-    from app.patients import _compute_age
     age = _compute_age(patient.get("birth_date"))
     return doctor == "julio" and age is not None and age < 18
 
@@ -384,7 +401,7 @@ async def send_booking_message(patient_id: str, contact_id: str, kind: str, line
                 # scripts/send_payment_reminders.save_to_checkpoint.
                 update.update({
                     "stage": "patient_agent",
-                    "user_name": patient_name,
+                    "user_name": c.get("name") or "",
                     "patient_name": patient_name,
                     "is_patient": True,
                     "preferred_doctor": doctor,
@@ -394,3 +411,111 @@ async def send_booking_message(patient_id: str, contact_id: str, kind: str, line
             _logger.exception("panel checkpoint falhou phone=%s", phone)
         sent.append(name)
     return {"sent": sent, "not_delivered": not_delivered, "held": held}
+
+
+class PanelInputError(ValueError):
+    """Corpo do endpoint inválido — vira 400 em app/main.py."""
+
+
+def _parse_start(raw: str) -> datetime:
+    try:
+        return datetime.fromisoformat(raw).replace(tzinfo=TZ)
+    except (TypeError, ValueError):
+        raise PanelInputError(f"data/hora inválida: {raw}")
+
+
+async def build_request(body: dict) -> dict:
+    """Valida o corpo do painel e devolve o dict que create_appointments espera."""
+    doctor = body.get("doctor")
+    if doctor not in DOCTOR_IDS:
+        raise PanelInputError("médico inválido")
+    modality = body.get("modality")
+    if modality not in ("online", "presencial"):
+        raise PanelInputError("modalidade inválida")
+    billing = body.get("billing", "normal")
+    if billing not in ("normal", "taxa_isenta", "cortesia"):
+        raise PanelInputError("cobrança inválida")
+
+    phone = _thread(body.get("phone") or "")
+    contact = await get_contact_by_phone(phone)
+    if not contact:
+        raise PanelInputError("contato não encontrado")
+    patient = await get_patient_by_id(body.get("patient_id") or "")
+    if not patient:
+        raise PanelInputError("paciente não encontrado")
+
+    restriction = patient.get("modality_restriction")
+    if restriction in ("online", "presencial") and modality != restriction:
+        raise PanelInputError(f"este paciente só pode ser atendido {restriction}")
+
+    raw_parts = body.get("parts") or []
+    if not 1 <= len(raw_parts) <= 2:
+        raise PanelInputError("informe um ou dois horários")
+    parts = []
+    for p in raw_parts:
+        minutes = int(p.get("minutes") or 0)
+        if minutes not in (40, 60, 120) or (minutes == 40 and doctor != "bruna"):
+            raise PanelInputError("duração inválida")
+        parts.append({"start": _parse_start(p.get("start")), "minutes": minutes})
+
+    split = bool(body.get("split"))
+    split_of_id = body.get("split_of")
+    split_of = None
+    if split or split_of_id:
+        age = _compute_age(patient.get("birth_date"))
+        if not (doctor == "julio" and age is not None and age < 18 and body.get("first_consultation")):
+            raise PanelInputError("divisão só vale para a 1ª consulta de menor com o Dr. Júlio")
+        if any(p["minutes"] != 60 for p in parts):
+            raise PanelInputError("cada parte da 1ª consulta dividida tem 1h")
+    if len(parts) == 2 and not split:
+        raise PanelInputError("dois horários só na 1ª consulta dividida")
+    if split_of_id:
+        if len(parts) != 1:
+            raise PanelInputError("completar a 2ª parte usa um horário só")
+        client = await get_supabase()
+        res = await (
+            client.from_("appointments")
+            .select("appointment_id, patient_id, booking_fee_paid_at, booking_fee_waived, is_courtesy, session_note, status")
+            .eq("appointment_id", split_of_id).limit(1).execute()
+        )
+        split_of = (res.data or [None])[0]
+        if not split_of or split_of["patient_id"] != patient["id"] or split_of.get("status") != "scheduled" \
+                or not (split_of.get("session_note") or "").startswith(SPLIT_PART1):
+            raise PanelInputError("parte 1 pendente não encontrada")
+
+    return {
+        "phone": phone, "contact_id": contact["id"], "patient": patient, "doctor": doctor,
+        "modality": modality, "parts": parts, "split": split and not split_of_id, "split_of": split_of,
+        "session_note": (body.get("session_note") or "").strip()[:80],
+        "first_consultation": bool(body.get("first_consultation")), "billing": billing,
+        "encaixe": False, "agent": (body.get("agent") or "").strip()[:80],
+    }
+
+
+async def handle(body: dict) -> tuple[int, dict]:
+    """Fluxo do endpoint POST /admin/panel/appointments. Devolve (status_http, corpo)."""
+    req = await build_request(body)
+    reasons: list[str] = []
+    if not body.get("encaixe_confirmed"):
+        for part in req["parts"]:
+            reasons += await check_slot(req["doctor"], part["start"], part["minutes"], req["patient"]["id"])
+
+    if body.get("dry_run"):
+        _, kind = _fee_fields(req, datetime.now(TZ).isoformat())
+        lines = [format_appt_line(req["doctor"], p["start"], n) for p, n in zip(req["parts"], _part_notes(req))]
+        pending = req["split"] and len(req["parts"]) == 1
+        preview = await message_preview(req["patient"]["id"], req["contact_id"], kind, lines, pending)
+        return 200, {"encaixe_reasons": reasons, "message": preview}
+
+    if reasons:
+        return 409, {"detail": {"needs_encaixe": True, "reasons": reasons}}
+
+    req["encaixe"] = bool(body.get("encaixe_confirmed"))
+    created = await create_appointments(req)
+    name = req["patient"].get("name") or ""
+    display_patient_name = f"{name} ({req['patient']['social_name']})" if req["patient"].get("social_name") else name
+    msg = await send_booking_message(
+        req["patient"]["id"], req["contact_id"], created["kind"], created["lines"], created["pending_part2"],
+        display_patient_name, req["doctor"],
+    )
+    return 200, {"appointments": created["appointments"], "message": msg}

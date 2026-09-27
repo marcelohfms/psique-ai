@@ -407,6 +407,13 @@ def test_text_for_all_caps_contact_name_title_cased():
     assert txt.startswith("Perfeito, Carla!")
 
 
+def test_nice_keeps_portuguese_connectors_lowercase():
+    assert pb._nice("MARIA DE FÁTIMA") == "Maria de Fátima"
+    assert pb._nice("JOÃO DOS SANTOS E SILVA") == "João dos Santos e Silva"
+    assert pb._nice("DA SILVA") == "Da Silva"  # conector na 1ª palavra fica maiúsculo
+    assert pb._nice("Carla Menezes") == "Carla Menezes"  # não mexe em nome já normal
+
+
 @pytest.mark.asyncio
 async def test_send_skips_closed_window_and_writes_checkpoint_when_open():
     recips = [{"id": "c1", "phone": "5581999998888", "name": "Carla"},
@@ -466,7 +473,9 @@ async def test_send_seeds_state_when_thread_is_empty():
     assert update["pending_appointment"] is None
     assert update["phone"] == "5581999998888@s.whatsapp.net"
     assert update["stage"] == "patient_agent"
-    assert update["user_name"] == "Lucas Menezes" and update["patient_name"] == "Lucas Menezes"
+    # user_name é o CONTATO destinatário (quem recebeu a mensagem, "Carla"), não o
+    # paciente ("Lucas Menezes") — a conversa é com a Carla, não com o Lucas.
+    assert update["user_name"] == "Carla" and update["patient_name"] == "Lucas Menezes"
     assert update["is_patient"] is True
     assert update["preferred_doctor"] == "julio"
 
