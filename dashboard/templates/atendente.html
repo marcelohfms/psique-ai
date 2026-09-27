@@ -1478,7 +1478,8 @@ function openApptEdit(a) {
   segSet("appt-doctor", a.doctor_key || "julio");
   if (a.modality) segSet("appt-modality", a.modality);
   $("appt-first").setAttribute("aria-checked", String(a.consultation_type === "primeira_consulta"));
-  segSet("appt-dur", String(a.minutes));
+  // Duração fora das opções (dado antigo): começa em 1h para o botão não ficar desligado sem motivo.
+  segSet("appt-dur", ["40", "60", "120"].includes(String(a.minutes)) ? String(a.minutes) : "60");
   segSet("appt-billing", p.custom_price === 0 ? "cortesia" : (a.billing || "normal"));
   $("appt-billing-wrap").classList.remove("hidden");
   $("appt-date").value = a.start_local.slice(0, 10);
@@ -1510,7 +1511,8 @@ async function apptPreview(show) {
     if (show) apptError(errText(body, "Não foi possível montar a prévia."));
     return;
   }
-  $("appt-late").classList.toggle("hidden", !body.late_fee);
+  // Nova taxa só existe com cobrança normal (isenta/cortesia não cobram).
+  $("appt-late").classList.toggle("hidden", !(body.late_fee && segGet("appt-billing") === "normal"));
   if (APPT.edit && body.notify === false) {
     $("appt-to").textContent = "ninguém (a mudança não gera mensagem)";
     APPT.previewText = "";
