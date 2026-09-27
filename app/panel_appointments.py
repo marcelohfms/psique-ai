@@ -597,6 +597,8 @@ async def apply_cancel(req: dict) -> dict:
     who = "Clínica" if req["initiated_by"] == "clinic" else "Paciente"
     fee_note = {"devolver": "Taxa: devolver ao paciente (ver planilha de Solicitações)",
                 "credito": "Taxa: guardada para remarcar", "reter": "Taxa: retida"}.get(req["fee_action"] or "", "")
+    if req["fee_action"] == "devolver" and len(done) < len(rows):
+        fee_note = "Taxa: devolução NÃO registrada (a outra parte continua marcada)"
     title = "Consulta liberada para remarcação 🔄" if new_status == "pending_reschedule" else "Agendamento cancelado pelo painel ❌"
     _notify_clinic_async(
         f"{'Consulta liberada para remarcação' if new_status == 'pending_reschedule' else 'Agendamento cancelado'} — {_display(req['patient'])}",

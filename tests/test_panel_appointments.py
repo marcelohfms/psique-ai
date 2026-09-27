@@ -834,3 +834,6 @@ async def test_apply_cancel_refund_skipped_when_sibling_fails():
     assert all(c[0][1].get("refund_requested_at") is None for c in m["update_row"].call_args_list)
     assert any("devolução não foi registrada" in w for w in out["warnings"])
     assert "refund_requested" not in [c[0][0] for c in m["log_event"].call_args_list]
+    notice = m["notify"].call_args[0][1]
+    assert "Taxa: devolução NÃO registrada (a outra parte continua marcada)" in notice
+    assert "ver planilha" not in notice
