@@ -2032,6 +2032,10 @@ def _post_panel(http_client, monkeypatch, body, secret="s3cr3t", check=(), creat
     return r, mocks
 
 
+def _set_secret(monkeypatch):
+    monkeypatch.setenv("ADMIN_SECRET", "s3cr3t")
+
+
 def test_panel_requires_secret(http_client, monkeypatch):
     r, _ = _post_panel(http_client, monkeypatch, _PANEL_BODY, secret="errado")
     assert r.status_code == 403
@@ -2185,3 +2189,54 @@ def test_panel_unexpected_exception_returns_502_with_friendly_detail(http_client
                               headers={"X-Admin-Secret": "s3cr3t"})
     assert r.status_code == 502
     assert r.json()["detail"] == "A Eva não conseguiu concluir. Confira a agenda antes de tentar de novo."
+
+
+# ── POST /admin/panel/appointments/edit e /cancel ─────────────────────────────
+
+@pytest.mark.parametrize("path,handler", [
+    ("/admin/panel/appointments/edit", "handle_edit"),
+    ("/admin/panel/appointments/cancel", "handle_cancel"),
+])
+def test_panel_edit_cancel_require_secret(http_client, monkeypatch, path, handler):
+    _set_secret(monkeypatch)
+    with patch(f"app.panel_appointments.{handler}", new_callable=AsyncMock) as mock_h:
+        r = http_client.post(path, json={}, headers={"X-Admin-Secret": "errado"})
+    assert r.status_code == 403
+    mock_h.assert_not_called()
+
+
+@pytest.mark.parametrize("path,handler", [
+    ("/admin/panel/appointments/edit", "handle_edit"),
+    ("/admin/panel/appointments/cancel", "handle_cancel"),
+])
+def test_panel_edit_cancel_pass_status_and_payload(http_client, monkeypatch, path, handler):
+    _set_secret(monkeypatch)
+    with patch(f"app.panel_appointments.{handler}", new_callable=AsyncMock,
+               return_value=(409, {"detail": {"needs_encaixe": True, "reasons": ["x"]}})):
+        r = http_client.post(path, json={"a": 1}, headers={"X-Admin-Secret": "s3cr3t"})
+    assert r.status_code == 409 and r.json()["detail"]["reasons"] == ["x"]
+
+
+def test_panel_edit_input_error_400(http_client, monkeypatch):
+    from app import panel_booking
+    _set_secret(monkeypatch)
+    with patch("app.panel_appointments.handle_edit", new_callable=AsyncMock,
+               side_effect=panel_booking.PanelInputError("nada mudou")):
+        r = http_client.post("/admin/panel/appointments/edit", json={}, headers={"X-Admin-Secret": "s3cr3t"})
+    assert r.status_code == 400 and r.json()["detail"] == "nada mudou"
+
+
+def test_panel_cancel_booking_error_502(http_client, monkeypatch):
+    from app import panel_booking
+    _set_secret(monkeypatch)
+    with patch("app.panel_appointments.handle_cancel", new_callable=AsyncMock,
+               side_effect=panel_booking.BookingError("não foi possível tirar a consulta da agenda; nada foi alterado")):
+        r = http_client.post("/admin/panel/appointments/cancel", json={}, headers={"X-Admin-Secret": "s3cr3t"})
+    assert r.status_code == 502 and "nada foi alterado" in r.json()["detail"]
+
+
+def test_panel_cancel_unexpected_error_friendly_502(http_client, monkeypatch):
+    _set_secret(monkeypatch)
+    with patch("app.panel_appointments.handle_cancel", new_callable=AsyncMock, side_effect=RuntimeError("boom")):
+        r = http_client.post("/admin/panel/appointments/cancel", json={}, headers={"X-Admin-Secret": "s3cr3t"})
+    assert r.status_code == 502 and "Confira a agenda" in r.json()["detail"]

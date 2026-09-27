@@ -495,28 +495,49 @@ async def admin_patch_state(request: Request, x_admin_secret: str | None = Heade
     return result
 
 
-@app.post("/admin/panel/appointments")
-async def admin_panel_appointments(request: Request, x_admin_secret: str | None = Header(default=None)):
-    """Nova consulta criada pela atendente no painel. Ver app/panel_booking.py."""
-    _check_admin_secret(x_admin_secret)
+async def _run_panel(handler, request: Request):
+    """Mapeia os erros dos fluxos do painel: entrada inválida 400, falha de gravação 502,
+    qualquer outra coisa 502 com texto amigável (a atendente precisa saber que nada foi feito)."""
     from fastapi.responses import JSONResponse
     from app import panel_booking
     body = await request.json()
     try:
-        status, payload = await panel_booking.handle(body)
+        status, payload = await handler(body)
     except panel_booking.PanelInputError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
     except panel_booking.BookingError as exc:
         raise HTTPException(status_code=502, detail=str(exc))
     except Exception:
-        # Uma falha inesperada (ex.: Supabase fora do ar dentro do check_slot) não
-        # pode virar 500 opaco — a atendente precisa saber que nada foi gravado.
-        logger.exception("panel appointments: falha inesperada")
+        logger.exception("painel: falha inesperada em %s", request.url.path)
         return JSONResponse(
             status_code=502,
             content={"detail": "A Eva não conseguiu concluir. Confira a agenda antes de tentar de novo."},
         )
     return JSONResponse(status_code=status, content=payload)
+
+
+@app.post("/admin/panel/appointments")
+async def admin_panel_appointments(request: Request, x_admin_secret: str | None = Header(default=None)):
+    """Nova consulta criada pela atendente no painel. Ver app/panel_booking.py."""
+    _check_admin_secret(x_admin_secret)
+    from app import panel_booking
+    return await _run_panel(panel_booking.handle, request)
+
+
+@app.post("/admin/panel/appointments/edit")
+async def admin_panel_appointments_edit(request: Request, x_admin_secret: str | None = Header(default=None)):
+    """Alteração de consulta pelo painel. Ver app/panel_appointments.py."""
+    _check_admin_secret(x_admin_secret)
+    from app import panel_appointments
+    return await _run_panel(panel_appointments.handle_edit, request)
+
+
+@app.post("/admin/panel/appointments/cancel")
+async def admin_panel_appointments_cancel(request: Request, x_admin_secret: str | None = Header(default=None)):
+    """Cancelamento de consulta pelo painel. Ver app/panel_appointments.py."""
+    _check_admin_secret(x_admin_secret)
+    from app import panel_appointments
+    return await _run_panel(panel_appointments.handle_cancel, request)
 
 
 # ── Core message processing ───────────────────────────────────────────────────
