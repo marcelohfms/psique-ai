@@ -1594,6 +1594,49 @@ async def _appt_belongs_to_sender(patient_id: str | None, phone: str) -> bool:
     return patient_id in _pids
 
 
+_ATTENDANT_NOTE_PREFIX = "[Instrução da atendente]:"
+# Quantas mensagens humanas recentes olhar atrás da nota da atendente. A troca
+# proposta pela clínica é respondida pelo paciente em 1-3 mensagens ("Confirmado",
+# "sim"); uma nota mais antiga que isso já não está ligada à troca em curso.
+_CLINIC_NOTE_LOOKBACK_HUMAN_MSGS = 6
+
+
+def _has_recent_attendant_note(state: dict) -> bool:
+    """True se há uma "[Instrução da atendente]" entre as últimas mensagens humanas.
+
+    Valida o initiated_by="clinic" que a Eva passa FORA do silent_mode: quando a
+    atendente/médico propõe uma troca por nota privada, quem confirma depois é o
+    paciente, e a tool roda com silent_mode=False. Sem nota recente na conversa, o
+    "clinic" é ignorado, para o paciente não conseguir se isentar da regra das 24h
+    sozinho (caso Mariana Gadelha, 5581993062020, 27/09/2026)."""
+    seen = 0
+    for m in reversed(state.get("messages") or []):
+        mtype = m.get("type") if isinstance(m, dict) else getattr(m, "type", None)
+        if mtype != "human":
+            continue
+        content = m.get("content") if isinstance(m, dict) else getattr(m, "content", "")
+        if isinstance(content, str) and content.startswith(_ATTENDANT_NOTE_PREFIX):
+            return True
+        seen += 1
+        if seen >= _CLINIC_NOTE_LOOKBACK_HUMAN_MSGS:
+            return False
+    return False
+
+
+def _clinic_swap_confirmed(state: dict, initiated_by: str | None) -> bool:
+    """Fora do silent_mode: o paciente está confirmando uma troca que a clínica
+    propôs (initiated_by="clinic" + nota recente da atendente na conversa)."""
+    return initiated_by == "clinic" and _has_recent_attendant_note(state)
+
+
+_CLINIC_SWAP_HINT = (
+    " EXCEÇÃO: se esta troca de horário foi proposta por \"[Instrução da atendente]\" "
+    "por iniciativa da clínica/médico (e não a pedido do paciente), NÃO cancele nem "
+    "cobre nova taxa — chame esta mesma ferramenta de novo com initiated_by=\"clinic\"; "
+    "a taxa já paga é mantida."
+)
+
+
 @tool
 async def cancel_appointment(
     appointment_id: str,
@@ -1833,7 +1876,9 @@ async def mark_reschedule_in_progress(
       para remarcar); use "clinic" se for por iniciativa da clínica/médico (ex: médico precisou
       ajustar a agenda). Se a nota da atendente não deixar isso claro, NÃO chame esta ferramenta
       ainda — pergunte antes, em nota privada, qual dos dois casos se aplica. Fora do silent_mode
-      (paciente conversando diretamente), não informe este parâmetro.
+      (paciente conversando diretamente), só informe initiated_by="clinic" quando o paciente
+      estiver respondendo a uma troca de horário que a atendente/médico propôs por
+      "[Instrução da atendente]" nesta conversa; nos demais casos, não informe este parâmetro.
     """
     client = await get_supabase()
     phone = config["configurable"]["phone"]
@@ -1884,8 +1929,13 @@ async def mark_reschedule_in_progress(
                 "\"pela clínica\" não conta como remarcação do paciente e não gera cobrança."
             )
         effective_initiated_by = initiated_by
+    elif _clinic_swap_confirmed(state, initiated_by):
+        effective_initiated_by = "clinic"
     else:
         effective_initiated_by = "patient"
+    # Isenção da clínica: nota privada em curso OU paciente confirmando a troca que a
+    # clínica propôs. Não conta como a remarcação do paciente nem recolhe a taxa.
+    clinic_exempt = bool(state.get("silent_mode")) or effective_initiated_by == "clinic"
 
     # Regra das 24h precede a regra do primeiro reagendamento: mesmo sendo a
     # primeira remarcação do paciente, se faltam MENOS de 24h para a consulta e a
@@ -1896,7 +1946,7 @@ async def mark_reschedule_in_progress(
     # (uma consulta 10:00 remarcada às 18:00 do dia anterior — 16h antes — passava
     # como se estivesse no prazo e reaproveitava a taxa: caso Benjamim/Kédma,
     # 5581996535274, 09/09/2026).
-    if not state.get("silent_mode") and appt.data.get("start_time"):
+    if not clinic_exempt and appt.data.get("start_time"):
         fee_paid = bool(appt.data.get("booking_fee_paid_at") or appt.data.get("booking_fee_waived"))
         appt_start = datetime.fromisoformat(appt.data["start_time"]).astimezone(TZ)
         deadline = appt_start - timedelta(hours=24)
@@ -1910,13 +1960,16 @@ async def mark_reschedule_in_progress(
                 "reserva de R$ 100,00 será cobrada para a nova data. Em seguida chame "
                 "get_available_slots e, ao confirmar o novo horário, chame cancel_appointment "
                 "(para esta consulta) e confirm_appointment (para a nova data)."
+                + (_CLINIC_SWAP_HINT if _has_recent_attendant_note(state) else "")
             )
 
     # Política de reagendamento: paciente pode reagendar apenas 1x.
     # A partir do 2º reagendamento iniciado pelo paciente, é necessário
     # solicitar uma nova consulta com nova taxa de reserva.
-    # Reagendamentos iniciados pela atendente/médico (silent_mode) são isentos.
-    if not state.get("silent_mode"):
+    # Reagendamentos iniciados pela atendente/médico (silent_mode ou troca proposta
+    # pela clínica e confirmada pelo paciente) são isentos.
+    patient_reschedule_count = 0
+    if not clinic_exempt:
         phone_clean = phone.replace("@s.whatsapp.net", "")
         # Reagendamentos marcados como iniciativa da clínica (reschedule_initiated_by
         # = "clinic") não contam aqui — eventos antigos sem essa marcação são
@@ -1959,7 +2012,7 @@ async def mark_reschedule_in_progress(
     await log_event("reschedule_requested", phone, {"appointment_id": appointment_id})
 
     first_reschedule_notice = ""
-    if not state.get("silent_mode") and patient_reschedule_count == 0:
+    if not clinic_exempt and patient_reschedule_count == 0:
         first_reschedule_notice = (
             " IMPORTANTE: informe ao paciente que este é o único reagendamento permitido sem "
             "perda da taxa de reserva. A partir de um segundo reagendamento, será necessário "
@@ -2247,6 +2300,7 @@ async def reschedule_appointment(
     modality: str = "",
     confirmed_by_patient: bool = True,
     force_encaixe: bool = False,
+    initiated_by: Literal["patient", "clinic"] | None = None,
 ) -> str:
     """
     Remarca uma consulta existente para um novo horário.
@@ -2266,6 +2320,11 @@ async def reschedule_appointment(
       online e presencial, use change_modality em vez desta ferramenta — reschedule_appointment
       conta como o reagendamento gratuito do paciente (política de 1 remarcação), então usá-la
       só para trocar a modalidade consome esse benefício indevidamente.
+    initiated_by: passe "clinic" quando o paciente estiver confirmando uma troca de horário
+      que a atendente/médico propôs por "[Instrução da atendente]" nesta conversa (ex: "oferte
+      o horário das 14h e, se ela confirmar, realize a troca"). Uma troca da clínica mantém a
+      taxa já paga mesmo a menos de 24h e não conta como a remarcação do paciente. Se o
+      pedido partiu do paciente, não informe este parâmetro.
     """
     from app.google_calendar import update_event
 
@@ -2389,8 +2448,15 @@ async def reschedule_appointment(
     # ainda "scheduled" — em pending_reschedule o mark já validou o prazo e o
     # evento antigo já foi removido do Calendar, então recusar aqui deixaria a
     # consulta sem evento.
+    # Troca proposta pela clínica e confirmada pelo paciente também é isenta: a
+    # nota da atendente roda em silent_mode, mas a confirmação ("Confirmado") chega
+    # como mensagem do paciente. Sem isso a Eva cancelava a consulta paga e cobrava
+    # outra taxa (caso Mariana Gadelha, 5581993062020, 27/09/2026: Dr. Júlio pediu
+    # a troca 16h→14h do mesmo dia).
+    clinic_swap = _clinic_swap_confirmed(state, initiated_by)
     if (
         not state.get("silent_mode")
+        and not clinic_swap
         and not is_pending_reschedule
         and old_dt is not None
         and old_dt != new_start
@@ -2409,6 +2475,7 @@ async def reschedule_appointment(
                 "de reserva de R$ 100,00 para garantir a nova data e, ao confirmar o "
                 "novo horário, chame cancel_appointment (para esta consulta) e "
                 "confirm_appointment (para a nova data)."
+                + (_CLINIC_SWAP_HINT if _has_recent_attendant_note(state) else "")
             )
 
     # Guard: check Google Calendar for conflicts on the NEW slot before writing it.
@@ -2507,6 +2574,8 @@ async def reschedule_appointment(
 
     if effective_modality:
         reschedule_update["modality"] = effective_modality
+    if clinic_swap:
+        reschedule_update["reschedule_initiated_by"] = "clinic"
     await client.from_("appointments").update(reschedule_update).eq("appointment_id", appointment_id).execute()
 
     _weekday_new = _WEEKDAY_LABELS_PT.get(new_start.weekday(), "")
@@ -2539,8 +2608,10 @@ async def reschedule_appointment(
         await log_event("appointment_rescheduled", phone, {
             "appointment_id": appointment_id,
             "new_datetime": new_slot_datetime,
-            "initiated_by": (appt_result.data or {}).get("reschedule_initiated_by")
-                or ("clinic" if state.get("silent_mode") else "patient"),
+            "initiated_by": "clinic" if clinic_swap else (
+                (appt_result.data or {}).get("reschedule_initiated_by")
+                or ("clinic" if state.get("silent_mode") else "patient")
+            ),
             "fee_paid": _fee_paid_now,
         })
 

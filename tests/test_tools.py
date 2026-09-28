@@ -3224,6 +3224,146 @@ async def test_reschedule_appointment_more_than_24h_paid_fee_proceeds():
     assert "booking_fee_paid_at" not in update_data
 
 
+_CLINIC_SWAP_MSGS = [
+    HumanMessage(content="[Instrução da atendente]: Eva, oferte o horário das 14 horas para a paciente. Se ela confirmar, realize a troca."),
+    HumanMessage(content="Confirmado"),
+]
+
+
+def _near_paid_appt():
+    """Consulta de hoje, com taxa paga, a poucas horas — dentro da janela das 24h."""
+    old = (datetime.now(TZ) + timedelta(hours=16)).replace(minute=0, second=0, microsecond=0)
+    return old, {
+        "start_time": old.isoformat(),
+        "patient_id": "user-1",
+        "patients": {"name": "Mariana"},
+        "booking_fee_paid_at": "2026-09-24T13:46:35-03:00",
+        "booking_fee_waived": False,
+        "status": "scheduled",
+    }
+
+
+async def _run_reschedule(state, appt_data, new_slot, **kwargs):
+    from app.graph.tools import reschedule_appointment
+    client, table, execute = _make_supabase_client()
+    execute.return_value = MagicMock(data=appt_data)
+    # Datas relativas a "agora": zera as exceções de agenda (recesso/bloqueio)
+    # para o teste não depender do calendário real do médico.
+    with patch.dict("app.google_calendar.SCHEDULE_EXCEPTIONS", {}, clear=True), \
+         patch("app.graph.tools._get_doctor_calendar_id", new_callable=AsyncMock, return_value="cal123"), \
+         patch("app.google_calendar.update_event", new_callable=AsyncMock) as mock_update, \
+         patch("app.graph.tools.get_supabase", new_callable=AsyncMock, return_value=client), \
+         patch("app.graph.tools.get_users_by_phone", new_callable=AsyncMock, return_value=[{"id": "user-1"}]), \
+         patch("app.graph.tools.log_event", new_callable=AsyncMock) as mock_log, \
+         patch("app.graph.tools._notify_clinic", new_callable=AsyncMock), \
+         patch("app.google_calendar._credentials", return_value=MagicMock()), \
+         patch("googleapiclient.discovery.build", return_value=MagicMock()), \
+         patch("app.google_calendar._get_busy", return_value=[]):
+        result = await reschedule_appointment.coroutine(
+            appointment_id="evt-abc",
+            new_slot_datetime=new_slot.strftime("%Y-%m-%dT%H:%M:%S"),
+            slot_duration_minutes=60,
+            state=state,
+            config=CONFIG,
+            **kwargs,
+        )
+    return result, table, mock_update, mock_log
+
+
+async def test_reschedule_appointment_clinic_swap_within_24h_keeps_fee():
+    """Troca proposta pela clínica por nota privada e confirmada pelo paciente
+    (silent_mode=False na confirmação) não cai na regra das 24h: remarca na mesma
+    linha, preserva a taxa e registra initiated_by=clinic (caso Mariana Gadelha,
+    5581993062020, 27/09/2026: a Eva cancelou a consulta paga e cobrou outra taxa)."""
+    old, appt = _near_paid_appt()
+    result, table, mock_update, mock_log = await _run_reschedule(
+        _make_state(messages=list(_CLINIC_SWAP_MSGS)), appt, old - timedelta(hours=2),
+        initiated_by="clinic",
+    )
+    assert "remarcada" in result.lower()
+    mock_update.assert_awaited_once()
+    update_data = next(
+        c.args[0] for c in table.update.call_args_list
+        if c.args and isinstance(c.args[0], dict) and "start_time" in c.args[0]
+    )
+    assert "booking_fee_paid_at" not in update_data
+    assert update_data["reschedule_initiated_by"] == "clinic"
+    resched = next(c for c in mock_log.call_args_list if c.args and c.args[0] == "appointment_rescheduled")
+    assert resched.args[2]["initiated_by"] == "clinic"
+
+
+async def test_reschedule_appointment_clinic_claim_without_note_still_refuses():
+    """initiated_by="clinic" sem nota recente da atendente é ignorado: o paciente
+    não consegue se isentar da regra das 24h sozinho."""
+    old, appt = _near_paid_appt()
+    result, _, mock_update, _ = await _run_reschedule(
+        _make_state(messages=[HumanMessage(content="quero trocar pra 14h")]), appt,
+        old - timedelta(hours=2), initiated_by="clinic",
+    )
+    assert "INSTRUÇÃO INTERNA" in result
+    assert "nova taxa" in result.lower()
+    assert "EXCEÇÃO" not in result
+    mock_update.assert_not_awaited()
+
+
+async def test_reschedule_appointment_within_24h_with_note_hints_clinic():
+    """Com nota da atendente recente e sem initiated_by, a recusa das 24h avisa a
+    Eva de que troca da clínica deve ser refeita com initiated_by="clinic"."""
+    old, appt = _near_paid_appt()
+    result, _, mock_update, _ = await _run_reschedule(
+        _make_state(messages=list(_CLINIC_SWAP_MSGS)), appt, old - timedelta(hours=2),
+    )
+    assert "INSTRUÇÃO INTERNA" in result
+    assert 'initiated_by="clinic"' in result
+    mock_update.assert_not_awaited()
+
+
+async def test_reschedule_appointment_old_attendant_note_does_not_count():
+    """Uma nota antiga, com várias mensagens do paciente depois, não isenta."""
+    from app.graph.tools import _CLINIC_NOTE_LOOKBACK_HUMAN_MSGS
+    old, appt = _near_paid_appt()
+    msgs = [_CLINIC_SWAP_MSGS[0]] + [
+        HumanMessage(content=f"msg {i}") for i in range(_CLINIC_NOTE_LOOKBACK_HUMAN_MSGS)
+    ]
+    result, _, mock_update, _ = await _run_reschedule(
+        _make_state(messages=msgs), appt, old - timedelta(hours=2), initiated_by="clinic",
+    )
+    assert "nova taxa" in result.lower()
+    mock_update.assert_not_awaited()
+
+
+async def test_mark_reschedule_in_progress_clinic_swap_outside_silent_mode_bypasses_24h():
+    """Mesmo caso pelo mark_reschedule_in_progress: fora do silent_mode, com nota
+    recente da atendente e initiated_by="clinic", não recusa pela regra das 24h e
+    grava reschedule_initiated_by=clinic."""
+    from app.graph.tools import mark_reschedule_in_progress
+    client, table, execute = _make_supabase_client()
+    near_start = (datetime.now(TZ) + timedelta(hours=16)).isoformat()
+    execute.side_effect = [
+        MagicMock(data={
+            "appointment_id": "evt-abc", "status": "scheduled", "patient_id": "user-1",
+            "start_time": near_start, "booking_fee_paid_at": "2026-09-24T13:46:35-03:00",
+            "booking_fee_waived": False,
+        }),
+        MagicMock(data=[]),
+    ]
+    with patch("app.graph.tools.get_supabase", new_callable=AsyncMock, return_value=client), \
+         patch("app.graph.tools.get_users_by_phone", new_callable=AsyncMock, return_value=[{"id": "user-1"}]), \
+         patch("app.graph.tools._resolve_doctor", new_callable=AsyncMock, return_value="julio"), \
+         patch("app.graph.tools._get_doctor_calendar_id", new_callable=AsyncMock, return_value="cal-123"), \
+         patch("app.google_calendar.cancel_event", new_callable=AsyncMock), \
+         patch("app.graph.tools.log_event", new_callable=AsyncMock):
+        result = await mark_reschedule_in_progress.coroutine(
+            appointment_id="evt-abc",
+            state=_make_state(messages=list(_CLINIC_SWAP_MSGS)),
+            config=CONFIG,
+            initiated_by="clinic",
+        )
+    assert "INSTRUÇÃO INTERNA" not in result
+    assert "único reagendamento" not in result.lower()
+    assert table.update.call_args[0][0]["reschedule_initiated_by"] == "clinic"
+
+
 async def test_reschedule_appointment_blocks_when_new_slot_busy():
     """reschedule_appointment deve recusar gravar um novo horário que já está
     ocupado por outro agendamento no Calendar — sem isso, uma oferta desatualizada
