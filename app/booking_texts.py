@@ -48,3 +48,41 @@ def confirmation_text(kind: str, appt_line: str, contact_name: str) -> str:
             f"Esse valor será abatido do total da consulta. Em caso de cancelamento ou remarcação com menos de 24h de antecedência ou ausência sem justificativa, a taxa não é devolvida."
         )
     raise ValueError(f"kind desconhecido: {kind}")
+
+
+def _hello(contact_name: str) -> str:
+    return f"Olá, {contact_name}!" if contact_name else "Olá!"
+
+
+def change_text(initiated_by: str, contact_name: str, old_line: str, new_line: str,
+                new_fee: bool = False) -> str:
+    """Aviso de consulta alterada pelo painel. initiated_by: patient | clinic."""
+    opening = ("A Clínica Psiquê precisou alterar sua consulta." if initiated_by == "clinic"
+               else "Conforme combinado, sua consulta foi alterada.")
+    txt = f"{_hello(contact_name)} {opening}\n\nEra: {old_line}\nAgora: {new_line}"
+    if new_fee:
+        return txt + (
+            "\n\nComo a mudança foi pedida com menos de 24h de antecedência, a taxa de reserva "
+            "anterior não é reaproveitada. Para garantir a nova data, é necessário o pagamento de "
+            f"uma nova taxa de R$ 100,00 em até 2 horas.\n💳 PIX: {CORRECT_PIX_KEY}"
+        )
+    return txt + "\n\nQualquer dúvida, é só responder aqui."
+
+
+_CANCEL_FEE_LINES = {
+    "devolver": "A equipe vai providenciar a devolução da taxa de reserva.",
+    "credito": "O valor da taxa de reserva fica guardado para a próxima consulta. "
+               "Quando quiser remarcar, é só responder aqui.",
+}
+
+
+def cancel_text(initiated_by: str, contact_name: str, lines: list[str], fee_action: str | None) -> str:
+    """Aviso de consulta cancelada pelo painel. fee_action: devolver | credito | reter | None."""
+    plural = len(lines) > 1
+    if initiated_by == "clinic":
+        opening = "A Clínica Psiquê precisou cancelar " + ("suas consultas:" if plural else "sua consulta:")
+    else:
+        opening = "Conforme combinado, " + ("suas consultas foram canceladas:" if plural else "sua consulta foi cancelada:")
+    txt = f"{_hello(contact_name)} {opening}\n" + "\n".join(lines)
+    fee = _CANCEL_FEE_LINES.get(fee_action or "")
+    return txt + (f"\n\n{fee}" if fee else "\n\nSe quiser marcar uma nova data, é só responder aqui.")

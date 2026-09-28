@@ -119,6 +119,26 @@ async def test_check_slot_accepts_utc_datetime_converts_to_recife():
     assert reasons == []
 
 
+@pytest.mark.asyncio
+async def test_check_slot_excludes_appointment_being_edited():
+    client, q = _sb([])
+    with patch("app.panel_booking.get_supabase", new_callable=AsyncMock, return_value=client), \
+         patch("app.panel_booking._calendar_busy", new_callable=AsyncMock,
+               return_value=[{"id": "evt-self", "start": "2026-10-05T09:00:00-03:00"}]):
+        reasons = await pb.check_slot("julio", MON_9, 60, patient_id="p1", exclude_appointment_id="evt-self")
+    assert reasons == []
+    q.neq.assert_called_with("appointment_id", "evt-self")
+
+
+@pytest.mark.asyncio
+async def test_check_slot_without_exclusion_does_not_call_neq():
+    client, q = _sb([])
+    with patch("app.panel_booking.get_supabase", new_callable=AsyncMock, return_value=client), \
+         patch("app.panel_booking._calendar_busy", new_callable=AsyncMock, return_value=[]):
+        await pb.check_slot("julio", MON_9, 60, patient_id="p1")
+    q.neq.assert_not_called()
+
+
 # ── create_appointments ──────────────────────────────────────────────────────
 
 def _req(**kw):
@@ -537,6 +557,37 @@ async def test_send_each_recipient_gets_own_name_in_text():
 
 
 @pytest.mark.asyncio
+async def test_deliver_message_uses_text_for_per_contact():
+    recips = [{"id": "c1", "phone": "5581999998888", "name": "CARLA MENEZES"}]
+    chatbot = MagicMock()
+    chatbot.aget_state = AsyncMock(return_value=MagicMock(values={"stage": "patient_agent"}))
+    chatbot.aupdate_state = AsyncMock()
+    with patch("app.panel_booking.consultation_reminder_contacts", new_callable=AsyncMock, return_value=recips), \
+         patch("app.panel_booking._linked_contacts_with_marker", new_callable=AsyncMock, return_value=[]), \
+         patch("app.panel_booking._window_open", new_callable=AsyncMock, return_value=True), \
+         patch("app.panel_booking.send_text", new_callable=AsyncMock) as mock_send, \
+         patch("app.panel_booking.save_message", new_callable=AsyncMock), \
+         patch("app.graph.graph.chatbot", chatbot):
+        out = await pb.deliver_message("p1", "c1", lambda c: f"oi {pb.contact_first_name(c)}", "Lucas", "julio")
+    assert mock_send.call_args[0][1] == "oi Carla"
+    assert out == {"sent": ["CARLA MENEZES"], "not_delivered": [], "held": []}
+
+
+@pytest.mark.asyncio
+async def test_preview_message_uses_first_recipient():
+    recips = [{"id": "c1", "phone": "5581999998888", "name": "Carla"}]
+    with patch("app.panel_booking.consultation_reminder_contacts", new_callable=AsyncMock, return_value=recips), \
+         patch("app.panel_booking._linked_contacts_with_marker", new_callable=AsyncMock, return_value=[]):
+        out = await pb.preview_message("p1", "c1", lambda c: f"texto para {c['name']}")
+    assert out["text"] == "texto para Carla"
+    assert out["recipients"] == [{"name": "Carla", "phone_hint": "8888"}]
+
+
+def test_contact_first_name_empty():
+    assert pb.contact_first_name({}) == ""
+
+
+@pytest.mark.asyncio
 async def test_notify_clinic_async_tracks_background_task():
     with patch("app.graph.tools._notify_clinic", new_callable=AsyncMock) as mock_notify:
         pb._notify_clinic_async("assunto", "corpo", "5581999998888@s.whatsapp.net")
@@ -731,3 +782,17 @@ async def test_build_request_split_of_rejects_when_part2_already_exists():
             st.enter_context(p)
         with pytest.raises(pb.PanelInputError, match="já foi marcada"):
             await pb.build_request(_br_body(split_of="evtX", first_consultation=True))
+
+
+@pytest.mark.asyncio
+async def test_create_notify_clinic_false_skips_email():
+    client, _ = _sb([])
+    _, mocks = await _run(_req(notify_clinic=False), client)
+    mocks[5].assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_create_notify_clinic_default_emails():
+    client, _ = _sb([])
+    _, mocks = await _run(_req(), client)
+    mocks[5].assert_called_once()

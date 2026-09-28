@@ -615,7 +615,7 @@ def _get_busy(service, calendar_id: str, window_start: datetime, window_end: dat
         )
         if not _is_bot_event:
             continue
-        busy.append({"start": start_raw["dateTime"], "end": end_raw["dateTime"]})
+        busy.append({"id": evt.get("id"), "start": start_raw["dateTime"], "end": end_raw["dateTime"]})
 
     _logger.warning("EVENTS_BUSY calendar=%s window=%s→%s found=%d events=%s",
                     calendar_id, window_start, window_end, len(busy), busy)
@@ -999,8 +999,13 @@ async def update_event(
     modality: str = "",
     patient_email: str = "",
     patient_number: str = "",
+    session_note: str = "",
+    confirmed: bool = False,
 ) -> None:
-    """Patch an existing Google Calendar event with a new start/end time."""
+    """Patch an existing Google Calendar event with a new start/end time.
+
+    `confirmed=True` mantém a marca de confirmação (prefixo ✅ + cor verde), que o
+    patch do título apagaria."""
     new_end = new_start + timedelta(minutes=slot_minutes)
     description = f"Paciente: {patient_name}\nMédico: {doctor_name}"
     if modality:
@@ -1011,11 +1016,17 @@ async def update_event(
         description += f"\nNúmero: {number_clean}"
     if patient_email:
         description += f"\nE-mail: {patient_email}"
-    if is_minor_first:
+    if session_note:
+        description += f"\n\n{session_note}"
+    elif is_minor_first:
         description += "\n\n1ª hora: conversa com os pais/responsáveis\n2ª hora: consulta com o paciente"
 
     modality_label = "Online" if modality == "online" else "Presencial"
     new_summary = f"Consulta — {patient_name} [{modality_label}]"
+    if session_note:
+        new_summary += f" ({session_note})"
+    if confirmed:
+        new_summary = f"{CONFIRMED_PREFIX}{new_summary}"
 
     patch = {
         "summary": new_summary,
@@ -1024,6 +1035,8 @@ async def update_event(
         "description": description,
         "extendedProperties": {"private": {"source": "psique-bot"}},
     }
+    if confirmed:
+        patch["colorId"] = CONFIRMED_COLOR_ID
     creds = _credentials()
     service = build("calendar", "v3", credentials=creds)
     loop = asyncio.get_running_loop()

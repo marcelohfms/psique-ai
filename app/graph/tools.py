@@ -3741,7 +3741,7 @@ async def register_payment(
     now_iso = datetime.now(TZ).isoformat()
     _appt_fields = (
         "appointment_id, start_time, end_time, doctor_id, paid_at, "
-        "booking_fee_paid_at, status, consultation_type, booking_fee_waived"
+        "booking_fee_paid_at, status, consultation_type, booking_fee_waived, is_courtesy"
     )
 
     # No start_time window in the query: a patient may settle the saldo weeks or
@@ -3996,6 +3996,10 @@ async def register_payment(
             custom_price = (_user_cp.data or {}).get("custom_price")
         except Exception:
             pass
+
+    # Cortesia por consulta (painel): vale como preço zero só para esta consulta.
+    if appt_result and appt_result.data and appt_result.data[0].get("is_courtesy"):
+        custom_price = 0
 
     expected = _expected_consultation_amount(
         doctor_key, _age, _consultation_type, pricing_dt, price_override=custom_price

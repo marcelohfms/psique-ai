@@ -1011,3 +1011,66 @@ def test_nova_consulta_eva_unauthorized_returns_503_friendly(client, monkeypatch
                     json={"phone": "5581", "patient_id": "p1", "doctor": "julio", "modality": "online",
                           "parts": [{"start": "2026-10-05T09:00", "minutes": 60}]})
     assert r.status_code == 503
+
+
+# ── Alterar / cancelar consulta ──────────────────────────────────────────────
+
+
+def test_alterar_forwards_with_appointment_id(client, monkeypatch):
+    seen = {}
+    async def fake_post(path, body, timeout=None):
+        seen["path"], seen["body"], seen["timeout"] = path, body, timeout
+        return 200, {"appointment_id": "a1", "warnings": [], "message": {"sent": ["Ana"]}}
+    async def fake_log(t, phone, meta):
+        seen["log"] = t
+    monkeypatch.setattr(eva_client, "post", fake_post)
+    monkeypatch.setattr(attendant_db, "log_event", fake_log)
+    body = {"phone": "5581", "doctor": "julio", "modality": "online", "start": "2026-10-06T09:00",
+            "minutes": 60, "initiated_by": "clinic", "agent": "Maria"}
+    r = client.post("/api/atendente/consulta/a1/alterar", params={"token": "test-token"}, json=body)
+    assert r.status_code == 200
+    assert seen["path"] == "/admin/panel/appointments/edit"
+    assert seen["body"]["appointment_id"] == "a1" and seen["body"]["initiated_by"] == "clinic"
+    assert seen["log"] == "attendant_edit_appointment"
+    assert seen["timeout"] == attendant_routes._BOOKING_TIMEOUT
+
+
+def test_cancelar_forwards_and_logs(client, monkeypatch):
+    seen = {}
+    async def fake_post(path, body, timeout=None):
+        seen["path"], seen["body"] = path, body
+        return 200, {"canceled": ["a1"], "warnings": [], "message": {"sent": []}}
+    async def fake_log(t, phone, meta):
+        seen["log"] = t
+    monkeypatch.setattr(eva_client, "post", fake_post)
+    monkeypatch.setattr(attendant_db, "log_event", fake_log)
+    r = client.post("/api/atendente/consulta/a1/cancelar", params={"token": "test-token"},
+                    json={"phone": "5581", "initiated_by": "patient", "fee_action": "reter"})
+    assert r.status_code == 200
+    assert seen["path"] == "/admin/panel/appointments/cancel"
+    assert seen["body"]["appointment_id"] == "a1" and seen["body"]["fee_action"] == "reter"
+    assert seen["log"] == "attendant_cancel_appointment"
+
+
+def test_cancelar_dry_run_does_not_log(client, monkeypatch):
+    seen = {"log": None}
+    async def fake_post(path, body, timeout=None):
+        seen["timeout"] = timeout
+        return 200, {"fee_paid": False, "message": None}
+    async def fake_log(t, phone, meta):
+        seen["log"] = t
+    monkeypatch.setattr(eva_client, "post", fake_post)
+    monkeypatch.setattr(attendant_db, "log_event", fake_log)
+    r = client.post("/api/atendente/consulta/a1/cancelar", params={"token": "test-token"},
+                    json={"phone": "5581", "dry_run": True})
+    assert r.status_code == 200 and seen["log"] is None
+    assert seen["timeout"] == attendant_routes._DRY_RUN_TIMEOUT
+
+
+def test_cancelar_eva_timeout_504(client, monkeypatch):
+    async def fake_post(path, body, timeout=None):
+        raise eva_client.EvaTimeout("timed out")
+    monkeypatch.setattr(eva_client, "post", fake_post)
+    r = client.post("/api/atendente/consulta/a1/cancelar", params={"token": "test-token"},
+                    json={"phone": "5581", "initiated_by": "clinic"})
+    assert r.status_code == 504 and "Confira a lista" in r.json()["detail"]

@@ -36,3 +36,39 @@ def test_confirmation_text_unknown_kind_raises():
     import pytest
     with pytest.raises(ValueError):
         confirmation_text("xyz", "l", "c")
+
+
+from app.booking_texts import cancel_text, change_text
+from app.graph.prompts import CORRECT_PIX_KEY
+
+
+def test_change_text_clinic():
+    t = change_text("clinic", "Carla", "linha velha", "linha nova")
+    assert t.startswith("Olá, Carla! A Clínica Psiquê precisou alterar sua consulta.")
+    assert "Era: linha velha\nAgora: linha nova" in t
+    assert "taxa" not in t
+
+
+def test_change_text_patient_with_new_fee():
+    t = change_text("patient", "", "a", "b", new_fee=True)
+    assert t.startswith("Olá! Conforme combinado, sua consulta foi alterada.")
+    assert "menos de 24h" in t and "R$ 100,00" in t and CORRECT_PIX_KEY in t
+
+
+def test_cancel_text_refund_and_plural():
+    t = cancel_text("clinic", "Carla", ["l1", "l2"], "devolver")
+    assert t.startswith("Olá, Carla! A Clínica Psiquê precisou cancelar suas consultas:\nl1\nl2")
+    assert "devolução da taxa" in t
+
+
+def test_cancel_text_credit():
+    t = cancel_text("patient", "Carla", ["l1"], "credito")
+    assert "Conforme combinado, sua consulta foi cancelada:\nl1" in t
+    assert "fica guardado para a próxima consulta" in t
+
+
+def test_cancel_text_no_fee_mention_when_retained_or_none():
+    for action in ("reter", None):
+        t = cancel_text("patient", "Carla", ["l1"], action)
+        assert "taxa" not in t
+        assert t.endswith("Se quiser marcar uma nova data, é só responder aqui.")

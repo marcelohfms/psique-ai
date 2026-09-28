@@ -1067,3 +1067,86 @@ def test_grid_violation_exception_window():
     with _patch.dict("app.google_calendar.SCHEDULE_EXCEPTIONS", exc):
         assert grid_violation("julio", _dt(2026, 10, 5, 9, 0, tzinfo=_TZR), 60) == "fora_da_excecao"
         assert grid_violation("julio", _dt(2026, 10, 5, 15, 0, tzinfo=_TZR), 60) is None
+
+
+# ── update_event com observação / _get_busy com id (Painel Parte 3) ─────────
+
+async def test_update_event_session_note_goes_to_summary_and_description():
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+    from app import google_calendar as gc
+    start = datetime(2026, 10, 5, 9, 0, tzinfo=ZoneInfo("America/Recife"))
+    with patch("app.google_calendar._credentials", return_value=MagicMock()), \
+         patch("app.google_calendar.build", return_value=MagicMock()), \
+         patch("app.google_calendar._update_event") as mock_upd:
+        await gc.update_event(
+            calendar_id="cal", event_id="evt1", new_start=start, slot_minutes=60,
+            patient_name="Lucas", doctor_name="Dr. Júlio", modality="presencial",
+            session_note="Domiciliar",
+        )
+    body = mock_upd.call_args[0][3]
+    assert body["summary"] == "Consulta — Lucas [Presencial] (Domiciliar)"
+    assert body["description"].endswith("\n\nDomiciliar")
+    assert "1ª hora" not in body["description"]
+
+
+async def test_update_event_without_note_keeps_old_summary():
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+    from app import google_calendar as gc
+    start = datetime(2026, 10, 5, 9, 0, tzinfo=ZoneInfo("America/Recife"))
+    with patch("app.google_calendar._credentials", return_value=MagicMock()), \
+         patch("app.google_calendar.build", return_value=MagicMock()), \
+         patch("app.google_calendar._update_event") as mock_upd:
+        await gc.update_event(
+            calendar_id="cal", event_id="evt1", new_start=start, slot_minutes=60,
+            patient_name="Lucas", doctor_name="Dr. Júlio", modality="online",
+        )
+    assert mock_upd.call_args[0][3]["summary"] == "Consulta — Lucas [Online]"
+
+
+def test_get_busy_includes_event_id():
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+    from app.google_calendar import _get_busy
+    tz = ZoneInfo("America/Recife")
+    service = MagicMock()
+    service.events.return_value.list.return_value.execute.return_value = {"items": [{
+        "id": "evt9", "summary": "Consulta — Ana [Online]",
+        "start": {"dateTime": "2026-10-05T09:00:00-03:00"},
+        "end": {"dateTime": "2026-10-05T10:00:00-03:00"},
+    }]}
+    busy = _get_busy(service, "cal", datetime(2026, 10, 5, 8, tzinfo=tz), datetime(2026, 10, 5, 12, tzinfo=tz))
+    assert busy == [{"id": "evt9", "start": "2026-10-05T09:00:00-03:00", "end": "2026-10-05T10:00:00-03:00"}]
+
+
+async def test_update_event_confirmed_keeps_mark_and_color():
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+    from app import google_calendar as gc
+    start = datetime(2026, 10, 5, 9, 0, tzinfo=ZoneInfo("America/Recife"))
+    with patch("app.google_calendar._credentials", return_value=MagicMock()), \
+         patch("app.google_calendar.build", return_value=MagicMock()), \
+         patch("app.google_calendar._update_event") as mock_upd:
+        await gc.update_event(
+            calendar_id="cal", event_id="evt1", new_start=start, slot_minutes=60,
+            patient_name="Lucas", doctor_name="Dr. Júlio", modality="online", confirmed=True,
+        )
+    body = mock_upd.call_args[0][3]
+    assert body["summary"] == f"{gc.CONFIRMED_PREFIX}Consulta — Lucas [Online]"
+    assert body["colorId"] == gc.CONFIRMED_COLOR_ID
+
+
+async def test_update_event_not_confirmed_has_no_color():
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+    from app import google_calendar as gc
+    start = datetime(2026, 10, 5, 9, 0, tzinfo=ZoneInfo("America/Recife"))
+    with patch("app.google_calendar._credentials", return_value=MagicMock()), \
+         patch("app.google_calendar.build", return_value=MagicMock()), \
+         patch("app.google_calendar._update_event") as mock_upd:
+        await gc.update_event(
+            calendar_id="cal", event_id="evt1", new_start=start, slot_minutes=60,
+            patient_name="Lucas", doctor_name="Dr. Júlio", modality="online",
+        )
+    assert "colorId" not in mock_upd.call_args[0][3]

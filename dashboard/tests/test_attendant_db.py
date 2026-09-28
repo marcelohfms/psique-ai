@@ -809,6 +809,18 @@ async def test_list_consultas_pending_part2_picks_most_recent_part1(patched_clie
     assert out["pending_part2"] == "new"
 
 
+async def test_list_consultas_billing(patched_client, fake_client):
+    base = {"patient_id": "p1", "status": "scheduled", "doctor_id": JULIO,
+            "start_time": "2099-10-05T12:00:00+00:00", "end_time": "2099-10-05T13:00:00+00:00"}
+    fake_client.store["appointments"] = [
+        {**base, "appointment_id": "a1", "is_courtesy": True, "booking_fee_waived": True},
+        {**base, "appointment_id": "a2", "is_courtesy": False, "booking_fee_waived": True},
+        {**base, "appointment_id": "a3"},
+    ]
+    out = await attendant_db.list_consultas("p1")
+    assert [a["billing"] for a in out["appointments"]] == ["cortesia", "taxa_isenta", "normal"]
+
+
 async def test_set_first_consultation(patched_client, fake_client):
     fake_client.store["appointments"] = [{"appointment_id": "a1", "consultation_type": None}]
     await attendant_db.set_first_consultation("a1", True)

@@ -459,15 +459,14 @@ _DRY_RUN_TIMEOUT = 20.0
 _BOOKING_TIMEOUT = 60.0
 
 
-@router.post("/consulta/nova")
-async def nova_consulta(body: NewAppointmentBody, _: None = Depends(verify_token)):
-    await _assert_patient_scope(body.phone, body.patient_id)
-    timeout = _DRY_RUN_TIMEOUT if body.dry_run else _BOOKING_TIMEOUT
+async def _forward_to_eva(path: str, payload: dict, dry_run: bool) -> tuple[int, dict]:
+    """Chama a Eva e traduz as falhas para a atendente. Em dry_run nada é gravado,
+    então timeout vira "nada foi alterado"; fora dele, a Eva pode ter concluído."""
+    timeout = _DRY_RUN_TIMEOUT if dry_run else _BOOKING_TIMEOUT
     try:
-        status_code, payload = await eva_client.post(
-            "/admin/panel/appointments", body.model_dump(), timeout=timeout)
+        status_code, body = await eva_client.post(path, payload, timeout=timeout)
     except eva_client.EvaTimeout:
-        if body.dry_run:
+        if dry_run:
             raise HTTPException(status_code=503, detail="A Eva não respondeu. Nada foi alterado.")
         raise HTTPException(
             status_code=504,
@@ -476,9 +475,67 @@ async def nova_consulta(body: NewAppointmentBody, _: None = Depends(verify_token
         raise HTTPException(status_code=503, detail="A Eva não respondeu. Nada foi alterado.")
     if status_code in (401, 403):
         raise HTTPException(status_code=503, detail="Painel sem acesso à Eva (configuração). Nada foi alterado.")
+    return status_code, body
+
+
+@router.post("/consulta/nova")
+async def nova_consulta(body: NewAppointmentBody, _: None = Depends(verify_token)):
+    await _assert_patient_scope(body.phone, body.patient_id)
+    status_code, payload = await _forward_to_eva("/admin/panel/appointments", body.model_dump(), body.dry_run)
     if status_code == 200 and not body.dry_run:
         await attendant_db.log_event("attendant_new_appointment", body.phone, {
             "patient_id": body.patient_id, "agent": body.agent, "encaixe": body.encaixe_confirmed,
             "appointments": [a.get("appointment_id") for a in payload.get("appointments", [])],
         })
     return JSONResponse(status_code=status_code, content=payload)
+
+
+class EditAppointmentBody(BaseModel):
+    phone: str
+    doctor: str
+    modality: str
+    start: str
+    minutes: int
+    session_note: str = Field(default="", max_length=80)
+    first_consultation: bool = False
+    billing: str = "normal"
+    initiated_by: str | None = None
+    encaixe_confirmed: bool = False
+    dry_run: bool = False
+    agent: str = Field(default="", max_length=80)
+
+
+class CancelAppointmentBody(BaseModel):
+    phone: str
+    initiated_by: str | None = None
+    fee_action: str | None = None
+    reason: str = Field(default="", max_length=200)
+    both_parts: bool = False
+    dry_run: bool = False
+    agent: str = Field(default="", max_length=80)
+
+
+@router.post("/consulta/{appointment_id}/alterar")
+async def alterar_consulta(appointment_id: str, body: EditAppointmentBody, _: None = Depends(verify_token)):
+    await _assert_appointment_scope(body.phone, appointment_id)
+    payload = {**body.model_dump(), "appointment_id": appointment_id}
+    status_code, resp = await _forward_to_eva("/admin/panel/appointments/edit", payload, body.dry_run)
+    if status_code == 200 and not body.dry_run:
+        await attendant_db.log_event("attendant_edit_appointment", body.phone, {
+            "appointment_id": appointment_id, "new_appointment_id": resp.get("appointment_id"),
+            "agent": body.agent, "encaixe": body.encaixe_confirmed, "initiated_by": body.initiated_by,
+        })
+    return JSONResponse(status_code=status_code, content=resp)
+
+
+@router.post("/consulta/{appointment_id}/cancelar")
+async def cancelar_consulta(appointment_id: str, body: CancelAppointmentBody, _: None = Depends(verify_token)):
+    await _assert_appointment_scope(body.phone, appointment_id)
+    payload = {**body.model_dump(), "appointment_id": appointment_id}
+    status_code, resp = await _forward_to_eva("/admin/panel/appointments/cancel", payload, body.dry_run)
+    if status_code == 200 and not body.dry_run:
+        await attendant_db.log_event("attendant_cancel_appointment", body.phone, {
+            "appointment_id": appointment_id, "canceled": resp.get("canceled", []), "agent": body.agent,
+            "initiated_by": body.initiated_by, "fee_action": body.fee_action,
+        })
+    return JSONResponse(status_code=status_code, content=resp)
