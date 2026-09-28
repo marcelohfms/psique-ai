@@ -39,11 +39,15 @@
   .eva button:focus-visible, .eva input:focus-visible, .eva select:focus-visible, .eva textarea:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
   .eva .av { width: 36px; height: 36px; border-radius: 10px; background: var(--accent-soft); color: var(--accent);
              font-size: 12px; font-weight: 600; display: inline-flex; align-items: center; justify-content: center; flex-shrink: 0; }
-  .eva .pbox { width: 420px; max-width: 100%; height: 52px; padding: 0 14px 0 8px; border-radius: 12px; border: 1px solid var(--line);
+  .eva .pbox { width: 420px; max-width: 100%; min-width: 0; min-height: 56px; padding: 8px 14px 8px 10px; border-radius: 12px; border: 1px solid var(--line);
                background: var(--surface); display: flex; align-items: center; gap: 12px; text-align: left; cursor: pointer; color: var(--ink); }
+  .eva .pbox:hover { border-color: var(--muted); }
+  .eva .pbox-name { font-size: 15px; font-weight: 500; line-height: 1.3; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .eva .pbox-sub { font-size: 12px; line-height: 1.3; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .eva .pbox[aria-expanded="true"] { border-color: var(--accent); }
-  .eva .plus { width: 52px; height: 52px; border-radius: 12px; border: 1px dashed var(--accent); background: transparent;
-               color: var(--accent); display: inline-flex; align-items: center; justify-content: center; cursor: pointer; }
+  .eva .plus { width: 56px; align-self: stretch; flex-shrink: 0; border-radius: 12px; border: 1px solid var(--line); background: transparent;
+               color: var(--muted); transition: color .18s ease, border-color .18s ease; display: inline-flex; align-items: center; justify-content: center; cursor: pointer; }
+  .eva .plus:hover { color: var(--accent); border-color: var(--accent); }
   .eva .dropdown { position: absolute; top: 58px; left: 0; width: 420px; max-width: 100%; margin: 0; padding: 6px;
                    z-index: 20; list-style: none; box-shadow: 0 16px 36px rgba(66,66,74,.14); }
   .eva .opt { display: flex; align-items: center; gap: 4px; border-radius: 10px; }
@@ -120,7 +124,7 @@
       <div class="flex items-start gap-4">
         <div id="contact-view" class="flex-1 flex flex-col gap-1">
           <div class="flex items-center gap-1">
-            <h1 id="contact-name" class="serif" style="font-size: 34px; line-height: 1.05; margin: 0"></h1>
+            <h1 id="contact-name" class="serif" style="font-size: clamp(26px, 6vw, 34px); line-height: 1.1; margin: 0"></h1>
             <button id="contact-edit-btn" type="button" class="ibtn" aria-label="Editar nome e CPF do contato">
               <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 20h4L19 9l-4-4L4 16z"/><path d="m13.5 6.5 4 4"/></svg>
             </button>
@@ -144,11 +148,11 @@
       <div class="flex items-center gap-2 relative">
         <button id="patient-box" type="button" class="pbox" aria-expanded="false" aria-controls="patient-list">
           <span id="pbox-av" class="av"></span>
-          <span class="flex-1 flex flex-col" style="gap: 2px">
-            <span class="cap" style="font-size: 10px">Paciente</span>
-            <span id="pbox-name" style="font-size: 15px; font-weight: 500"></span>
+          <span class="flex-1 flex flex-col" style="min-width: 0">
+            <span id="pbox-name" class="pbox-name"></span>
+            <span id="pbox-sub" class="pbox-sub"></span>
           </span>
-          <span id="pbox-count" class="num text-xs" style="color: var(--muted)"></span>
+          <span id="pbox-count" class="num text-xs whitespace-nowrap hidden sm:inline" style="color: var(--muted)"></span>
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="color: var(--muted)"><path d="m6 9 6 6 6-6"/></svg>
         </button>
         <button id="link-open" type="button" class="plus" aria-label="Vincular outro paciente a este número">
@@ -166,7 +170,7 @@
     </nav>
 
     <section id="tab-consultas" class="tab-panel flex flex-col gap-5">
-      <div id="consultas-head" class="flex items-end gap-4 flex-wrap"></div>
+      <div id="consultas-head" class="flex items-center gap-4 flex-wrap"></div>
       <ol id="consultas-list" class="timeline" aria-label="Consultas agendadas"></ol>
       <p id="consultas-empty" class="hidden text-sm" style="color: var(--muted)">Nenhuma consulta marcada.</p>
     </section>
@@ -555,9 +559,9 @@ function selectPatient(pid) {
   CURRENT_PID = pid;
   const p = PATIENTS.find((x) => x.id === pid);
   $("pbox-av").textContent = p ? initials(p.name) : "+";
-  $("pbox-name").innerHTML = p
-    ? `${escapeHtml(p.name)} <span style="font-weight:400;color:var(--muted)">· ${escapeHtml(relLabel(p.link))}</span>`
-    : `<span style="color:var(--muted)">Nenhum paciente vinculado</span>`;
+  $("pbox-name").textContent = p ? p.name : "Nenhum paciente vinculado";
+  $("pbox-name").style.color = p ? "" : "var(--muted)";
+  $("pbox-sub").textContent = p ? `Paciente · ${relLabel(p.link)}` : "Use o + para vincular";
   $("pbox-count").textContent = PATIENTS.length > 1 ? `${PATIENTS.length} vinculados` : "";
   renderPatientList();
   // Limpa a aba Consultas na troca, para não mostrar as consultas do paciente anterior.
@@ -681,12 +685,9 @@ function renderConsultasHead() {
   const n = CONSULTAS.appointments.length;
   const meta = [age !== null ? `${age} anos` : "", doc, n ? `${n} marcada${n > 1 ? "s" : ""}` : ""].filter(Boolean);
   $("consultas-head").innerHTML = `
-    <div class="flex-1 flex flex-col gap-1" style="min-width: 0">
-      <div class="flex items-center gap-2 flex-wrap">
-        <h2 class="serif" style="font-size: 28px; line-height: 1.1; margin: 0">${escapeHtml(p.name || "")}</h2>
-        ${age !== null && age < 18 ? '<span class="tag tag-kid">Infantil</span>' : ""}
-      </div>
+    <div class="flex-1 flex items-center gap-2 flex-wrap" style="min-width: 0">
       <span class="text-sm num" style="color: var(--muted)">${meta.map(escapeHtml).join(" · ")}</span>
+      ${age !== null && age < 18 ? '<span class="tag tag-kid">Infantil</span>' : ""}
     </div>
     <button id="appt-new" type="button" class="btn btn-primary">Nova consulta</button>`;
   $("appt-new").onclick = () => openApptSheet(null);
