@@ -85,6 +85,7 @@
               font-size: 11px; font-weight: 500; background: var(--soft); color: var(--muted); white-space: nowrap; }
   .eva .tag-kid { background: var(--accent-soft); color: var(--accent-dk); }
   .eva .tag-info { background: var(--info-soft); color: var(--info); }
+  .eva .tag-warn { background: var(--warn-soft); color: var(--warn); }
   .eva .timeline { position: relative; display: flex; flex-direction: column; gap: 14px; padding-left: 0; margin: 0; list-style: none; }
   .eva .tl-row { display: grid; grid-template-columns: 56px 18px minmax(0, 1fr); gap: 10px; align-items: start; }
   .eva .tl-date { text-align: right; line-height: 1; padding-top: 12px; }
@@ -114,6 +115,14 @@
   .eva .notice-warn { background: var(--warn-soft); color: var(--warn); }
   .eva .link { background: none; border: 0; padding: 0; min-height: 32px; font: inherit; font-size: 13px; color: var(--accent); cursor: pointer; }
   .eva .link:hover { text-decoration: underline; }
+  .eva .chk { display: flex; align-items: center; gap: 10px; min-height: 32px; font-size: 14px; cursor: pointer; }
+  .eva .chk input { width: 16px; height: 16px; accent-color: var(--accent); flex-shrink: 0; }
+  .eva .fld { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+  .eva .money { position: relative; }
+  .eva .money::before { content: "R$"; position: absolute; left: 12px; top: 50%; transform: translateY(-50%); font-size: 13px; color: var(--muted); pointer-events: none; }
+  .eva .money .inp { padding-left: 34px; }
+  .eva .btn-ghost-danger { color: var(--danger); border-color: var(--line); }
+  .eva .btn-ghost-danger:hover { border-color: var(--danger); }
 </style>
 
 <div class="eva min-h-screen">
@@ -175,17 +184,17 @@
       <p id="consultas-empty" class="hidden text-sm" style="color: var(--muted)">Nenhuma consulta marcada.</p>
     </section>
 
-    <section id="tab-financeiro" class="tab-panel hidden space-y-4">
-      <div id="pagamentos-box" class="hidden">
-        <h2 class="serif" style="font-size: 22px; margin: 0 0 8px">Pendências</h2>
-        <div id="pagamentos-list" class="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3"></div>
+    <section id="tab-financeiro" class="tab-panel hidden flex flex-col gap-5">
+      <div id="pagamentos-box" class="hidden flex flex-col gap-3">
+        <span class="cap">Pagamentos pendentes</span>
+        <div id="pagamentos-list" class="grid grid-cols-1 md:grid-cols-2 gap-3"></div>
       </div>
       <div id="financeiro-forms"></div>
     </section>
 
-    <section id="tab-cadastro" class="tab-panel hidden space-y-4">
+    <section id="tab-cadastro" class="tab-panel hidden flex flex-col gap-5">
       <div id="vinculo-card"></div>
-      <div id="forms-paciente"></div>
+      <div id="forms-paciente" class="flex flex-col gap-5"></div>
     </section>
 
     <section id="tab-reset" class="tab-panel hidden">
@@ -999,7 +1008,7 @@ async function loadPagamentos() {
   if (seq !== PAG_SEQ) return;
   box.classList.remove("hidden");
   if (!pendencias.length) {
-    list.innerHTML = `<p class="text-sm text-gray-400 dark:text-gray-500">Nenhum pagamento pendente.</p>`;
+    list.innerHTML = `<p class="text-sm" style="color: var(--muted)">Nenhum pagamento pendente.</p>`;
     return;
   }
   list.innerHTML = pendencias.map(pagamentoCard).join("");
@@ -1009,43 +1018,48 @@ function pagamentoCard(p) {
   const tipoLabel = p.tipo === "taxa"
     ? "Taxa de reserva"
     : (p.realizada === false ? "Consulta (antecipado)" : "Consulta");
-  const badgeClass = p.tipo === "taxa"
-    ? "bg-green-100 text-green-700 dark:bg-green-900 dark:text-green-200"
-    : (p.realizada === false
-        ? "bg-amber-100 text-amber-700 dark:bg-amber-900 dark:text-amber-200"
-        : "bg-blue-100 text-blue-700 dark:bg-blue-900 dark:text-blue-200");
+  const tagClass = p.tipo === "taxa" ? "tag tag-kid" : (p.realizada === false ? "tag tag-warn" : "tag tag-info");
   const isentarBtn = p.tipo === "taxa"
-    ? `<button onclick="isentarTaxa(this)" class="bg-gray-500 hover:bg-gray-600 text-white text-xs px-3 py-1.5 rounded">Isentar taxa</button>`
+    ? `<button type="button" onclick="isentarTaxa(this)" class="btn">Isentar taxa</button>`
     : "";
   const aviso = p.realizada === false
-    ? `<div class="text-xs text-amber-600 dark:text-amber-400 mb-2">Consulta ainda não realizada — pagamento antecipado, opcional.</div>`
+    ? `<p class="notice notice-warn" style="padding: 8px 12px; font-size: 12px">Consulta ainda não realizada. Pagamento antecipado, opcional.</p>`
     : "";
-  return `<div class="bg-white dark:bg-gray-800 rounded-lg shadow p-3" data-appt="${escapeHtml(p.appointment_id)}" data-tipo="${escapeHtml(p.tipo)}"
+  return `<div class="card p-4 flex flex-col gap-3" data-appt="${escapeHtml(p.appointment_id)}" data-tipo="${escapeHtml(p.tipo)}"
        data-paciente="${escapeHtml(p.paciente)}" data-medico="${escapeHtml(p.medico)}" data-data-hora="${escapeHtml(p.data_hora)}" data-phone="${escapeHtml(p.phone)}"
        data-patient-id="${escapeHtml(p.patient_id)}">
-    <div class="flex justify-between items-start mb-1">
-      <span class="text-sm font-medium text-gray-700 dark:text-gray-100">${escapeHtml(p.paciente)}</span>
-      <span class="text-xs px-2 py-0.5 rounded-full ${badgeClass}">${tipoLabel}</span>
+    <div class="flex items-start gap-2">
+      <div class="flex-1 flex flex-col gap-1" style="min-width: 0">
+        <span class="font-medium" style="font-size: 15px">${escapeHtml(p.paciente)}</span>
+        <span class="text-sm num" style="color: var(--muted)">${escapeHtml(p.medico)} · ${escapeHtml(p.data_hora)}</span>
+      </div>
+      <span class="${tagClass}">${tipoLabel}</span>
     </div>
-    <div class="text-xs text-gray-500 dark:text-gray-400 mb-2">${escapeHtml(p.medico)} · ${escapeHtml(p.data_hora)}</div>
     ${aviso}
-    <div class="flex items-center gap-2 flex-wrap">
-      <input type="number" min="0" value="${p.valor}" class="valor-input w-20 border border-gray-300 dark:border-gray-600 dark:bg-gray-700 dark:text-gray-100 rounded px-2 py-1 text-sm">
-      <select class="forma-input border border-gray-300 dark:border-gray-600 dark:bg-gray-700 dark:text-gray-100 rounded px-2 py-1 text-sm">
-        <option value="PIX">PIX</option>
-        <option value="cartao_credito">Cartão de crédito</option>
-        <option value="cartao_debito">Cartão de débito</option>
-        <option value="dinheiro">Dinheiro</option>
-      </select>
-      <label class="comprovante-label text-xs text-gray-500 dark:text-gray-400 cursor-pointer underline">
+    <div class="grid gap-2" style="grid-template-columns: minmax(0, 1fr) minmax(0, 1.4fr)">
+      <label class="fld"><span class="cap">Valor</span>
+        <span class="money"><input type="number" min="0" value="${escapeHtml(p.valor)}" class="valor-input inp num"></span></label>
+      <label class="fld"><span class="cap">Forma</span>
+        <select class="forma-input inp">
+          <option value="PIX">PIX</option>
+          <option value="cartao_credito">Cartão de crédito</option>
+          <option value="cartao_debito">Cartão de débito</option>
+          <option value="dinheiro">Dinheiro</option>
+        </select></label>
+    </div>
+    <div class="flex items-center gap-2 flex-wrap" style="min-width: 0">
+      <label class="link comprovante-label inline-flex items-center gap-1" style="cursor: pointer">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m21 11-8.5 8.5a5 5 0 0 1-7-7L14 4a3.5 3.5 0 0 1 5 5l-8.5 8.5a2 2 0 0 1-3-3L15 7"/></svg>
         Anexar comprovante
         <input type="file" accept="image/*,.pdf" class="comprovante-input hidden">
       </label>
-      <button onclick="marcarPago(this)" class="bg-wa-green hover:bg-wa-green-dk text-white text-xs px-3 py-1.5 rounded ml-auto">Marcar pago</button>
-      <button onclick="marcarNoShowPag(this)" class="bg-gray-200 hover:bg-red-100 dark:bg-gray-700 dark:hover:bg-red-900 text-gray-700 hover:text-red-700 dark:text-gray-200 dark:hover:text-red-300 text-xs px-3 py-1.5 rounded">Não compareceu</button>
-      ${isentarBtn}
+      <span class="comprovante-nome text-xs" style="color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0"></span>
     </div>
-    <div class="comprovante-nome text-xs text-gray-400 dark:text-gray-500 mt-1"></div>
+    <div class="flex items-center gap-2 flex-wrap pt-3" style="border-top: 1px solid var(--soft)">
+      <button type="button" onclick="marcarPago(this)" class="btn btn-primary">Marcar pago</button>
+      ${isentarBtn}
+      <button type="button" onclick="marcarNoShowPag(this)" class="btn btn-ghost-danger" style="margin-left: auto">Não compareceu</button>
+    </div>
   </div>`;
 }
 
@@ -1123,22 +1137,16 @@ async function isentarTaxa(btn) {
 // ── 4. Renderizar formulários ───────────────────────────────────────────────
 function field(label, id, value, type = "text") {
   const v = value == null ? "" : value;
-  return `<div class="mb-2">
-    <label class="block text-xs uppercase text-gray-500 dark:text-gray-400 mb-0.5">${label}</label>
-    <input id="${id}" type="${type}" value="${String(v).replace(/"/g, "&quot;")}"
-      class="w-full border border-gray-300 dark:border-gray-600 dark:bg-gray-700 dark:text-gray-100 rounded px-2 py-1 text-sm">
-  </div>`;
+  return `<label class="fld"><span class="cap">${label}</span>
+    <input id="${id}" type="${type}" value="${escapeHtml(v)}" class="inp${type === "number" ? " num" : ""}"></label>`;
 }
 function checkbox(label, id, checked) {
-  return `<label class="flex items-center gap-2 text-sm mb-2 text-gray-700 dark:text-gray-200">
-    <input id="${id}" type="checkbox" ${checked ? "checked" : ""}> ${label}
-  </label>`;
+  return `<label class="chk"><input id="${id}" type="checkbox" ${checked ? "checked" : ""}> ${label}</label>`;
 }
 function select(label, id, value, options) {
   const opts = options.map(([v, t]) =>
     `<option value="${v}" ${String(value) === String(v) ? "selected" : ""}>${t}</option>`).join("");
-  return `<div class="mb-2"><label class="block text-xs uppercase text-gray-500 dark:text-gray-400 mb-0.5">${label}</label>
-    <select id="${id}" class="w-full border border-gray-300 dark:border-gray-600 dark:bg-gray-700 dark:text-gray-100 rounded px-2 py-1 text-sm">${opts}</select></div>`;
+  return `<label class="fld"><span class="cap">${label}</span><select id="${id}" class="inp">${opts}</select></label>`;
 }
 
 const DOCTORS = [["", "—"],
@@ -1151,37 +1159,31 @@ const RETURN_LABELS = {
 };
 
 function returnBlock(pid, rr) {
-  const wrap = (inner, accent) => `<div class="mt-2 rounded-md border ${accent ? "border-teal-300 bg-teal-50 dark:border-teal-700 dark:bg-teal-900/30" : "border-gray-200 dark:border-gray-700"} p-3">
-    <div class="text-xs uppercase ${accent ? "text-teal-700 dark:text-teal-300" : "text-gray-400 dark:text-gray-500"} mb-1">Data de retorno</div>${inner}</div>`;
+  const wrap = (inner) => `<section class="card p-4 flex flex-col gap-3"><span class="cap">Data de retorno</span>${inner}</section>`;
   if (!rr) {
-    return wrap(`<div class="text-sm text-gray-500 dark:text-gray-400">— <span class="text-xs text-gray-400 dark:text-gray-500">(nenhum retorno classificado ainda)</span></div>`, false);
+    return wrap(`<p class="text-sm" style="color: var(--muted)">Nenhum retorno classificado ainda.</p>`);
   }
   if (rr.return_interval === "alta") {
-    return wrap(`<div class="text-sm text-gray-500 dark:text-gray-400">— <span class="text-xs">paciente recebeu alta</span></div>`, false);
+    return wrap(`<p class="text-sm" style="color: var(--muted)">Paciente recebeu alta.</p>`);
   }
   const label = RETURN_LABELS[rr.return_interval] || rr.return_interval || "";
   const dateVal = rr.next_return_date || "";
-  const nota = label ? `<span class="text-xs text-gray-500 dark:text-gray-400">informado pela médica: retorno em ${escapeHtml(label)}</span>` : "";
-  return wrap(`<div class="flex items-center gap-2 flex-wrap">
-    <input id="p_return_date" type="date" value="${escapeHtml(dateVal)}" class="border border-gray-300 dark:border-gray-600 dark:bg-gray-700 dark:text-gray-100 rounded px-2 py-1 text-sm">
-    <button onclick="saveRetorno('${pid}')" class="bg-teal-600 hover:bg-teal-700 text-white text-xs px-3 py-1.5 rounded">Salvar retorno</button>
-    ${nota}
-  </div>`, true);
+  const nota = label ? `<p class="text-sm" style="color: var(--muted)">Informado pela médica: retorno em ${escapeHtml(label)}.</p>` : "";
+  return wrap(`${nota}<div class="flex items-center gap-2 flex-wrap">
+    <input id="p_return_date" type="date" value="${escapeHtml(dateVal)}" class="inp num" style="width: auto">
+    <button type="button" onclick="saveRetorno('${pid}')" class="btn">Salvar retorno</button>
+  </div>`);
 }
 
 function evaBlock(pid, off) {
-  if (off) {
-    return `<div class="mt-3 rounded-md border border-red-300 bg-red-50 dark:border-red-700 dark:bg-red-900/30 p-3 flex items-center justify-between gap-3">
-      <div>
-        <div class="text-sm font-semibold text-red-700 dark:text-red-300">🔕 Eva desligada</div>
-        <div class="text-xs text-red-600 dark:text-red-400">sem lembretes e sem respostas</div>
-      </div>
-      <button onclick="setEva('${pid}', false)" class="bg-gray-600 hover:bg-gray-700 text-white text-xs px-3 py-1.5 rounded whitespace-nowrap">Religar Eva</button>
-    </div>`;
-  }
-  return `<div class="mt-3">
-    <button onclick="setEva('${pid}', true)" class="bg-red-600 hover:bg-red-700 text-white text-xs px-3 py-1.5 rounded">Desligar Eva</button>
-  </div>`;
+  const text = off
+    ? `<span class="font-medium" style="color: var(--danger)">Eva desligada</span><span class="text-sm" style="color: var(--muted)">Sem lembretes e sem respostas para este paciente.</span>`
+    : `<span class="font-medium">Eva ativa</span><span class="text-sm" style="color: var(--muted)">Desligar para de mandar lembretes e de responder.</span>`;
+  const btn = off
+    ? `<button type="button" onclick="setEva('${pid}', false)" class="btn whitespace-nowrap">Religar Eva</button>`
+    : `<button type="button" onclick="setEva('${pid}', true)" class="btn btn-ghost-danger whitespace-nowrap">Desligar Eva</button>`;
+  return `<section class="card p-4 flex items-center gap-4 flex-wrap"${off ? ' style="border-color: var(--danger)"' : ""}>
+    <div class="flex-1 flex flex-col gap-1" style="min-width: 200px">${text}</div>${btn}</section>`;
 }
 // ── 5. Salvar ────────────────────────────────────────────────────────────────
 async function post(url, body) {
@@ -1234,35 +1236,38 @@ function renderForms(patient, returnReminder, evaOff) {
     $("financeiro-forms").innerHTML = "";
     return;
   }
-  $("forms-paciente").innerHTML = `<section class="bg-white dark:bg-gray-800 rounded-lg shadow p-4" data-pid="${patient.id}">
-      <h2 class="font-medium text-gray-700 dark:text-gray-100 mb-2">Ficha</h2>
-      <div class="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-3">
+  $("forms-paciente").innerHTML = `<section class="card p-4 flex flex-col gap-4" data-pid="${patient.id}">
+      <span class="cap">Ficha do paciente</span>
+      <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
         ${field("Nome", "p_name", patient.name)}
-        ${field("Nome Social", "p_social_name", patient.social_name)}
+        ${field("Nome social", "p_social_name", patient.social_name)}
         ${field("Nascimento (dd/mm/aaaa)", "p_birth", patient.birth_date)}
         ${field("CPF", "p_cpf", patient.patient_cpf)}
         ${field("E-mail", "p_email", patient.email)}
         ${select("Médico", "p_doctor", patient.doctor_id || "", DOCTORS)}
-        ${select("Modalidade", "p_modality", patient.modality_restriction || "", [["", "—"], ["online", "Online"], ["presencial", "Presencial"]])}
-        ${field("Preço custom (R$)", "p_price", patient.custom_price, "number")}
+        ${select("Modalidade", "p_modality", patient.modality_restriction || "", [["", "Qualquer uma"], ["online", "Só online"], ["presencial", "Só presencial"]])}
+        ${field("Preço especial (R$)", "p_price", patient.custom_price, "number")}
       </div>
-      <div class="flex flex-wrap gap-4 mt-1 mb-2">
+      <div class="flex flex-col pt-3" style="border-top: 1px solid var(--soft)">
         ${checkbox("Paciente retornante", "p_returning", patient.is_returning_patient)}
         ${checkbox("Exceção de idade", "p_age_exc", patient.age_exception)}
         ${checkbox("Taxa de reserva sempre isenta", "p_fee_waived", patient.booking_fee_waived)}
       </div>
-      ${returnBlock(patient.id, returnReminder)}
-      ${evaBlock(patient.id, evaOff)}
-      <button onclick="savePatient('${patient.id}')" class="mt-2 bg-wa-green hover:bg-wa-green-dk text-white text-xs px-3 py-1.5 rounded">Salvar paciente</button>
-    </section>`;
-  $("financeiro-forms").innerHTML = `<section class="bg-white dark:bg-gray-800 rounded-lg shadow p-4" data-pid="${patient.id}">
-      <h2 class="font-medium text-gray-700 dark:text-gray-100 mb-2">Dados financeiros</h2>
-      <div class="grid grid-cols-1 sm:grid-cols-3 gap-3">
-        ${field("Financeiro — nome", "p_fin_name", patient.financial_name)}
-        ${field("Financeiro — CPF", "p_fin_cpf", patient.financial_cpf)}
-        ${field("Financeiro — e-mail", "p_fin_email", patient.financial_email)}
+      <button type="button" onclick="savePatient('${patient.id}')" class="btn btn-primary self-end">Salvar ficha</button>
+    </section>
+    ${returnBlock(patient.id, returnReminder)}
+    ${evaBlock(patient.id, evaOff)}`;
+  $("financeiro-forms").innerHTML = `<section class="card p-4 flex flex-col gap-4" data-pid="${patient.id}">
+      <div class="flex flex-col gap-1">
+        <span class="cap">Dados para nota fiscal</span>
+        <span class="text-sm" style="color: var(--muted)">De quem paga a consulta, se não for o próprio paciente.</span>
       </div>
-      <button onclick="saveFinanceiro('${patient.id}')" class="mt-2 bg-wa-green hover:bg-wa-green-dk text-white text-xs px-3 py-1.5 rounded">Salvar financeiro</button>
+      <div class="grid grid-cols-1 sm:grid-cols-3 gap-3">
+        ${field("Nome", "p_fin_name", patient.financial_name)}
+        ${field("CPF", "p_fin_cpf", patient.financial_cpf)}
+        ${field("E-mail", "p_fin_email", patient.financial_email)}
+      </div>
+      <button type="button" onclick="saveFinanceiro('${patient.id}')" class="btn btn-primary self-end">Salvar dados</button>
     </section>`;
 }
 
