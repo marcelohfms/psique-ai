@@ -130,28 +130,50 @@ async def _drain_buffer_on_shutdown() -> None:
         logger.exception("BUFFER_DRAIN failed during shutdown")
 
 
+def _checkpointer_pool(conn_string: str):
+    """Pool de conexões do checkpointer, que se recupera sozinho de conexão caída.
+
+    Antes o checkpointer usava UMA AsyncConnection aberta no boot, sem reconexão.
+    Quando o Supabase derrubava essa conexão, todo aget_state/ainvoke falhava até
+    o container reiniciar, enquanto o /health seguia 200 e as mensagens seguiam
+    sendo gravadas em `messages`. Foi o que deixou a Eva muda por um dia inteiro
+    (30/09/2026, 15 pacientes sem resposta). Com o pool, `check` testa a conexão
+    antes de entregá-la e troca a que morreu; `max_idle`/`max_lifetime` reciclam
+    conexões paradas antes que o pooler do Supabase as corte.
+    """
+    from psycopg.rows import dict_row
+    from psycopg_pool import AsyncConnectionPool
+
+    return AsyncConnectionPool(
+        conn_string,
+        min_size=1,
+        max_size=5,
+        max_idle=300,
+        max_lifetime=1800,
+        reconnect_timeout=60,
+        check=AsyncConnectionPool.check_connection,
+        kwargs={"autocommit": True, "prepare_threshold": None, "row_factory": dict_row},
+        open=False,
+    )
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Initialize Supabase checkpointer on startup if connection string is set."""
     conn_string = os.getenv("SUPABASE_CONNECTION_STRING")
 
     if conn_string:
-        from psycopg import AsyncConnection
-        from psycopg.rows import dict_row
         from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
         from app.graph.graph import build_graph
 
         logger.info("Connecting to Supabase checkpointer...")
-        conn = None
         _max_attempts = 5
         for _attempt in range(1, _max_attempts + 1):
+            # Pool novo a cada tentativa: um pool cujo open() estourou o tempo
+            # fica fechado e o psycopg_pool não deixa reabrir.
+            pool = _checkpointer_pool(conn_string)
             try:
-                conn = await AsyncConnection.connect(
-                    conn_string,
-                    autocommit=True,
-                    prepare_threshold=None,
-                    row_factory=dict_row,
-                )
+                await pool.open(wait=True, timeout=30)
                 break
             except Exception:
                 if _attempt == _max_attempts:
@@ -163,8 +185,8 @@ async def lifespan(app: FastAPI):
                 )
                 await asyncio.sleep(_wait)
 
-        async with conn:
-            checkpointer = AsyncPostgresSaver(conn)
+        async with pool:
+            checkpointer = AsyncPostgresSaver(pool)
             await checkpointer.setup()
             graph_module.chatbot = build_graph(checkpointer=checkpointer)
             logger.info("Supabase checkpointer ready.")
@@ -172,7 +194,7 @@ async def lifespan(app: FastAPI):
             try:
                 yield
             finally:
-                # Drain inside `async with conn`: the flushed handlers still need
+                # Drain inside `async with pool`: the flushed handlers still need
                 # the checkpointer to run the graph.
                 await _drain_buffer_on_shutdown()
     else:
