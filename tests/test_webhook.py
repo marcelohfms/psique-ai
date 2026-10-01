@@ -2240,3 +2240,54 @@ def test_panel_cancel_unexpected_error_friendly_502(http_client, monkeypatch):
     with patch("app.panel_appointments.handle_cancel", new_callable=AsyncMock, side_effect=RuntimeError("boom")):
         r = http_client.post("/admin/panel/appointments/cancel", json={}, headers={"X-Admin-Secret": "s3cr3t"})
     assert r.status_code == 502 and "Confira a agenda" in r.json()["detail"]
+
+
+# ── Checkpointer: pool que se recupera de conexão caída (30/09/2026) ──────────
+
+def test_checkpointer_pool_checks_connection_before_use():
+    """A conexão única morria e a Eva ficava muda até reiniciar. O pool precisa
+    testar a conexão antes de entregá-la e reciclar as ociosas."""
+    from psycopg_pool import AsyncConnectionPool
+    from app.main import _checkpointer_pool
+
+    pool = _checkpointer_pool("postgresql://u:p@localhost:1/db")
+    assert isinstance(pool, AsyncConnectionPool)
+    assert pool._check == AsyncConnectionPool.check_connection
+    assert pool.max_idle <= 600
+    assert pool.max_lifetime <= 3600
+    assert pool.closed  # só abre no lifespan
+    assert pool.kwargs["autocommit"] is True
+    assert pool.kwargs["prepare_threshold"] is None
+
+
+async def test_lifespan_builds_fresh_pool_after_failed_open(monkeypatch):
+    """Pool cujo open() falhou fica fechado e não reabre: cada tentativa usa um novo."""
+    import app.main as _main
+
+    pools = []
+
+    def _fake_pool(conn_string):
+        p = MagicMock()
+        p.open = AsyncMock(side_effect=Exception("boom") if not pools else None)
+        p.__aenter__ = AsyncMock(return_value=p)
+        p.__aexit__ = AsyncMock(return_value=False)
+        pools.append(p)
+        return p
+
+    saver = MagicMock()
+    saver.setup = AsyncMock()
+    monkeypatch.setenv("SUPABASE_CONNECTION_STRING", "postgresql://x")
+    monkeypatch.setattr(_main, "_checkpointer_pool", _fake_pool)
+    monkeypatch.setattr(_main.asyncio, "sleep", AsyncMock())
+    monkeypatch.setattr(_main, "_recover_messages_lost_to_restart", AsyncMock())
+    monkeypatch.setattr(_main, "_drain_buffer_on_shutdown", AsyncMock())
+
+    with patch("langgraph.checkpoint.postgres.aio.AsyncPostgresSaver", return_value=saver) as saver_cls, \
+         patch("app.graph.graph.build_graph", return_value=MagicMock()), \
+         patch("app.graph.graph.chatbot", MagicMock()):
+        async with _main.lifespan(_main.app):
+            pass
+
+    assert len(pools) == 2
+    saver_cls.assert_called_once_with(pools[1])
+    saver.setup.assert_awaited_once()
