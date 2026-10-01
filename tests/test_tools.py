@@ -3092,7 +3092,11 @@ async def test_reschedule_appointment_event_records_fee_paid_true_when_fee_paid(
         "booking_fee_waived": False,
         "status": "scheduled",
     })
-    with patch("app.graph.tools._get_doctor_calendar_id", new_callable=AsyncMock, return_value="cal123"), \
+    # Datas relativas a "agora": zera as exceções de agenda (feriado/bloqueio)
+    # para o teste não depender do calendário real do médico. Em 30/09/2026,
+    # hoje+12 caía no feriado de 12/10 e a tool recusava antes do evento.
+    with patch.dict("app.google_calendar.SCHEDULE_EXCEPTIONS", {}, clear=True), \
+         patch("app.graph.tools._get_doctor_calendar_id", new_callable=AsyncMock, return_value="cal123"), \
          patch("app.google_calendar.update_event", new_callable=AsyncMock), \
          patch("app.graph.tools.get_supabase", new_callable=AsyncMock, return_value=client), \
          patch("app.graph.tools.get_users_by_phone", new_callable=AsyncMock, return_value=[{"id": "user-1"}]), \
