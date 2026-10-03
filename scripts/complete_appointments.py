@@ -20,6 +20,8 @@ from app.patients import consultation_reminder_contacts, own_contact_ids
 # Templates Meta de pós-consulta com pedido de avaliação no Google (o link
 # fica no botão do template). {{1}} = primeiro nome do paciente. A versão de
 # "retorno" vai quando aquele telefone já recebeu o pedido para esse paciente.
+# Os de 1ª vez foram aprovados na Meta como *_v2: o nome sem sufixo não existe
+# lá e o envio falha com #132001 (o Chatwoot aceita e só marca "failed" depois).
 AVALIACAO_EVENT = "avaliacao_google_sent"
 
 _ASK_PRIMEIRA = (
@@ -34,36 +36,40 @@ _ASK_RETORNO = (
     "Se você já avaliou, muito obrigada! 💜"
 )
 
-# (third_party, returning) -> (template, abertura com {nome})
+# (third_party, returning) -> (template, abertura com {nome}, fecho extra)
 _POS_CONSULTA = {
     (False, False): (
-        "avaliacao_google",
+        "avaliacao_google_v2",
         "Oi, {nome}! 😊\n\nEspero que sua consulta na Psiquê tenha corrido "
         "tudo bem. Agradecemos a confiança!\n\n",
+        " 💜",
     ),
     (True, False): (
-        "avaliacao_google_terceiro",
+        "avaliacao_google_terceiro_v2",
         "Oi! 😊\n\nEspero que a consulta de {nome} na Psiquê tenha corrido "
         "tudo bem. Agradecemos a confiança!\n\n",
+        "",
     ),
     (False, True): (
         "avaliacao_google_retorno",
         "Oi, {nome}! 😊\n\nEspero que mais essa consulta na Psiquê tenha "
         "corrido tudo bem. Obrigada por seguir com a gente!\n\n",
+        "",
     ),
     (True, True): (
         "avaliacao_google_retorno_terceiro",
         "Oi! 😊\n\nEspero que mais essa consulta de {nome} na Psiquê tenha "
         "corrido tudo bem. Obrigada por seguirem com a gente!\n\n",
+        "",
     ),
 }
 
 
 def _pos_consulta_template(first_name: str, third_party: bool, returning: bool) -> tuple[str, str]:
     """(nome do template Meta, texto espelhado no Chatwoot)."""
-    template, opening = _POS_CONSULTA[(third_party, returning)]
+    template, opening, closing = _POS_CONSULTA[(third_party, returning)]
     ask = _ASK_RETORNO if returning else _ASK_PRIMEIRA
-    return template, opening.format(nome=first_name) + ask
+    return template, opening.format(nome=first_name) + ask + closing
 
 
 async def _already_asked(phone: str, patient_id: str | None) -> bool:
