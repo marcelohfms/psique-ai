@@ -266,10 +266,12 @@ async def test_pos_consulta_nao_registra_evento_se_envio_falha(_events):
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("third_party,returning,template,inicio,fim", [
-    (False, False, "avaliacao_google",
-     "Oi, Natalia! 😊\n\nEspero que sua consulta na Psiquê", "Muito obrigada!"),
-    (True, False, "avaliacao_google_terceiro",
-     "Oi! 😊\n\nEspero que a consulta de Natalia na Psiquê", "Muito obrigada!"),
+    # Os de 1ª vez foram aprovados na Meta com sufixo _v2; o nome sem sufixo
+    # não existe lá e o envio falha com #132001.
+    (False, False, "avaliacao_google_v2",
+     "Oi, Natalia! 😊\n\nEspero que sua consulta na Psiquê", "Muito obrigada! 💜"),
+    (True, False, "avaliacao_google_terceiro_v2",
+     "Oi! 😊\n\nEspero que a consulta de Natalia na Psiquê", "trabalho.\n\nMuito obrigada!"),
     (False, True, "avaliacao_google_retorno",
      "Oi, Natalia! 😊\n\nEspero que mais essa consulta na Psiquê", "Se você já avaliou, muito obrigada! 💜"),
     (True, True, "avaliacao_google_retorno_terceiro",
