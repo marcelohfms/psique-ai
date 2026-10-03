@@ -2038,10 +2038,20 @@ async def _run_patient_agent_with_user(state: dict, user: dict) -> "SystemMessag
 
 
 async def test_price_notice_injected_when_not_yet_notified():
-    """price_adjustment_notified_at=None → price notice IS injected into system prompt."""
+    """price_adjustment_notified_at=None → price notice IS injected into system prompt.
+
+    Data congelada em setembro: a partir de outubro/2026 o aviso não sai mais."""
+    from datetime import datetime as _real_dt
+
+    class _FrozenSeptember(_real_dt):
+        @classmethod
+        def now(cls, tz=None):
+            return _real_dt(2026, 9, 15, 10, 0, tzinfo=tz)
+
     state = _make_patient_agent_state(messages=[HumanMessage(content="quero agendar")])
     user = {"price_adjustment_notified_at": None}
-    system_msg = await _run_patient_agent_with_user(state, user=user)
+    with patch("app.graph.nodes.datetime", _FrozenSeptember):
+        system_msg = await _run_patient_agent_with_user(state, user=user)
     assert system_msg is not None
     assert "AVISO ÚNICO OBRIGATÓRIO" in system_msg.content
 
