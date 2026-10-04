@@ -1859,6 +1859,44 @@ async def cancel_all_appointments(
     return f"{len(canceled)} consulta(s) cancelada(s) com sucesso. ✅\n{body}"
 
 
+# ── Lote com mark_reschedule_in_progress + reschedule_appointment ─────────────
+# O ToolNode roda as tool calls de uma mesma resposta em paralelo. Quando a Eva
+# chama as duas juntas, reschedule_appointment lia a consulta como "scheduled"
+# antes de o mark terminar, ia pelo caminho de "atualizar o evento existente" e
+# movia para a nova data um evento que o mark acabara de apagar. A consulta
+# ficava ativa no banco apontando para um evento cancelado, sem aparecer no
+# Google Calendar (caso Maria Augusta, 5587996056531, 29/09/2026: 01/10 → 05/10).
+# A trava: o reschedule do mesmo lote espera o mark terminar antes de ler o banco.
+_MARK_DONE: dict[str, asyncio.Future] = {}
+_MARK_WAIT_SECONDS = 30
+
+
+def _sibling_mark_call_id(state: dict, appointment_id: str) -> str | None:
+    """id da tool call de mark_reschedule_in_progress para esta consulta, quando ela
+    divide o lote (a última AIMessage) com reschedule_appointment. None caso contrário."""
+    msgs = (state or {}).get("messages") or []
+    last = msgs[-1] if msgs else None
+    tcs = getattr(last, "tool_calls", None) or []
+    names = {tc.get("name") for tc in tcs}
+    if not {"mark_reschedule_in_progress", "reschedule_appointment"} <= names:
+        return None
+    for tc in tcs:
+        if (
+            tc.get("name") == "mark_reschedule_in_progress"
+            and (tc.get("args") or {}).get("appointment_id") == appointment_id
+        ):
+            return tc.get("id")
+    return None
+
+
+def _mark_done_future(key: str) -> asyncio.Future:
+    fut = _MARK_DONE.get(key)
+    if fut is None:
+        fut = asyncio.get_running_loop().create_future()
+        _MARK_DONE[key] = fut
+    return fut
+
+
 @tool
 async def mark_reschedule_in_progress(
     appointment_id: str,
@@ -1880,6 +1918,24 @@ async def mark_reschedule_in_progress(
       estiver respondendo a uma troca de horário que a atendente/médico propôs por
       "[Instrução da atendente]" nesta conversa; nos demais casos, não informe este parâmetro.
     """
+    # Se reschedule_appointment veio no mesmo lote de tool calls, ele espera este
+    # aviso para só ler a consulta depois que o evento antigo foi apagado.
+    sibling_key = _sibling_mark_call_id(state, appointment_id)
+    try:
+        return await _mark_reschedule_in_progress_impl(appointment_id, state, config, initiated_by)
+    finally:
+        if sibling_key:
+            fut = _mark_done_future(sibling_key)
+            if not fut.done():
+                fut.set_result(None)
+
+
+async def _mark_reschedule_in_progress_impl(
+    appointment_id: str,
+    state: dict,
+    config: RunnableConfig,
+    initiated_by: Literal["patient", "clinic"] | None,
+) -> str:
     client = await get_supabase()
     phone = config["configurable"]["phone"]
     now = datetime.now(TZ)
@@ -2328,6 +2384,18 @@ async def reschedule_appointment(
     """
     from app.google_calendar import update_event
 
+    # Mesmo lote que mark_reschedule_in_progress: espera o mark terminar (ele apaga
+    # o evento antigo e marca pending_reschedule) antes de ler a consulta.
+    _mark_key = _sibling_mark_call_id(state, appointment_id)
+    if _mark_key:
+        try:
+            await asyncio.wait_for(asyncio.shield(_mark_done_future(_mark_key)), _MARK_WAIT_SECONDS)
+        except asyncio.TimeoutError:
+            logger.warning("reschedule_appointment: mark_reschedule_in_progress do lote não terminou em %ss (appt=%s)",
+                           _MARK_WAIT_SECONDS, appointment_id)
+        finally:
+            _MARK_DONE.pop(_mark_key, None)
+
     doctor = await _resolve_doctor(state, config)
     calendar_id = await _get_doctor_calendar_id(doctor)
     if not calendar_id:
@@ -2426,6 +2494,17 @@ async def reschedule_appointment(
     # Nesse caso cria um novo evento em vez de atualizar o antigo (que foi cancelado).
     appt_status_result = await client.from_("appointments").select("status").eq("appointment_id", appointment_id).maybe_single().execute()
     is_pending_reschedule = (appt_status_result.data or {}).get("status") == "pending_reschedule"
+
+    # O mark do mesmo lote recusou (política de 1 remarcação, prazo de 24h, consulta
+    # cancelada…): a consulta não foi liberada, então não remarca por cima da recusa.
+    # A Eva segue a instrução que o mark devolveu.
+    if _mark_key and not is_pending_reschedule:
+        return (
+            "[INSTRUÇÃO INTERNA — NÃO ENVIE AO PACIENTE] mark_reschedule_in_progress não "
+            "liberou esta consulta para remarcação, então ela NÃO foi remarcada. Siga a "
+            "instrução devolvida por mark_reschedule_in_progress e não diga ao paciente que "
+            "a consulta foi remarcada."
+        )
 
     old_dt = None
     if old_start_time:

@@ -3038,6 +3038,133 @@ async def test_reschedule_appointment_updates_event_and_notifies():
     mock_notify.assert_called()
 
 
+# ── lote mark_reschedule_in_progress + reschedule_appointment ────────────────
+# Caso Maria Augusta (5587996056531, 29/09/2026): a Eva chamou as duas tools na
+# mesma resposta, o ToolNode rodou em paralelo e o reschedule leu a consulta como
+# "scheduled" antes de o mark apagar o evento — moveu o evento apagado para a nova
+# data e a consulta sumiu do Google Calendar.
+
+def _batch_state(appointment_id="evt-abc"):
+    from langchain_core.messages import AIMessage
+    ai = AIMessage(content="", tool_calls=[
+        {"name": "mark_reschedule_in_progress", "args": {"appointment_id": appointment_id},
+         "id": "call-mark", "type": "tool_call"},
+        {"name": "reschedule_appointment",
+         "args": {"appointment_id": appointment_id, "new_slot_datetime": "2026-12-07T14:00:00",
+                  "slot_duration_minutes": 60},
+         "id": "call-resched", "type": "tool_call"},
+    ])
+    return _make_state(messages=[ai])
+
+
+def test_sibling_mark_call_id_only_when_both_tools_in_batch():
+    from langchain_core.messages import AIMessage
+    from app.graph.tools import _sibling_mark_call_id
+    assert _sibling_mark_call_id(_batch_state(), "evt-abc") == "call-mark"
+    # Outra consulta: não é irmã.
+    assert _sibling_mark_call_id(_batch_state(), "evt-outra") is None
+    # Só o mark no lote (fluxo normal, reschedule vem depois): nada a esperar.
+    only_mark = AIMessage(content="", tool_calls=[
+        {"name": "mark_reschedule_in_progress", "args": {"appointment_id": "evt-abc"},
+         "id": "call-mark", "type": "tool_call"},
+    ])
+    assert _sibling_mark_call_id(_make_state(messages=[only_mark]), "evt-abc") is None
+    assert _sibling_mark_call_id(_make_state(), "evt-abc") is None
+
+
+def _stateful_appt_client(status_box):
+    client, table, execute = _make_supabase_client()
+
+    async def _exec(*a, **k):
+        return MagicMock(data={
+            "start_time": "2026-12-03T19:00:00+00:00",
+            "patient_id": "user-1",
+            "patients": {"name": "Maria"},
+            "status": status_box["status"],
+            "booking_fee_paid_at": "2026-11-01T10:00:00-03:00",
+            "booking_fee_waived": False,
+            "reschedule_initiated_by": "patient",
+        })
+    execute.side_effect = _exec
+    return client
+
+
+async def test_reschedule_in_same_batch_waits_for_mark_and_creates_new_event():
+    import asyncio
+    from app.graph.tools import reschedule_appointment, mark_reschedule_in_progress
+    status_box = {"status": "scheduled"}
+    client = _stateful_appt_client(status_box)
+
+    async def _fake_mark_impl(appointment_id, state, config, initiated_by):
+        await asyncio.sleep(0.05)  # o reschedule já começou e precisa esperar
+        status_box["status"] = "pending_reschedule"
+        return "Reagendamento marcado como em andamento."
+
+    state = _batch_state()
+    with patch("app.graph.tools._mark_reschedule_in_progress_impl", side_effect=_fake_mark_impl), \
+         patch("app.graph.tools._resolve_doctor", new_callable=AsyncMock, return_value="julio"), \
+         patch("app.graph.tools._get_doctor_calendar_id", new_callable=AsyncMock, return_value="cal123"), \
+         patch("app.google_calendar.update_event", new_callable=AsyncMock) as mock_update, \
+         patch("app.google_calendar.create_event", new_callable=AsyncMock, return_value="evt-novo") as mock_create, \
+         patch("app.google_calendar._get_busy", return_value=[]), \
+         patch("app.google_calendar._credentials", return_value=MagicMock()), \
+         patch("googleapiclient.discovery.build", return_value=MagicMock()), \
+         patch("app.graph.tools.get_supabase", new_callable=AsyncMock, return_value=client), \
+         patch("app.graph.tools.get_users_by_phone", new_callable=AsyncMock, return_value=[{"id": "user-1"}]), \
+         patch("app.graph.tools.log_event", new_callable=AsyncMock), \
+         patch("app.graph.tools._notify_clinic", new_callable=AsyncMock):
+        resched_res, _ = await asyncio.gather(
+            reschedule_appointment.coroutine(
+                appointment_id="evt-abc", new_slot_datetime="2026-12-07T14:00:00",
+                slot_duration_minutes=60, state=state, config=CONFIG,
+            ),
+            mark_reschedule_in_progress.coroutine(
+                appointment_id="evt-abc", state=state, config=CONFIG,
+            ),
+        )
+    # Viu o pending_reschedule do mark: cria evento novo, não mexe no apagado.
+    mock_create.assert_awaited_once()
+    mock_update.assert_not_awaited()
+    assert "remarcada" in resched_res.lower()
+    from app.graph.tools import _MARK_DONE
+    assert "call-mark" not in _MARK_DONE
+
+
+async def test_reschedule_in_same_batch_refuses_when_mark_refuses():
+    import asyncio
+    from app.graph.tools import reschedule_appointment, mark_reschedule_in_progress
+    status_box = {"status": "scheduled"}
+    client = _stateful_appt_client(status_box)
+
+    async def _refusing_mark_impl(appointment_id, state, config, initiated_by):
+        await asyncio.sleep(0.02)
+        return "POLÍTICA DE REAGENDAMENTO: este paciente já utilizou o reagendamento disponível."
+
+    state = _batch_state()
+    with patch("app.graph.tools._mark_reschedule_in_progress_impl", side_effect=_refusing_mark_impl), \
+         patch("app.graph.tools._resolve_doctor", new_callable=AsyncMock, return_value="julio"), \
+         patch("app.graph.tools._get_doctor_calendar_id", new_callable=AsyncMock, return_value="cal123"), \
+         patch("app.google_calendar.update_event", new_callable=AsyncMock) as mock_update, \
+         patch("app.google_calendar.create_event", new_callable=AsyncMock) as mock_create, \
+         patch("app.graph.tools.get_supabase", new_callable=AsyncMock, return_value=client), \
+         patch("app.graph.tools.get_users_by_phone", new_callable=AsyncMock, return_value=[{"id": "user-1"}]), \
+         patch("app.graph.tools.log_event", new_callable=AsyncMock) as mock_log, \
+         patch("app.graph.tools._notify_clinic", new_callable=AsyncMock):
+        resched_res, _ = await asyncio.gather(
+            reschedule_appointment.coroutine(
+                appointment_id="evt-abc", new_slot_datetime="2026-12-07T14:00:00",
+                slot_duration_minutes=60, state=state, config=CONFIG,
+            ),
+            mark_reschedule_in_progress.coroutine(
+                appointment_id="evt-abc", state=state, config=CONFIG,
+            ),
+        )
+    assert "NÃO foi remarcada" in resched_res
+    mock_update.assert_not_awaited()
+    mock_create.assert_not_awaited()
+    mock_log.assert_not_awaited()
+
+
 async def test_reschedule_appointment_clears_confirmed_at():
     """Ao remarcar, a confirmação de presença da data ANTIGA não pode sobreviver:
     reschedule_appointment deve zerar confirmed_at junto com os flags de lembrete.
