@@ -643,10 +643,13 @@ async def _cancel_unpaid_appointment(client, appt: dict, graph, now: datetime) -
 
 def _reminder_due(appt: dict, now: datetime) -> bool:
     """1º lembrete da taxa: 2h após o agendamento ou, se a Eva prorrogou, no prazo
-    combinado (payment_deadline_at). O cancelamento segue 2h após o lembrete."""
+    combinado (payment_deadline_at). O cancelamento segue 2h após o lembrete.
+    O prazo combinado nunca passa de 24h antes da consulta, nem quando a consulta
+    é remarcada para mais perto depois da prorrogação."""
     deadline = appt.get("payment_deadline_at")
     if deadline:
-        return datetime.fromisoformat(deadline) <= now
+        limit = datetime.fromisoformat(appt["start_time"]) - timedelta(hours=24)
+        return min(datetime.fromisoformat(deadline), limit) <= now
     return datetime.fromisoformat(appt["created_at"]) <= now - timedelta(hours=2)
 
 

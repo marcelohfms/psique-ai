@@ -4825,7 +4825,7 @@ async def extend_payment_deadline(
 
     Use quando o paciente disser que vai pagar mais tarde, amanhã, em X horas, etc.
     O lembrete automático será reenviado no prazo e o cancelamento ocorrerá
-    2h após o lembrete, se não pago.
+    2h após o lembrete, se não pago. O prazo vai no máximo até 24h antes da consulta.
 
     deadline_iso: data e hora limite para pagamento em ISO 8601 com fuso (ex: '2026-06-26T10:00:00-03:00').
                   Interprete o pedido do paciente e converta para este formato.
@@ -4870,6 +4870,21 @@ async def extend_payment_deadline(
         deadline_dt = datetime.fromisoformat(deadline_iso)
     except ValueError:
         return f"Formato de data inválido: {deadline_iso}. Use ISO 8601 (ex: '2026-06-26T10:00:00-03:00')."
+    if deadline_dt.tzinfo is None:
+        deadline_dt = deadline_dt.replace(tzinfo=TZ)
+
+    # O prazo vai no máximo até 24h antes da consulta. Mais que isso, só a
+    # atendente isentando a taxa.
+    limit_dt = datetime.fromisoformat(appt["start_time"]) - timedelta(hours=24)
+    if limit_dt <= datetime.now(TZ):
+        return (
+            "[INSTRUÇÃO INTERNA — NÃO ENVIE AO PACIENTE] Prazo NÃO estendido: a consulta é em "
+            "menos de 24h. Explique com carinho que, por ser tão perto da consulta, a taxa "
+            "precisa ser paga no prazo normal para garantir a vaga. Não ofereça isenção."
+        )
+    capped = deadline_dt > limit_dt
+    if capped:
+        deadline_dt = limit_dt
 
     # Prazo em coluna própria: mexer em created_at escondia a consulta do
     # lembrete de véspera, que só lembra consultas criadas há mais de 12h (caso Davi).
@@ -4883,9 +4898,14 @@ async def extend_payment_deadline(
 
     await log_event("payment_deadline_extended", phone, {
         "appointment_id": appt["appointment_id"],
-        "new_deadline": deadline_iso,
+        "new_deadline": deadline_dt.isoformat(),
+        "requested_deadline": deadline_iso,
     })
 
+    if capped:
+        return (f"Prazo de pagamento estendido até {deadline_str}, o limite de 24h antes da "
+                "consulta (o paciente pediu depois disso). Explique que a taxa precisa ser paga "
+                "até 24h antes da consulta. O lembrete será reenviado automaticamente.")
     return f"Prazo de pagamento estendido até {deadline_str}. O lembrete será reenviado automaticamente."
 
 
