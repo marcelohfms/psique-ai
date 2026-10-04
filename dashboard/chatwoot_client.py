@@ -23,3 +23,32 @@ async def send_confirmation_message(conversation_id: int, text: str) -> None:
             url, json={"content": text, "message_type": "outgoing"}, headers=headers,
         )
         response.raise_for_status()
+
+
+async def send_template_message(
+    conversation_id: int, template_name: str, body_params: dict[str, str], content: str,
+) -> None:
+    """Manda um template aprovado na Meta (UTILITY, pt_BR) — o único formato que o
+    WhatsApp entrega fora da janela de 24h. Mesmo payload de app/chatwoot.py::
+    send_template_message; `content` é o texto que fica registrado no Chatwoot."""
+    base_url = os.environ["CHATWOOT_BASE_URL"].rstrip("/")
+    account_id = os.environ["CHATWOOT_ACCOUNT_ID"]
+    url = f"{base_url}/api/v1/accounts/{account_id}/conversations/{conversation_id}/messages"
+    headers = {
+        "api_access_token": os.environ["CHATWOOT_AGENT_BOT_TOKEN"],
+        "Content-Type": "application/json",
+    }
+    payload = {
+        "content": content,
+        "message_type": "outgoing",
+        "private": False,
+        "template_params": {
+            "name": template_name,
+            "category": "UTILITY",
+            "language": "pt_BR",
+            "processed_params": {"body": body_params},
+        },
+    }
+    async with httpx.AsyncClient(timeout=10) as client:
+        response = await client.post(url, json=payload, headers=headers)
+        response.raise_for_status()
