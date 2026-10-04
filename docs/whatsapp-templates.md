@@ -66,8 +66,7 @@ frase que muda entra numa variável, como em `taxa_reserva_lembrete`.
 
 ```
 Olá, {{1}}! 😊
-
-Passando apenas para confirmar o recebimento de {{2}} referente à sua taxa de reserva. Não se preocupe, {{3}} está garantida! 💙
+Passando apenas para confirmar o recebimento de {{2}} referente à sua taxa de reserva. Não se preocupe, {{3}} está garantida. Muito obrigada! 💜
 ```
 
 | Var | Conteúdo | Exemplo |

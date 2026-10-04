@@ -329,9 +329,9 @@ def payment_confirmation(tipo: str, valor: int, contact_first: str,
         consulta = f"a consulta de {patient_first}" if patient_first else "sua consulta"
         params = {"1": contact_first, "2": valor_str, "3": consulta}
         text = (
-            f"Olá, {contact_first}! 😊\n\n"
+            f"Olá, {contact_first}! 😊\n"
             f"Passando apenas para confirmar o recebimento de {valor_str} referente à "
-            f"sua taxa de reserva. Não se preocupe, {consulta} está garantida! 💙"
+            f"sua taxa de reserva. Não se preocupe, {consulta} está garantida. Muito obrigada! 💜"
         )
     else:
         consulta = f"à consulta de {patient_first}" if patient_first else "à sua consulta"
