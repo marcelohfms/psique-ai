@@ -641,6 +641,15 @@ async def _cancel_unpaid_appointment(client, appt: dict, graph, now: datetime) -
     print(f"  [payment_cancel] Canceled {'and notified' if any_notified else '(WhatsApp FAILED)'} — {patient_name}")
 
 
+def _reminder_due(appt: dict, now: datetime) -> bool:
+    """1º lembrete da taxa: 2h após o agendamento ou, se a Eva prorrogou, no prazo
+    combinado (payment_deadline_at). O cancelamento segue 2h após o lembrete."""
+    deadline = appt.get("payment_deadline_at")
+    if deadline:
+        return datetime.fromisoformat(deadline) <= now
+    return datetime.fromisoformat(appt["created_at"]) <= now - timedelta(hours=2)
+
+
 async def main():
     from supabase import acreate_client
 
@@ -659,11 +668,11 @@ async def main():
     two_hours_ago = (now - timedelta(hours=2)).isoformat()
 
     _appt_select = (
-        "appointment_id, start_time, doctor_id, created_at, payment_reminder_sent_at, "
+        "appointment_id, start_time, doctor_id, created_at, payment_reminder_sent_at, payment_deadline_at, "
         "contact_id, patient_id, is_courtesy, patients(name, custom_price)"
     )
 
-    # ── Step 1: 1st reminder (not yet reminded, booked >= 2h ago) ─────────────
+    # ── Step 1: 1st reminder (booked >= 2h ago, or extended deadline reached) ──
     reminder_result = await (
         client.from_("appointments")
         .select(_appt_select)
@@ -671,11 +680,10 @@ async def main():
         .eq("booking_fee_waived", False)
         .is_("booking_fee_paid_at", "null")
         .is_("payment_reminder_sent_at", "null")
-        .lte("created_at", two_hours_ago)
         .gte("start_time", now.isoformat())
         .execute()
     )
-    reminder_appts = reminder_result.data or []
+    reminder_appts = [a for a in (reminder_result.data or []) if _reminder_due(a, now)]
     print(f"Appointments needing payment reminder: {len(reminder_appts)}")
 
     # ── Step 2: cancellation (reminder sent >= 2h ago, still unpaid) ──────────

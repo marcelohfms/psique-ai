@@ -7172,3 +7172,51 @@ async def test_register_payment_saldo_goes_to_open_completed_not_paid_courtesy()
     assert mock_sheets.call_args.kwargs["payment_type"] == "Consulta"
     paid_updates = [c for c in table.eq.call_args_list if c.args == ("appointment_id", "apt-18-09")]
     assert paid_updates, "o pagamento deveria ser gravado na consulta de 18/09"
+
+
+# ── extend_payment_deadline ──────────────────────────────────────────────────
+# Caso Davi (04/10/2026): o prazo prorrogado era guardado empurrando created_at
+# para o futuro (prazo − 2h). O lembrete de véspera só lembra consultas criadas
+# há mais de 12h, então a consulta "ainda não criada" ficou sem lembrete.
+
+
+async def test_extend_payment_deadline_writes_own_column_not_created_at():
+    from app.graph.tools import extend_payment_deadline
+    client, table, execute = _make_supabase_client()
+    future_start = (datetime.now(TZ) + timedelta(days=3)).isoformat()
+    execute.side_effect = [
+        MagicMock(data=[{"appointment_id": "evt-abc", "start_time": future_start}]),  # select
+        MagicMock(data=[]),  # update
+    ]
+    with patch("app.graph.tools.get_supabase", new_callable=AsyncMock, return_value=client), \
+         patch("app.database.get_users_by_phone", new_callable=AsyncMock,
+               return_value=[{"id": "patient-1"}]), \
+         patch("app.graph.tools.log_event", new_callable=AsyncMock):
+        result = await extend_payment_deadline.coroutine(
+            deadline_iso="2026-10-05T07:00:00-03:00",
+            state=_make_state(),
+            config=CONFIG,
+        )
+    assert "Prazo de pagamento estendido até 05/10/2026 às 07:00" in result
+    payload = table.update.call_args.args[0]
+    assert "created_at" not in payload
+    assert payload["payment_deadline_at"] == "2026-10-05T07:00:00-03:00"
+    assert payload["payment_reminder_sent_at"] is None
+
+
+async def test_extend_payment_deadline_rejects_invalid_date():
+    from app.graph.tools import extend_payment_deadline
+    client, table, execute = _make_supabase_client()
+    future_start = (datetime.now(TZ) + timedelta(days=3)).isoformat()
+    execute.return_value = MagicMock(data=[{"appointment_id": "evt-abc", "start_time": future_start}])
+    with patch("app.graph.tools.get_supabase", new_callable=AsyncMock, return_value=client), \
+         patch("app.database.get_users_by_phone", new_callable=AsyncMock,
+               return_value=[{"id": "patient-1"}]), \
+         patch("app.graph.tools.log_event", new_callable=AsyncMock):
+        result = await extend_payment_deadline.coroutine(
+            deadline_iso="amanhã",
+            state=_make_state(),
+            config=CONFIG,
+        )
+    assert "Formato de data inválido" in result
+    table.update.assert_not_called()

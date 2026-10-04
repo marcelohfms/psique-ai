@@ -227,7 +227,7 @@ async def build_edit(body: dict) -> dict:
         # Isentar por cima de taxa paga apagaria a data real do pagamento numa volta ao normal.
         raise PanelInputError("a taxa desta consulta já foi paga; para devolver, cancele com devolução")
     if not late_fee and billing == "normal" and current_billing(row, patient) != "normal":
-        # O cron de cobrança conta o prazo por created_at/payment_reminder_sent_at e
+        # O cron de cobrança conta o prazo por created_at/payment_deadline_at/payment_reminder_sent_at e
         # cancelaria a consulta na hora. Na remarcação tardia a linha é nova: pode.
         raise PanelInputError("para voltar a cobrar a taxa, cancele esta consulta e agende de novo")
     return {
