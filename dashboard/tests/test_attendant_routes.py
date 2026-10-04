@@ -499,7 +499,7 @@ def test_pagar_fora_da_janela_manda_template_da_consulta(client, monkeypatch):
     _, name, params, content = calls["template"]
     assert name == "pagamento_consulta_recebido"
     assert params == {"1": "João", "2": "R$ 650,00", "3": "à sua consulta"}
-    assert "Está tudo certo agora, obrigada!" in content
+    assert "Está tudo certo agora, muito obrigada!" in content
 
 
 def test_pagar_dentro_da_janela_manda_texto_livre(client, monkeypatch):

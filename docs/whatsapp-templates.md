@@ -79,8 +79,7 @@ Passando apenas para confirmar o recebimento de {{2}} referente à sua taxa de r
 
 ```
 Olá, {{1}}! 😊
-
-Passando apenas para confirmar o recebimento de {{2}} referente {{3}}. Está tudo certo agora, obrigada! 💙
+Passando apenas para confirmar o recebimento de {{2}} referente {{3}}. Está tudo certo agora, muito obrigada! 💜
 ```
 
 | Var | Conteúdo | Exemplo |
