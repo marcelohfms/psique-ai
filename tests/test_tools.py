@@ -7220,3 +7220,48 @@ async def test_extend_payment_deadline_rejects_invalid_date():
         )
     assert "Formato de data inválido" in result
     table.update.assert_not_called()
+
+
+async def test_extend_payment_deadline_caps_at_24h_before_appointment():
+    """Prazo pedido depois de 24h antes da consulta vira o limite de 24h antes
+    (caso Davi: pediu para pagar no dia da consulta)."""
+    from app.graph.tools import extend_payment_deadline
+    client, table, execute = _make_supabase_client()
+    execute.side_effect = [
+        MagicMock(data=[{"appointment_id": "evt-abc", "start_time": "2099-10-05T18:00:00+00:00"}]),
+        MagicMock(data=[]),
+    ]
+    with patch("app.graph.tools.get_supabase", new_callable=AsyncMock, return_value=client), \
+         patch("app.database.get_users_by_phone", new_callable=AsyncMock,
+               return_value=[{"id": "patient-1"}]), \
+         patch("app.graph.tools.log_event", new_callable=AsyncMock):
+        result = await extend_payment_deadline.coroutine(
+            deadline_iso="2099-10-05T07:00:00-03:00",
+            state=_make_state(),
+            config=CONFIG,
+        )
+    payload = table.update.call_args.args[0]
+    assert datetime.fromisoformat(payload["payment_deadline_at"]) == \
+        datetime.fromisoformat("2099-10-04T18:00:00+00:00")
+    assert "04/10/2099 às 15:00" in result
+    assert "24h antes" in result
+
+
+async def test_extend_payment_deadline_refused_when_appointment_within_24h():
+    """Consulta a menos de 24h: não há prazo para estender."""
+    from app.graph.tools import extend_payment_deadline
+    client, table, execute = _make_supabase_client()
+    soon = (datetime.now(TZ) + timedelta(hours=20)).isoformat()
+    execute.return_value = MagicMock(data=[{"appointment_id": "evt-abc", "start_time": soon}])
+    with patch("app.graph.tools.get_supabase", new_callable=AsyncMock, return_value=client), \
+         patch("app.database.get_users_by_phone", new_callable=AsyncMock,
+               return_value=[{"id": "patient-1"}]), \
+         patch("app.graph.tools.log_event", new_callable=AsyncMock) as mock_log:
+        result = await extend_payment_deadline.coroutine(
+            deadline_iso=(datetime.now(TZ) + timedelta(hours=10)).isoformat(),
+            state=_make_state(),
+            config=CONFIG,
+        )
+    assert result.startswith("[INSTRUÇÃO INTERNA")
+    table.update.assert_not_called()
+    mock_log.assert_not_awaited()

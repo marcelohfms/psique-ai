@@ -998,6 +998,7 @@ def test_reminder_due_two_hours_after_booking_without_deadline():
 def test_reminder_waits_for_extended_deadline():
     now = datetime(2026, 10, 4, 12, 0, tzinfo=TZ)
     appt = {"created_at": "2026-09-11T14:03:00+00:00",
+            "start_time": "2026-11-05T20:00:00+00:00",
             "payment_deadline_at": "2026-10-05T10:00:00+00:00"}
     assert not spr._reminder_due(appt, now)
     assert spr._reminder_due(appt, datetime(2026, 10, 5, 7, 0, tzinfo=TZ))
@@ -1006,3 +1007,13 @@ def test_reminder_waits_for_extended_deadline():
 def test_appt_select_includes_payment_deadline_at():
     import inspect
     assert "payment_deadline_at" in inspect.getsource(spr.main)
+
+
+def test_extended_deadline_capped_at_24h_before_appointment():
+    """Consulta remarcada para mais perto: o prazo antigo não pode passar de 24h
+    antes da nova data (caso Davi, consulta movida de 05/11 para 05/10)."""
+    appt = {"created_at": "2026-09-11T14:03:00+00:00",
+            "start_time": "2026-10-05T18:00:00+00:00",
+            "payment_deadline_at": "2026-10-05T10:00:00+00:00"}
+    assert not spr._reminder_due(appt, datetime(2026, 10, 4, 14, 59, tzinfo=TZ))
+    assert spr._reminder_due(appt, datetime(2026, 10, 4, 15, 0, tzinfo=TZ))
