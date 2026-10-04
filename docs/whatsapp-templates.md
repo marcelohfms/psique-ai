@@ -47,6 +47,49 @@ Fica tranquilo(a): sua taxa de reserva continua garantida. Você prefere voltar 
 
 ---
 
+## Confirmação de pagamento (`pagamento_taxa_recebido` / `pagamento_consulta_recebido`)
+
+Enviados pelo painel da atendente no Chatwoot quando ela dá baixa num pagamento
+(`POST /api/atendente/pagamentos/{id}/pagar`, ver
+[`dashboard/attendant_routes.py`](../dashboard/attendant_routes.py)::`payment_confirmation`).
+Se o contato escreveu nas últimas 24h, vai o mesmo texto como mensagem livre. Fora
+disso vai o template, porque a Meta descarta texto livre em silêncio.
+
+- **Categoria:** Utility (Utilidade) → subtipo **Mensagem padrão**
+- **Idioma:** `pt_BR`
+- **Cabeçalho / Rodapé / Botões:** nenhum
+
+Um template só atende o próprio paciente e o terceiro (ex.: a mãe), porque a
+frase que muda entra numa variável, como em `taxa_reserva_lembrete`.
+
+### `pagamento_taxa_recebido`
+
+```
+Olá, {{1}}! 😊
+Passando apenas para confirmar o recebimento de {{2}} referente à sua taxa de reserva. Não se preocupe, {{3}} está garantida. Muito obrigada! 💜
+```
+
+| Var | Conteúdo | Exemplo |
+|-----|----------|---------|
+| `{{1}}` | primeiro nome de quem está na conversa | `Daniella` |
+| `{{2}}` | valor recebido | `R$ 100,00` |
+| `{{3}}` | `sua consulta` ou `a consulta de <paciente>` | `a consulta de Bento` |
+
+### `pagamento_consulta_recebido`
+
+```
+Olá, {{1}}! 😊
+Passando apenas para confirmar o recebimento de {{2}} referente {{3}}. Está tudo certo agora, muito obrigada! 💜
+```
+
+| Var | Conteúdo | Exemplo |
+|-----|----------|---------|
+| `{{1}}` | primeiro nome de quem está na conversa | `Ana` |
+| `{{2}}` | valor recebido | `R$ 650,00` |
+| `{{3}}` | `à sua consulta` ou `à consulta de <paciente>` | `à sua consulta` |
+
+---
+
 ## Templates existentes (lembretes de consulta)
 
 Enviados por [`scripts/send_appointment_reminders.py`](../scripts/send_appointment_reminders.py).

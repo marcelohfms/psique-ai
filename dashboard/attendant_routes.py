@@ -298,15 +298,84 @@ class AtendentePagarBody(BaseModel):
     receipt_filename: str = ""  # nome do arquivo no Drive, devolvido pela mesma rota
 
 
-_CONFIRM_TEXT = {
-    "taxa": (
-        "Olá, {paciente}! 👋 Recebemos o pagamento da taxa de reserva da sua consulta "
-        "com {medico}. Sua vaga está garantida! ✅"
-    ),
-    "consulta": (
-        "Olá, {paciente}! 👋 Recebemos o pagamento da sua consulta com {medico}. Obrigado! ✅"
-    ),
+# Templates aprovados na Meta (UTILITY, pt_BR), ver docs/whatsapp-templates.md.
+# Fora da janela de 24h o WhatsApp descarta texto livre em silêncio, então a
+# confirmação vai como template. Dentro dela vai o mesmo texto, como mensagem livre.
+TEMPLATE_PAGAMENTO = {
+    "taxa": "pagamento_taxa_recebido",
+    "consulta": "pagamento_consulta_recebido",
 }
+
+
+def _first_name(name: str | None) -> str:
+    return (name or "").strip().split(" ")[0] if (name or "").strip() else ""
+
+
+def _format_brl(valor: int) -> str:
+    """650 -> 'R$ 650,00'; 1200 -> 'R$ 1.200,00'."""
+    return "R$ " + f"{valor:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+
+
+def payment_confirmation(tipo: str, valor: int, contact_first: str,
+                         patient_first: str | None) -> tuple[str, dict[str, str], str]:
+    """(nome do template, body_params, texto) da confirmação de pagamento.
+
+    `patient_first` é None quando quem está na conversa é o próprio paciente.
+    Quando é um terceiro (ex.: a mãe), a mensagem cita o paciente pelo nome.
+    O texto é o corpo do template já preenchido: vai como mensagem livre dentro
+    da janela e como `content` (registro no Chatwoot) fora dela."""
+    valor_str = _format_brl(valor)
+    if tipo == "taxa":
+        consulta = f"a consulta de {patient_first}" if patient_first else "sua consulta"
+        params = {"1": contact_first, "2": valor_str, "3": consulta}
+        text = (
+            f"Olá, {contact_first}! 😊\n"
+            f"Passando apenas para confirmar o recebimento de {valor_str} referente à "
+            f"sua taxa de reserva. Não se preocupe, {consulta} está garantida. Muito obrigada! 💜"
+        )
+    else:
+        consulta = f"à consulta de {patient_first}" if patient_first else "à sua consulta"
+        params = {"1": contact_first, "2": valor_str, "3": consulta}
+        text = (
+            f"Olá, {contact_first}! 😊\n"
+            f"Passando apenas para confirmar o recebimento de {valor_str} referente "
+            f"{consulta}. Está tudo certo agora, muito obrigada! 💜"
+        )
+    return TEMPLATE_PAGAMENTO[tipo], params, text
+
+
+async def _confirmation_names(phone: str, paciente: str) -> tuple[str, str | None]:
+    """(primeiro nome de quem está na conversa, primeiro nome do paciente ou None
+    se for a mesma pessoa). Sem contato no banco, trata como o próprio paciente
+    (comportamento antigo da confirmação)."""
+    patient_first = _first_name(paciente)
+    try:
+        resolved = await attendant_db.resolve_contact_and_patients(phone)
+    except Exception:
+        logger.exception("CONFIRM_RESOLVE_FAILED phone=%s", phone)
+        return patient_first, None
+    contact = resolved.get("contact") or {}
+    contact_first = _first_name(contact.get("name"))
+    if not contact_first:
+        return patient_first, None
+    alvo = attendant_db._norm(paciente)
+    for p in resolved.get("patients") or []:
+        if attendant_db._norm(p.get("name")) == alvo:
+            is_self = bool((p.get("link") or {}).get("is_self"))
+            return contact_first, (None if is_self else patient_first)
+    # Paciente não achado entre os vínculos: compara os nomes, como o lembrete de taxa.
+    same = attendant_db._norm(contact_first) == attendant_db._norm(patient_first)
+    return contact_first, (None if same else patient_first)
+
+
+async def _send_payment_confirmation(conversation_id: int, phone: str, tipo: str,
+                                     valor: int, paciente: str) -> None:
+    contact_first, patient_first = await _confirmation_names(phone, paciente)
+    template, params, text = payment_confirmation(tipo, valor, contact_first, patient_first)
+    if await attendant_db.window_open(phone):
+        await chatwoot_client.send_confirmation_message(conversation_id, text)
+    else:
+        await chatwoot_client.send_template_message(conversation_id, template, params, text)
 
 
 @router.get("/pagamentos")
@@ -351,8 +420,9 @@ async def pagar(appointment_id: str, body: AtendentePagarBody, _: None = Depends
 
     if body.conversation_id is not None:
         try:
-            text = _CONFIRM_TEXT[body.tipo].format(paciente=body.paciente, medico=body.medico)
-            await chatwoot_client.send_confirmation_message(body.conversation_id, text)
+            await _send_payment_confirmation(
+                body.conversation_id, body.phone, body.tipo, body.valor, body.paciente,
+            )
         except Exception:
             logger.exception("CONFIRM_MSG_FAILED appt=%s conversation_id=%s",
                              appointment_id, body.conversation_id)

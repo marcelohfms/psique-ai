@@ -25,3 +25,37 @@ async def test_send_confirmation_message_posts_to_chatwoot(monkeypatch):
     assert args[0] == "https://chatwoot.example.com/api/v1/accounts/1/conversations/42/messages"
     assert kwargs["json"] == {"content": "Recebemos seu pagamento!", "message_type": "outgoing"}
     assert kwargs["headers"]["api_access_token"] == "bot-token-123"
+
+
+async def test_send_template_message_posts_template_params(monkeypatch):
+    monkeypatch.setenv("CHATWOOT_BASE_URL", "https://chatwoot.example.com/")
+    monkeypatch.setenv("CHATWOOT_ACCOUNT_ID", "1")
+    monkeypatch.setenv("CHATWOOT_AGENT_BOT_TOKEN", "bot-token-123")
+
+    mock_response = MagicMock()
+    mock_response.raise_for_status = MagicMock()
+    mock_post = AsyncMock(return_value=mock_response)
+
+    mock_client = MagicMock()
+    mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+    mock_client.__aexit__ = AsyncMock(return_value=False)
+    mock_client.post = mock_post
+
+    params = {"1": "Ana", "2": "R$ 100,00", "3": "sua consulta"}
+    with patch("chatwoot_client.httpx.AsyncClient", return_value=mock_client):
+        await chatwoot_client.send_template_message(42, "pagamento_taxa_recebido", params, "texto")
+
+    args, kwargs = mock_post.call_args
+    assert args[0] == "https://chatwoot.example.com/api/v1/accounts/1/conversations/42/messages"
+    assert kwargs["json"] == {
+        "content": "texto",
+        "message_type": "outgoing",
+        "private": False,
+        "template_params": {
+            "name": "pagamento_taxa_recebido",
+            "category": "UTILITY",
+            "language": "pt_BR",
+            "processed_params": {"body": params},
+        },
+    }
+    mock_response.raise_for_status.assert_called_once()
