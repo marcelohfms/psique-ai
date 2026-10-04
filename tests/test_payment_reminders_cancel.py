@@ -982,3 +982,27 @@ async def test_reminder_recipients_ignora_booking_em_hold():
         out = await spr._reminder_recipients({"contact_id": "cb"}, financeiros)
     # booking em hold é ignorado → cai no fallback dos financeiros (já filtrados)
     assert [c["phone"] for c in out] == ["5581111"]
+
+
+# ── Quando o 1º lembrete vence: prazo próprio x 2h após o agendamento ─────────
+# O prazo prorrogado pela Eva (extend_payment_deadline) mora em
+# payment_deadline_at. Antes ele empurrava created_at para o futuro e escondia a
+# consulta do lembrete de véspera (caso Davi, 04/10/2026).
+
+def test_reminder_due_two_hours_after_booking_without_deadline():
+    now = datetime(2026, 10, 4, 12, 0, tzinfo=TZ)
+    assert spr._reminder_due({"created_at": "2026-10-04T12:00:00+00:00"}, now)  # 9h Recife
+    assert not spr._reminder_due({"created_at": "2026-10-04T14:30:00+00:00"}, now)
+
+
+def test_reminder_waits_for_extended_deadline():
+    now = datetime(2026, 10, 4, 12, 0, tzinfo=TZ)
+    appt = {"created_at": "2026-09-11T14:03:00+00:00",
+            "payment_deadline_at": "2026-10-05T10:00:00+00:00"}
+    assert not spr._reminder_due(appt, now)
+    assert spr._reminder_due(appt, datetime(2026, 10, 5, 7, 0, tzinfo=TZ))
+
+
+def test_appt_select_includes_payment_deadline_at():
+    import inspect
+    assert "payment_deadline_at" in inspect.getsource(spr.main)

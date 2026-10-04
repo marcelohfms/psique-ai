@@ -4824,7 +4824,7 @@ async def extend_payment_deadline(
     """Estende o prazo de pagamento da taxa de reserva quando o paciente pede mais tempo.
 
     Use quando o paciente disser que vai pagar mais tarde, amanhã, em X horas, etc.
-    O lembrete automático será reenviado 2h antes do prazo e o cancelamento ocorrerá
+    O lembrete automático será reenviado no prazo e o cancelamento ocorrerá
     2h após o lembrete, se não pago.
 
     deadline_iso: data e hora limite para pagamento em ISO 8601 com fuso (ex: '2026-06-26T10:00:00-03:00').
@@ -4866,16 +4866,15 @@ async def extend_payment_deadline(
     if not appt:
         return "Não encontrei consulta agendada com taxa de reserva pendente para este paciente."
 
-    # Parse deadline and compute new created_at (deadline - 2h so reminder fires at deadline)
     try:
         deadline_dt = datetime.fromisoformat(deadline_iso)
     except ValueError:
         return f"Formato de data inválido: {deadline_iso}. Use ISO 8601 (ex: '2026-06-26T10:00:00-03:00')."
 
-    new_created_at = (deadline_dt - timedelta(hours=2)).isoformat()
-
+    # Prazo em coluna própria: mexer em created_at escondia a consulta do
+    # lembrete de véspera, que só lembra consultas criadas há mais de 12h (caso Davi).
     await client.from_("appointments").update({
-        "created_at": new_created_at,
+        "payment_deadline_at": deadline_dt.isoformat(),
         "payment_reminder_sent_at": None,
     }).eq("appointment_id", appt["appointment_id"]).execute()
 
