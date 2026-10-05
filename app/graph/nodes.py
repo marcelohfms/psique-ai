@@ -1,6 +1,6 @@
 import os
 import re as _re_mod
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 from langchain_openai import ChatOpenAI
 from langchain_core.messages import SystemMessage, AIMessage
@@ -24,7 +24,7 @@ from app.graph.tools import (
 )
 from app.graph.prompts import COLLECT_SYSTEM, MINOR_RULE, MINOR_RETURNING_RULE, ADULT_RULE, GUARDIAN_RULE, EXISTING_PATIENT_SYSTEM, NEW_PATIENT_SYSTEM, CANCELLATION_RULES, MODALITY_CHANGE_RULE, CLINIC_ADDRESS, CLINIC_ADDRESS_TEXT, get_doctors_info, sanitize_clinic_address, get_booking_fee_rule, MEDICAL_LIMITS_RULE, AGE_EXCEPTION_RULE, DOCTOR_CORRECTION_RULE, EMAIL_RULE, get_pricing_rules, ATTENDANT_INSTRUCTION_RULE, get_pricing_exception_rule, CORRECT_PIX_KEY, SOCIAL_NAME_RULE, MINOR_FIRST_CONSULT_INFO, MINOR_RULE_SCHEDULING_ONLY, NO_REPEAT_ANSWER_RULE
 from app.whatsapp import send_text
-from app.database import upsert_user, log_event, get_upcoming_appointments, get_user_by_phone, get_users_by_phone, DOCTOR_IDS, DOCTOR_NAMES, save_message, get_last_assistant_message_time, is_registration_complete, missing_registration_field
+from app.database import upsert_user, log_event, get_events_by_type, get_upcoming_appointments, get_user_by_phone, get_users_by_phone, DOCTOR_IDS, DOCTOR_NAMES, save_message, get_last_assistant_message_time, is_registration_complete, missing_registration_field
 from app.chatwoot import get_conversation_id, add_private_note
 from app.utils import looks_like_name
 
@@ -374,6 +374,48 @@ def _eva_denies_shift(text: str) -> bool:
     mentions_shift = "tarde" in low or "noite" in low
     has_negation = any(m in low for m in _NO_AVAIL_MARKERS)
     return mentions_shift and has_negation and has_context
+
+
+# ── Lista de horários copiada de oferta antiga ───────────────────────────────
+# Caso Juliana/Bento (5581999713131, 05/10/2026): ao retomar com "Eva, continue o
+# agendamento", a Eva reenviou os horários de 08/10 oferecidos 27 dias antes,
+# copiados do histórico, sem chamar get_available_slots — e 08/10 já estava lotado.
+# Estes helpers alimentam o GUARD_STALE_SLOTS em patient_agent.
+
+STALE_SLOT_OFFER_MAX_AGE = timedelta(hours=2)
+_SLOT_OFFER_MARKERS = ("prefere", "disponív", "disponiv", "vaga", "opç", "opc", "escolh", "melhor")
+_SLOT_TIME_RE = _re_mod.compile(r"\b(\d{1,2}):(\d{2})\b")
+
+
+def _looks_like_slot_offer(text: str) -> bool:
+    """True quando o texto oferece uma lista de horários: 2+ horários distintos
+    (06h–21h) num contexto de oferta. Um horário só é resumo de confirmação."""
+    if not text:
+        return False
+    times = {
+        (int(m.group(1)), int(m.group(2)))
+        for m in _SLOT_TIME_RE.finditer(text)
+        if 6 <= int(m.group(1)) <= 21
+    }
+    if len(times) < 2:
+        return False
+    low = text.lower()
+    return any(m in low for m in _SLOT_OFFER_MARKERS)
+
+
+async def _last_slot_offer_is_stale(phone: str, now: datetime) -> bool:
+    """True se o último slots_offered do telefone tem mais de STALE_SLOT_OFFER_MAX_AGE
+    ou não existe (sem prova de que a lista é recente, melhor buscar de novo)."""
+    events = await get_events_by_type(phone, "slots_offered", limit=1)
+    if not events:
+        return True
+    try:
+        ts = datetime.fromisoformat(str(events[0]["created_at"]).replace("Z", "+00:00"))
+    except (KeyError, ValueError):
+        return True
+    if ts.tzinfo is None:
+        ts = ts.replace(tzinfo=timezone.utc)
+    return now - ts > STALE_SLOT_OFFER_MAX_AGE
 
 
 def _detect_debora_insistence(messages: list) -> bool:
@@ -3353,6 +3395,58 @@ async def patient_agent_node(state: ConversationState, config: RunnableConfig) -
                     _combined_shift, state.get("phone"),
                 )
                 response = AIMessage(content="", tool_calls=[_forced_ns])
+
+    # ── Guard: lista de horários copiada de oferta antiga ────────────────────
+    # A Eva reaproveita do histórico horários oferecidos dias antes, sem chamar
+    # get_available_slots, e oferece vaga que já foi ocupada (caso Juliana/Bento,
+    # 05/10/2026). Se a resposta lista horários, a busca não rodou neste turno e a
+    # última oferta real (slots_offered) é velha, reinjeta get_available_slots com
+    # os argumentos da última busca; o ToolNode roda e a LLM redige com dado real.
+    # Vale também em silent_mode: a retomada pela atendente foi justamente o caso.
+    # Uma vez por turno: na volta do ToolNode a busca já consta no turno.
+    if (
+        not response.tool_calls
+        and response.content
+        and _last_h_idx is not None
+        and _first_internal_marker_idx(response.content) < 0
+        and _looks_like_slot_offer(str(response.content))
+    ):
+        _turn_msgs_ss = clean_messages[_last_h_idx + 1:]
+        _searched_this_turn = any(
+            tc.get("name") == "get_available_slots"
+            for m in _turn_msgs_ss
+            for tc in (getattr(m, "tool_calls", None) or [])
+        )
+        _last_search_args = None if _searched_this_turn else next(
+            (
+                (tc.get("args") or {})
+                for m in reversed(clean_messages[:_last_h_idx])
+                for tc in (getattr(m, "tool_calls", None) or [])
+                if tc.get("name") == "get_available_slots"
+            ),
+            None,
+        )
+        if (
+            _last_search_args
+            and _last_search_args.get("preferred_day")
+            and await _last_slot_offer_is_stale(state["phone"], datetime.now(timezone.utc))
+        ):
+            import uuid as _uuid_ss
+            _forced_ss = {
+                "name": "get_available_slots",
+                "args": {
+                    "preferred_day": _last_search_args["preferred_day"],
+                    "preferred_shift": _last_search_args.get("preferred_shift", "qualquer"),
+                    "slot_duration_minutes": _last_search_args.get("slot_duration_minutes", 60),
+                },
+                "id": str(_uuid_ss.uuid4()),
+                "type": "tool_call",
+            }
+            _logger.warning(
+                "GUARD_STALE_SLOTS: lista de horários sem busca recente — reinjetando "
+                "get_available_slots(%s) phone=%s", _forced_ss["args"], state.get("phone"),
+            )
+            response = AIMessage(content="", tool_calls=[_forced_ss])
 
     # Only send to WhatsApp when the LLM produces a final text (no tool calls)
     if not response.tool_calls and response.content:
