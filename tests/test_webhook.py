@@ -6,6 +6,8 @@ import json
 import logging
 import time
 import os
+from datetime import datetime
+from zoneinfo import ZoneInfo
 import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -2009,6 +2011,8 @@ _PANEL_CREATED = {
     "appointments": [{"appointment_id": "e1"}],
 }
 _PANEL_SENT = {"sent": ["Ana"], "not_delivered": [], "held": []}
+# Relógio congelado antes de 2026-10-05: build_request recusa horário no passado.
+_PANEL_NOW = datetime(2026, 9, 27, 9, 0, tzinfo=ZoneInfo("America/Recife"))
 
 
 def _panel_patches(check=(), created=None, patient=None):
@@ -2020,6 +2024,7 @@ def _panel_patches(check=(), created=None, patient=None):
         patch("app.panel_booking.send_booking_message", new_callable=AsyncMock, return_value=_PANEL_SENT),
         patch("app.panel_booking.message_preview", new_callable=AsyncMock,
               return_value={"text": "t", "recipients": [], "held": []}),
+        patch("app.panel_booking._now", return_value=_PANEL_NOW),
     ]
 
 
