@@ -888,6 +888,18 @@ async def test_payment_confirmation_falha_no_envio_propaga():
 
 
 @pytest.mark.asyncio
+async def test_isencao_fora_da_janela_manda_template_aprovado():
+    stack, m = _pay_patches(window=False)
+    params = {"1": "Juliana", "2": "a consulta de Bento", "3": "Dr. Júlio"}
+    with stack:
+        status, payload = await pb.send_payment_confirmation(
+            {**_PAY_BODY, "template": "isencao_taxa_reserva", "params": params})
+    assert payload == {"sent": True, "via": "template"}
+    m["tpl"].assert_awaited_once_with(
+        107, "isencao_taxa_reserva", "pt_BR", "UTILITY", params, _PAY_BODY["text"])
+
+
+@pytest.mark.asyncio
 async def test_isencao_sem_template_dentro_da_janela_manda_texto():
     stack, m = _pay_patches(window=True)
     with stack:

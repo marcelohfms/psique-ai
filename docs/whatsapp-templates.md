@@ -90,6 +90,31 @@ Passando apenas para confirmar o recebimento de {{2}} referente {{3}}. Está tud
 
 ---
 
+## Isenção da taxa de reserva (`isencao_taxa_reserva`)
+
+Enviado quando a atendente clica em "Isentar taxa" no painel
+(`POST /api/atendente/pagamentos/{id}/isentar`, ver
+[`dashboard/attendant_routes.py`](../dashboard/attendant_routes.py)::`waiver_confirmation`).
+O dashboard pede à Eva (`/admin/panel/payment-confirmation`), que manda texto livre
+dentro da janela de 24h e o template fora dela. Submetido à Meta em 05/10/2026.
+
+- **Categoria:** Utility (Utilidade) → subtipo **Mensagem padrão**
+- **Idioma:** `pt_BR`
+- **Cabeçalho / Rodapé / Botões:** nenhum
+
+```
+Olá, {{1}}! 😊
+A taxa de reserva para {{2}} com {{3}} foi isentada. Não é necessário nenhum pagamento antecipado.
+```
+
+| Var | Conteúdo | Exemplo |
+|-----|----------|---------|
+| `{{1}}` | primeiro nome de quem está na conversa | `Juliana` |
+| `{{2}}` | `sua consulta` ou `a consulta de <paciente>` | `a consulta de Bento` |
+| `{{3}}` | médico(a) | `Dr. Júlio` |
+
+---
+
 ## Templates existentes (lembretes de consulta)
 
 Enviados por [`scripts/send_appointment_reminders.py`](../scripts/send_appointment_reminders.py).

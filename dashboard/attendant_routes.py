@@ -394,13 +394,21 @@ async def _send_payment_confirmation(phone: str, tipo: str, valor: int, paciente
     return await _send_via_eva(phone, text, template, params)
 
 
-def waiver_text(contact_first: str, patient_first: str | None, medico: str) -> str:
+TEMPLATE_ISENCAO = "isencao_taxa_reserva"  # ver docs/whatsapp-templates.md
+
+
+def waiver_confirmation(contact_first: str, patient_first: str | None,
+                        medico: str) -> tuple[str, dict[str, str], str]:
+    """(template, body_params, texto) do aviso de isenção da taxa. O texto é o
+    corpo do template já preenchido, igual a payment_confirmation."""
     consulta = f"a consulta de {patient_first}" if patient_first else "sua consulta"
-    return (
+    params = {"1": contact_first, "2": consulta, "3": medico}
+    text = (
         f"Olá, {contact_first}! 😊\n"
         f"A taxa de reserva para {consulta} com {medico} foi isentada. "
         f"Não é necessário nenhum pagamento antecipado."
     )
+    return TEMPLATE_ISENCAO, params, text
 
 
 @router.get("/pagamentos")
@@ -566,7 +574,8 @@ async def isentar(appointment_id: str, body: AtendenteIsentarBody, _: None = Dep
 
     try:
         contact_first, patient_first = await _confirmation_names(body.phone, body.paciente)
-        confirmacao = await _send_via_eva(body.phone, waiver_text(contact_first, patient_first, body.medico))
+        template, params, text = waiver_confirmation(contact_first, patient_first, body.medico)
+        confirmacao = await _send_via_eva(body.phone, text, template, params)
     except Exception:
         confirmacao = "falhou"
         logger.exception("CONFIRM_MSG_FAILED appt=%s phone=%s", appointment_id, body.phone)
