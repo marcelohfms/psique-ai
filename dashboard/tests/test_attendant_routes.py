@@ -716,6 +716,113 @@ def test_pagar_repassa_drive_link_para_mark_paid(client, monkeypatch):
     assert calls["receipt_filename"] == "Natalia_01-07-2026_R$550.pdf"
 
 
+# ── Comprovante + registro numa única requisição ─────────────────────────────
+# Caso Bento/Juliana (05/10/2026): o upload ia numa chamada e o registro em outra;
+# a segunda se perdeu, o arquivo ficou no Drive e a taxa seguiu em aberto.
+
+_FORM_PAGAR = {"tipo": "taxa", "valor": "100", "forma_pagamento": "PIX",
+               "paciente": "Bento", "medico": "Dr. Júlio", "data_hora": "05/11/2026 14:00",
+               "phone": "5581999713131", "conversation_id": "107"}
+
+
+def _pagar_com_comprovante(client, data=None, with_file=True):
+    files = {"file": ("comprovante.jpg", b"img", "image/jpeg")} if with_file else None
+    return client.post(
+        "/api/atendente/pagamentos/a1/pagar-com-comprovante",
+        params={"token": "test-token"},
+        data=data or _FORM_PAGAR,
+        files=files,
+    )
+
+
+@pytest.fixture
+def pagar_fakes(monkeypatch):
+    calls = {"log": []}
+    async def fake_get_client():
+        return object()
+    async def fake_upload(patient_name, appointment_dt, amount, file_bytes, mimetype):
+        calls["upload"] = (patient_name, appointment_dt, amount, file_bytes)
+        return "https://drive.google.com/file/d/xyz/view", "Bento_05-11-2026_R$100.jpg"
+    async def fake_mark_paid(_client, appointment_id, tipo, valor, forma_pagamento,
+                              paciente, medico, data_hora, phone, drive_link="",
+                              receipt_filename=""):
+        calls["mark_paid"] = (appointment_id, tipo, valor, drive_link, receipt_filename)
+    async def fake_send_confirmation(conversation_id, text):
+        calls["confirm"] = conversation_id
+    async def fake_log(event_type, phone, metadata):
+        calls["log"].append((event_type, metadata))
+
+    monkeypatch.setattr(attendant_routes, "get_client", fake_get_client)
+    monkeypatch.setattr(payments, "upload_comprovante", fake_upload)
+    monkeypatch.setattr(payments, "mark_paid", fake_mark_paid)
+    monkeypatch.setattr(chatwoot_client, "send_confirmation_message", fake_send_confirmation)
+    monkeypatch.setattr(attendant_db, "log_event", fake_log)
+    return calls
+
+
+def test_pagar_com_comprovante_requires_token(client):
+    r = client.post("/api/atendente/pagamentos/a1/pagar-com-comprovante", data=_FORM_PAGAR)
+    assert r.status_code == 401
+
+
+def test_pagar_com_comprovante_sobe_e_registra_junto(client, pagar_fakes):
+    r = _pagar_com_comprovante(client)
+    assert r.status_code == 200
+    assert pagar_fakes["upload"] == ("Bento", "05/11/2026 14:00", "100", b"img")
+    assert pagar_fakes["mark_paid"] == (
+        "a1", "taxa", 100, "https://drive.google.com/file/d/xyz/view", "Bento_05-11-2026_R$100.jpg",
+    )
+    assert pagar_fakes["confirm"] == 107
+    assert pagar_fakes["log"][-1][0] == "attendant_pagamento_registrado"
+
+
+def test_pagar_com_comprovante_sem_arquivo_registra_sem_link(client, pagar_fakes):
+    r = _pagar_com_comprovante(client, with_file=False)
+    assert r.status_code == 200
+    assert "upload" not in pagar_fakes
+    assert pagar_fakes["mark_paid"][3:] == ("", "")
+
+
+def test_pagar_com_comprovante_falha_no_drive_nao_registra(client, pagar_fakes, monkeypatch):
+    async def fake_upload(*a, **k):
+        raise RuntimeError("Drive fora")
+    monkeypatch.setattr(payments, "upload_comprovante", fake_upload)
+    r = _pagar_com_comprovante(client)
+    assert r.status_code == 502
+    assert "Nada foi registrado" in r.json()["detail"]
+    assert "mark_paid" not in pagar_fakes
+
+
+def test_pagar_com_comprovante_falha_no_registro_avisa_e_loga(client, pagar_fakes, monkeypatch):
+    async def fake_mark_paid(*a, **k):
+        raise RuntimeError("Supabase fora")
+    monkeypatch.setattr(payments, "mark_paid", fake_mark_paid)
+    r = _pagar_com_comprovante(client)
+    assert r.status_code == 500
+    assert "comprovante foi salvo" in r.json()["detail"]
+    assert "NÃO foi registrado" in r.json()["detail"]
+    event, meta = pagar_fakes["log"][-1]
+    assert event == "attendant_pagamento_falhou"
+    assert meta["drive_link"] == "https://drive.google.com/file/d/xyz/view"
+
+
+def test_pagar_com_comprovante_falha_so_no_log_ainda_responde_ok(client, pagar_fakes, monkeypatch):
+    """Pagamento já gravado: erro só no log não pode virar 'NÃO registrado',
+    senão a atendente tenta de novo e duplica a linha da planilha."""
+    async def fake_log(*a, **k):
+        raise RuntimeError("events fora")
+    monkeypatch.setattr(attendant_db, "log_event", fake_log)
+    r = _pagar_com_comprovante(client)
+    assert r.status_code == 200
+    assert "mark_paid" in pagar_fakes
+
+
+def test_pagar_com_comprovante_tipo_invalido_nao_sobe_arquivo(client, pagar_fakes):
+    r = _pagar_com_comprovante(client, data={**_FORM_PAGAR, "tipo": "outro"})
+    assert r.status_code == 400
+    assert "upload" not in pagar_fakes
+
+
 # ── No-show (falta) ─────────────────────────────────────────────────────────
 
 

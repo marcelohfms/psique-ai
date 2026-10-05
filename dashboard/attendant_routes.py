@@ -404,12 +404,7 @@ async def upload_comprovante(
     return {"drive_link": drive_link, "receipt_filename": filename}
 
 
-@router.post("/pagamentos/{appointment_id}/pagar")
-async def pagar(appointment_id: str, body: AtendentePagarBody, _: None = Depends(verify_token)):
-    if body.tipo not in ("taxa", "consulta"):
-        raise HTTPException(status_code=400, detail="tipo deve ser 'taxa' ou 'consulta'")
-
-    await _assert_appointment_scope(body.phone, appointment_id)
+async def _registrar_pagamento(appointment_id: str, body: AtendentePagarBody) -> None:
     client = await get_client()
     await payments.mark_paid(
         client, appointment_id, body.tipo, body.valor, body.forma_pagamento,
@@ -427,9 +422,89 @@ async def pagar(appointment_id: str, body: AtendentePagarBody, _: None = Depends
             logger.exception("CONFIRM_MSG_FAILED appt=%s conversation_id=%s",
                              appointment_id, body.conversation_id)
 
-    await attendant_db.log_event("attendant_pagamento_registrado", body.phone, {
-        "appointment_id": appointment_id, "tipo": body.tipo, "valor": body.valor,
-    })
+    # O pagamento já está gravado aqui; uma falha só no log não pode virar
+    # "NÃO registrado" para a atendente, senão ela tenta de novo e duplica.
+    try:
+        await attendant_db.log_event("attendant_pagamento_registrado", body.phone, {
+            "appointment_id": appointment_id, "tipo": body.tipo, "valor": body.valor,
+        })
+    except Exception:
+        logger.exception("LOG_EVENT_FAILED appt=%s", appointment_id)
+
+
+@router.post("/pagamentos/{appointment_id}/pagar")
+async def pagar(appointment_id: str, body: AtendentePagarBody, _: None = Depends(verify_token)):
+    if body.tipo not in ("taxa", "consulta"):
+        raise HTTPException(status_code=400, detail="tipo deve ser 'taxa' ou 'consulta'")
+
+    await _assert_appointment_scope(body.phone, appointment_id)
+    await _registrar_pagamento(appointment_id, body)
+    return {"ok": True}
+
+
+@router.post("/pagamentos/{appointment_id}/pagar-com-comprovante")
+async def pagar_com_comprovante(
+    appointment_id: str,
+    tipo: str = Form(...),
+    valor: int = Form(...),
+    forma_pagamento: str = Form(...),
+    paciente: str = Form(...),
+    medico: str = Form(...),
+    data_hora: str = Form(...),
+    phone: str = Form(...),
+    conversation_id: int | None = Form(default=None),
+    file: UploadFile | None = File(default=None),
+    _: None = Depends(verify_token),
+):
+    """Sobe o comprovante (se houver) e registra o pagamento numa única requisição.
+
+    Antes eram duas chamadas do navegador (/comprovante e depois /pagar). Se a
+    segunda se perdia, o arquivo ficava no Drive mas a taxa seguia em aberto, sem
+    linha na planilha, e o cron cobrava o paciente (caso Bento/Juliana, 05/10/2026).
+    Agora o servidor faz as duas coisas e, se o registro falhar depois do upload,
+    responde com erro dizendo exatamente isso e deixa um evento para auditoria.
+    """
+    if tipo not in ("taxa", "consulta"):
+        raise HTTPException(status_code=400, detail="tipo deve ser 'taxa' ou 'consulta'")
+
+    await _assert_appointment_scope(phone, appointment_id)
+
+    drive_link, receipt_filename = "", ""
+    if file is not None and file.filename:
+        content = await file.read()
+        mimetype = file.content_type or "image/jpeg"
+        try:
+            drive_link, receipt_filename = await payments.upload_comprovante(
+                paciente, data_hora, str(valor), content, mimetype,
+            )
+        except Exception:
+            logger.exception("UPLOAD_COMPROVANTE_FAILED appt=%s paciente=%s", appointment_id, paciente)
+            raise HTTPException(
+                status_code=502,
+                detail="Falha ao enviar o comprovante ao Drive. Nada foi registrado; tente de novo.",
+            )
+
+    body = AtendentePagarBody(
+        tipo=tipo, valor=valor, forma_pagamento=forma_pagamento, paciente=paciente,
+        medico=medico, data_hora=data_hora, phone=phone, conversation_id=conversation_id,
+        drive_link=drive_link, receipt_filename=receipt_filename,
+    )
+    try:
+        await _registrar_pagamento(appointment_id, body)
+    except Exception:
+        logger.exception("ATTENDANT_PAGAMENTO_FAILED appt=%s drive_link=%s", appointment_id, drive_link)
+        try:
+            await attendant_db.log_event("attendant_pagamento_falhou", phone, {
+                "appointment_id": appointment_id, "tipo": tipo, "valor": valor,
+                "drive_link": drive_link,
+            })
+        except Exception:
+            logger.exception("LOG_EVENT_FAILED appt=%s", appointment_id)
+        detail = (
+            "O comprovante foi salvo no Drive, mas o pagamento NÃO foi registrado. Tente de novo."
+            if drive_link else "O pagamento NÃO foi registrado. Tente de novo."
+        )
+        raise HTTPException(status_code=500, detail=detail)
     return {"ok": True}
 
 
