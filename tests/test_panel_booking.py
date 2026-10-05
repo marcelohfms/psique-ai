@@ -806,3 +806,91 @@ async def test_create_notify_clinic_default_emails():
     client, _ = _sb([])
     _, mocks = await _run(_req(), client)
     mocks[5].assert_called_once()
+
+
+# ── Confirmação de pagamento pedida pelo painel ──────────────────────────────
+# O dashboard postava direto no Chatwoot e a mensagem nunca saía (caso Bento,
+# 05/10/2026). Agora o painel pede à Eva, que tem as credenciais certas.
+
+_RECEIPT_ROW = {"created_at": "x", "content": "[imagem]: COMPROVANTE DE PAGAMENTO: Taxa de "
+                "Reserva R$ 100 — registrado pela atendente [drive_link:https://d]"}
+_PAY_BODY = {"phone": "5581999713131", "template": "pagamento_taxa_recebido",
+             "params": {"1": "Juliana", "2": "R$ 100,00", "3": "a consulta de Bento"},
+             "text": "Olá, Juliana! 😊\nPassando apenas para confirmar..."}
+
+
+@pytest.mark.asyncio
+async def test_window_open_ignora_comprovante_anexado_pela_atendente():
+    """mark_paid grava o comprovante do painel como role='user' logo antes da
+    confirmação; sem o filtro a janela parecia sempre aberta e o texto livre
+    seria descartado pela Meta fora das 24h."""
+    client, _ = _sb([_RECEIPT_ROW])
+    with patch("app.panel_booking.get_supabase", AsyncMock(return_value=client)):
+        assert await pb._window_open("5581999713131") is False
+
+
+@pytest.mark.asyncio
+async def test_window_open_com_mensagem_do_contato():
+    client, _ = _sb([_RECEIPT_ROW, {"created_at": "x", "content": "Obrigada"}])
+    with patch("app.panel_booking.get_supabase", AsyncMock(return_value=client)):
+        assert await pb._window_open("5581999713131") is True
+
+
+def _pay_patches(window: bool):
+    stack = ExitStack()
+    m = {
+        "window": stack.enter_context(patch("app.panel_booking._window_open", AsyncMock(return_value=window))),
+        "send_text": stack.enter_context(patch("app.panel_booking.send_text", AsyncMock())),
+        "save": stack.enter_context(patch("app.panel_booking.save_message", AsyncMock())),
+        "conv": stack.enter_context(patch("app.chatwoot.find_or_create_conversation", AsyncMock(return_value=107))),
+        "tpl": stack.enter_context(patch("app.chatwoot.send_template_message", AsyncMock())),
+    }
+    graph = MagicMock()
+    graph.chatbot.aget_state = AsyncMock(return_value=MagicMock(values={"stage": "patient_agent"}))
+    graph.chatbot.aupdate_state = AsyncMock()
+    m["graph"] = graph
+    stack.enter_context(patch("app.graph.graph", graph))
+    return stack, m
+
+
+@pytest.mark.asyncio
+async def test_payment_confirmation_dentro_da_janela_manda_texto():
+    stack, m = _pay_patches(window=True)
+    with stack:
+        status, payload = await pb.send_payment_confirmation(dict(_PAY_BODY))
+    assert (status, payload) == (200, {"sent": True, "via": "texto"})
+    m["send_text"].assert_awaited_once_with("5581999713131@s.whatsapp.net", _PAY_BODY["text"])
+    m["tpl"].assert_not_awaited()
+    m["save"].assert_awaited_once_with("5581999713131@s.whatsapp.net", "assistant", _PAY_BODY["text"])
+    m["graph"].chatbot.aupdate_state.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_payment_confirmation_fora_da_janela_manda_template():
+    stack, m = _pay_patches(window=False)
+    with stack:
+        status, payload = await pb.send_payment_confirmation(dict(_PAY_BODY))
+    assert payload["via"] == "template"
+    m["send_text"].assert_not_awaited()
+    m["tpl"].assert_awaited_once_with(
+        107, "pagamento_taxa_recebido", "pt_BR", "UTILITY", _PAY_BODY["params"], _PAY_BODY["text"],
+    )
+
+
+@pytest.mark.asyncio
+async def test_payment_confirmation_falha_no_envio_propaga():
+    """Erro no Chatwoot tem que chegar ao painel (502), não sumir em silêncio."""
+    stack, m = _pay_patches(window=True)
+    m["send_text"].side_effect = RuntimeError("chatwoot fora")
+    with stack, pytest.raises(RuntimeError):
+        await pb.send_payment_confirmation(dict(_PAY_BODY))
+    m["save"].assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("override", [
+    {"phone": ""}, {"text": ""}, {"template": "outro_template"}, {"params": "x"},
+])
+async def test_payment_confirmation_entrada_invalida(override):
+    with pytest.raises(pb.PanelInputError):
+        await pb.send_payment_confirmation({**_PAY_BODY, **override})

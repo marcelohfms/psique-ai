@@ -368,14 +368,17 @@ async def _confirmation_names(phone: str, paciente: str) -> tuple[str, str | Non
     return contact_first, (None if same else patient_first)
 
 
-async def _send_payment_confirmation(conversation_id: int, phone: str, tipo: str,
-                                     valor: int, paciente: str) -> None:
+async def _send_payment_confirmation(phone: str, tipo: str, valor: int, paciente: str) -> None:
+    """Pede à Eva para mandar a confirmação. Ela tem as credenciais do Chatwoot que
+    funcionam e decide entre texto livre (janela de 24h aberta) e template.
+    Antes o dashboard postava direto no Chatwoot e a mensagem nunca saía."""
     contact_first, patient_first = await _confirmation_names(phone, paciente)
     template, params, text = payment_confirmation(tipo, valor, contact_first, patient_first)
-    if await attendant_db.window_open(phone):
-        await chatwoot_client.send_confirmation_message(conversation_id, text)
-    else:
-        await chatwoot_client.send_template_message(conversation_id, template, params, text)
+    status_code, payload = await eva_client.post("/admin/panel/payment-confirmation", {
+        "phone": phone, "template": template, "params": params, "text": text,
+    })
+    if status_code != 200:
+        raise RuntimeError(f"Eva respondeu {status_code}: {payload}")
 
 
 @router.get("/pagamentos")
@@ -404,7 +407,9 @@ async def upload_comprovante(
     return {"drive_link": drive_link, "receipt_filename": filename}
 
 
-async def _registrar_pagamento(appointment_id: str, body: AtendentePagarBody) -> None:
+async def _registrar_pagamento(appointment_id: str, body: AtendentePagarBody) -> str:
+    """Grava o pagamento e manda a confirmação ao contato. Devolve "enviada" ou
+    "falhou" para o painel avisar a atendente quando a mensagem não saiu."""
     client = await get_client()
     await payments.mark_paid(
         client, appointment_id, body.tipo, body.valor, body.forma_pagamento,
@@ -413,14 +418,12 @@ async def _registrar_pagamento(appointment_id: str, body: AtendentePagarBody) ->
         receipt_filename=body.receipt_filename,
     )
 
-    if body.conversation_id is not None:
-        try:
-            await _send_payment_confirmation(
-                body.conversation_id, body.phone, body.tipo, body.valor, body.paciente,
-            )
-        except Exception:
-            logger.exception("CONFIRM_MSG_FAILED appt=%s conversation_id=%s",
-                             appointment_id, body.conversation_id)
+    confirmacao = "enviada"
+    try:
+        await _send_payment_confirmation(body.phone, body.tipo, body.valor, body.paciente)
+    except Exception:
+        confirmacao = "falhou"
+        logger.exception("CONFIRM_MSG_FAILED appt=%s phone=%s", appointment_id, body.phone)
 
     # O pagamento já está gravado aqui; uma falha só no log não pode virar
     # "NÃO registrado" para a atendente, senão ela tenta de novo e duplica.
@@ -430,6 +433,7 @@ async def _registrar_pagamento(appointment_id: str, body: AtendentePagarBody) ->
         })
     except Exception:
         logger.exception("LOG_EVENT_FAILED appt=%s", appointment_id)
+    return confirmacao
 
 
 @router.post("/pagamentos/{appointment_id}/pagar")
@@ -438,8 +442,8 @@ async def pagar(appointment_id: str, body: AtendentePagarBody, _: None = Depends
         raise HTTPException(status_code=400, detail="tipo deve ser 'taxa' ou 'consulta'")
 
     await _assert_appointment_scope(body.phone, appointment_id)
-    await _registrar_pagamento(appointment_id, body)
-    return {"ok": True}
+    confirmacao = await _registrar_pagamento(appointment_id, body)
+    return {"ok": True, "confirmacao": confirmacao}
 
 
 @router.post("/pagamentos/{appointment_id}/pagar-com-comprovante")
@@ -490,7 +494,7 @@ async def pagar_com_comprovante(
         drive_link=drive_link, receipt_filename=receipt_filename,
     )
     try:
-        await _registrar_pagamento(appointment_id, body)
+        confirmacao = await _registrar_pagamento(appointment_id, body)
     except Exception:
         logger.exception("ATTENDANT_PAGAMENTO_FAILED appt=%s drive_link=%s", appointment_id, drive_link)
         try:
@@ -505,7 +509,7 @@ async def pagar_com_comprovante(
             if drive_link else "O pagamento NÃO foi registrado. Tente de novo."
         )
         raise HTTPException(status_code=500, detail=detail)
-    return {"ok": True}
+    return {"ok": True, "confirmacao": confirmacao}
 
 
 @router.post("/pagamentos/{appointment_id}/no-show")

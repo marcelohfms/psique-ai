@@ -6,7 +6,7 @@ do dashboard. NÃO importa app/ (a imagem Docker do dashboard não contém app/)
 import logging
 import unicodedata
 import uuid
-from datetime import date, datetime, timedelta, timezone
+from datetime import date, datetime, timezone
 from zoneinfo import ZoneInfo
 
 from db_client import get_client
@@ -571,32 +571,6 @@ async def get_appointment_patient_id(appointment_id: str) -> str | None:
     )
     rows = res.data or []
     return rows[0]["patient_id"] if rows else None
-
-
-WHATSAPP_WINDOW_HOURS = 24
-
-
-async def window_open(phone: str) -> bool:
-    """True se o contato escreveu nas últimas 24h. Fora disso o Meta descarta
-    texto livre em silêncio e só entrega template aprovado. Mesma regra de
-    scripts/send_payment_reminders._window_open. Erro na consulta = janela
-    fechada (cai no template, que é entregável)."""
-    cutoff = (datetime.now(timezone.utc) - timedelta(hours=WHATSAPP_WINDOW_HOURS)).isoformat()
-    try:
-        client = await get_client()
-        res = (
-            await client.from_("messages")
-            .select("created_at")
-            .in_("phone", _phone_variants(phone))
-            .eq("role", "user")
-            .gte("created_at", cutoff)
-            .limit(1)
-            .execute()
-        )
-        return bool(res.data)
-    except Exception:
-        logger.exception("window_open falhou phone=%s", phone)
-        return False
 
 
 # ── Updates com whitelist de campos ───────────────────────────────────────────

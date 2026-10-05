@@ -1133,7 +1133,11 @@ async function marcarPago(btn) {
     restore();
     return;
   }
-  alert("Pagamento registrado ✅");
+  let res = {};
+  try { res = await r.json(); } catch (_) {}
+  alert(res.confirmacao === "falhou"
+    ? "Pagamento registrado ✅\n\nMas a mensagem de confirmação NÃO foi enviada ao paciente. Avise pela conversa."
+    : "Pagamento registrado ✅ Confirmação enviada ao paciente.");
   card.remove();
 }
 
