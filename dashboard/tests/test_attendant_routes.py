@@ -575,7 +575,8 @@ def test_isentar_registra_e_envia_confirmacao_pela_eva(client, monkeypatch):
     assert calls["mark_fee_waived"] == ("a1", "João", "Dr. Júlio", "10/07/2026 14:00")
     path, body = calls["sent"][0]
     assert path == "/admin/panel/payment-confirmation"
-    assert body["template"] == ""  # não há template aprovado para isenção
+    assert body["template"] == "isencao_taxa_reserva"
+    assert body["params"] == {"1": "João", "2": "sua consulta", "3": "Dr. Júlio"}
     assert "sua consulta com Dr. Júlio foi isentada" in body["text"]
     assert calls["log"][0] == "attendant_taxa_isentada"
 
@@ -588,7 +589,9 @@ def test_isentar_terceiro_cita_o_paciente(client, monkeypatch):
     }
     _isentar_patches(monkeypatch, calls, resolved=resolved)
     _isentar(client, paciente="Bento Libonati")
-    text = calls["sent"][0][1]["text"]
+    body = calls["sent"][0][1]
+    assert body["params"] == {"1": "Juliana", "2": "a consulta de Bento", "3": "Dr. Júlio"}
+    text = body["text"]
     assert text.startswith("Olá, Juliana!")
     assert "a consulta de Bento com Dr. Júlio" in text
 

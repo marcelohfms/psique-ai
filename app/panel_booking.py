@@ -602,7 +602,7 @@ async def handle(body: dict) -> tuple[int, dict]:
     return 200, {"appointments": created["appointments"], "message": msg}
 
 
-_PAYMENT_TEMPLATES = {"pagamento_taxa_recebido", "pagamento_consulta_recebido"}
+_PAYMENT_TEMPLATES = {"pagamento_taxa_recebido", "pagamento_consulta_recebido", "isencao_taxa_reserva"}
 
 
 async def send_payment_confirmation(body: dict) -> tuple[int, dict]:
