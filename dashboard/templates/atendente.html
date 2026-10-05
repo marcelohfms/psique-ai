@@ -1135,9 +1135,7 @@ async function marcarPago(btn) {
   }
   let res = {};
   try { res = await r.json(); } catch (_) {}
-  alert(res.confirmacao === "falhou"
-    ? "Pagamento registrado ✅\n\nMas a mensagem de confirmação NÃO foi enviada ao paciente. Avise pela conversa."
-    : "Pagamento registrado ✅ Confirmação enviada ao paciente.");
+  alert(confirmacaoAviso("Pagamento registrado ✅", res.confirmacao));
   card.remove();
 }
 
@@ -1166,7 +1164,21 @@ async function isentarTaxa(btn) {
     }),
   });
   if (!r.ok) { alert("Erro ao isentar taxa."); btn.disabled = false; return; }
+  let res = {};
+  try { res = await r.json(); } catch (_) {}
+  alert(confirmacaoAviso("Taxa isentada ✅", res.confirmacao));
   card.remove();
+}
+
+// A mensagem ao paciente sai pela Eva; quando não sai, a atendente precisa saber.
+function confirmacaoAviso(feito, confirmacao) {
+  if (confirmacao === "falhou") {
+    return `${feito}\n\nMas a mensagem para o paciente NÃO foi enviada. Avise pela conversa.`;
+  }
+  if (confirmacao === "fora_da_janela") {
+    return `${feito}\n\nO paciente não escreve há mais de 24h, então o WhatsApp não deixa mandar o aviso automático. Avise pela conversa se precisar.`;
+  }
+  return `${feito} Mensagem enviada ao paciente.`;
 }
 // ── 4. Renderizar formulários ───────────────────────────────────────────────
 function field(label, id, value, type = "text") {

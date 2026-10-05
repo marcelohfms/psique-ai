@@ -888,6 +888,27 @@ async def test_payment_confirmation_falha_no_envio_propaga():
 
 
 @pytest.mark.asyncio
+async def test_isencao_sem_template_dentro_da_janela_manda_texto():
+    stack, m = _pay_patches(window=True)
+    with stack:
+        status, payload = await pb.send_payment_confirmation({**_PAY_BODY, "template": "", "params": {}})
+    assert payload == {"sent": True, "via": "texto"}
+    m["send_text"].assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_isencao_sem_template_fora_da_janela_nao_envia():
+    """Texto livre fora das 24h some em silêncio na Meta: não manda e avisa."""
+    stack, m = _pay_patches(window=False)
+    with stack:
+        status, payload = await pb.send_payment_confirmation({**_PAY_BODY, "template": "", "params": {}})
+    assert (status, payload) == (200, {"sent": False, "motivo": "janela_fechada"})
+    m["send_text"].assert_not_awaited()
+    m["tpl"].assert_not_awaited()
+    m["save"].assert_not_awaited()
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("override", [
     {"phone": ""}, {"text": ""}, {"template": "outro_template"}, {"params": "x"},
 ])

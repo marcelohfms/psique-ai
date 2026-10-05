@@ -606,19 +606,21 @@ _PAYMENT_TEMPLATES = {"pagamento_taxa_recebido", "pagamento_consulta_recebido"}
 
 
 async def send_payment_confirmation(body: dict) -> tuple[int, dict]:
-    """Confirmação de pagamento dada pela atendente no painel.
+    """Confirmação de pagamento ou de isenção da taxa dada pela atendente no painel.
 
-    O painel monta o texto e o template (dashboard/attendant_routes.payment_confirmation)
+    O painel monta o texto e o template (opcional) (dashboard/attendant_routes.payment_confirmation)
     e a Eva entrega, porque é ela que tem as credenciais do Chatwoot que funcionam.
     Antes o próprio dashboard postava no Chatwoot e a mensagem nunca saía.
-    Dentro da janela de 24h vai o texto livre; fora dela, o template aprovado.
+    Dentro da janela de 24h vai o texto livre; fora dela, o template aprovado. Sem
+    template e fora da janela, não envia e devolve sent=False.
     """
     phone = (body.get("phone") or "").strip()
     text = (body.get("text") or "").strip()
     template = body.get("template") or ""
     params = body.get("params") or {}
-    if not phone or not text or template not in _PAYMENT_TEMPLATES or not isinstance(params, dict):
-        raise PanelInputError("phone, text, template e params são obrigatórios")
+    if (not phone or not text or not isinstance(params, dict)
+            or (template and template not in _PAYMENT_TEMPLATES)):
+        raise PanelInputError("phone e text são obrigatórios; template, se vier, tem que ser aprovado")
 
     from app.chatwoot import find_or_create_conversation, send_template_message
 
@@ -626,6 +628,10 @@ async def send_payment_confirmation(body: dict) -> tuple[int, dict]:
     if await _window_open(phone):
         await send_text(thread, text)
         via = "texto"
+    elif not template:
+        # Sem template aprovado (ex.: isenção da taxa), texto livre fora da janela
+        # seria descartado pela Meta em silêncio: melhor não mandar e avisar o painel.
+        return 200, {"sent": False, "motivo": "janela_fechada"}
     else:
         conversation_id = await find_or_create_conversation(thread)
         await send_template_message(

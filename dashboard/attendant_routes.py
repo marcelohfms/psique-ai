@@ -14,7 +14,6 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
 import attendant_db
-import chatwoot_client
 import eva_client
 import payments
 import return_reminders
@@ -368,17 +367,40 @@ async def _confirmation_names(phone: str, paciente: str) -> tuple[str, str | Non
     return contact_first, (None if same else patient_first)
 
 
-async def _send_payment_confirmation(phone: str, tipo: str, valor: int, paciente: str) -> None:
-    """Pede à Eva para mandar a confirmação. Ela tem as credenciais do Chatwoot que
-    funcionam e decide entre texto livre (janela de 24h aberta) e template.
-    Antes o dashboard postava direto no Chatwoot e a mensagem nunca saía."""
+async def _send_via_eva(phone: str, text: str, template: str = "",
+                        params: dict[str, str] | None = None) -> str:
+    """Pede à Eva para mandar a mensagem ao contato. Ela tem as credenciais do
+    Chatwoot que funcionam e decide entre texto livre (janela de 24h aberta) e
+    template. Antes o dashboard postava direto no Chatwoot e nada saía.
+
+    Devolve "enviada", "fora_da_janela" (sem template e contato calado há mais de
+    24h) ou "falhou", para o painel avisar a atendente."""
+    try:
+        status_code, payload = await eva_client.post("/admin/panel/payment-confirmation", {
+            "phone": phone, "template": template, "params": params or {}, "text": text,
+        })
+    except Exception:
+        logger.exception("CONFIRM_MSG_FAILED phone=%s", phone)
+        return "falhou"
+    if status_code != 200:
+        logger.error("CONFIRM_MSG_FAILED phone=%s status=%s payload=%s", phone, status_code, payload)
+        return "falhou"
+    return "enviada" if payload.get("sent") else "fora_da_janela"
+
+
+async def _send_payment_confirmation(phone: str, tipo: str, valor: int, paciente: str) -> str:
     contact_first, patient_first = await _confirmation_names(phone, paciente)
     template, params, text = payment_confirmation(tipo, valor, contact_first, patient_first)
-    status_code, payload = await eva_client.post("/admin/panel/payment-confirmation", {
-        "phone": phone, "template": template, "params": params, "text": text,
-    })
-    if status_code != 200:
-        raise RuntimeError(f"Eva respondeu {status_code}: {payload}")
+    return await _send_via_eva(phone, text, template, params)
+
+
+def waiver_text(contact_first: str, patient_first: str | None, medico: str) -> str:
+    consulta = f"a consulta de {patient_first}" if patient_first else "sua consulta"
+    return (
+        f"Olá, {contact_first}! 😊\n"
+        f"A taxa de reserva para {consulta} com {medico} foi isentada. "
+        f"Não é necessário nenhum pagamento antecipado."
+    )
 
 
 @router.get("/pagamentos")
@@ -408,8 +430,8 @@ async def upload_comprovante(
 
 
 async def _registrar_pagamento(appointment_id: str, body: AtendentePagarBody) -> str:
-    """Grava o pagamento e manda a confirmação ao contato. Devolve "enviada" ou
-    "falhou" para o painel avisar a atendente quando a mensagem não saiu."""
+    """Grava o pagamento e manda a confirmação ao contato. Devolve o status do
+    envio (ver _send_via_eva) para o painel avisar quando a mensagem não saiu."""
     client = await get_client()
     await payments.mark_paid(
         client, appointment_id, body.tipo, body.valor, body.forma_pagamento,
@@ -418,9 +440,8 @@ async def _registrar_pagamento(appointment_id: str, body: AtendentePagarBody) ->
         receipt_filename=body.receipt_filename,
     )
 
-    confirmacao = "enviada"
     try:
-        await _send_payment_confirmation(body.phone, body.tipo, body.valor, body.paciente)
+        confirmacao = await _send_payment_confirmation(body.phone, body.tipo, body.valor, body.paciente)
     except Exception:
         confirmacao = "falhou"
         logger.exception("CONFIRM_MSG_FAILED appt=%s phone=%s", appointment_id, body.phone)
@@ -543,21 +564,20 @@ async def isentar(appointment_id: str, body: AtendenteIsentarBody, _: None = Dep
     client = await get_client()
     await payments.mark_fee_waived(client, appointment_id, body.paciente, body.medico, body.data_hora)
 
-    if body.conversation_id is not None:
-        try:
-            text = (
-                f"Olá, {body.paciente}! 👋 A taxa de reserva da sua consulta com {body.medico} "
-                f"foi isentada. Não é necessário nenhum pagamento antecipado. 😊"
-            )
-            await chatwoot_client.send_confirmation_message(body.conversation_id, text)
-        except Exception:
-            logger.exception("CONFIRM_MSG_FAILED appt=%s conversation_id=%s",
-                             appointment_id, body.conversation_id)
+    try:
+        contact_first, patient_first = await _confirmation_names(body.phone, body.paciente)
+        confirmacao = await _send_via_eva(body.phone, waiver_text(contact_first, patient_first, body.medico))
+    except Exception:
+        confirmacao = "falhou"
+        logger.exception("CONFIRM_MSG_FAILED appt=%s phone=%s", appointment_id, body.phone)
 
-    await attendant_db.log_event("attendant_taxa_isentada", body.phone, {
-        "appointment_id": appointment_id,
-    })
-    return {"ok": True}
+    try:
+        await attendant_db.log_event("attendant_taxa_isentada", body.phone, {
+            "appointment_id": appointment_id,
+        })
+    except Exception:
+        logger.exception("LOG_EVENT_FAILED appt=%s", appointment_id)
+    return {"ok": True, "confirmacao": confirmacao}
 
 
 # ── Consultas ─────────────────────────────────────────────────────────────────
