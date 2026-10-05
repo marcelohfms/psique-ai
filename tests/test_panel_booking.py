@@ -11,6 +11,16 @@ from app.database import DOCTOR_IDS
 
 TZ = ZoneInfo("America/Recife")
 MON_9 = datetime(2026, 10, 5, 9, 0, tzinfo=TZ)
+# Relógio congelado antes das datas fixas dos testes: build_request recusa
+# horário no passado, e sem isso os testes quebram quando o calendário real
+# alcança as datas (aconteceu em 05/10/2026).
+FROZEN_NOW = datetime(2026, 9, 27, 9, 0, tzinfo=TZ)
+
+
+@pytest.fixture(autouse=True)
+def _frozen_now():
+    with patch("app.panel_booking._now", return_value=FROZEN_NOW):
+        yield
 
 
 def _sb(rows=None):
