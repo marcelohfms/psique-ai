@@ -4107,6 +4107,49 @@ async def test_request_document_skips_duplicate_within_window():
     mock_email.assert_not_awaited()
 
 
+async def test_nudge_doctor_document_skips_right_after_request():
+    """Paciente pede a receita e completa o pedido em mensagens picadas segundos
+    depois ("Atenta 60", "Fico no aguardo"). O 2º turno lia isso como cobrança e
+    chamava nudge_doctor_document: o médico recebia o e-mail de pedido e, 24s
+    depois, um e-mail de cobrança do mesmo documento (caso Soraia Martins,
+    5587988258374, 05/10/2026). Logo após um pedido/aviso, o nudge não manda
+    e-mail nem grava evento, e orienta a Eva a não dizer que reforçou."""
+    from app.graph.tools import nudge_doctor_document
+    client, events_table, _ = _make_supabase_client_with_recent_doc_event()
+    with patch("app.graph.tools.get_supabase", new_callable=AsyncMock, return_value=client), \
+         patch("app.graph.tools.log_event", new_callable=AsyncMock) as mock_log, \
+         patch("app.email_sender.send_document_nudge_email", new_callable=AsyncMock) as mock_email:
+        result = await nudge_doctor_document.coroutine(
+            patient_message="Atenta 60. Fico no aguardo.",
+            state=_make_state(patient_name="Soraia"),
+            config=CONFIG,
+        )
+    mock_email.assert_not_awaited()
+    mock_log.assert_not_awaited()
+    assert result.startswith("NUDGE_SKIPPED_RECENT")
+    assert "NÃO diga que reforçou" in result
+    # a guarda olha pedido E aviso anteriores
+    events_table.in_.assert_any_call("event_type", ["document_requested", "document_nudge_sent"])
+
+
+async def test_nudge_doctor_document_sends_when_no_recent_request():
+    """Cobrança real (pedido antigo, nada nos últimos minutos) segue mandando o
+    e-mail ao médico e gravando o evento."""
+    from app.graph.tools import nudge_doctor_document
+    client, _, _ = _make_supabase_client()
+    with patch("app.graph.tools.get_supabase", new_callable=AsyncMock, return_value=client), \
+         patch("app.graph.tools.log_event", new_callable=AsyncMock) as mock_log, \
+         patch("app.email_sender.send_document_nudge_email", new_callable=AsyncMock) as mock_email:
+        result = await nudge_doctor_document.coroutine(
+            patient_message="Alguma novidade sobre a receita?",
+            state=_make_state(),
+            config=CONFIG,
+        )
+    assert result == "NUDGE_OK"
+    mock_email.assert_awaited_once()
+    assert mock_log.await_args.args[0] == "document_nudge_sent"
+
+
 async def test_request_document_receita_controlada_registra_e_orienta_retirada():
     """Pedido de emissão de receita controlada (ex.: Ritalina) grava a medicação na
     planilha E responde com a orientação de receita física / retirada presencial.

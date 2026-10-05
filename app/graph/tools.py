@@ -2714,6 +2714,10 @@ async def reschedule_appointment(
 # tipo acontecem horas/dias depois (caso Ian Vittor, 4,5h), então a janela é curta.
 _DOC_DEDUP_WINDOW_MINUTES = 3
 
+# Janela em que nudge_doctor_document não cobra o médico porque um pedido ou
+# aviso de documento acabou de sair (ver a guarda dentro da tool).
+_DOC_NUDGE_COOLDOWN_MINUTES = 10
+
 
 def _document_success_message(document_type: str, is_controlled: bool) -> str:
     """Mensagem de sucesso do request_document, compartilhada entre o registro
@@ -2912,6 +2916,29 @@ async def nudge_doctor_document(
     doctor_id = DOCTOR_IDS.get(doctor_key)
 
     client = await get_supabase()
+
+    # Logo após um pedido (ou aviso) de documento, não é cobrança: é o paciente
+    # completando o pedido em mensagens picadas ("Atenta 60", "Fico no aguardo")
+    # que caem num 2º turno. Sem esta guarda o médico recebia o e-mail do pedido e,
+    # segundos depois, um e-mail de cobrança do mesmo documento (caso Soraia
+    # Martins, 5587988258374, 05/10/2026 — 24s de intervalo). Cobrança real vem
+    # horas/dias depois, então a janela é curta.
+    from datetime import timezone as _tz
+    _nudge_cutoff = (datetime.now(_tz.utc) - timedelta(minutes=_DOC_NUDGE_COOLDOWN_MINUTES)).isoformat()
+    _recent = await client.from_("events").select("id") \
+        .in_("event_type", ["document_requested", "document_nudge_sent"]) \
+        .in_("phone", _phone_variants(phone)) \
+        .gte("created_at", _nudge_cutoff) \
+        .limit(1).execute()
+    if _recent.data:
+        logger.warning("NUDGE_DOC_SKIP_RECENT phone=%s", phone)
+        return (
+            "NUDGE_SKIPPED_RECENT: o pedido deste documento acabou de ser registrado "
+            "e o médico já foi avisado há poucos minutos. NÃO diga que reforçou, cobrou "
+            "ou avisou o médico de novo. Apenas confirme ao paciente, em uma frase curta, "
+            "que o pedido já está registrado e que o documento será enviado para o "
+            "e-mail assim que for emitido."
+        )
 
     # Find most recent pending document for this patient
     phone_clean = phone.replace("@s.whatsapp.net", "")
