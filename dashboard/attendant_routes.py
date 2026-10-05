@@ -14,7 +14,6 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
 import attendant_db
-import chatwoot_client
 import eva_client
 import payments
 import return_reminders
@@ -368,14 +367,40 @@ async def _confirmation_names(phone: str, paciente: str) -> tuple[str, str | Non
     return contact_first, (None if same else patient_first)
 
 
-async def _send_payment_confirmation(conversation_id: int, phone: str, tipo: str,
-                                     valor: int, paciente: str) -> None:
+async def _send_via_eva(phone: str, text: str, template: str = "",
+                        params: dict[str, str] | None = None) -> str:
+    """Pede à Eva para mandar a mensagem ao contato. Ela tem as credenciais do
+    Chatwoot que funcionam e decide entre texto livre (janela de 24h aberta) e
+    template. Antes o dashboard postava direto no Chatwoot e nada saía.
+
+    Devolve "enviada", "fora_da_janela" (sem template e contato calado há mais de
+    24h) ou "falhou", para o painel avisar a atendente."""
+    try:
+        status_code, payload = await eva_client.post("/admin/panel/payment-confirmation", {
+            "phone": phone, "template": template, "params": params or {}, "text": text,
+        })
+    except Exception:
+        logger.exception("CONFIRM_MSG_FAILED phone=%s", phone)
+        return "falhou"
+    if status_code != 200:
+        logger.error("CONFIRM_MSG_FAILED phone=%s status=%s payload=%s", phone, status_code, payload)
+        return "falhou"
+    return "enviada" if payload.get("sent") else "fora_da_janela"
+
+
+async def _send_payment_confirmation(phone: str, tipo: str, valor: int, paciente: str) -> str:
     contact_first, patient_first = await _confirmation_names(phone, paciente)
     template, params, text = payment_confirmation(tipo, valor, contact_first, patient_first)
-    if await attendant_db.window_open(phone):
-        await chatwoot_client.send_confirmation_message(conversation_id, text)
-    else:
-        await chatwoot_client.send_template_message(conversation_id, template, params, text)
+    return await _send_via_eva(phone, text, template, params)
+
+
+def waiver_text(contact_first: str, patient_first: str | None, medico: str) -> str:
+    consulta = f"a consulta de {patient_first}" if patient_first else "sua consulta"
+    return (
+        f"Olá, {contact_first}! 😊\n"
+        f"A taxa de reserva para {consulta} com {medico} foi isentada. "
+        f"Não é necessário nenhum pagamento antecipado."
+    )
 
 
 @router.get("/pagamentos")
@@ -404,12 +429,9 @@ async def upload_comprovante(
     return {"drive_link": drive_link, "receipt_filename": filename}
 
 
-@router.post("/pagamentos/{appointment_id}/pagar")
-async def pagar(appointment_id: str, body: AtendentePagarBody, _: None = Depends(verify_token)):
-    if body.tipo not in ("taxa", "consulta"):
-        raise HTTPException(status_code=400, detail="tipo deve ser 'taxa' ou 'consulta'")
-
-    await _assert_appointment_scope(body.phone, appointment_id)
+async def _registrar_pagamento(appointment_id: str, body: AtendentePagarBody) -> str:
+    """Grava o pagamento e manda a confirmação ao contato. Devolve o status do
+    envio (ver _send_via_eva) para o painel avisar quando a mensagem não saiu."""
     client = await get_client()
     await payments.mark_paid(
         client, appointment_id, body.tipo, body.valor, body.forma_pagamento,
@@ -418,19 +440,97 @@ async def pagar(appointment_id: str, body: AtendentePagarBody, _: None = Depends
         receipt_filename=body.receipt_filename,
     )
 
-    if body.conversation_id is not None:
+    try:
+        confirmacao = await _send_payment_confirmation(body.phone, body.tipo, body.valor, body.paciente)
+    except Exception:
+        confirmacao = "falhou"
+        logger.exception("CONFIRM_MSG_FAILED appt=%s phone=%s", appointment_id, body.phone)
+
+    # O pagamento já está gravado aqui; uma falha só no log não pode virar
+    # "NÃO registrado" para a atendente, senão ela tenta de novo e duplica.
+    try:
+        await attendant_db.log_event("attendant_pagamento_registrado", body.phone, {
+            "appointment_id": appointment_id, "tipo": body.tipo, "valor": body.valor,
+        })
+    except Exception:
+        logger.exception("LOG_EVENT_FAILED appt=%s", appointment_id)
+    return confirmacao
+
+
+@router.post("/pagamentos/{appointment_id}/pagar")
+async def pagar(appointment_id: str, body: AtendentePagarBody, _: None = Depends(verify_token)):
+    if body.tipo not in ("taxa", "consulta"):
+        raise HTTPException(status_code=400, detail="tipo deve ser 'taxa' ou 'consulta'")
+
+    await _assert_appointment_scope(body.phone, appointment_id)
+    confirmacao = await _registrar_pagamento(appointment_id, body)
+    return {"ok": True, "confirmacao": confirmacao}
+
+
+@router.post("/pagamentos/{appointment_id}/pagar-com-comprovante")
+async def pagar_com_comprovante(
+    appointment_id: str,
+    tipo: str = Form(...),
+    valor: int = Form(...),
+    forma_pagamento: str = Form(...),
+    paciente: str = Form(...),
+    medico: str = Form(...),
+    data_hora: str = Form(...),
+    phone: str = Form(...),
+    conversation_id: int | None = Form(default=None),
+    file: UploadFile | None = File(default=None),
+    _: None = Depends(verify_token),
+):
+    """Sobe o comprovante (se houver) e registra o pagamento numa única requisição.
+
+    Antes eram duas chamadas do navegador (/comprovante e depois /pagar). Se a
+    segunda se perdia, o arquivo ficava no Drive mas a taxa seguia em aberto, sem
+    linha na planilha, e o cron cobrava o paciente (caso Bento/Juliana, 05/10/2026).
+    Agora o servidor faz as duas coisas e, se o registro falhar depois do upload,
+    responde com erro dizendo exatamente isso e deixa um evento para auditoria.
+    """
+    if tipo not in ("taxa", "consulta"):
+        raise HTTPException(status_code=400, detail="tipo deve ser 'taxa' ou 'consulta'")
+
+    await _assert_appointment_scope(phone, appointment_id)
+
+    drive_link, receipt_filename = "", ""
+    if file is not None and file.filename:
+        content = await file.read()
+        mimetype = file.content_type or "image/jpeg"
         try:
-            await _send_payment_confirmation(
-                body.conversation_id, body.phone, body.tipo, body.valor, body.paciente,
+            drive_link, receipt_filename = await payments.upload_comprovante(
+                paciente, data_hora, str(valor), content, mimetype,
             )
         except Exception:
-            logger.exception("CONFIRM_MSG_FAILED appt=%s conversation_id=%s",
-                             appointment_id, body.conversation_id)
+            logger.exception("UPLOAD_COMPROVANTE_FAILED appt=%s paciente=%s", appointment_id, paciente)
+            raise HTTPException(
+                status_code=502,
+                detail="Falha ao enviar o comprovante ao Drive. Nada foi registrado; tente de novo.",
+            )
 
-    await attendant_db.log_event("attendant_pagamento_registrado", body.phone, {
-        "appointment_id": appointment_id, "tipo": body.tipo, "valor": body.valor,
-    })
-    return {"ok": True}
+    body = AtendentePagarBody(
+        tipo=tipo, valor=valor, forma_pagamento=forma_pagamento, paciente=paciente,
+        medico=medico, data_hora=data_hora, phone=phone, conversation_id=conversation_id,
+        drive_link=drive_link, receipt_filename=receipt_filename,
+    )
+    try:
+        confirmacao = await _registrar_pagamento(appointment_id, body)
+    except Exception:
+        logger.exception("ATTENDANT_PAGAMENTO_FAILED appt=%s drive_link=%s", appointment_id, drive_link)
+        try:
+            await attendant_db.log_event("attendant_pagamento_falhou", phone, {
+                "appointment_id": appointment_id, "tipo": tipo, "valor": valor,
+                "drive_link": drive_link,
+            })
+        except Exception:
+            logger.exception("LOG_EVENT_FAILED appt=%s", appointment_id)
+        detail = (
+            "O comprovante foi salvo no Drive, mas o pagamento NÃO foi registrado. Tente de novo."
+            if drive_link else "O pagamento NÃO foi registrado. Tente de novo."
+        )
+        raise HTTPException(status_code=500, detail=detail)
+    return {"ok": True, "confirmacao": confirmacao}
 
 
 @router.post("/pagamentos/{appointment_id}/no-show")
@@ -464,21 +564,20 @@ async def isentar(appointment_id: str, body: AtendenteIsentarBody, _: None = Dep
     client = await get_client()
     await payments.mark_fee_waived(client, appointment_id, body.paciente, body.medico, body.data_hora)
 
-    if body.conversation_id is not None:
-        try:
-            text = (
-                f"Olá, {body.paciente}! 👋 A taxa de reserva da sua consulta com {body.medico} "
-                f"foi isentada. Não é necessário nenhum pagamento antecipado. 😊"
-            )
-            await chatwoot_client.send_confirmation_message(body.conversation_id, text)
-        except Exception:
-            logger.exception("CONFIRM_MSG_FAILED appt=%s conversation_id=%s",
-                             appointment_id, body.conversation_id)
+    try:
+        contact_first, patient_first = await _confirmation_names(body.phone, body.paciente)
+        confirmacao = await _send_via_eva(body.phone, waiver_text(contact_first, patient_first, body.medico))
+    except Exception:
+        confirmacao = "falhou"
+        logger.exception("CONFIRM_MSG_FAILED appt=%s phone=%s", appointment_id, body.phone)
 
-    await attendant_db.log_event("attendant_taxa_isentada", body.phone, {
-        "appointment_id": appointment_id,
-    })
-    return {"ok": True}
+    try:
+        await attendant_db.log_event("attendant_taxa_isentada", body.phone, {
+            "appointment_id": appointment_id,
+        })
+    except Exception:
+        logger.exception("LOG_EVENT_FAILED appt=%s", appointment_id)
+    return {"ok": True, "confirmacao": confirmacao}
 
 
 # ── Consultas ─────────────────────────────────────────────────────────────────

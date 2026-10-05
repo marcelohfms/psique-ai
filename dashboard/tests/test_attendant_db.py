@@ -844,29 +844,3 @@ def test_age_on():
     assert attendant_db.age_on("", date(2026, 1, 1)) is None
 
 
-# ── Janela de 24h do WhatsApp ────────────────────────────────────────────────
-
-
-async def test_window_open_com_mensagem_recente_do_contato(patched_client):
-    recente = (datetime.now(timezone.utc) - timedelta(hours=2)).isoformat()
-    patched_client.store["messages"] = [
-        {"phone": "558199998888", "role": "user", "created_at": recente},  # sem o 9
-    ]
-    assert await attendant_db.window_open("5581999998888") is True
-
-
-async def test_window_open_fechada_quando_ultima_mensagem_tem_mais_de_24h(patched_client):
-    antiga = (datetime.now(timezone.utc) - timedelta(hours=30)).isoformat()
-    recente_da_clinica = (datetime.now(timezone.utc) - timedelta(hours=1)).isoformat()
-    patched_client.store["messages"] = [
-        {"phone": "5581999998888", "role": "user", "created_at": antiga},
-        {"phone": "5581999998888", "role": "assistant", "created_at": recente_da_clinica},
-    ]
-    assert await attendant_db.window_open("5581999998888") is False
-
-
-async def test_window_open_erro_na_consulta_conta_como_fechada(monkeypatch):
-    async def _boom():
-        raise RuntimeError("supabase fora")
-    monkeypatch.setattr(attendant_db, "get_client", _boom)
-    assert await attendant_db.window_open("5581999998888") is False

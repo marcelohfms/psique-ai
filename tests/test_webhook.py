@@ -2296,3 +2296,36 @@ async def test_lifespan_builds_fresh_pool_after_failed_open(monkeypatch):
     assert len(pools) == 2
     saver_cls.assert_called_once_with(pools[1])
     saver.setup.assert_awaited_once()
+
+
+# ── POST /admin/panel/payment-confirmation ────────────────────────────────────
+
+_PAY_CONFIRM_BODY = {"phone": "5581999998888", "template": "pagamento_taxa_recebido",
+                     "params": {"1": "Ana", "2": "R$ 100,00", "3": "sua consulta"}, "text": "Olá, Ana!"}
+
+
+def test_panel_payment_confirmation_requires_secret(http_client, monkeypatch):
+    monkeypatch.setenv("ADMIN_SECRET", "s3cr3t")
+    r = http_client.post("/admin/panel/payment-confirmation", json=_PAY_CONFIRM_BODY,
+                         headers={"X-Admin-Secret": "errado"})
+    assert r.status_code == 403
+
+
+def test_panel_payment_confirmation_ok(http_client, monkeypatch):
+    monkeypatch.setenv("ADMIN_SECRET", "s3cr3t")
+    with patch("app.panel_booking.send_payment_confirmation", new_callable=AsyncMock,
+               return_value=(200, {"sent": True, "via": "texto"})) as m:
+        r = http_client.post("/admin/panel/payment-confirmation", json=_PAY_CONFIRM_BODY,
+                             headers={"X-Admin-Secret": "s3cr3t"})
+    assert r.status_code == 200
+    assert r.json() == {"sent": True, "via": "texto"}
+    m.assert_awaited_once_with(_PAY_CONFIRM_BODY)
+
+
+def test_panel_payment_confirmation_falha_no_envio_vira_502(http_client, monkeypatch):
+    monkeypatch.setenv("ADMIN_SECRET", "s3cr3t")
+    with patch("app.panel_booking.send_payment_confirmation", new_callable=AsyncMock,
+               side_effect=RuntimeError("chatwoot fora")):
+        r = http_client.post("/admin/panel/payment-confirmation", json=_PAY_CONFIRM_BODY,
+                             headers={"X-Admin-Secret": "s3cr3t"})
+    assert r.status_code == 502

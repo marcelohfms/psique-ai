@@ -1098,33 +1098,44 @@ async function marcarPago(btn) {
   const file = card.querySelector(".comprovante-input").files[0];
   if (isNaN(valor) || valor < 0) { alert("Valor inválido."); return; }
   btn.disabled = true;
+  const label = btn.textContent;
+  btn.textContent = "Registrando…";
+  const restore = () => { btn.disabled = false; btn.textContent = label; };
 
-  let drive_link = "", receipt_filename = "";
-  if (file) {
-    const form = new FormData();
-    form.append("paciente", card.dataset.paciente);
-    form.append("data_hora", card.dataset.dataHora);
-    form.append("valor", String(valor));
-    form.append("file", file);
-    const upload = await fetch(`/api/atendente/pagamentos/${card.dataset.appt}/comprovante?token=${encodeURIComponent(TOKEN)}`, {
+  // Comprovante e registro vão juntos numa única requisição: antes eram duas, e
+  // quando a segunda se perdia o arquivo ficava no Drive com a taxa em aberto.
+  const form = new FormData();
+  form.append("tipo", card.dataset.tipo);
+  form.append("valor", String(valor));
+  form.append("forma_pagamento", forma_pagamento);
+  form.append("paciente", card.dataset.paciente);
+  form.append("medico", card.dataset.medico);
+  form.append("data_hora", card.dataset.dataHora);
+  form.append("phone", card.dataset.phone);
+  if (CONVERSATION_ID != null) form.append("conversation_id", String(CONVERSATION_ID));
+  if (file) form.append("file", file);
+
+  let r;
+  try {
+    r = await fetch(`/api/atendente/pagamentos/${card.dataset.appt}/pagar-com-comprovante?token=${encodeURIComponent(TOKEN)}`, {
       method: "POST",
       body: form,
     });
-    if (!upload.ok) { alert("Erro ao enviar comprovante."); btn.disabled = false; return; }
-    ({ drive_link, receipt_filename } = await upload.json());
+  } catch (err) {
+    alert("A conexão caiu antes da resposta. Feche e reabra o painel para ver se o pagamento entrou antes de tentar de novo.");
+    restore();
+    return;
   }
-
-  const r = await fetch(`/api/atendente/pagamentos/${card.dataset.appt}/pagar?token=${encodeURIComponent(TOKEN)}`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      tipo: card.dataset.tipo, valor, forma_pagamento,
-      paciente: card.dataset.paciente, medico: card.dataset.medico,
-      data_hora: card.dataset.dataHora, phone: card.dataset.phone,
-      conversation_id: CONVERSATION_ID, drive_link, receipt_filename,
-    }),
-  });
-  if (!r.ok) { alert("Erro ao registrar pagamento."); btn.disabled = false; return; }
+  if (!r.ok) {
+    let msg = "Erro ao registrar pagamento. O pagamento NÃO foi registrado.";
+    try { const j = await r.json(); if (typeof j.detail === "string") msg = j.detail; } catch (_) {}
+    alert(msg);
+    restore();
+    return;
+  }
+  let res = {};
+  try { res = await r.json(); } catch (_) {}
+  alert(confirmacaoAviso("Pagamento registrado ✅", res.confirmacao));
   card.remove();
 }
 
@@ -1153,7 +1164,21 @@ async function isentarTaxa(btn) {
     }),
   });
   if (!r.ok) { alert("Erro ao isentar taxa."); btn.disabled = false; return; }
+  let res = {};
+  try { res = await r.json(); } catch (_) {}
+  alert(confirmacaoAviso("Taxa isentada ✅", res.confirmacao));
   card.remove();
+}
+
+// A mensagem ao paciente sai pela Eva; quando não sai, a atendente precisa saber.
+function confirmacaoAviso(feito, confirmacao) {
+  if (confirmacao === "falhou") {
+    return `${feito}\n\nMas a mensagem para o paciente NÃO foi enviada. Avise pela conversa.`;
+  }
+  if (confirmacao === "fora_da_janela") {
+    return `${feito}\n\nO paciente não escreve há mais de 24h, então o WhatsApp não deixa mandar o aviso automático. Avise pela conversa se precisar.`;
+  }
+  return `${feito} Mensagem enviada ao paciente.`;
 }
 // ── 4. Renderizar formulários ───────────────────────────────────────────────
 function field(label, id, value, type = "text") {

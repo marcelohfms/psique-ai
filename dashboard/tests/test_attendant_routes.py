@@ -23,14 +23,11 @@ def _bypass_scope(monkeypatch):
 
 @pytest.fixture(autouse=True)
 def _confirm_defaults(monkeypatch):
-    """Padrão da confirmação de pagamento: janela de 24h aberta e contato sem
-    ficha no banco (trata como o próprio paciente). Testes que precisam de outro
-    cenário sobrescrevem com monkeypatch."""
-    async def _open(phone):
-        return True
+    """Padrão da confirmação de pagamento: contato sem ficha no banco (trata como
+    o próprio paciente). Testes que precisam de outro cenário sobrescrevem com
+    monkeypatch."""
     async def _no_contact(phone):
         return {"contact": None, "patients": []}
-    monkeypatch.setattr(attendant_db, "window_open", _open)
     monkeypatch.setattr(attendant_db, "resolve_contact_and_patients", _no_contact)
 
 
@@ -288,7 +285,6 @@ def test_atendente_page_renders():
     assert 'id="contact-name"' in r.text
 
 
-import chatwoot_client
 import payments
 
 
@@ -355,6 +351,16 @@ def test_pagar_tipo_invalido_retorna_400(client):
     assert r.status_code == 400
 
 
+def _eva_recorder(monkeypatch, status=200):
+    """A confirmação de pagamento sai pela Eva (/admin/panel/payment-confirmation)."""
+    sent = []
+    async def fake_post(path, body, timeout=30.0):
+        sent.append((path, body))
+        return status, {"sent": status == 200}
+    monkeypatch.setattr(eva_client, "post", fake_post)
+    return sent
+
+
 def test_pagar_registra_e_envia_confirmacao(client, monkeypatch):
     calls = {}
     async def fake_get_client():
@@ -363,15 +369,13 @@ def test_pagar_registra_e_envia_confirmacao(client, monkeypatch):
                               paciente, medico, data_hora, phone, drive_link="",
                               receipt_filename=""):
         calls["mark_paid"] = (appointment_id, tipo, valor)
-    async def fake_send_confirmation(conversation_id, text):
-        calls["confirm"] = (conversation_id, text)
     async def fake_log(event_type, phone, metadata):
         calls["log"] = (event_type, phone, metadata)
 
     monkeypatch.setattr(attendant_routes, "get_client", fake_get_client)
     monkeypatch.setattr(payments, "mark_paid", fake_mark_paid)
-    monkeypatch.setattr(chatwoot_client, "send_confirmation_message", fake_send_confirmation)
     monkeypatch.setattr(attendant_db, "log_event", fake_log)
+    sent = _eva_recorder(monkeypatch)
 
     r = client.post(
         "/api/atendente/pagamentos/a1/pagar",
@@ -381,29 +385,28 @@ def test_pagar_registra_e_envia_confirmacao(client, monkeypatch):
               "phone": "5581999998888", "conversation_id": 42},
     )
     assert r.status_code == 200
-    assert r.json() == {"ok": True}
+    assert r.json() == {"ok": True, "confirmacao": "enviada"}
     assert calls["mark_paid"] == ("a1", "taxa", 100)
-    assert calls["confirm"][0] == 42
-    assert "R$ 100,00" in calls["confirm"][1]
-    assert "sua consulta está garantida" in calls["confirm"][1]
+    path, body = sent[0]
+    assert path == "/admin/panel/payment-confirmation"
+    assert body["phone"] == "5581999998888"
+    assert body["template"] == "pagamento_taxa_recebido"
+    assert "R$ 100,00" in body["text"]
+    assert "sua consulta está garantida" in body["text"]
     assert calls["log"][0] == "attendant_pagamento_registrado"
 
 
-def test_pagar_sem_conversation_id_nao_envia_confirmacao(client, monkeypatch):
-    calls = {}
+def test_pagar_sem_conversation_id_envia_confirmacao_mesmo_assim(client, monkeypatch):
+    """A Eva acha a conversa pelo telefone; o conversation_id do iframe não é mais
+    condição para avisar o paciente."""
     async def fake_get_client():
         return object()
-    async def fake_mark_paid(*args, **kwargs):
-        calls["mark_paid"] = True
-    async def fake_send_confirmation(conversation_id, text):
-        calls["confirm"] = True
-    async def fake_log(event_type, phone, metadata):
-        calls["log"] = True
-
+    async def fake_noop(*args, **kwargs):
+        return None
     monkeypatch.setattr(attendant_routes, "get_client", fake_get_client)
-    monkeypatch.setattr(payments, "mark_paid", fake_mark_paid)
-    monkeypatch.setattr(chatwoot_client, "send_confirmation_message", fake_send_confirmation)
-    monkeypatch.setattr(attendant_db, "log_event", fake_log)
+    monkeypatch.setattr(payments, "mark_paid", fake_noop)
+    monkeypatch.setattr(attendant_db, "log_event", fake_noop)
+    sent = _eva_recorder(monkeypatch)
 
     r = client.post(
         "/api/atendente/pagamentos/a1/pagar",
@@ -413,59 +416,54 @@ def test_pagar_sem_conversation_id_nao_envia_confirmacao(client, monkeypatch):
               "phone": "5581999998888"},
     )
     assert r.status_code == 200
-    assert calls["mark_paid"] is True
-    assert "confirm" not in calls  # sem conversation_id, não tenta mandar mensagem
+    assert len(sent) == 1
 
 
-def test_pagar_falha_no_envio_da_confirmacao_nao_quebra(client, monkeypatch):
+def test_pagar_falha_no_envio_da_confirmacao_avisa_o_painel(client, monkeypatch):
     async def fake_get_client():
         return object()
-    async def fake_mark_paid(*args, **kwargs):
+    async def fake_noop(*args, **kwargs):
         return None
-    async def fake_send_confirmation(conversation_id, text):
-        raise RuntimeError("chatwoot fora do ar")
-    async def fake_log(event_type, phone, metadata):
-        return None
-
+    async def boom(*args, **kwargs):
+        raise eva_client.EvaUnavailable("Eva fora do ar")
     monkeypatch.setattr(attendant_routes, "get_client", fake_get_client)
-    monkeypatch.setattr(payments, "mark_paid", fake_mark_paid)
-    monkeypatch.setattr(chatwoot_client, "send_confirmation_message", fake_send_confirmation)
-    monkeypatch.setattr(attendant_db, "log_event", fake_log)
+    monkeypatch.setattr(payments, "mark_paid", fake_noop)
+    monkeypatch.setattr(attendant_db, "log_event", fake_noop)
+    monkeypatch.setattr(eva_client, "post", boom)
 
-    r = client.post(
-        "/api/atendente/pagamentos/a1/pagar",
-        params={"token": "test-token"},
-        json={"tipo": "taxa", "valor": 100, "forma_pagamento": "PIX",
-              "paciente": "João", "medico": "Dr. Júlio", "data_hora": "10/07/2026 14:00",
-              "phone": "5581999998888", "conversation_id": 42},
-    )
+    r = _pagar(client, "taxa", 100, "João")
     assert r.status_code == 200
-    assert r.json() == {"ok": True}
+    assert r.json() == {"ok": True, "confirmacao": "falhou"}
 
 
-def _pay_patches(monkeypatch, calls, *, window=True, resolved=None):
+def test_pagar_eva_responde_erro_conta_como_falha(client, monkeypatch):
     async def fake_get_client():
         return object()
-    async def fake_mark_paid(*args, **kwargs):
+    async def fake_noop(*args, **kwargs):
         return None
-    async def fake_log(event_type, phone, metadata):
+    monkeypatch.setattr(attendant_routes, "get_client", fake_get_client)
+    monkeypatch.setattr(payments, "mark_paid", fake_noop)
+    monkeypatch.setattr(attendant_db, "log_event", fake_noop)
+    _eva_recorder(monkeypatch, status=502)
+
+    r = _pagar(client, "taxa", 100, "João")
+    assert r.json()["confirmacao"] == "falhou"
+
+
+def _pay_patches(monkeypatch, calls, *, resolved=None):
+    async def fake_get_client():
+        return object()
+    async def fake_noop(*args, **kwargs):
         return None
-    async def fake_send_confirmation(conversation_id, text):
-        calls["free"] = (conversation_id, text)
-    async def fake_send_template(conversation_id, template_name, body_params, content):
-        calls["template"] = (conversation_id, template_name, body_params, content)
-    async def fake_window(phone):
-        return window
     async def fake_resolve(phone):
         return resolved or {"contact": None, "patients": []}
 
     monkeypatch.setattr(attendant_routes, "get_client", fake_get_client)
-    monkeypatch.setattr(payments, "mark_paid", fake_mark_paid)
-    monkeypatch.setattr(attendant_db, "log_event", fake_log)
-    monkeypatch.setattr(attendant_db, "window_open", fake_window)
+    monkeypatch.setattr(payments, "mark_paid", fake_noop)
+    monkeypatch.setattr(attendant_db, "log_event", fake_noop)
     monkeypatch.setattr(attendant_db, "resolve_contact_and_patients", fake_resolve)
-    monkeypatch.setattr(chatwoot_client, "send_confirmation_message", fake_send_confirmation)
-    monkeypatch.setattr(chatwoot_client, "send_template_message", fake_send_template)
+    sent = _eva_recorder(monkeypatch)
+    calls["sent"] = sent
 
 
 def _pagar(client, tipo, valor, paciente):
@@ -478,36 +476,30 @@ def _pagar(client, tipo, valor, paciente):
     )
 
 
-def test_pagar_fora_da_janela_manda_template_da_taxa(client, monkeypatch):
+def _sent_body(calls):
+    return calls["sent"][0][1]
+
+
+def test_pagar_taxa_monta_template_e_texto(client, monkeypatch):
     calls = {}
-    _pay_patches(monkeypatch, calls, window=False)
+    _pay_patches(monkeypatch, calls)
     r = _pagar(client, "taxa", 100, "João Silva")
     assert r.status_code == 200
-    assert "free" not in calls
-    conv, name, params, content = calls["template"]
-    assert conv == 42
-    assert name == "pagamento_taxa_recebido"
-    assert params == {"1": "João", "2": "R$ 100,00", "3": "sua consulta"}
-    assert "sua consulta está garantida" in content
+    body = _sent_body(calls)
+    assert body["template"] == "pagamento_taxa_recebido"
+    assert body["params"] == {"1": "João", "2": "R$ 100,00", "3": "sua consulta"}
+    assert "sua consulta está garantida" in body["text"]
 
 
-def test_pagar_fora_da_janela_manda_template_da_consulta(client, monkeypatch):
+def test_pagar_consulta_monta_template_e_texto(client, monkeypatch):
     calls = {}
-    _pay_patches(monkeypatch, calls, window=False)
-    r = _pagar(client, "consulta", 650, "João Silva")
-    assert r.status_code == 200
-    _, name, params, content = calls["template"]
-    assert name == "pagamento_consulta_recebido"
-    assert params == {"1": "João", "2": "R$ 650,00", "3": "à sua consulta"}
-    assert "Está tudo certo agora, muito obrigada!" in content
-
-
-def test_pagar_dentro_da_janela_manda_texto_livre(client, monkeypatch):
-    calls = {}
-    _pay_patches(monkeypatch, calls, window=True)
+    _pay_patches(monkeypatch, calls)
     _pagar(client, "consulta", 650, "João Silva")
-    assert "template" not in calls
-    assert "R$ 650,00 referente à sua consulta" in calls["free"][1]
+    body = _sent_body(calls)
+    assert body["template"] == "pagamento_consulta_recebido"
+    assert body["params"] == {"1": "João", "2": "R$ 650,00", "3": "à sua consulta"}
+    assert "R$ 650,00 referente à sua consulta" in body["text"]
+    assert "Está tudo certo agora, muito obrigada!" in body["text"]
 
 
 def test_pagar_terceiro_cita_o_paciente_pelo_nome(client, monkeypatch):
@@ -516,11 +508,11 @@ def test_pagar_terceiro_cita_o_paciente_pelo_nome(client, monkeypatch):
         "contact": {"id": "c1", "name": "Daniella Souza"},
         "patients": [{"id": "p1", "name": "Bento Souza", "link": {"is_self": False}}],
     }
-    _pay_patches(monkeypatch, calls, window=False, resolved=resolved)
+    _pay_patches(monkeypatch, calls, resolved=resolved)
     _pagar(client, "taxa", 100, "Bento Souza")
-    _, _, params, content = calls["template"]
-    assert params == {"1": "Daniella", "2": "R$ 100,00", "3": "a consulta de Bento"}
-    assert "a consulta de Bento está garantida" in content
+    body = _sent_body(calls)
+    assert body["params"] == {"1": "Daniella", "2": "R$ 100,00", "3": "a consulta de Bento"}
+    assert "a consulta de Bento está garantida" in body["text"]
 
 
 def test_pagar_proprio_paciente_usa_sua_consulta(client, monkeypatch):
@@ -529,21 +521,9 @@ def test_pagar_proprio_paciente_usa_sua_consulta(client, monkeypatch):
         "contact": {"id": "c1", "name": "Ana"},
         "patients": [{"id": "p1", "name": "Ana Lima", "link": {"is_self": True}}],
     }
-    _pay_patches(monkeypatch, calls, window=False, resolved=resolved)
+    _pay_patches(monkeypatch, calls, resolved=resolved)
     _pagar(client, "consulta", 1200, "Ana Lima")
-    _, _, params, _ = calls["template"]
-    assert params == {"1": "Ana", "2": "R$ 1.200,00", "3": "à sua consulta"}
-
-
-def test_pagar_falha_do_template_nao_quebra(client, monkeypatch):
-    calls = {}
-    _pay_patches(monkeypatch, calls, window=False)
-    async def boom(*args, **kwargs):
-        raise RuntimeError("template ainda não aprovado")
-    monkeypatch.setattr(chatwoot_client, "send_template_message", boom)
-    r = _pagar(client, "taxa", 100, "João")
-    assert r.status_code == 200
-    assert r.json() == {"ok": True}
+    assert _sent_body(calls)["params"] == {"1": "Ana", "2": "R$ 1.200,00", "3": "à sua consulta"}
 
 
 # ── Isenção de taxa de reserva ────────────────────────────────────────────────
@@ -557,86 +537,84 @@ def test_isentar_requires_token(client):
     assert r.status_code == 401
 
 
-def test_isentar_registra_e_envia_confirmacao(client, monkeypatch):
-    calls = {}
+def _isentar_patches(monkeypatch, calls, *, eva_status=200, eva_payload=None, resolved=None):
     async def fake_get_client():
         return object()
     async def fake_mark_fee_waived(_client, appointment_id, paciente, medico, data_hora):
         calls["mark_fee_waived"] = (appointment_id, paciente, medico, data_hora)
-    async def fake_send_confirmation(conversation_id, text):
-        calls["confirm"] = (conversation_id, text)
     async def fake_log(event_type, phone, metadata):
         calls["log"] = (event_type, phone, metadata)
+    async def fake_post(path, body, timeout=30.0):
+        calls.setdefault("sent", []).append((path, body))
+        return eva_status, eva_payload if eva_payload is not None else {"sent": True, "via": "texto"}
+    async def fake_resolve(phone):
+        return resolved or {"contact": None, "patients": []}
 
     monkeypatch.setattr(attendant_routes, "get_client", fake_get_client)
     monkeypatch.setattr(payments, "mark_fee_waived", fake_mark_fee_waived)
-    monkeypatch.setattr(chatwoot_client, "send_confirmation_message", fake_send_confirmation)
     monkeypatch.setattr(attendant_db, "log_event", fake_log)
+    monkeypatch.setattr(attendant_db, "resolve_contact_and_patients", fake_resolve)
+    monkeypatch.setattr(eva_client, "post", fake_post)
 
-    r = client.post(
-        "/api/atendente/pagamentos/a1/isentar",
-        params={"token": "test-token"},
-        json={"paciente": "João", "medico": "Dr. Júlio", "data_hora": "10/07/2026 14:00",
-              "phone": "5581999998888", "conversation_id": 42},
-    )
+
+def _isentar(client, paciente="João", conversation_id=42):
+    body = {"paciente": paciente, "medico": "Dr. Júlio", "data_hora": "10/07/2026 14:00",
+            "phone": "5581999998888"}
+    if conversation_id is not None:
+        body["conversation_id"] = conversation_id
+    return client.post("/api/atendente/pagamentos/a1/isentar",
+                       params={"token": "test-token"}, json=body)
+
+
+def test_isentar_registra_e_envia_confirmacao_pela_eva(client, monkeypatch):
+    calls = {}
+    _isentar_patches(monkeypatch, calls)
+    r = _isentar(client)
     assert r.status_code == 200
-    assert r.json() == {"ok": True}
+    assert r.json() == {"ok": True, "confirmacao": "enviada"}
     assert calls["mark_fee_waived"] == ("a1", "João", "Dr. Júlio", "10/07/2026 14:00")
-    assert calls["confirm"][0] == 42
-    assert "isentada" in calls["confirm"][1]
+    path, body = calls["sent"][0]
+    assert path == "/admin/panel/payment-confirmation"
+    assert body["template"] == ""  # não há template aprovado para isenção
+    assert "sua consulta com Dr. Júlio foi isentada" in body["text"]
     assert calls["log"][0] == "attendant_taxa_isentada"
 
 
-def test_isentar_sem_conversation_id_nao_envia_confirmacao(client, monkeypatch):
+def test_isentar_terceiro_cita_o_paciente(client, monkeypatch):
     calls = {}
-    async def fake_get_client():
-        return object()
-    async def fake_mark_fee_waived(*args, **kwargs):
-        calls["mark_fee_waived"] = True
-    async def fake_send_confirmation(conversation_id, text):
-        calls["confirm"] = True
-    async def fake_log(event_type, phone, metadata):
-        calls["log"] = True
+    resolved = {
+        "contact": {"id": "c1", "name": "Juliana Libonati"},
+        "patients": [{"id": "p1", "name": "Bento Libonati", "link": {"is_self": False}}],
+    }
+    _isentar_patches(monkeypatch, calls, resolved=resolved)
+    _isentar(client, paciente="Bento Libonati")
+    text = calls["sent"][0][1]["text"]
+    assert text.startswith("Olá, Juliana!")
+    assert "a consulta de Bento com Dr. Júlio" in text
 
-    monkeypatch.setattr(attendant_routes, "get_client", fake_get_client)
-    monkeypatch.setattr(payments, "mark_fee_waived", fake_mark_fee_waived)
-    monkeypatch.setattr(chatwoot_client, "send_confirmation_message", fake_send_confirmation)
-    monkeypatch.setattr(attendant_db, "log_event", fake_log)
 
-    r = client.post(
-        "/api/atendente/pagamentos/a1/isentar",
-        params={"token": "test-token"},
-        json={"paciente": "Maria", "medico": "Dra. Bruna", "data_hora": "10/07/2026 15:00",
-              "phone": "5581999998888"},
-    )
+def test_isentar_sem_conversation_id_envia_mesmo_assim(client, monkeypatch):
+    calls = {}
+    _isentar_patches(monkeypatch, calls)
+    r = _isentar(client, conversation_id=None)
     assert r.status_code == 200
-    assert calls["mark_fee_waived"] is True
-    assert "confirm" not in calls  # sem conversation_id, não tenta mandar mensagem
+    assert len(calls["sent"]) == 1
 
 
-def test_isentar_falha_no_envio_da_confirmacao_nao_quebra(client, monkeypatch):
-    async def fake_get_client():
-        return object()
-    async def fake_mark_fee_waived(*args, **kwargs):
-        return None
-    async def fake_send_confirmation(conversation_id, text):
-        raise RuntimeError("chatwoot fora do ar")
-    async def fake_log(event_type, phone, metadata):
-        return None
+def test_isentar_fora_da_janela_avisa_o_painel(client, monkeypatch):
+    calls = {}
+    _isentar_patches(monkeypatch, calls, eva_payload={"sent": False, "motivo": "janela_fechada"})
+    r = _isentar(client)
+    assert r.json() == {"ok": True, "confirmacao": "fora_da_janela"}
 
-    monkeypatch.setattr(attendant_routes, "get_client", fake_get_client)
-    monkeypatch.setattr(payments, "mark_fee_waived", fake_mark_fee_waived)
-    monkeypatch.setattr(chatwoot_client, "send_confirmation_message", fake_send_confirmation)
-    monkeypatch.setattr(attendant_db, "log_event", fake_log)
 
-    r = client.post(
-        "/api/atendente/pagamentos/a1/isentar",
-        params={"token": "test-token"},
-        json={"paciente": "João", "medico": "Dr. Júlio", "data_hora": "10/07/2026 14:00",
-              "phone": "5581999998888", "conversation_id": 42},
-    )
+def test_isentar_falha_no_envio_nao_quebra_e_avisa(client, monkeypatch):
+    calls = {}
+    _isentar_patches(monkeypatch, calls, eva_status=502, eva_payload={"detail": "erro"})
+    r = _isentar(client)
     assert r.status_code == 200
-    assert r.json() == {"ok": True}
+    assert r.json() == {"ok": True, "confirmacao": "falhou"}
+    assert calls["mark_fee_waived"]
 
 
 # ── Upload de comprovante ─────────────────────────────────────────────────────
@@ -714,6 +692,112 @@ def test_pagar_repassa_drive_link_para_mark_paid(client, monkeypatch):
     assert r.status_code == 200
     assert calls["drive_link"] == "https://drive.google.com/file/d/abc123/view"
     assert calls["receipt_filename"] == "Natalia_01-07-2026_R$550.pdf"
+
+
+# ── Comprovante + registro numa única requisição ─────────────────────────────
+# Caso Bento/Juliana (05/10/2026): o upload ia numa chamada e o registro em outra;
+# a segunda se perdeu, o arquivo ficou no Drive e a taxa seguiu em aberto.
+
+_FORM_PAGAR = {"tipo": "taxa", "valor": "100", "forma_pagamento": "PIX",
+               "paciente": "Bento", "medico": "Dr. Júlio", "data_hora": "05/11/2026 14:00",
+               "phone": "5581999713131", "conversation_id": "107"}
+
+
+def _pagar_com_comprovante(client, data=None, with_file=True):
+    files = {"file": ("comprovante.jpg", b"img", "image/jpeg")} if with_file else None
+    return client.post(
+        "/api/atendente/pagamentos/a1/pagar-com-comprovante",
+        params={"token": "test-token"},
+        data=data or _FORM_PAGAR,
+        files=files,
+    )
+
+
+@pytest.fixture
+def pagar_fakes(monkeypatch):
+    calls = {"log": []}
+    async def fake_get_client():
+        return object()
+    async def fake_upload(patient_name, appointment_dt, amount, file_bytes, mimetype):
+        calls["upload"] = (patient_name, appointment_dt, amount, file_bytes)
+        return "https://drive.google.com/file/d/xyz/view", "Bento_05-11-2026_R$100.jpg"
+    async def fake_mark_paid(_client, appointment_id, tipo, valor, forma_pagamento,
+                              paciente, medico, data_hora, phone, drive_link="",
+                              receipt_filename=""):
+        calls["mark_paid"] = (appointment_id, tipo, valor, drive_link, receipt_filename)
+    async def fake_log(event_type, phone, metadata):
+        calls["log"].append((event_type, metadata))
+
+    monkeypatch.setattr(attendant_routes, "get_client", fake_get_client)
+    monkeypatch.setattr(payments, "upload_comprovante", fake_upload)
+    monkeypatch.setattr(payments, "mark_paid", fake_mark_paid)
+    monkeypatch.setattr(attendant_db, "log_event", fake_log)
+    calls["sent"] = _eva_recorder(monkeypatch)
+    return calls
+
+
+def test_pagar_com_comprovante_requires_token(client):
+    r = client.post("/api/atendente/pagamentos/a1/pagar-com-comprovante", data=_FORM_PAGAR)
+    assert r.status_code == 401
+
+
+def test_pagar_com_comprovante_sobe_e_registra_junto(client, pagar_fakes):
+    r = _pagar_com_comprovante(client)
+    assert r.status_code == 200
+    assert pagar_fakes["upload"] == ("Bento", "05/11/2026 14:00", "100", b"img")
+    assert pagar_fakes["mark_paid"] == (
+        "a1", "taxa", 100, "https://drive.google.com/file/d/xyz/view", "Bento_05-11-2026_R$100.jpg",
+    )
+    assert r.json() == {"ok": True, "confirmacao": "enviada"}
+    assert pagar_fakes["sent"][0][1]["phone"] == "5581999713131"
+    assert pagar_fakes["log"][-1][0] == "attendant_pagamento_registrado"
+
+
+def test_pagar_com_comprovante_sem_arquivo_registra_sem_link(client, pagar_fakes):
+    r = _pagar_com_comprovante(client, with_file=False)
+    assert r.status_code == 200
+    assert "upload" not in pagar_fakes
+    assert pagar_fakes["mark_paid"][3:] == ("", "")
+
+
+def test_pagar_com_comprovante_falha_no_drive_nao_registra(client, pagar_fakes, monkeypatch):
+    async def fake_upload(*a, **k):
+        raise RuntimeError("Drive fora")
+    monkeypatch.setattr(payments, "upload_comprovante", fake_upload)
+    r = _pagar_com_comprovante(client)
+    assert r.status_code == 502
+    assert "Nada foi registrado" in r.json()["detail"]
+    assert "mark_paid" not in pagar_fakes
+
+
+def test_pagar_com_comprovante_falha_no_registro_avisa_e_loga(client, pagar_fakes, monkeypatch):
+    async def fake_mark_paid(*a, **k):
+        raise RuntimeError("Supabase fora")
+    monkeypatch.setattr(payments, "mark_paid", fake_mark_paid)
+    r = _pagar_com_comprovante(client)
+    assert r.status_code == 500
+    assert "comprovante foi salvo" in r.json()["detail"]
+    assert "NÃO foi registrado" in r.json()["detail"]
+    event, meta = pagar_fakes["log"][-1]
+    assert event == "attendant_pagamento_falhou"
+    assert meta["drive_link"] == "https://drive.google.com/file/d/xyz/view"
+
+
+def test_pagar_com_comprovante_falha_so_no_log_ainda_responde_ok(client, pagar_fakes, monkeypatch):
+    """Pagamento já gravado: erro só no log não pode virar 'NÃO registrado',
+    senão a atendente tenta de novo e duplica a linha da planilha."""
+    async def fake_log(*a, **k):
+        raise RuntimeError("events fora")
+    monkeypatch.setattr(attendant_db, "log_event", fake_log)
+    r = _pagar_com_comprovante(client)
+    assert r.status_code == 200
+    assert "mark_paid" in pagar_fakes
+
+
+def test_pagar_com_comprovante_tipo_invalido_nao_sobe_arquivo(client, pagar_fakes):
+    r = _pagar_com_comprovante(client, data={**_FORM_PAGAR, "tipo": "outro"})
+    assert r.status_code == 400
+    assert "upload" not in pagar_fakes
 
 
 # ── No-show (falta) ─────────────────────────────────────────────────────────
