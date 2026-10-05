@@ -6136,6 +6136,128 @@ async def test_guard_false_no_shift_does_not_fire_when_already_checked():
     assert not (result["messages"][-1].tool_calls or [])
 
 
+# ── GUARD_STALE_SLOTS: lista de horários copiada de oferta antiga ────────────
+# Caso Juliana/Bento (5581999713131, 05/10/2026): a atendente mandou "Eva,
+# continue o agendamento" e a Eva reenviou os horários de 08/10 que tinha
+# oferecido em 08/09, copiados do histórico, sem chamar get_available_slots.
+# 08/10 já estava lotado. O guard reinjeta a busca quando a última oferta real
+# (evento slots_offered) é velha e a tool não rodou no turno.
+
+def test_looks_like_slot_offer():
+    from app.graph.nodes import _looks_like_slot_offer
+    assert _looks_like_slot_offer(
+        "Você prefere o horário de 08/10 às 15:00, 16:00 ou 17:00 para a consulta do Bento?"
+    )
+    assert _looks_like_slot_offer("Tenho disponíveis: 09:00 e 10:00. Qual fica melhor?")
+    # Um horário só (resumo de confirmação) não é oferta
+    assert not _looks_like_slot_offer("Só confirmar: 📅 08/10 às 15:00. Você prefere presencial?")
+    # Horários sem contexto de oferta (lista de consultas marcadas)
+    assert not _looks_like_slot_offer("Bento tem consultas em 08/10 às 15:00 e 22/10 às 15:00.")
+    assert not _looks_like_slot_offer("")
+
+
+def _stale_slots_state():
+    from langchain_core.messages import ToolMessage
+    old_call = AIMessage(content="", tool_calls=[{
+        "name": "get_available_slots",
+        "args": {"preferred_day": "08/10", "preferred_shift": "tarde", "slot_duration_minutes": 60},
+        "id": "call_old",
+        "type": "tool_call",
+    }])
+    old_tool = ToolMessage(
+        content="Horários disponíveis na quinta, dia 08/10: 15:00, 16:00, 17:00",
+        name="get_available_slots", tool_call_id="call_old",
+    )
+    return _make_patient_agent_state(
+        silent_mode=True,
+        messages=[
+            HumanMessage(content="08/10, quinta"),
+            old_call,
+            old_tool,
+            AIMessage(content="Na quinta, dia 08/10, tenho 15:00, 16:00 e 17:00. Qual prefere?"),
+            HumanMessage(content="[Instrução da atendente]: Eva, continue o agendamento para esse paciente."),
+        ],
+    )
+
+
+_STALE_OFFER_REPLY = (
+    "Juliana 😊\n\nVocê prefere o horário de 08/10 às 15:00, 16:00 ou 17:00 "
+    "para a consulta do Bento?"
+)
+
+
+async def _run_stale_slots(state, events, reply=_STALE_OFFER_REPLY):
+    from app.graph.nodes import patient_agent_node
+
+    async def fake_ainvoke(messages):
+        return AIMessage(content=reply)
+
+    with patch("app.graph.nodes._get_agent_llm") as mock_llm_fn, \
+         patch("app.graph.nodes.send_text", new_callable=AsyncMock) as mock_send, \
+         patch("app.graph.nodes.save_message", new_callable=AsyncMock), \
+         patch("app.graph.nodes.get_upcoming_appointments", new_callable=AsyncMock, return_value=[]), \
+         patch("app.graph.nodes.get_user_by_phone", new_callable=AsyncMock, return_value={"price_adjustment_notified_at": "2026-01-01"}), \
+         patch("app.graph.nodes.get_last_assistant_message_time", new_callable=AsyncMock, return_value=None), \
+         patch("app.graph.nodes.get_events_by_type", new_callable=AsyncMock, return_value=events) as mock_events, \
+         patch("app.google_calendar.format_doctor_schedules", return_value="seg-sex"):
+        mock_llm = MagicMock()
+        mock_llm.ainvoke = fake_ainvoke
+        mock_llm_fn.return_value = mock_llm
+        result = await patient_agent_node(state, {})
+    return result, mock_send, mock_events
+
+
+async def test_guard_stale_slots_reinjects_search_when_offer_is_old():
+    from datetime import datetime, timedelta, timezone
+    old = (datetime.now(timezone.utc) - timedelta(days=27)).isoformat()
+    result, mock_send, _ = await _run_stale_slots(
+        _stale_slots_state(), [{"event_type": "slots_offered", "created_at": old}],
+    )
+
+    mock_send.assert_not_awaited()
+    forced = result["messages"][-1]
+    assert forced.tool_calls, "esperava get_available_slots reinjetada"
+    tc = forced.tool_calls[0]
+    assert tc["name"] == "get_available_slots"
+    assert tc["args"] == {"preferred_day": "08/10", "preferred_shift": "tarde", "slot_duration_minutes": 60}
+
+
+async def test_guard_stale_slots_reinjects_when_no_offer_event():
+    result, mock_send, _ = await _run_stale_slots(_stale_slots_state(), [])
+    mock_send.assert_not_awaited()
+    assert result["messages"][-1].tool_calls[0]["name"] == "get_available_slots"
+
+
+async def test_guard_stale_slots_lets_fresh_offer_through():
+    from datetime import datetime, timedelta, timezone
+    fresh = (datetime.now(timezone.utc) - timedelta(minutes=20)).isoformat()
+    result, mock_send, _ = await _run_stale_slots(
+        _stale_slots_state(), [{"event_type": "slots_offered", "created_at": fresh}],
+    )
+    mock_send.assert_awaited_once()
+    assert not (result["messages"][-1].tool_calls or [])
+
+
+async def test_guard_stale_slots_skips_when_search_ran_this_turn():
+    """Volta do ToolNode no mesmo turno: a busca já rodou, a lista é fresca —
+    não consulta eventos nem reinjeta (sem loop)."""
+    from langchain_core.messages import ToolMessage
+    state = _stale_slots_state()
+    state["messages"] = state["messages"] + [
+        AIMessage(content="", tool_calls=[{
+            "name": "get_available_slots",
+            "args": {"preferred_day": "08/10", "preferred_shift": "tarde", "slot_duration_minutes": 60},
+            "id": "call_new", "type": "tool_call",
+        }]),
+        ToolMessage(content="Horários disponíveis na quinta, dia 08/10: 15:00, 16:00, 17:00",
+                    name="get_available_slots", tool_call_id="call_new"),
+    ]
+    result, mock_send, mock_events = await _run_stale_slots(state, [])
+    mock_send.assert_awaited_once()
+    mock_events.assert_not_awaited()
+    assert not (result["messages"][-1].tool_calls or [])
+
+
 def test_article_before_patient_name_guard_in_all_prompts():
     """Regressão: Eva colava artigo de gênero antes do nome do paciente
     (ex.: "do Taynnar" para uma paciente mulher). A guarda ARTIGO ANTES DO
