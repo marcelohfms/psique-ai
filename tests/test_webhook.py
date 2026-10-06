@@ -1110,6 +1110,24 @@ async def test_pause_does_not_expire_after_24h():
     mock_upsert.assert_not_called()
 
 
+async def test_pause_silences_loose_contact_without_patient():
+    """Contato solto (sem paciente vinculado, ex.: psicólogo externo) pausado com
+    eva-inativa grava active=False só em `contacts`; get_users_by_phone volta []
+    e o portão deixava passar. A nota da atendente fazia a Eva responder com a
+    conversa pausada (caso Marcos Júlio, 5581996662187, 05/10/2026)."""
+    from app.main import _eva_paused_for_phone
+
+    loose = {"id": "c1", "phone": "5581996662187", "active": False, "manual_hold": False}
+    with patch("app.main.get_users_by_phone", new_callable=AsyncMock, return_value=[]), \
+         patch("app.main.get_contact_by_phone", new_callable=AsyncMock, return_value=loose):
+        assert await _eva_paused_for_phone("5581996662187@s.whatsapp.net") is True
+
+    loose["active"] = True
+    with patch("app.main.get_users_by_phone", new_callable=AsyncMock, return_value=[]), \
+         patch("app.main.get_contact_by_phone", new_callable=AsyncMock, return_value=loose):
+        assert await _eva_paused_for_phone("5581996662187@s.whatsapp.net") is False
+
+
 def _chatwoot_public_agent_payload(
     message_id: int = 501,
     content: str = "Bom dia! Aqui é a Débora, secretária da clínica.",
