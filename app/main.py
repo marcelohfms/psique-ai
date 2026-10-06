@@ -671,6 +671,11 @@ async def _eva_paused_for_phone(phone: str) -> bool:
         _contact = None  # degradação graciosa — segue o fluxo normal
     if _contact and _contact.get("manual_hold"):
         return True
+    # A pausa por label grava active=False no contato. Sem paciente vinculado,
+    # get_users_by_phone volta [] e só o contato carrega a pausa (caso Marcos
+    # Júlio, 5581996662187, 05/10/2026: nota da atendente fez a Eva responder).
+    if _contact and _contact.get("active") is False:
+        return True
 
     # active=False = pausada até reativação explícita. deactivated_at continua
     # sendo gravado para auditoria, mas não reabre mais a conversa por tempo.
