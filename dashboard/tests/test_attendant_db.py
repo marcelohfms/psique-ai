@@ -767,6 +767,27 @@ async def test_list_consultas_future_active_only(patched_client, fake_client):
     assert out["has_completed"] is True
 
 
+async def test_list_consultas_keeps_today_after_start_until_midnight(patched_client, fake_client, monkeypatch):
+    # Caso Matheus 07/10: consulta das 10h sumiu do painel às 10h01, com a
+    # atendente esperando o paciente escolher outro dia para remarcar.
+    class _Frozen(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return datetime(2026, 10, 7, 15, 0, tzinfo=attendant_db._TZ)
+
+    monkeypatch.setattr(attendant_db, "datetime", _Frozen)
+    fake_client.store["appointments"] = [
+        {"appointment_id": "hoje", "patient_id": "p1", "status": "scheduled", "doctor_id": JULIO,
+         "start_time": "2026-10-07T13:00:00+00:00", "end_time": "2026-10-07T14:00:00+00:00"},
+        # 23h de ontem em Recife = 02h UTC de hoje: tem de sair mesmo caindo no "hoje" UTC.
+        {"appointment_id": "ontem", "patient_id": "p1", "status": "scheduled", "doctor_id": JULIO,
+         "start_time": "2026-10-07T02:00:00+00:00", "end_time": "2026-10-07T03:00:00+00:00"},
+    ]
+    out = await attendant_db.list_consultas("p1")
+    assert [a["appointment_id"] for a in out["appointments"]] == ["hoje"]
+    assert out["appointments"][0]["start_local"] == "2026-10-07T10:00"
+
+
 async def test_list_consultas_part2_booked_clears_pending(patched_client, fake_client):
     base = {"patient_id": "p1", "status": "scheduled", "doctor_id": JULIO}
     fake_client.store["appointments"] = [

@@ -383,18 +383,22 @@ async def _pending_part2(client, patient_id: str) -> tuple[str | None, str | Non
 
 
 async def list_consultas(patient_id: str) -> dict:
-    """Consultas que ainda não aconteceram (scheduled/pending_reschedule), sem
+    """Consultas ativas (scheduled/pending_reschedule) de hoje em diante, sem
     dados de pagamento, mais: a parte 1 de 1ª consulta dividida cuja parte 2
-    ainda não foi marcada, e se o paciente já teve consulta realizada."""
+    ainda não foi marcada, e se o paciente já teve consulta realizada.
+
+    A consulta de hoje fica na lista até a meia-noite (Recife), mesmo depois do
+    horário: a atendente pode estar esperando o paciente escolher outro dia para
+    remarcar. O cancelamento de consulta que já passou continua bloqueado na Eva."""
     client = await get_client()
-    now_iso = datetime.now(_TZ).isoformat()
+    today_start = datetime.now(_TZ).replace(hour=0, minute=0, second=0, microsecond=0)
     res = await (
         client.from_("appointments")
         .select("appointment_id, start_time, end_time, doctor_id, modality, consultation_type, "
                 "session_note, status, is_courtesy, booking_fee_waived")
         .eq("patient_id", patient_id)
         .in_("status", list(_ACTIVE_APPT_STATUSES))
-        .gt("start_time", now_iso)
+        .gte("start_time", today_start.isoformat())
         .order("start_time")
         .execute()
     )
