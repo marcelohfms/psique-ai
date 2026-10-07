@@ -287,4 +287,9 @@ async def test_send_pos_consulta_template_de_avaliacao(third_party, returning, t
     assert kwargs["template_name"] == template
     assert kwargs["body_params"] == {"1": "Natalia"}
     assert kwargs["content"].startswith(inicio)
-    assert kwargs["content"].endswith(fim)
+    assert kwargs["content"].endswith(fim + ca._LINK_NOTE)
+
+
+def test_espelho_no_chatwoot_mostra_o_link_do_botao():
+    _, content = ca._pos_consulta_template("Natalia", False, False)
+    assert content.endswith('(Link enviado no botão "Avaliar no Google": https://g.page/r/Cc1NsiZwX3taEBM/review)')
