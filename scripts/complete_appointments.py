@@ -24,6 +24,12 @@ from app.patients import consultation_reminder_contacts, own_contact_ids
 # lá e o envio falha com #132001 (o Chatwoot aceita e só marca "failed" depois).
 AVALIACAO_EVENT = "avaliacao_google_sent"
 
+# O Chatwoot não mostra o botão do template, só o texto espelhado. Sem esta
+# linha a atendente não vê que o link foi junto. Precisa bater com a URL do
+# botão cadastrada na Meta (igual nos 4 templates).
+_REVIEW_URL = "https://g.page/r/Cc1NsiZwX3taEBM/review"
+_LINK_NOTE = f"\n\n(Link enviado no botão \"Avaliar no Google\": {_REVIEW_URL})"
+
 _ASK_PRIMEIRA = (
     "Se você tiver um minutinho, sua avaliação seria muito bem-vinda. "
     "É rápido e ajuda bastante o nosso trabalho.\n\n"
@@ -69,7 +75,7 @@ def _pos_consulta_template(first_name: str, third_party: bool, returning: bool) 
     """(nome do template Meta, texto espelhado no Chatwoot)."""
     template, opening, closing = _POS_CONSULTA[(third_party, returning)]
     ask = _ASK_RETORNO if returning else _ASK_PRIMEIRA
-    return template, opening.format(nome=first_name) + ask + closing
+    return template, opening.format(nome=first_name) + ask + closing + _LINK_NOTE
 
 
 async def _already_asked(phone: str, patient_id: str | None) -> bool:
