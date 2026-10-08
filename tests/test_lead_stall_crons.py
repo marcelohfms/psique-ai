@@ -5,7 +5,7 @@ from unittest.mock import AsyncMock
 import pytest
 
 import scripts.send_lead_stall_nudges as cron
-from app.lead_stall import LABEL_NEW, LABEL_CADASTRO, LABEL_AGENDAMENTO
+from app.lead_stall import LABEL_NEW, LABEL_CADASTRO, LABEL_AGENDAMENTO, LABEL_POS_CADASTRO
 
 NOW = datetime(2026, 9, 18, 15, 0, tzinfo=timezone.utc)
 
@@ -167,6 +167,48 @@ async def test_nudge_skipped_when_not_cadastro(monkeypatch):
     send_mock.assert_not_awaited()
 
 
+async def test_nudge_pos_cadastro_uses_scheduling_message(monkeypatch):
+    sent = {}
+
+    async def fake_get_events(phone, event_type, limit=50):
+        return []
+
+    async def fake_window(client, phone, now):
+        return True
+
+    async def fake_send(phone, text):
+        sent["text"] = text
+
+    async def fake_log_event(event_type, phone, metadata=None):
+        sent["logged"] = (event_type, metadata)
+
+    monkeypatch.setattr(cron, "get_events_by_type", fake_get_events)
+    monkeypatch.setattr(cron, "_window_open", fake_window)
+    monkeypatch.setattr(cron, "send_whatsapp", fake_send)
+    monkeypatch.setattr(cron, "log_event", fake_log_event)
+
+    rec = {"phone": "5581111", "situation": LABEL_POS_CADASTRO,
+           "user": {"name": "Ryan Lucas", "active": True}, "last_msg_at": NOW}
+    await cron._maybe_nudge(client=None, graph=None, rec=rec, now=NOW)
+
+    assert sent["text"].startswith("Oi, Ryan!")
+    assert "horário" in sent["text"] and "dia e turno" in sent["text"]
+    assert sent["logged"][0] == "lead_stall_nudge_sent"
+    assert sent["logged"][1]["situation"] == LABEL_POS_CADASTRO
+
+
+async def test_nudge_pos_cadastro_skipped_when_already_nudged_in_cadastro(monkeypatch):
+    # caso Thaísa: cutucada no cadastro, concluiu e recusou — sem segundo aviso
+    send_mock = AsyncMock()
+    monkeypatch.setattr(cron, "get_events_by_type", AsyncMock(return_value=[{"metadata": {}}]))
+    monkeypatch.setattr(cron, "send_whatsapp", send_mock)
+
+    rec = {"phone": "5581111", "situation": LABEL_POS_CADASTRO,
+           "user": {"name": "Thaísa", "active": True}, "last_msg_at": NOW}
+    await cron._maybe_nudge(client=None, graph=None, rec=rec, now=NOW)
+    send_mock.assert_not_awaited()
+
+
 # ── relatório: seleção de cadastro-abandonado frio ────────────────────────────
 
 import scripts.send_scheduling_stall_report as report
@@ -220,3 +262,25 @@ async def test_report_excludes_already_nudged(monkeypatch):
 
     got = await report.fetch_cadastro_abandonado_reportable(client=None, now=NOW)
     assert got == []
+
+
+async def test_report_includes_cold_pos_cadastro(monkeypatch):
+    async def fake_evaluate(client, now):
+        return [
+            {"phone": "5581111", "situation": LABEL_POS_CADASTRO,
+             "user": {"name": "Ryan", "active": True}, "last_msg_at": NOW},
+        ]
+
+    async def fake_window(client, phone, now):
+        return False  # janela de 24h fechada
+
+    async def fake_get_events(phone, event_type, limit=50):
+        return []
+
+    monkeypatch.setattr(report, "evaluate_leads", fake_evaluate)
+    monkeypatch.setattr(report, "_window_open_safe", fake_window)
+    monkeypatch.setattr(report, "get_events_by_type", fake_get_events)
+
+    got = await report.fetch_cadastro_abandonado_reportable(client=None, now=NOW)
+    assert [c["phone"] for c in got] == ["5581111"]
+    assert "parou antes de ver os horários" in report._fmt_cadastro_case(got[0])
