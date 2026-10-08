@@ -174,7 +174,7 @@ async def test_report_only_cadastro_section_sends_email():
 
     email.assert_awaited_once()
     body = email.call_args[0][1]
-    assert "não terminaram" in body
+    assert "não chegaram a agendar" in body
     assert "cadastro" in body.lower()
     assert "Ana" in body
 

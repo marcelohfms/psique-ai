@@ -5,7 +5,8 @@ import pytest
 
 from app.lead_stall import (
     classify_situation, select_recent_phones, label_ops, needs_label_change,
-    LABEL_NEW, LABEL_CADASTRO, LABEL_AGENDAMENTO, LEAD_LABELS,
+    select_registered_without_offer,
+    LABEL_NEW, LABEL_CADASTRO, LABEL_AGENDAMENTO, LABEL_POS_CADASTRO, LEAD_LABELS,
 )
 
 NOW = datetime(2026, 9, 18, 15, 0, tzinfo=timezone.utc)
@@ -46,6 +47,67 @@ def test_offered_abandoned_is_agendamento_abandonado():
 
 def test_completed_registration_without_abandon_is_nothing():
     assert classify_situation(**_base(registration_complete=True)) is None
+
+
+def test_silent_after_registration_without_offer_is_pos_cadastro():
+    # caso Ryan: cadastro completo, ouviu o preço e sumiu antes de ver horários
+    facts = _base(registration_complete=True, registered_without_offer=True,
+                  last_msg_at=NOW - timedelta(hours=5))
+    assert classify_situation(**facts) == LABEL_POS_CADASTRO
+
+
+def test_fresh_registration_without_offer_is_nothing():
+    facts = _base(registration_complete=True, registered_without_offer=True)
+    assert classify_situation(**facts) is None
+
+
+def test_old_registration_silent_is_nothing():
+    # paciente antigo (cadastro fora da janela do lead) que mandou mensagem e calou
+    facts = _base(registration_complete=True, last_msg_at=NOW - timedelta(hours=5))
+    assert classify_situation(**facts) is None
+
+
+def test_pos_cadastro_with_appointment_or_paused_is_nothing():
+    facts = dict(registration_complete=True, registered_without_offer=True,
+                 last_msg_at=NOW - timedelta(hours=5))
+    assert classify_situation(**_base(has_appointment=True, **facts)) is None
+    assert classify_situation(**_base(active=False, **facts)) is None
+
+
+def test_offer_precedes_pos_cadastro():
+    facts = _base(registration_complete=True, registered_without_offer=True,
+                  offered_abandoned=True, last_msg_at=NOW - timedelta(hours=5))
+    assert classify_situation(**facts) == LABEL_AGENDAMENTO
+
+
+# ── select_registered_without_offer ──────────────────────────────────────────
+
+def _ev(phone, event_type, dt):
+    return {"phone": phone, "event_type": event_type, "created_at": dt.isoformat()}
+
+
+def test_registered_without_other_intent_is_selected():
+    rows = [_ev("5581111", "info_collected", NOW - timedelta(hours=6))]
+    assert select_registered_without_offer(rows) == {"5581111"}
+
+
+def test_document_request_after_registration_is_excluded():
+    # caso Miriam: cadastro feito só para pedir declaração
+    rows = [
+        _ev("5581111", "info_collected", NOW - timedelta(hours=6)),
+        _ev("5581111", "document_requested", NOW - timedelta(hours=6) + timedelta(seconds=8)),
+        _ev("5582222", "info_collected", NOW - timedelta(hours=6)),
+        _ev("5582222", "human_transfer", NOW - timedelta(hours=5)),
+    ]
+    assert select_registered_without_offer(rows) == set()
+
+
+def test_other_intent_before_registration_does_not_exclude():
+    rows = [
+        _ev("5581111", "document_requested", NOW - timedelta(days=2)),
+        _ev("5581111", "info_collected", NOW - timedelta(hours=6)),
+    ]
+    assert select_registered_without_offer(rows) == {"5581111"}
 
 
 def test_has_appointment_is_nothing():
@@ -106,12 +168,14 @@ def test_needs_label_change():
 # ── evaluate_leads (I/O mockado) ──────────────────────────────────────────────
 
 class _FakeMessagesClient:
-    """from_('messages').select(...).gte(...).execute() → rows fixos."""
-    def __init__(self, rows):
-        self._rows = rows
+    """from_('messages'|'events').select(...)...execute() → rows fixos por tabela."""
+    def __init__(self, rows, event_rows=None):
+        self._by_table = {"messages": rows, "events": event_rows or []}
+        self._table = None
 
     def from_(self, table):
-        assert table == "messages"
+        assert table in self._by_table
+        self._table = table
         return self
 
     def select(self, *a, **k):
@@ -120,9 +184,12 @@ class _FakeMessagesClient:
     def gte(self, *a, **k):
         return self
 
+    def in_(self, *a, **k):
+        return self
+
     async def execute(self):
         from unittest.mock import MagicMock
-        return MagicMock(data=self._rows)
+        return MagicMock(data=self._by_table[self._table])
 
 
 async def test_evaluate_leads_classifies_each_phone(monkeypatch):
@@ -200,3 +267,28 @@ async def test_evaluate_uses_exclude_handled_false(monkeypatch):
 
     await mod.evaluate_leads(client, NOW)
     assert captured["kwargs"].get("exclude_handled") is False
+
+
+async def test_evaluate_flags_registration_without_offer(monkeypatch):
+    import app.lead_stall as mod
+
+    rows = [_msg("5581111", "user", NOW - timedelta(hours=5))]
+    events = [_ev("5581111", "info_collected", NOW - timedelta(hours=5))]
+    client = _FakeMessagesClient(rows, events)
+
+    async def fake_fetch_abandoned(c, now, **k):
+        return []
+
+    async def fake_get_user(phone):
+        return {"name": "Ryan", "active": True}
+
+    async def fake_upcoming(phone):
+        return []
+
+    monkeypatch.setattr(mod, "fetch_abandoned", fake_fetch_abandoned)
+    monkeypatch.setattr("app.database.get_user_by_phone", fake_get_user)
+    monkeypatch.setattr("app.database.get_upcoming_appointments", fake_upcoming)
+    monkeypatch.setattr("app.database.is_registration_complete", lambda u: True)
+
+    recs = await mod.evaluate_leads(client, NOW)
+    assert recs[0]["situation"] == LABEL_POS_CADASTRO

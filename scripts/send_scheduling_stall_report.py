@@ -25,7 +25,9 @@ load_dotenv()
 from app.scheduling_stall import (
     fetch_abandoned, is_nudge_eligible, REPORT_EVENT as REPORT_EVENT_SCHED, mark_handled,
 )
-from app.lead_stall import evaluate_leads, LABEL_CADASTRO, REPORT_EVENT, NUDGE_EVENT
+from app.lead_stall import (
+    evaluate_leads, LABEL_POS_CADASTRO, NUDGE_LABELS, REPORT_EVENT, NUDGE_EVENT,
+)
 from app.database import get_events_by_type
 
 TZ = ZoneInfo("America/Recife")
@@ -49,13 +51,13 @@ def _fmt_case(case: dict) -> str:
 
 
 async def fetch_cadastro_abandonado_reportable(client, now: datetime) -> list[dict]:
-    """cadastro-abandonado que a Eva NÃO vai cutucar (pausado OU fora da janela de
-    24h) e que ainda não foi reportado. Espelha a regra do relatório de
-    agendamento."""
+    """cadastro-abandonado e agendamento-nao-iniciado que a Eva NÃO vai cutucar
+    (pausado OU fora da janela de 24h) e que ainda não foram reportados. Espelha a
+    regra do relatório de agendamento."""
     records = await evaluate_leads(client, now)
     reportable: list[dict] = []
     for rec in records:
-        if rec["situation"] != LABEL_CADASTRO:
+        if rec["situation"] not in NUDGE_LABELS:
             continue
         phone = rec["phone"]
         user = rec["user"]
@@ -72,6 +74,7 @@ async def fetch_cadastro_abandonado_reportable(client, now: datetime) -> list[di
             "name": user.get("name") or "(sem cadastro)",
             "active": active,
             "last_msg_at": rec["last_msg_at"],
+            "situation": rec["situation"],
         })
     return reportable
 
@@ -81,6 +84,8 @@ def _fmt_cadastro_case(case: dict) -> str:
     motivo = "Eva pausada (eva-inativa)" if not case["active"] else "fora da janela de 24h"
     line = f"• {case['name']}"
     line += f"\n  WhatsApp: {case['phone']}"
+    if case.get("situation") == LABEL_POS_CADASTRO:
+        line += "\n  Situação: cadastro completo, parou antes de ver os horários"
     line += f"\n  Última mensagem em: {quando}"
     line += f"\n  Motivo do contato manual: {motivo}"
     return line
@@ -142,10 +147,11 @@ async def main() -> None:
 
     if cadastro_cases:
         lines += [
-            f"Leads que começaram o cadastro e não terminaram — {today_str}",
+            f"Leads que começaram o cadastro e não chegaram a agendar — {today_str}",
             "=" * 60,
-            "Informaram o nome mas não concluíram o cadastro, e NÃO estão sendo",
-            "cutucados automaticamente (Eva pausada, ou fora da janela de 24h).",
+            "Informaram o nome mas não concluíram o cadastro, ou concluíram e",
+            "pararam antes de ver os horários. NÃO estão sendo cutucados",
+            "automaticamente (Eva pausada, ou fora da janela de 24h).",
             "Vale um contato manual.",
             "",
             f"Total: {len(cadastro_cases)}",

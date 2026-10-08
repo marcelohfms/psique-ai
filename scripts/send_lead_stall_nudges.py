@@ -4,7 +4,7 @@ abandonou o cadastro. Roda a cada 30 min via GitHub Actions.
 Regras (ver app/lead_stall.py):
 - Reconcilia label de TODO lead recente, mas só chama o Chatwoot quando a
   situação muda (memória via evento lead_label_set) — protege do rate limit.
-- Nudge só para cadastro-abandonado, ativo, dentro da janela de 24h, 8h-20h
+- Nudge só para cadastro-abandonado e agendamento-nao-iniciado, ativo, dentro da janela de 24h, 8h-20h
   Recife, 1 vez por lead (evento lead_stall_nudge_sent). Espelha o
   send_scheduling_stall_nudges.
 - Nada toca eva-ativa/eva-inativa nem o webhook/grafo.
@@ -20,7 +20,7 @@ load_dotenv()
 
 from app.lead_stall import (
     evaluate_leads, label_ops, needs_label_change, is_lead_paused,
-    LABEL_CADASTRO, LABEL_SET_EVENT, NUDGE_EVENT,
+    LABEL_CADASTRO, LABEL_POS_CADASTRO, NUDGE_LABELS, LABEL_SET_EVENT, NUDGE_EVENT,
 )
 from app.database import log_event, get_events_by_type
 from app.chatwoot import get_conversation_id, find_or_create_conversation, set_labels
@@ -44,6 +44,22 @@ def cadastro_nudge_message(contact_first_name: str) -> str:
         f"mas não chegou a finalizar. Quer continuar de onde a gente parou?\n\n"
         f"É rapidinho, é só me responder por aqui. 🙏"
     )
+
+
+def pos_cadastro_nudge_message(contact_first_name: str) -> str:
+    saudacao = f"Oi, {contact_first_name}! " if contact_first_name else "Oi! "
+    return (
+        f"{saudacao}😊 Seu cadastro aqui na Clínica Psique já está pronto, só "
+        f"faltou a gente escolher o horário da consulta. Ainda quer marcar?\n\n"
+        f"Se sim, é só me dizer o melhor dia e turno que eu já vejo as opções "
+        f"disponíveis pra você. 🙏"
+    )
+
+
+NUDGE_MESSAGES = {
+    LABEL_CADASTRO: cadastro_nudge_message,
+    LABEL_POS_CADASTRO: pos_cadastro_nudge_message,
+}
 
 
 async def _reconcile_label(rec: dict) -> None:
@@ -80,8 +96,10 @@ async def _reconcile_label(rec: dict) -> None:
 
 
 async def _maybe_nudge(client, graph, rec: dict, now: datetime) -> None:
-    """Cutuca uma vez quem abandonou o cadastro, se ativo e na janela de 24h."""
-    if rec["situation"] != LABEL_CADASTRO:
+    """Cutuca uma vez quem abandonou o cadastro ou parou logo depois dele, se ativo
+    e na janela de 24h. O evento de nudge é um só por lead: quem já foi cutucado
+    no cadastro não recebe um segundo aviso depois de concluí-lo."""
+    if rec["situation"] not in NUDGE_LABELS:
         return
     phone = rec["phone"]
     user = rec["user"]
@@ -95,7 +113,7 @@ async def _maybe_nudge(client, graph, rec: dict, now: datetime) -> None:
 
     name = user.get("name") or ""
     doctor_key = user.get("preferred_doctor") or ""
-    text = cadastro_nudge_message(_first_name(name))
+    text = NUDGE_MESSAGES[rec["situation"]](_first_name(name))
 
     try:
         await send_whatsapp(phone, text)
@@ -110,7 +128,8 @@ async def _maybe_nudge(client, graph, rec: dict, now: datetime) -> None:
         except Exception as e:
             print(f"  [nudge] checkpoint falhou para {phone}: {type(e).__name__}: {e}")
 
-    await log_event(NUDGE_EVENT, phone, {"last_msg_at": rec["last_msg_at"].isoformat()})
+    await log_event(NUDGE_EVENT, phone, {"last_msg_at": rec["last_msg_at"].isoformat(),
+                                         "situation": rec["situation"]})
     print(f"  [nudge] enviado para {phone}")
 
 

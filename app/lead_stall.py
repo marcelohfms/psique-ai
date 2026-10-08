@@ -8,6 +8,9 @@ Labels (mutuamente exclusivas, no máximo uma por lead):
   - lead-novo             → começou, cadastro incompleto, ainda dentro do prazo
   - cadastro-abandonado   → deu o nome, cadastro incompleto, 4h+ de silêncio
   - agendamento-abandonado→ viu horários e não confirmou (via scheduling_stall)
+  - agendamento-nao-iniciado → terminou o cadastro e parou antes de ver horários,
+                               4h+ de silêncio (caso Ryan, 5581988603497, 07/10/2026:
+                               ouviu o preço e sumiu; nenhum cron o cobria)
 """
 from datetime import datetime, timedelta
 
@@ -19,7 +22,16 @@ MAX_LEAD_AGE_DAYS = 7
 LABEL_NEW = "lead-novo"
 LABEL_CADASTRO = "cadastro-abandonado"
 LABEL_AGENDAMENTO = "agendamento-abandonado"
-LEAD_LABELS = (LABEL_NEW, LABEL_CADASTRO, LABEL_AGENDAMENTO)
+LABEL_POS_CADASTRO = "agendamento-nao-iniciado"
+LEAD_LABELS = (LABEL_NEW, LABEL_CADASTRO, LABEL_AGENDAMENTO, LABEL_POS_CADASTRO)
+# Situações que este cron cutuca (agendamento-abandonado é do scheduling_stall).
+NUDGE_LABELS = (LABEL_CADASTRO, LABEL_POS_CADASTRO)
+
+# Cadastro concluído (emitido no collect_info) e os eventos que mostram que a
+# conversa seguiu para outra coisa que não agendar — esses não são cutucados
+# (caso Miriam, 14/09/2026: cadastro feito só para pedir declaração).
+REGISTRATION_EVENT = "info_collected"
+NON_SCHEDULING_EVENTS = ("document_requested", "human_transfer", "external_contact_requested")
 
 # Eventos phone-keyed (tabela events) para memória entre rodadas do cron.
 LABEL_SET_EVENT = "lead_label_set"       # metadata: {"label": <str|None>, "conversation_id": int}
@@ -44,21 +56,26 @@ def classify_situation(
     last_msg_at: datetime,
     now: datetime,
     stall_hours: int = STALL_HOURS,
+    registered_without_offer: bool = False,
 ) -> str | None:
     """Devolve a label da situação do lead, ou None quando não há label a aplicar.
 
     Ordem importa: quem tem consulta ou está pausado sai fora; agendamento
     abandonado precede o resto (implica cadastro completo); só então avaliamos o
-    cadastro incompleto."""
+    cadastro incompleto.
+
+    registered_without_offer: concluiu o cadastro nesta janela de lead e a
+    conversa não seguiu para documento/atendente (ver
+    select_registered_without_offer). Com silêncio, vira agendamento-nao-iniciado."""
     if not active:
         return None
     if has_appointment:
         return None
     if offered_abandoned:
         return LABEL_AGENDAMENTO
-    if registration_complete:
-        return None
     silent = (now - last_msg_at) >= timedelta(hours=stall_hours)
+    if registration_complete:
+        return LABEL_POS_CADASTRO if (registered_without_offer and silent) else None
     if silent:
         return LABEL_CADASTRO if has_name else None
     return LABEL_NEW
@@ -84,6 +101,29 @@ def select_recent_phones(
         if phone not in latest or ts > latest[phone]:
             latest[phone] = ts
     return latest
+
+
+def select_registered_without_offer(event_rows: list[dict]) -> set[str]:
+    """Telefones cujo último info_collected NÃO foi seguido de um evento de outra
+    intenção (documento, atendente, contato externo). Recebe eventos dos tipos
+    REGISTRATION_EVENT + NON_SCHEDULING_EVENTS já restritos à janela do lead.
+    Quem viu horários ou marcou é tratado antes, em classify_situation."""
+    registered_at: dict[str, datetime] = {}
+    other_at: dict[str, list[datetime]] = {}
+    for ev in event_rows:
+        phone = ev.get("phone")
+        if not phone:
+            continue
+        ts = parse_ts(ev["created_at"])
+        if ev.get("event_type") == REGISTRATION_EVENT:
+            if phone not in registered_at or ts > registered_at[phone]:
+                registered_at[phone] = ts
+        else:
+            other_at.setdefault(phone, []).append(ts)
+    return {
+        phone for phone, reg in registered_at.items()
+        if not any(t >= reg for t in other_at.get(phone, []))
+    }
 
 
 def label_ops(situation: str | None) -> tuple[list[str], list[str]]:
@@ -124,6 +164,15 @@ async def evaluate_leads(client, now: datetime) -> list[dict]:
     # ~30 min e a atendente não consegue filtrar quem abandonou o agendamento).
     abandoned = {c["phone"] for c in await fetch_abandoned(client, now, exclude_handled=False)}
 
+    reg_rows = (
+        await client.from_("events")
+        .select("phone, event_type, created_at")
+        .in_("event_type", [REGISTRATION_EVENT, *NON_SCHEDULING_EVENTS])
+        .gte("created_at", cutoff_iso)
+        .execute()
+    ).data or []
+    registered = select_registered_without_offer(reg_rows)
+
     records: list[dict] = []
     for phone, last_msg_at in latest.items():
         user = await get_user_by_phone(phone) or {}
@@ -137,6 +186,7 @@ async def evaluate_leads(client, now: datetime) -> list[dict]:
             has_name=bool((user.get("name") or "").strip()),
             last_msg_at=last_msg_at,
             now=now,
+            registered_without_offer=phone in registered,
         )
         records.append({
             "phone": phone,
