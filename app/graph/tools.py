@@ -1623,6 +1623,62 @@ def _has_recent_attendant_note(state: dict) -> bool:
     return False
 
 
+# Palavras que ligam uma nota da atendente a um pagamento ("PAGAMENTO CONFIRMADO
+# Fulana R$ 650,00", "registre o pix de 600", "pagou no cartão"). Uma nota recente
+# sobre outro assunto ("pode encaminhar os relatórios") não autoriza baixa.
+_PAYMENT_NOTE_RE = re.compile(
+    r"pag|pix|cart[aã]o|d[eé]bito|cr[eé]dito|dinheiro|esp[eé]cie|transfer|r\$|comprovante|quit|baixa|registr|lan[cç]",
+    re.IGNORECASE,
+)
+
+
+def _attendant_authorized_payment(state: dict) -> bool:
+    """True se uma "[Instrução da atendente]" recente fala de pagamento.
+
+    Pagamento sem comprovante (link, cartão, dinheiro ou PIX sem imagem) só pode ser
+    registrado por ordem da clínica. A palavra do paciente ("Pagamento efetuado,
+    obrigada!") não basta: ninguém conferiu se o dinheiro caiu (caso Marília, mãe
+    Maria Andrea, 5581991912704, 08/10/2026 — R$ 650 baixados pelo link sem
+    PAGAMENTO CONFIRMADO da atendente)."""
+    seen = 0
+    for m in reversed(state.get("messages") or []):
+        mtype = m.get("type") if isinstance(m, dict) else getattr(m, "type", None)
+        if mtype != "human":
+            continue
+        content = m.get("content") if isinstance(m, dict) else getattr(m, "content", "")
+        if (
+            isinstance(content, str)
+            and content.startswith(_ATTENDANT_NOTE_PREFIX)
+            and _PAYMENT_NOTE_RE.search(content[len(_ATTENDANT_NOTE_PREFIX):])
+        ):
+            return True
+        seen += 1
+        if seen >= _CLINIC_NOTE_LOOKBACK_HUMAN_MSGS:
+            return False
+    return False
+
+
+PAYMENT_UNCONFIRMED_MARKER = "[PAGAMENTO_SEM_CONFIRMACAO]"
+
+
+def _recent_receipt_image(state: dict) -> bool:
+    """True se o paciente mandou imagem nas últimas mensagens humanas, mesmo sem a
+    tag [drive_link:] (upload no Drive falhou, caso Rayssa 03/09/2026). Há um
+    comprovante de verdade na conversa; o caminho do valor ilegível cuida dele."""
+    seen = 0
+    for m in reversed(state.get("messages") or []):
+        mtype = m.get("type") if isinstance(m, dict) else getattr(m, "type", None)
+        if mtype != "human":
+            continue
+        content = m.get("content") if isinstance(m, dict) else getattr(m, "content", "")
+        if isinstance(content, str) and "[imagem]:" in content:
+            return True
+        seen += 1
+        if seen >= _CLINIC_NOTE_LOOKBACK_HUMAN_MSGS:
+            return False
+    return False
+
+
 def _clinic_swap_confirmed(state: dict, initiated_by: str | None) -> bool:
     """Fora do silent_mode: o paciente está confirmando uma troca que a clínica
     propôs (initiated_by="clinic" + nota recente da atendente na conversa)."""
@@ -3681,6 +3737,38 @@ async def register_payment(
         "REGISTER_PAYMENT start: drive_link=%r amount=%r image_description=%r",
         drive_link, amount, image_description[:120] if image_description else "",
     )
+
+    # ── Guard: pagamento sem comprovante exige ordem da atendente ─────────────
+    # Sem imagem (nem link do Drive, nem descrição) o único lastro do pagamento é a
+    # confirmação da clínica. Vale para is_link, payment_method e PIX sem imagem.
+    # O prompt já mandava esperar o "PAGAMENTO CONFIRMADO", mas o modelo deu baixa
+    # só com a palavra do paciente (caso Marília, 08/10/2026).
+    if (
+        not drive_link and not image_description
+        and not (not is_link and not payment_method and _recent_receipt_image(state))
+        and not _attendant_authorized_payment(state)
+    ):
+        _logger.warning(
+            "REGISTER_PAYMENT blocked: sem comprovante e sem instrução da atendente "
+            "phone=%s amount=%r is_link=%s method=%r",
+            phone, amount, is_link, payment_method,
+        )
+        try:
+            await log_event("payment_unconfirmed_blocked", phone, {
+                "amount": amount, "is_link": is_link, "payment_method": payment_method,
+                "patient_name_override": patient_name_override,
+            })
+        except Exception:
+            _logger.exception("log_event payment_unconfirmed_blocked falhou phone=%s", phone)
+        return (
+            f"{PAYMENT_UNCONFIRMED_MARKER}\n"
+            "[INSTRUÇÃO INTERNA — NÃO ENVIE AO PACIENTE] NADA foi registrado. Pagamento "
+            "sem comprovante só é registrado depois que a atendente confirma por nota "
+            "(\"PAGAMENTO CONFIRMADO [nome] R$ [valor]\"). NÃO diga que o pagamento foi "
+            "recebido nem que a consulta está quitada. Responda ao paciente que o "
+            "pagamento está sendo conferido pela equipe e que confirmamos em breve. "
+            "Se o paciente pagou por PIX, peça para enviar o comprovante por aqui."
+        )
 
     # ── Guard: mesmo comprovante de imagem processado em dobro ─────────────────
     # A corrida de processamento duplo do turno chama register_payment duas vezes

@@ -5,7 +5,7 @@ from datetime import datetime, timedelta
 from unittest.mock import AsyncMock, MagicMock, patch
 from zoneinfo import ZoneInfo
 
-from langchain_core.messages import HumanMessage
+from langchain_core.messages import AIMessage, HumanMessage
 
 from tests.conftest import PHONE, CONFIG
 
@@ -4498,7 +4498,7 @@ async def test_register_payment_unreadable_without_drive_link_tells_clinic_to_fe
         result = await register_payment.coroutine(
             amount="?",
             drive_link="",
-            state=_make_state(),
+            state=_make_state(messages=[HumanMessage(content="[imagem]: comprovante ilegível")]),
             config=CONFIG,
         )
 
@@ -6013,7 +6013,7 @@ async def test_register_payment_courtesy_zero_price():
         result = await register_payment.coroutine(
             amount="0,00",
             drive_link="",
-            state=_make_state(preferred_doctor="julio", patient_age=35),
+            state=_make_state(preferred_doctor="julio", patient_age=35, messages=[HumanMessage(content="[Instrução da atendente]: registre o pagamento, é cortesia")]),
             config=CONFIG,
         )
     assert "QUITADA" in result
@@ -6036,7 +6036,7 @@ async def test_register_payment_courtesy_per_appointment():
         result = await register_payment.coroutine(
             amount="0,00",
             drive_link="",
-            state=_make_state(preferred_doctor="julio", patient_age=35),
+            state=_make_state(preferred_doctor="julio", patient_age=35, messages=[HumanMessage(content="[Instrução da atendente]: registre o pagamento, é cortesia")]),
             config=CONFIG,
         )
     assert "QUITADA" in result
@@ -7024,7 +7024,7 @@ async def test_register_payment_panel_link_never_dedups():
         result = await register_payment.coroutine(
             amount="600,00",
             drive_link="",
-            state=_make_state(),
+            state=_make_state(messages=[HumanMessage(content="[Instrução da atendente]: PAGAMENTO CONFIRMADO Maria R$ 600,00")]),
             config=CONFIG,
             is_link=True,
         )
@@ -7308,3 +7308,84 @@ async def test_extend_payment_deadline_refused_when_appointment_within_24h():
     assert result.startswith("[INSTRUÇÃO INTERNA")
     table.update.assert_not_called()
     mock_log.assert_not_awaited()
+
+
+async def test_register_payment_link_without_attendant_note_is_blocked():
+    """Caso Marília (5581991912704, 08/10/2026): a atendente mandou o link de R$ 650,
+    a mãe disse "Pagamento efetuado, obrigada!" e a Eva deu baixa com is_link=True
+    sem o PAGAMENTO CONFIRMADO. Sem nota da atendente, nada pode ser gravado."""
+    from app.graph.tools import register_payment, PAYMENT_UNCONFIRMED_MARKER
+    client, table, _ = _make_supabase_client_with_appointment()
+    state = _make_state(messages=[
+        AIMessage(content="Para realizar o pagamento de R$ 650,00, acesse o Link de Pagamento abaixo"),
+        HumanMessage(content="Pagamento efetuado, obrigada!"),
+    ])
+    with patch("app.graph.tools.get_supabase", new_callable=AsyncMock, return_value=client), \
+         patch("app.graph.tools.get_users_by_phone", new_callable=AsyncMock, return_value=[{"id": "user-123", "patient_name": "Maria"}]), \
+         patch("app.graph.tools.log_event", new_callable=AsyncMock) as mock_log, \
+         patch("app.graph.tools._notify_clinic", new_callable=AsyncMock) as mock_notify, \
+         patch("app.google_sheets.append_payment_receipt", new_callable=AsyncMock) as mock_sheets:
+        result = await register_payment.coroutine(
+            amount="650,00", drive_link="", state=state, config=CONFIG, is_link=True,
+        )
+    assert PAYMENT_UNCONFIRMED_MARKER in result
+    assert "QUITADA" not in result
+    mock_sheets.assert_not_awaited()
+    mock_notify.assert_not_awaited()
+    table.update.assert_not_called()
+    assert mock_log.call_args[0][0] == "payment_unconfirmed_blocked"
+
+
+async def test_register_payment_pix_without_receipt_or_note_is_blocked():
+    """PIX sem imagem e sem nota da atendente ("fiz o pix de 600") também não grava."""
+    from app.graph.tools import register_payment, PAYMENT_UNCONFIRMED_MARKER
+    client, _, _ = _make_supabase_client_with_appointment()
+    state = _make_state(messages=[HumanMessage(content="já fiz o pix de 600")])
+    with patch("app.graph.tools.get_supabase", new_callable=AsyncMock, return_value=client), \
+         patch("app.graph.tools.log_event", new_callable=AsyncMock), \
+         patch("app.google_sheets.append_payment_receipt", new_callable=AsyncMock) as mock_sheets:
+        result = await register_payment.coroutine(
+            amount="600,00", drive_link="", state=state, config=CONFIG,
+        )
+    assert PAYMENT_UNCONFIRMED_MARKER in result
+    mock_sheets.assert_not_awaited()
+
+
+async def test_register_payment_unrelated_attendant_note_does_not_authorize():
+    """Nota recente sobre outro assunto ("pode encaminhar os relatórios") não
+    autoriza baixa pelo link."""
+    from app.graph.tools import register_payment, PAYMENT_UNCONFIRMED_MARKER
+    client, _, _ = _make_supabase_client_with_appointment()
+    state = _make_state(messages=[
+        HumanMessage(content="[Instrução da atendente]: pode encaminhar os relatórios ao Dr. Júlio"),
+        HumanMessage(content="Pagamento efetuado, obrigada!"),
+    ])
+    with patch("app.graph.tools.get_supabase", new_callable=AsyncMock, return_value=client), \
+         patch("app.graph.tools.log_event", new_callable=AsyncMock), \
+         patch("app.google_sheets.append_payment_receipt", new_callable=AsyncMock) as mock_sheets:
+        result = await register_payment.coroutine(
+            amount="650,00", drive_link="", state=state, config=CONFIG, is_link=True,
+        )
+    assert PAYMENT_UNCONFIRMED_MARKER in result
+    mock_sheets.assert_not_awaited()
+
+
+async def test_register_payment_link_with_pagamento_confirmado_note_registers():
+    """Com o PAGAMENTO CONFIRMADO da atendente, a baixa pelo link segue normal."""
+    from app.graph.tools import register_payment, PAYMENT_UNCONFIRMED_MARKER
+    client, _, _ = _make_supabase_client_with_appointment()
+    state = _make_state(silent_mode=True, messages=[
+        HumanMessage(content="Pagamento efetuado, obrigada!"),
+        HumanMessage(content="[Instrução da atendente]: PAGAMENTO CONFIRMADO Maria R$ 650,00"),
+    ])
+    with patch("app.graph.tools.get_supabase", new_callable=AsyncMock, return_value=client), \
+         patch("app.graph.tools.get_users_by_phone", new_callable=AsyncMock, return_value=[{"id": "user-123", "patient_name": "Maria"}]), \
+         patch("app.graph.tools.log_event", new_callable=AsyncMock), \
+         patch("app.graph.tools._notify_clinic", new_callable=AsyncMock), \
+         patch("app.google_sheets.append_payment_receipt", new_callable=AsyncMock) as mock_sheets:
+        result = await register_payment.coroutine(
+            amount="650,00", drive_link="", state=state, config=CONFIG, is_link=True,
+        )
+    assert PAYMENT_UNCONFIRMED_MARKER not in result
+    assert "QUITADA" in result
+    mock_sheets.assert_awaited_once()
