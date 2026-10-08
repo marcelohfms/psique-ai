@@ -3572,6 +3572,48 @@ _BOOKING_FEE_RESEND_WINDOW_MINUTES = 30
 RECEIPT_DEDUP_MARKER = "[COMPROVANTE_JA_REGISTRADO]"
 
 
+# Marcador devolvido por register_payment quando o ARQUIVO do comprovante (mesmo
+# md5) já foi usado num registro anterior, com outro drive_link. Caso Miguel
+# Costa Loureiro (5581991012815): o comprovante da consulta de 03/09 foi reusado
+# para dar baixa na de 08/10. Nada é gravado; a clínica confere pelo painel.
+DUPLICATE_RECEIPT_MARKER = "[COMPROVANTE_REPETIDO]"
+
+
+async def _find_previous_receipt(client, file_md5: str, drive_link: str) -> dict | None:
+    """Registro payment_receipt_registered mais antigo com o mesmo md5 de arquivo e
+    outro drive_link, de qualquer telefone (o mesmo arquivo em outra família também é
+    suspeito). Mesmo drive_link é a corrida de processamento duplo, tratada por
+    _receipt_already_registered. Best-effort: falha na leitura devolve None."""
+    if not file_md5:
+        return None
+    try:
+        res = await client.from_("events").select("phone, created_at, metadata") \
+            .eq("event_type", "payment_receipt_registered") \
+            .eq("metadata->>file_md5", file_md5) \
+            .order("created_at").limit(10).execute()
+    except Exception:
+        logger.warning("FIND_PREVIOUS_RECEIPT failed md5=%s", file_md5, exc_info=True)
+        return None
+    for row in res.data or []:
+        if (row.get("metadata") or {}).get("drive_link") != drive_link:
+            return row
+    return None
+
+
+def _describe_previous_receipt(row: dict) -> str:
+    """'Fulano, consulta de 03/09/2026 18:00, registrado em 03/09/2026' para avisos."""
+    meta = row.get("metadata") or {}
+    partes = [meta.get("patient_name") or "paciente não identificado"]
+    if meta.get("appointment_dt"):
+        partes.append(f"consulta de {meta['appointment_dt']}")
+    try:
+        quando = datetime.fromisoformat(row["created_at"]).astimezone(ZoneInfo("America/Recife"))
+        partes.append(f"registrado em {quando.strftime('%d/%m/%Y')}")
+    except Exception:
+        pass
+    return ", ".join(partes)
+
+
 async def _receipt_already_registered(client, phone: str, drive_link: str) -> bool:
     """True se já existe um payment_receipt_registered com este drive_link, para
     as variantes deste telefone, dentro de _BOOKING_FEE_RESEND_WINDOW_MINUTES.
@@ -3787,6 +3829,52 @@ async def register_payment(
                 f"{RECEIPT_DEDUP_MARKER}\n"
                 "[INSTRUÇÃO INTERNA — NÃO ENVIE AO PACIENTE] Este comprovante já foi "
                 "registrado há instantes (processamento duplo). Nada foi gravado de novo."
+            )
+
+    # ── Guard: arquivo de comprovante já usado em outro registro ──────────────
+    # Compara o md5 do arquivo (o Drive expõe md5Checksum) com os registros
+    # anteriores. Pega o mesmo arquivo reenviado em outro dia, que antes virava
+    # baixa nova ou "Pagamento Parcial". Prints diferentes do mesmo PIX geram
+    # arquivos diferentes e passam. Fail-open se o Drive ou o Supabase falharem.
+    _file_md5 = ""
+    if drive_link and not is_link and not payment_method:
+        from app.google_drive import get_file_md5
+        _file_md5 = await get_file_md5(drive_link)
+        _previous = await _find_previous_receipt(client, _file_md5, drive_link)
+        if _previous:
+            _prev_desc = _describe_previous_receipt(_previous)
+            _prev_link = (_previous.get("metadata") or {}).get("drive_link", "")
+            _prev_appt = (_previous.get("metadata") or {}).get("appointment_dt", "")
+            _logger.warning(
+                "REGISTER_PAYMENT blocked: comprovante repetido md5=%s phone=%s anterior=%s",
+                _file_md5, phone, _prev_desc,
+            )
+            try:
+                await log_event("payment_duplicate_receipt_blocked", phone, {
+                    "file_md5": _file_md5, "drive_link": drive_link, "amount": amount,
+                    "previous_drive_link": _prev_link, "previous": _prev_desc,
+                })
+            except Exception:
+                _logger.exception("log_event payment_duplicate_receipt_blocked falhou phone=%s", phone)
+            await _notify_clinic(
+                f"⚠️ Comprovante REPETIDO — o paciente enviou um arquivo idêntico a um "
+                f"comprovante já registrado. NADA foi registrado. Confira e, se for o caso, "
+                f"lance pelo painel.\nTelefone: {phone}\nValor lido: R$ {amount}"
+                f"\nRegistro anterior: {_prev_desc}\nLink anterior: {_prev_link}"
+                f"\nLink novo: {drive_link}",
+                phone=phone,
+                subject="Comprovante repetido",
+            )
+            return (
+                f"{DUPLICATE_RECEIPT_MARKER}\n"
+                "[INSTRUÇÃO INTERNA — NÃO ENVIE AO PACIENTE] NADA foi registrado. Este "
+                f"arquivo de comprovante é idêntico a um já registrado ({_prev_desc}). "
+                "A CLÍNICA JÁ FOI AVISADA para conferir. NÃO diga que o pagamento foi "
+                "confirmado nem que a consulta está quitada. Diga ao paciente, com "
+                "gentileza, que esse comprovante já consta registrado"
+                + (f" para a consulta de {_prev_appt}" if _prev_appt else "")
+                + " e que a equipe vai conferir. Se ele fez um pagamento novo, peça o "
+                "comprovante desse pagamento."
             )
 
     # ── Resolve patient ────────────────────────────────────────────────────────
@@ -4314,6 +4402,7 @@ async def register_payment(
         await log_event("payment_receipt_registered", phone, {
             "patient_name": patient_name, "amount": amount,
             "payment_type": "Consulta", "drive_link": drive_link,
+            "appointment_dt": appointment_dt, **({"file_md5": _file_md5} if _file_md5 else {}),
         })
         return f"{confirmation_msg}\n\nConsulta QUITADA (cortesia). ✅ Nenhum valor adicional será cobrado."
 
@@ -4470,6 +4559,8 @@ async def register_payment(
         "amount": amount,
         "payment_type": payment_type,
         "drive_link": drive_link,
+        "appointment_dt": appointment_dt,
+        **({"file_md5": _file_md5} if _file_md5 else {}),
     })
 
     # ── Notify original patient number if third-party sender ──────────────────
