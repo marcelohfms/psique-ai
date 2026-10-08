@@ -3,6 +3,7 @@
 (token, filtrado por paciente).
 """
 import asyncio
+import hashlib
 import io
 import logging
 import os
@@ -422,6 +423,61 @@ async def upload_comprovante(
     return drive_link, filename
 
 
+def file_md5(file_bytes: bytes) -> str:
+    """md5 dos bytes do comprovante. É o mesmo valor que o Drive expõe em
+    md5Checksum, então compara com os arquivos que a Eva subiu (ver
+    app/graph/tools.py::_find_previous_receipt). Identidade de arquivo, não segurança."""
+    return hashlib.md5(file_bytes).hexdigest()
+
+
+async def find_previous_receipt(client, md5: str) -> dict | None:
+    """Registro payment_receipt_registered mais antigo com este md5 de arquivo, de
+    qualquer telefone. Caso Miguel Costa Loureiro (08/10/2026): o comprovante da
+    consulta de 03/09 foi reusado para dar baixa na de 08/10. Falha na leitura
+    devolve None: a trava não pode impedir um pagamento legítimo."""
+    if not md5:
+        return None
+    try:
+        res = await (
+            client.from_("events").select("phone, created_at, metadata")
+            .eq("event_type", "payment_receipt_registered")
+            .eq("metadata->>file_md5", md5)
+            .order("created_at").limit(1).execute()
+        )
+    except Exception:
+        logger.warning("FIND_PREVIOUS_RECEIPT failed md5=%s", md5, exc_info=True)
+        return None
+    return (res.data or [None])[0]
+
+
+def describe_previous_receipt(row: dict) -> str:
+    """Texto do aviso de comprovante repetido mostrado à atendente."""
+    meta = row.get("metadata") or {}
+    texto = f"Este comprovante já foi usado para {meta.get('patient_name') or 'outro paciente'}"
+    if meta.get("appointment_dt"):
+        texto += f", consulta de {meta['appointment_dt']}"
+    try:
+        quando = datetime.fromisoformat(row["created_at"]).astimezone(ZoneInfo("America/Recife"))
+        texto += f" (registrado em {quando.strftime('%d/%m/%Y')})"
+    except Exception:
+        pass
+    return texto + ". Registrar mesmo assim?"
+
+
+async def log_duplicate_confirmed(phone: str, appointment_id: str, md5: str, previous: dict) -> None:
+    """Rastro de quando a atendente confirma um comprovante repetido. Best-effort."""
+    try:
+        await attendant_db.log_event("payment_duplicate_receipt_confirmed", phone, {
+            "appointment_id": appointment_id,
+            "file_md5": md5,
+            "previous_drive_link": (previous.get("metadata") or {}).get("drive_link", ""),
+            "previous_phone": previous.get("phone", ""),
+            "previous_created_at": previous.get("created_at", ""),
+        })
+    except Exception:
+        logger.exception("LOG_EVENT_FAILED duplicate_confirmed appt=%s", appointment_id)
+
+
 def _phone_variants(phone: str) -> list[str]:
     """Variantes com e sem o 9 de um celular brasileiro. Espelha attendant_db.py."""
     digits = phone.replace("@s.whatsapp.net", "").lstrip("+")
@@ -637,6 +693,7 @@ async def mark_paid(
     phone: str,
     drive_link: str = "",
     receipt_filename: str = "",
+    file_md5: str = "",
 ) -> None:
     """Grava o pagamento no agendamento e tenta registrar na planilha/e-mail (best-effort).
 
@@ -647,6 +704,8 @@ async def mark_paid(
     `drive_link`: link do comprovante já enviado ao Drive (opcional — ver upload_comprovante).
     `receipt_filename`: nome real do arquivo no Drive, devolvido junto com o link por
     upload_comprovante — vira o texto do hyperlink na planilha.
+    `file_md5`: md5 do arquivo (file_md5), gravado no evento para a trava de
+    comprovante repetido.
     """
     now = datetime.now(timezone.utc).isoformat()
     appointment_ids = appointment_id.split(",")
@@ -741,7 +800,9 @@ async def mark_paid(
                 "payment_method": forma_label,
                 "drive_link": drive_link,
                 "appointment_id": appointment_id,
+                "appointment_dt": data_hora,
                 "registered_via": "dashboard",
+                **({"file_md5": file_md5} if file_md5 else {}),
             })
         except Exception:
             logger.exception("LOG_EVENT_FAILED patient=%s drive_link=%s", paciente, drive_link)
