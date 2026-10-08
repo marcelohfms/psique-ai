@@ -1115,12 +1115,19 @@ async function marcarPago(btn) {
   if (CONVERSATION_ID != null) form.append("conversation_id", String(CONVERSATION_ID));
   if (file) form.append("file", file);
 
+  const url = `/api/atendente/pagamentos/${card.dataset.appt}/pagar-com-comprovante?token=${encodeURIComponent(TOKEN)}`;
   let r;
   try {
-    r = await fetch(`/api/atendente/pagamentos/${card.dataset.appt}/pagar-com-comprovante?token=${encodeURIComponent(TOKEN)}`, {
-      method: "POST",
-      body: form,
-    });
+    r = await fetch(url, { method: "POST", body: form });
+    // 409 = comprovante idêntico a um já registrado. Nada foi gravado; só segue
+    // se a atendente confirmar (caso Miguel Costa Loureiro, 08/10/2026).
+    if (r.status === 409) {
+      let dup = null;
+      try { dup = (await r.json()).detail; } catch (_) {}
+      if (!dup || !dup.duplicado || !confirm(`⚠️ ${dup.mensagem}`)) { restore(); return; }
+      form.set("confirmar_duplicado", "true");
+      r = await fetch(url, { method: "POST", body: form });
+    }
   } catch (err) {
     alert("A conexão caiu antes da resposta. Feche e reabra o painel para ver se o pagamento entrou antes de tentar de novo.");
     restore();

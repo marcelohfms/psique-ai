@@ -767,19 +767,31 @@ async function marcarPago(appointmentId, tipo, btn) {
   btn.innerHTML = `<svg class="" style="width:14px;height:14px;animation:spin 0.8s linear infinite" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M21 12a9 9 0 1 1-6.219-8.56"/></svg>Aguarde…`;
 
   try {
-    let drive_link = '', receipt_filename = '';
+    let drive_link = '', receipt_filename = '', file_md5 = '';
     if (file) {
       const form = new FormData();
       form.append('paciente', row.dataset.paciente);
       form.append('data_hora', row.dataset.dataHora);
       form.append('valor', String(valor));
+      form.append('phone', row.dataset.phone);
       form.append('file', file);
-      const uploadResp = await fetch(`/api/pagamentos/${appointmentId}/comprovante`, {
-        method: 'POST',
-        body: form,
-      });
+      const uploadUrl = `/api/pagamentos/${appointmentId}/comprovante`;
+      let uploadResp = await fetch(uploadUrl, { method: 'POST', body: form });
+      // 409 = comprovante idêntico a um já registrado. Nada foi gravado; só segue
+      // se a atendente confirmar (caso Miguel Costa Loureiro, 08/10/2026).
+      if (uploadResp.status === 409) {
+        let dup = null;
+        try { dup = (await uploadResp.json()).detail; } catch (_) {}
+        if (!dup || !dup.duplicado || !confirm(`⚠️ ${dup.mensagem}`)) {
+          btn.disabled = false;
+          btn.innerHTML = original;
+          return;
+        }
+        form.set('confirmar_duplicado', 'true');
+        uploadResp = await fetch(uploadUrl, { method: 'POST', body: form });
+      }
       if (!uploadResp.ok) throw new Error(await uploadResp.text());
-      ({ drive_link, receipt_filename } = await uploadResp.json());
+      ({ drive_link, receipt_filename, file_md5 } = await uploadResp.json());
     }
 
     const resp = await fetch(`/api/pagamentos/${appointmentId}/pagar`, {
@@ -795,6 +807,7 @@ async function marcarPago(appointmentId, tipo, btn) {
         phone: row.dataset.phone,
         drive_link,
         receipt_filename,
+        file_md5,
       }),
     });
 

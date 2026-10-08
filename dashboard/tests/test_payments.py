@@ -715,3 +715,64 @@ async def test_append_sheet_sem_receipt_filename_cai_no_helper(monkeypatch):
 
 async def test_append_sheet_sem_drive_link_nao_escreve_hyperlink(monkeypatch):
     assert await _run_append_sheet(monkeypatch) is None
+
+
+# ── Trava de comprovante repetido ────────────────────────────────────────────
+# Caso Miguel Costa Loureiro (08/10/2026).
+
+def test_file_md5_bate_com_o_md5checksum_do_drive():
+    import hashlib
+    assert payments.file_md5(b"abc") == hashlib.md5(b"abc").hexdigest()
+
+
+async def test_mark_paid_grava_md5_e_consulta_no_evento(fake_client, monkeypatch):
+    fake_client.store["appointments"] = [{"appointment_id": "a1", "paid_at": None}]
+    monkeypatch.setattr(payments, "_append_payment_sheet", AsyncMock())
+    monkeypatch.setattr(payments, "_send_clinic_email", AsyncMock())
+    log = AsyncMock()
+    monkeypatch.setattr(attendant_db, "log_event", log)
+    await payments.mark_paid(
+        fake_client, "a1", "consulta", 750, "PIX", "Miguel", "Dr. Júlio",
+        "08/10/2026 18:00", "5581991012815",
+        drive_link="https://drive.google.com/file/d/abc/view", file_md5="md5x",
+    )
+    event, _phone, meta = log.await_args_list[0].args
+    assert event == "payment_receipt_registered"
+    assert meta["file_md5"] == "md5x"
+    assert meta["appointment_dt"] == "08/10/2026 18:00"
+
+
+def _events_client(result=None, error=None):
+    from unittest.mock import MagicMock
+    q = MagicMock()
+    for m in ("select", "eq", "order", "limit"):
+        getattr(q, m).return_value = q
+    q.execute = AsyncMock(side_effect=error) if error else AsyncMock(return_value=MagicMock(data=result))
+    c = MagicMock()
+    c.from_.return_value = q
+    return c, q
+
+
+async def test_find_previous_receipt_busca_pelo_md5():
+    row = {"phone": "x", "created_at": "2026-09-03T22:12:09+00:00", "metadata": {}}
+    c, q = _events_client([row])
+    assert await payments._find_previous_receipt_real(c, "md5x") == row
+    q.eq.assert_any_call("metadata->>file_md5", "md5x")
+    q.eq.assert_any_call("event_type", "payment_receipt_registered")
+
+
+async def test_find_previous_receipt_vazio_ou_erro_devolve_none():
+    c, _ = _events_client([])
+    assert await payments._find_previous_receipt_real(c, "md5x") is None
+    c, _ = _events_client(error=Exception("fora"))
+    assert await payments._find_previous_receipt_real(c, "md5x") is None
+    assert await payments._find_previous_receipt_real(c, "") is None
+
+
+def test_describe_previous_receipt_em_horario_de_recife():
+    msg = payments.describe_previous_receipt({
+        "created_at": "2026-09-04T01:30:00+00:00",
+        "metadata": {"patient_name": "Miguel Costa Loureiro", "appointment_dt": "03/09/2026 18:00"},
+    })
+    assert msg == ("Este comprovante já foi usado para Miguel Costa Loureiro, consulta de "
+                   "03/09/2026 18:00 (registrado em 03/09/2026). Registrar mesmo assim?")

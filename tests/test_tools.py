@@ -7389,3 +7389,130 @@ async def test_register_payment_link_with_pagamento_confirmado_note_registers():
     assert PAYMENT_UNCONFIRMED_MARKER not in result
     assert "QUITADA" in result
     mock_sheets.assert_awaited_once()
+
+
+# ── Trava de comprovante repetido (mesmo md5 de arquivo) ─────────────────────
+# Caso Miguel Costa Loureiro (5581991012815): o arquivo do comprovante da consulta
+# de 03/09 foi reusado para dar baixa na de 08/10.
+
+_PREV_RECEIPT_ROW = {
+    "phone": "5581991012815",
+    "created_at": "2026-09-03T22:12:09.856812+00:00",
+    "metadata": {
+        "patient_name": "Miguel Costa Loureiro",
+        "appointment_dt": "03/09/2026 18:00",
+        "drive_link": "https://drive.google.com/file/d/ANTIGO/view",
+        "file_md5": "06aaf6d31b6a69aa9abca9704b68a29f",
+    },
+}
+
+
+def _client_with_events_sequence(*event_results):
+    """events devolve cada lista na ordem das queries (1ª = dedup por drive_link,
+    2ª = busca por md5)."""
+    client, table, execute = _make_supabase_client_with_appointment()
+    events_table = MagicMock()
+    for m in ("select", "eq", "in_", "limit", "gte", "order"):
+        getattr(events_table, m).return_value = events_table
+    events_table.execute = AsyncMock(side_effect=[MagicMock(data=r) for r in event_results]
+                                     + [MagicMock(data=[])] * 5)
+    client.from_.side_effect = lambda name: events_table if name == "events" else table
+    return client, table, events_table
+
+
+async def test_register_payment_blocks_reused_receipt_file():
+    from app.graph.tools import register_payment, DUPLICATE_RECEIPT_MARKER
+    client, table, _ = _client_with_events_sequence([], [_PREV_RECEIPT_ROW])
+    with patch("app.graph.tools.get_supabase", new_callable=AsyncMock, return_value=client), \
+         patch("app.google_drive.get_file_md5", new_callable=AsyncMock,
+               return_value="06aaf6d31b6a69aa9abca9704b68a29f"), \
+         patch("app.graph.tools.get_users_by_phone", new_callable=AsyncMock, return_value=[{"id": "user-123", "patient_name": "Maria"}]), \
+         patch("app.graph.tools.log_event", new_callable=AsyncMock) as mock_log, \
+         patch("app.google_drive.rename_file", new_callable=AsyncMock) as mock_rename, \
+         patch("app.google_sheets.append_payment_receipt", new_callable=AsyncMock) as mock_sheets, \
+         patch("app.graph.tools._notify_clinic", new_callable=AsyncMock) as mock_notify:
+        result = await register_payment.coroutine(
+            amount="650,00",
+            drive_link="https://drive.google.com/file/d/NOVO/view",
+            state=_make_state(),
+            config=CONFIG,
+        )
+    assert DUPLICATE_RECEIPT_MARKER in result
+    assert "consulta de 03/09/2026 18:00" in result
+    mock_sheets.assert_not_called()
+    mock_rename.assert_not_called()
+    assert not table.update.called
+    mock_notify.assert_awaited_once()
+    assert "ANTIGO" in mock_notify.await_args.args[0]
+    assert mock_log.await_args.args[0] == "payment_duplicate_receipt_blocked"
+
+
+async def test_register_payment_new_receipt_file_records_md5():
+    from app.graph.tools import register_payment, DUPLICATE_RECEIPT_MARKER
+    client, table, _ = _client_with_events_sequence([], [])
+    with patch("app.graph.tools.get_supabase", new_callable=AsyncMock, return_value=client), \
+         patch("app.google_drive.get_file_md5", new_callable=AsyncMock, return_value="md5novo"), \
+         patch("app.graph.tools.get_users_by_phone", new_callable=AsyncMock, return_value=[{"id": "user-123", "patient_name": "Maria"}]), \
+         patch("app.graph.tools.log_event", new_callable=AsyncMock) as mock_log, \
+         patch("app.google_drive.rename_file", new_callable=AsyncMock), \
+         patch("app.google_sheets.append_payment_receipt", new_callable=AsyncMock) as mock_sheets, \
+         patch("app.graph.tools._notify_clinic", new_callable=AsyncMock):
+        result = await register_payment.coroutine(
+            amount="100,00",
+            drive_link="https://drive.google.com/file/d/NOVO/view",
+            state=_make_state(),
+            config=CONFIG,
+        )
+    assert DUPLICATE_RECEIPT_MARKER not in result
+    mock_sheets.assert_awaited_once()
+    registered = [c for c in mock_log.await_args_list if c.args[0] == "payment_receipt_registered"]
+    assert registered and registered[0].args[2]["file_md5"] == "md5novo"
+    assert "appointment_dt" in registered[0].args[2]
+
+
+async def test_register_payment_md5_unavailable_registers_without_md5():
+    """Drive fora do ar (md5 vazio): fail-open, registra e não grava file_md5."""
+    from app.graph.tools import register_payment, DUPLICATE_RECEIPT_MARKER
+    client, table, _ = _client_with_events_sequence([], [_PREV_RECEIPT_ROW])
+    with patch("app.graph.tools.get_supabase", new_callable=AsyncMock, return_value=client), \
+         patch("app.graph.tools.get_users_by_phone", new_callable=AsyncMock, return_value=[{"id": "user-123", "patient_name": "Maria"}]), \
+         patch("app.graph.tools.log_event", new_callable=AsyncMock) as mock_log, \
+         patch("app.google_drive.rename_file", new_callable=AsyncMock), \
+         patch("app.google_sheets.append_payment_receipt", new_callable=AsyncMock) as mock_sheets, \
+         patch("app.graph.tools._notify_clinic", new_callable=AsyncMock):
+        result = await register_payment.coroutine(
+            amount="100,00",
+            drive_link="https://drive.google.com/file/d/NOVO/view",
+            state=_make_state(),
+            config=CONFIG,
+        )
+    assert DUPLICATE_RECEIPT_MARKER not in result
+    mock_sheets.assert_awaited_once()
+    registered = [c for c in mock_log.await_args_list if c.args[0] == "payment_receipt_registered"]
+    assert registered and "file_md5" not in registered[0].args[2]
+
+
+async def test_find_previous_receipt_ignores_same_drive_link():
+    """Mesmo drive_link é a corrida de processamento duplo, não reuso."""
+    from app.graph.tools import _find_previous_receipt
+    events_table = MagicMock()
+    for m in ("select", "eq", "order", "limit"):
+        getattr(events_table, m).return_value = events_table
+    events_table.execute = AsyncMock(return_value=MagicMock(data=[_PREV_RECEIPT_ROW]))
+    client = MagicMock()
+    client.from_.return_value = events_table
+    same = _PREV_RECEIPT_ROW["metadata"]["drive_link"]
+    assert await _find_previous_receipt(client, "06aaf6d31b6a69aa9abca9704b68a29f", same) is None
+    assert await _find_previous_receipt(client, "06aaf6d31b6a69aa9abca9704b68a29f", "https://outro") == _PREV_RECEIPT_ROW
+    assert await _find_previous_receipt(client, "", "https://outro") is None
+
+
+async def test_find_previous_receipt_db_error_is_fail_open():
+    from app.graph.tools import _find_previous_receipt
+    events_table = MagicMock()
+    for m in ("select", "eq", "order", "limit"):
+        getattr(events_table, m).return_value = events_table
+    events_table.execute = AsyncMock(side_effect=Exception("supabase down"))
+    client = MagicMock()
+    client.from_.return_value = events_table
+    assert await _find_previous_receipt(client, "abc", "https://x") is None

@@ -81,3 +81,12 @@ async def async_client(mock_chatbot):
     transport = httpx.ASGITransport(app=app)
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
         yield client
+
+
+@pytest.fixture(autouse=True)
+def _no_drive_md5_lookup():
+    """register_payment lê o md5 do comprovante no Drive (trava de comprovante
+    repetido). Nos testes não há Drive: devolve "" (fail-open) salvo quando o teste
+    faz o próprio patch."""
+    with patch("app.google_drive.get_file_md5", new_callable=AsyncMock, return_value=""):
+        yield
