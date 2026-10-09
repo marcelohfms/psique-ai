@@ -4027,19 +4027,30 @@ async def register_payment(
         and datetime.fromisoformat(a["start_time"]) >= _lookback_dt
     ]
 
-    if _open_pick:
-        appt_result_data = [_open_pick]
-    elif _recent_scheduled:
-        appt_result_data = [max(_recent_scheduled, key=lambda a: datetime.fromisoformat(a["start_time"]))]
-    else:
-        # PRIORITY 3: future canceled appointment that can be reactivated.
+    # Future canceled appointment still owing the booking fee (PRIORITY 3).
+    _future_canceled_unpaid: list[dict] = []
+    if not _open_pick:
         future_canceled = await client.from_("appointments").select(
             "appointment_id, start_time, end_time, doctor_id, booking_fee_paid_at, booking_fee_waived"
         ).eq("patient_id", user_id).eq("status", "canceled").eq("booking_fee_waived", False).is_(
             "booking_fee_paid_at", "null"
         ).gte("start_time", now_iso).order("start_time").limit(1).execute()
+        _future_canceled_unpaid = future_canceled.data or []
 
-        if future_canceled.data:
+    # R$100 with every scheduled appointment already settled is the fee of the one
+    # the cron just canceled, not a repeat payment. Stopping at the paid scheduled
+    # one answered "já consta como registrado" and recorded nothing (caso Marcia
+    # Zamorano, 5581996566872, 09/10/2026: cancelada às 12h26, PIX às 12h28).
+    _fee_for_canceled = (
+        bool(_future_canceled_unpaid) and abs(_parse_brl_amount(amount) - 100) < 1
+    )
+
+    if _open_pick:
+        appt_result_data = [_open_pick]
+    elif _recent_scheduled and not _fee_for_canceled:
+        appt_result_data = [max(_recent_scheduled, key=lambda a: datetime.fromisoformat(a["start_time"]))]
+    else:
+        if _future_canceled_unpaid:
             # Defer to the reactivation branch below by returning no active appointment.
             appt_result_data = []
         else:
