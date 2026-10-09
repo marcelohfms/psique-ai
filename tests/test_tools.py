@@ -4961,6 +4961,109 @@ async def test_register_payment_reactivation_slot_taken_returns_marker():
     ), f"update pending_reschedule não encontrado: {update_payloads}"
 
 
+def _marcia_case_client(results):
+    """Supabase mock com sequência de execute() e tabela `events` isolada (dedup)."""
+    execute = AsyncMock(side_effect=results)
+    table = MagicMock()
+    for m in ("select", "eq", "in_", "limit", "single", "maybe_single", "ilike",
+              "gte", "gt", "lt", "neq", "order", "insert", "update", "upsert", "is_"):
+        getattr(table, m).return_value = table
+    table.execute = execute
+    events_table = MagicMock()
+    for m in ("select", "eq", "in_", "limit", "gte", "order"):
+        getattr(events_table, m).return_value = events_table
+    events_table.execute = AsyncMock(return_value=MagicMock(data=[]))
+    client = MagicMock()
+    client.from_.side_effect = lambda name: events_table if name == "events" else table
+    return client, table
+
+
+async def _run_marcia_case(amount: str, results: list, slot_start: datetime):
+    from app.graph.tools import register_payment
+    client, table = _marcia_case_client(results)
+    with patch("app.graph.tools.get_supabase", new_callable=AsyncMock, return_value=client), \
+         patch("app.patients.get_contact_by_phone", new_callable=AsyncMock, return_value={"id": "contact-1"}), \
+         patch("app.patients.get_patients_by_contact", new_callable=AsyncMock, return_value=[{"id": "user-123"}]), \
+         patch("app.patients.get_contacts_for_patient", new_callable=AsyncMock, return_value=[{"phone": "5581996566872"}]), \
+         patch("app.google_calendar._credentials", return_value=MagicMock()), \
+         patch("googleapiclient.discovery.build", return_value=MagicMock()), \
+         patch("app.google_calendar._get_busy", return_value=[]), \
+         patch("app.google_calendar.create_event", new_callable=AsyncMock, return_value="new-event-id"), \
+         patch("app.graph.tools.log_event", new_callable=AsyncMock), \
+         patch("app.graph.tools._notify_clinic", new_callable=AsyncMock), \
+         patch("app.google_drive.rename_file", new_callable=AsyncMock), \
+         patch("app.google_sheets.append_payment_receipt", new_callable=AsyncMock), \
+         patch("app.graph.tools.send_text", new_callable=AsyncMock):
+        result = await register_payment.coroutine(
+            amount=amount,
+            drive_link="https://drive.google.com/file/d/abc/view",
+            state=_make_state(),
+            config=CONFIG,
+            patient_name_override="Maria Beatriz Cavalcante Zamorano",
+        )
+    return result, table
+
+
+def _marcia_paid_scheduled(julio_id: str) -> dict:
+    """Consulta de ontem, ainda scheduled (cron só marca completed 24h depois) e já quitada."""
+    start = datetime.now(TZ) - timedelta(days=1)
+    return {
+        "appointment_id": "apt-ontem", "start_time": start.isoformat(),
+        "end_time": (start + timedelta(hours=1)).isoformat(), "doctor_id": julio_id,
+        "paid_at": start.isoformat(), "booking_fee_paid_at": start.isoformat(),
+        "status": "scheduled", "consultation_type": "acompanhamento",
+        "booking_fee_waived": True, "is_courtesy": False,
+    }
+
+
+async def test_register_payment_fee_reactivates_canceled_when_scheduled_is_paid():
+    """Caso Marcia Zamorano (5581996566872, 09/10/2026): o cron cancelou a consulta
+    de 28/01 por falta da taxa e o PIX de R$100 chegou 2min depois. A consulta de
+    ontem, ainda scheduled e já quitada, vencia a seleção e a guarda paid_at
+    respondia 'já estava registrado' sem gravar. Agora R$100 com a agendada quitada
+    e uma futura cancelada devendo a taxa reativa a cancelada."""
+    julio_id = "d5baa58b-a788-4f40-b8c0-512c189150be"
+    slot_start = (datetime.now(TZ) + timedelta(days=90)).replace(hour=10, minute=0, second=0, microsecond=0)
+    results = [
+        MagicMock(data=[{"id": "user-123", "name": "Maria Beatriz Cavalcante Zamorano", "doctor_id": julio_id}]),
+        MagicMock(data=[_marcia_paid_scheduled(julio_id)]),          # candidatos scheduled/completed
+        MagicMock(data=[{"appointment_id": "apt-jan"}]),             # futura cancelada com taxa pendente
+        MagicMock(data=[{                                            # canceled_result da reativação
+            "appointment_id": "apt-jan", "start_time": slot_start.isoformat(),
+            "end_time": (slot_start + timedelta(hours=1)).isoformat(),
+            "doctor_id": julio_id, "modality": "presencial",
+        }]),
+        MagicMock(data={"agenda_id": "cal-julio"}),                  # doctors.agenda_id
+        MagicMock(data=[]),                                          # update → scheduled
+        MagicMock(data={}),                                          # custom_price
+    ]
+    result, table = await _run_marcia_case("100,00", results, slot_start)
+
+    assert "já estava registrado" not in result
+    update_payloads = [c.args[0] for c in table.update.call_args_list if c.args]
+    assert any(
+        p.get("status") == "scheduled" and p.get("booking_fee_paid_at")
+        and p.get("appointment_id") == "new-event-id"
+        for p in update_payloads
+    ), f"reativação não encontrada: {update_payloads}"
+
+
+async def test_register_payment_non_fee_amount_keeps_already_paid_guard():
+    """Valor que não é a taxa (R$600) com a agendada quitada continua caindo na
+    guarda 'já estava registrado', mesmo havendo futura cancelada devendo a taxa."""
+    julio_id = "d5baa58b-a788-4f40-b8c0-512c189150be"
+    slot_start = (datetime.now(TZ) + timedelta(days=90)).replace(hour=10, minute=0, second=0, microsecond=0)
+    results = [
+        MagicMock(data=[{"id": "user-123", "name": "Maria Beatriz Cavalcante Zamorano", "doctor_id": julio_id}]),
+        MagicMock(data=[_marcia_paid_scheduled(julio_id)]),
+        MagicMock(data=[{"appointment_id": "apt-jan"}]),
+    ]
+    result, table = await _run_marcia_case("600,00", results, slot_start)
+
+    assert "já estava registrado" in result
+    assert not table.update.call_args_list
+
+
 async def test_register_payment_rename_unknown_amount_uses_placeholder():
     """amount='?' (not identified) must not produce a broken filename like
     '..._R$.pdf' or '..._R$?.pdf' — falls back to a readable placeholder."""
