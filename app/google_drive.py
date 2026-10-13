@@ -147,6 +147,32 @@ async def rename_file(file_id: str, new_name: str) -> str:
     return await loop.run_in_executor(None, _rename_file, service, file_id, new_name)
 
 
+def _drive_file_id(drive_link: str) -> str:
+    """Extrai o id do arquivo de um link do Drive (/d/<id>/ ou ?id=<id>)."""
+    m = re.search(r"/d/([^/?&#\s]+)", drive_link or "") or re.search(r"[?&]id=([^&#\s]+)", drive_link or "")
+    return m.group(1) if m else ""
+
+
+def _get_md5(service, file_id: str) -> str:
+    return service.files().get(fileId=file_id, fields="md5Checksum", supportsAllDrives=True).execute().get("md5Checksum", "")
+
+
+async def get_file_md5(drive_link: str) -> str:
+    """md5 do arquivo no Drive (o mesmo hashlib.md5 dos bytes). "" se o link não tem
+    id ou a leitura falha: quem usa trata vazio como "não sei" e segue (fail-open)."""
+    import logging as _log
+    file_id = _drive_file_id(drive_link)
+    if not file_id:
+        return ""
+    try:
+        service = build("drive", "v3", credentials=_credentials())
+        loop = asyncio.get_running_loop()
+        return await loop.run_in_executor(None, _get_md5, service, file_id)
+    except Exception:
+        _log.getLogger(__name__).warning("DRIVE_MD5 FAILED file_id=%s", file_id, exc_info=True)
+        return ""
+
+
 async def upload_image(image_bytes: bytes, filename: str, mimetype: str = "image/jpeg") -> str:
     """Upload image or PDF bytes to the payments Drive folder. Returns public web view URL."""
     folder_id = os.getenv("GOOGLE_DRIVE_PAYMENTS_FOLDER_ID", "")

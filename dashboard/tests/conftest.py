@@ -202,3 +202,16 @@ class FakeClient:
 @pytest.fixture
 def fake_client():
     return FakeClient()
+
+
+@pytest.fixture(autouse=True)
+def _no_duplicate_receipt_lookup(monkeypatch):
+    """Trava de comprovante repetido: por padrão nenhum registro anterior, sem tocar
+    no banco. Testes da trava sobrescrevem com monkeypatch (o original fica em
+    payments._find_previous_receipt_real para os testes unitários)."""
+    import payments
+    if not hasattr(payments, "_find_previous_receipt_real"):
+        payments._find_previous_receipt_real = payments.find_previous_receipt
+    async def _none(client, md5):
+        return None
+    monkeypatch.setattr(payments, "find_previous_receipt", _none)

@@ -367,7 +367,7 @@ def test_pagar_registra_e_envia_confirmacao(client, monkeypatch):
         return object()
     async def fake_mark_paid(_client, appointment_id, tipo, valor, forma_pagamento,
                               paciente, medico, data_hora, phone, drive_link="",
-                              receipt_filename=""):
+                              receipt_filename="", **_kw):
         calls["mark_paid"] = (appointment_id, tipo, valor)
     async def fake_log(event_type, phone, metadata):
         calls["log"] = (event_type, phone, metadata)
@@ -649,6 +649,7 @@ def test_upload_comprovante_retorna_drive_link_e_nome(client, monkeypatch):
     assert r.json() == {
         "drive_link": "https://drive.google.com/file/d/abc123/view",
         "receipt_filename": "João_10-07-2026_R$100.jpg",
+        "file_md5": payments.file_md5(b"fake-image-bytes"),
     }
     assert calls["upload"] == ("João", "10/07/2026 14:00", "100", b"fake-image-bytes", "image/jpeg")
 
@@ -673,7 +674,7 @@ def test_pagar_repassa_drive_link_para_mark_paid(client, monkeypatch):
         return object()
     async def fake_mark_paid(_client, appointment_id, tipo, valor, forma_pagamento,
                               paciente, medico, data_hora, phone, drive_link="",
-                              receipt_filename=""):
+                              receipt_filename="", **_kw):
         calls["drive_link"] = drive_link
         calls["receipt_filename"] = receipt_filename
     async def fake_log(event_type, phone, metadata):
@@ -726,7 +727,7 @@ def pagar_fakes(monkeypatch):
         return "https://drive.google.com/file/d/xyz/view", "Bento_05-11-2026_R$100.jpg"
     async def fake_mark_paid(_client, appointment_id, tipo, valor, forma_pagamento,
                               paciente, medico, data_hora, phone, drive_link="",
-                              receipt_filename=""):
+                              receipt_filename="", **_kw):
         calls["mark_paid"] = (appointment_id, tipo, valor, drive_link, receipt_filename)
     async def fake_log(event_type, phone, metadata):
         calls["log"].append((event_type, metadata))
@@ -1278,3 +1279,70 @@ def test_cancelar_eva_timeout_504(client, monkeypatch):
     r = client.post("/api/atendente/consulta/a1/cancelar", params={"token": "test-token"},
                     json={"phone": "5581", "initiated_by": "clinic"})
     assert r.status_code == 504 and "Confira a lista" in r.json()["detail"]
+
+
+# ── Trava de comprovante repetido ────────────────────────────────────────────
+# Caso Miguel Costa Loureiro (08/10/2026): o arquivo do comprovante da consulta de
+# 03/09 foi reusado no painel para dar baixa na de 08/10.
+
+_PREV = {
+    "phone": "5581991012815", "created_at": "2026-09-03T22:12:09+00:00",
+    "metadata": {"patient_name": "Miguel Costa Loureiro", "appointment_dt": "03/09/2026 18:00",
+                 "drive_link": "https://drive.google.com/file/d/ANTIGO/view"},
+}
+
+
+@pytest.fixture
+def repetido(monkeypatch):
+    seen = {}
+    async def fake_find(client, md5):
+        seen["md5"] = md5
+        return _PREV
+    monkeypatch.setattr(payments, "find_previous_receipt", fake_find)
+    return seen
+
+
+def test_pagar_com_comprovante_repetido_sem_confirmacao_nao_grava(client, pagar_fakes, repetido):
+    r = _pagar_com_comprovante(client)
+    assert r.status_code == 409
+    detail = r.json()["detail"]
+    assert detail["duplicado"] is True
+    assert "Miguel Costa Loureiro" in detail["mensagem"]
+    assert "03/09/2026 18:00" in detail["mensagem"]
+    assert "upload" not in pagar_fakes
+    assert "mark_paid" not in pagar_fakes
+    assert repetido["md5"] == payments.file_md5(b"img")
+
+
+def test_pagar_com_comprovante_repetido_confirmado_grava_e_loga(client, pagar_fakes, repetido):
+    r = _pagar_com_comprovante(client, data={**_FORM_PAGAR, "confirmar_duplicado": "true"})
+    assert r.status_code == 200
+    assert "mark_paid" in pagar_fakes
+    event, meta = pagar_fakes["log"][-1]
+    assert event == "payment_duplicate_receipt_confirmed"
+    assert meta["appointment_id"] == "a1"
+    assert meta["previous_drive_link"] == "https://drive.google.com/file/d/ANTIGO/view"
+
+
+def test_pagar_com_comprovante_repassa_md5_ao_mark_paid(client, pagar_fakes, monkeypatch):
+    got = {}
+    async def fake_mark_paid(*a, **kw):
+        got.update(kw)
+    monkeypatch.setattr(payments, "mark_paid", fake_mark_paid)
+    r = _pagar_com_comprovante(client)
+    assert r.status_code == 200
+    assert got["file_md5"] == payments.file_md5(b"img")
+    assert not any(e == "payment_duplicate_receipt_confirmed" for e, _ in pagar_fakes["log"])
+
+
+def test_upload_comprovante_repetido_retorna_409(client, monkeypatch, repetido):
+    async def fake_upload(*a, **k):
+        raise AssertionError("não deveria subir ao Drive")
+    monkeypatch.setattr(payments, "upload_comprovante", fake_upload)
+    r = client.post(
+        "/api/atendente/pagamentos/a1/comprovante",
+        params={"token": "test-token"},
+        data={"paciente": "João", "data_hora": "10/07/2026 14:00", "valor": "100"},
+        files={"file": ("comprovante.jpg", b"fake-image-bytes", "image/jpeg")},
+    )
+    assert r.status_code == 409

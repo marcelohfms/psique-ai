@@ -295,6 +295,23 @@ class AtendentePagarBody(BaseModel):
     conversation_id: int | None = None
     drive_link: str = ""  # link do comprovante já enviado ao Drive (ver /pagamentos/{id}/comprovante)
     receipt_filename: str = ""  # nome do arquivo no Drive, devolvido pela mesma rota
+    file_md5: str = ""  # md5 do arquivo, devolvido pela mesma rota (trava de comprovante repetido)
+
+
+async def _check_duplicate_receipt(md5: str, confirmar: bool) -> dict | None:
+    """409 se o arquivo já foi usado em outro registro e a atendente ainda não
+    confirmou. Devolve o registro anterior (ou None) para o rastro da confirmação."""
+    try:
+        client = await get_client()
+    except Exception:
+        logger.warning("DUPLICATE_RECEIPT_CHECK sem cliente; segue sem a trava", exc_info=True)
+        return None
+    previous = await payments.find_previous_receipt(client, md5)
+    if previous and not confirmar:
+        raise HTTPException(status_code=409, detail={
+            "duplicado": True, "mensagem": payments.describe_previous_receipt(previous),
+        })
+    return previous
 
 
 # Templates aprovados na Meta (UTILITY, pt_BR), ver docs/whatsapp-templates.md.
@@ -421,20 +438,27 @@ async def pagamentos(phone: str, _: None = Depends(verify_token)):
 
 @router.post("/pagamentos/{appointment_id}/comprovante")
 async def upload_comprovante(
+    appointment_id: str,
     paciente: str = Form(...),
     data_hora: str = Form(...),
     valor: str = Form(...),
     file: UploadFile = File(...),
+    phone: str = Form(default=""),
+    confirmar_duplicado: bool = Form(default=False),
     _: None = Depends(verify_token),
 ):
     content = await file.read()
     mimetype = file.content_type or "image/jpeg"
+    md5 = payments.file_md5(content)
+    previous = await _check_duplicate_receipt(md5, confirmar_duplicado)
     try:
         drive_link, filename = await payments.upload_comprovante(paciente, data_hora, valor, content, mimetype)
     except Exception:
         logger.exception("UPLOAD_COMPROVANTE_FAILED paciente=%s", paciente)
         raise HTTPException(status_code=502, detail="Falha ao enviar comprovante ao Drive")
-    return {"drive_link": drive_link, "receipt_filename": filename}
+    if previous:
+        await payments.log_duplicate_confirmed(phone, appointment_id, md5, previous)
+    return {"drive_link": drive_link, "receipt_filename": filename, "file_md5": md5}
 
 
 async def _registrar_pagamento(appointment_id: str, body: AtendentePagarBody) -> str:
@@ -446,6 +470,7 @@ async def _registrar_pagamento(appointment_id: str, body: AtendentePagarBody) ->
         body.paciente, body.medico, body.data_hora, body.phone,
         drive_link=body.drive_link,
         receipt_filename=body.receipt_filename,
+        file_md5=body.file_md5,
     )
 
     try:
@@ -487,6 +512,7 @@ async def pagar_com_comprovante(
     phone: str = Form(...),
     conversation_id: int | None = Form(default=None),
     file: UploadFile | None = File(default=None),
+    confirmar_duplicado: bool = Form(default=False),
     _: None = Depends(verify_token),
 ):
     """Sobe o comprovante (se houver) e registra o pagamento numa única requisição.
@@ -502,10 +528,14 @@ async def pagar_com_comprovante(
 
     await _assert_appointment_scope(phone, appointment_id)
 
-    drive_link, receipt_filename = "", ""
+    drive_link, receipt_filename, md5, previous = "", "", "", None
     if file is not None and file.filename:
         content = await file.read()
         mimetype = file.content_type or "image/jpeg"
+        # Antes do upload: comprovante repetido não sobe ao Drive sem confirmação
+        # (caso Miguel Costa Loureiro, 08/10/2026).
+        md5 = payments.file_md5(content)
+        previous = await _check_duplicate_receipt(md5, confirmar_duplicado)
         try:
             drive_link, receipt_filename = await payments.upload_comprovante(
                 paciente, data_hora, str(valor), content, mimetype,
@@ -520,7 +550,7 @@ async def pagar_com_comprovante(
     body = AtendentePagarBody(
         tipo=tipo, valor=valor, forma_pagamento=forma_pagamento, paciente=paciente,
         medico=medico, data_hora=data_hora, phone=phone, conversation_id=conversation_id,
-        drive_link=drive_link, receipt_filename=receipt_filename,
+        drive_link=drive_link, receipt_filename=receipt_filename, file_md5=md5,
     )
     try:
         confirmacao = await _registrar_pagamento(appointment_id, body)
@@ -538,6 +568,8 @@ async def pagar_com_comprovante(
             if drive_link else "O pagamento NÃO foi registrado. Tente de novo."
         )
         raise HTTPException(status_code=500, detail=detail)
+    if previous:
+        await payments.log_duplicate_confirmed(phone, appointment_id, md5, previous)
     return {"ok": True, "confirmacao": confirmacao}
 
 
