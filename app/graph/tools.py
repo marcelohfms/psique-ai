@@ -2951,6 +2951,7 @@ async def nudge_doctor_document(
     patient_message: str,
     state: Annotated[dict, InjectedState],
     config: RunnableConfig,
+    document_type: Literal["", "nota_fiscal", "recibo", "laudo", "exame", "relatorio", "receita", "declaracao", "requisicao", "atestado"] = "",
 ) -> str:
     """Notifica o médico por e-mail quando o paciente cobra sobre um DOCUMENTO pendente
     (laudo, declaração, atestado, receita) que já foi solicitado anteriormente.
@@ -2960,6 +2961,8 @@ async def nudge_doctor_document(
     que não seja um documento físico pendente. Para esses casos, oriente o paciente a entrar em
     contato diretamente com o médico pelo e-mail ou telefone da clínica.
     patient_message: texto exato ou resumo do que o paciente disse.
+    document_type: o documento cobrado (ex.: 'laudo'). Se nunca houve pedido registrado
+    dele, a tool registra o pedido agora em vez de só cobrar.
     """
     from app.email_sender import send_document_nudge_email
     from app.database import DOCTOR_IDS
@@ -2996,19 +2999,57 @@ async def nudge_doctor_document(
             "e-mail assim que for emitido."
         )
 
-    # Find most recent pending document for this patient
+    # Find most recent pending document for this patient. Os 8 últimos dígitos
+    # são comuns às duas grafias do número (com e sem o 9).
     phone_clean = phone.replace("@s.whatsapp.net", "")
-    docs = await client.from_("documents").select("*").filter(
-        "metadata->>phone", "ilike", f"%{phone_clean[-9:]}%"
-    ).order("id", desc=True).limit(1).execute()
+    docs_q = client.from_("documents").select("*").filter(
+        "metadata->>phone", "ilike", f"%{phone_clean[-8:]}%"
+    )
+    if document_type:
+        docs_q = docs_q.filter("metadata->>type", "eq", document_type)
+    docs = await docs_q.order("id", desc=True).limit(1).execute()
 
-    document_type = "declaracao"
-    requested_at = "data não registrada"
-    if docs.data:
-        doc = docs.data[0]
-        document_type = (doc.get("metadata") or {}).get("type", document_type)
-        # Use document id as proxy for creation order — no created_at column
-        requested_at = f"solicitação nº {doc['id']}"
+    # Cobrança de documento que nunca foi pedido: não há o que cobrar. Antes o
+    # médico recebia um e-mail de cobrança com tipo padrão "declaracao" e "data
+    # não registrada", o pedido nunca entrava em documents nem na planilha, e a
+    # Eva dizia ao paciente que tinha avisado o médico (caso João de Almeida
+    # Lima, mãe Valdete, 5581991748135, 03/10 e 13/10/2026 — laudo). Agora o
+    # pedido é registrado de verdade pelo request_document.
+    if not docs.data:
+        logger.warning("NUDGE_DOC_NO_REQUEST phone=%s type=%s", phone, document_type)
+        if not document_type:
+            return (
+                "NUDGE_NO_REQUEST: não existe nenhum pedido de documento registrado para "
+                "este paciente, então o médico NÃO foi avisado. NÃO diga que avisou ou "
+                "cobrou o médico. Pergunte ao paciente qual documento ele precisa e, com "
+                "a resposta, chame request_document para registrar o pedido."
+            )
+        if not patient_email:
+            return (
+                f"NUDGE_NO_REQUEST: não existe pedido de {document_type} registrado para "
+                "este paciente, então o médico NÃO foi avisado. NÃO diga que avisou ou "
+                "cobrou o médico. Peça o e-mail para envio do documento e chame "
+                f"request_document com document_type='{document_type}'."
+            )
+        result = await request_document.coroutine(
+            document_type=document_type,
+            patient_email=patient_email,
+            state=state,
+            config=config,
+        )
+        return (
+            f"NUDGE_REGISTERED_NOW: não havia pedido de {document_type} registrado para "
+            "este paciente. O pedido foi registrado agora e o médico recebeu a "
+            f"solicitação ({result.splitlines()[0]}). NÃO diga que já tinha sido pedido "
+            "antes nem que apenas lembrou o médico. Diga ao paciente, em frases curtas, "
+            "que o pedido foi registrado agora e que o documento será enviado para o "
+            f"e-mail {patient_email} assim que for emitido."
+        )
+
+    doc = docs.data[0]
+    document_type = (doc.get("metadata") or {}).get("type") or document_type or "declaracao"
+    # Use document id as proxy for creation order — no created_at column
+    requested_at = f"solicitação nº {doc['id']}"
 
     # Fetch doctor email
     doctor_email = ""

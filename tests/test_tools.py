@@ -4136,7 +4136,7 @@ async def test_nudge_doctor_document_sends_when_no_recent_request():
     """Cobrança real (pedido antigo, nada nos últimos minutos) segue mandando o
     e-mail ao médico e gravando o evento."""
     from app.graph.tools import nudge_doctor_document
-    client, _, _ = _make_supabase_client()
+    client = _make_nudge_client(docs=[{"id": 300, "metadata": {"type": "receita"}}])
     with patch("app.graph.tools.get_supabase", new_callable=AsyncMock, return_value=client), \
          patch("app.graph.tools.log_event", new_callable=AsyncMock) as mock_log, \
          patch("app.email_sender.send_document_nudge_email", new_callable=AsyncMock) as mock_email:
@@ -4147,7 +4147,104 @@ async def test_nudge_doctor_document_sends_when_no_recent_request():
         )
     assert result == "NUDGE_OK"
     mock_email.assert_awaited_once()
+    assert mock_email.await_args.kwargs["document_type"] == "receita"
+    assert mock_email.await_args.kwargs["requested_at"] == "solicitação nº 300"
     assert mock_log.await_args.args[0] == "document_nudge_sent"
+
+
+def _make_nudge_client(docs):
+    """Client do nudge: events sem nada recente; documents devolve `docs`."""
+    def _table(data):
+        t = MagicMock()
+        for m in ("select", "eq", "in_", "limit", "single", "maybe_single",
+                  "gte", "order", "insert", "update", "upsert", "or_", "filter", "is_"):
+            getattr(t, m).return_value = t
+        t.execute = AsyncMock(return_value=MagicMock(data=data))
+        return t
+
+    docs_table = _table(docs)
+    other_table = _table([])
+    client = MagicMock()
+    client.from_.side_effect = lambda name: docs_table if name == "documents" else other_table
+    client.docs_table = docs_table
+    return client
+
+
+async def test_nudge_doctor_document_registers_request_when_never_requested():
+    """Cobrança de laudo que nunca foi pedido: antes ia ao médico um e-mail de
+    cobrança com tipo "declaracao" e "data não registrada", e o pedido nunca
+    entrava em documents nem na planilha (caso João de Almeida Lima, mãe Valdete,
+    5581991748135, 03/10 e 13/10/2026). Agora registra o pedido de verdade."""
+    from app.graph.tools import nudge_doctor_document
+    client = _make_nudge_client(docs=[])
+    fake_request = MagicMock()
+    fake_request.coroutine = AsyncMock(return_value="Solicitação de laudo registrada com sucesso! ✅\nJá encaminhamos...")
+    state = _make_state(patient_name="João de Almeida Lima", patient_email="mae@example.com")
+    with patch("app.graph.tools.get_supabase", new_callable=AsyncMock, return_value=client), \
+         patch("app.graph.tools.request_document", fake_request), \
+         patch("app.graph.tools.log_event", new_callable=AsyncMock) as mock_log, \
+         patch("app.email_sender.send_document_nudge_email", new_callable=AsyncMock) as mock_email:
+        result = await nudge_doctor_document.coroutine(
+            patient_message="Ainda não recebemos o laudo",
+            state=state,
+            config=CONFIG,
+            document_type="laudo",
+        )
+    assert result.startswith("NUDGE_REGISTERED_NOW")
+    fake_request.coroutine.assert_awaited_once()
+    kwargs = fake_request.coroutine.await_args.kwargs
+    assert kwargs["document_type"] == "laudo"
+    assert kwargs["patient_email"] == "mae@example.com"
+    # sem e-mail de cobrança nem evento de nudge para um pedido inexistente
+    mock_email.assert_not_awaited()
+    mock_log.assert_not_awaited()
+    # procurou especificamente um pedido de laudo
+    client.docs_table.filter.assert_any_call("metadata->>type", "eq", "laudo")
+
+
+async def test_nudge_doctor_document_without_type_and_no_request_asks():
+    """Sem pedido registrado e sem saber o documento, não cobra o médico e manda
+    a Eva perguntar qual documento é."""
+    from app.graph.tools import nudge_doctor_document
+    client = _make_nudge_client(docs=[])
+    fake_request = MagicMock()
+    fake_request.coroutine = AsyncMock()
+    with patch("app.graph.tools.get_supabase", new_callable=AsyncMock, return_value=client), \
+         patch("app.graph.tools.request_document", fake_request), \
+         patch("app.graph.tools.log_event", new_callable=AsyncMock) as mock_log, \
+         patch("app.email_sender.send_document_nudge_email", new_callable=AsyncMock) as mock_email:
+        result = await nudge_doctor_document.coroutine(
+            patient_message="Alguma novidade?",
+            state=_make_state(patient_email="mae@example.com"),
+            config=CONFIG,
+        )
+    assert result.startswith("NUDGE_NO_REQUEST")
+    assert "NÃO diga que avisou" in result
+    fake_request.coroutine.assert_not_awaited()
+    mock_email.assert_not_awaited()
+    mock_log.assert_not_awaited()
+
+
+async def test_nudge_doctor_document_without_email_asks_for_it():
+    """Sem pedido e sem e-mail no state: não registra nada e pede o e-mail."""
+    from app.graph.tools import nudge_doctor_document
+    client = _make_nudge_client(docs=[])
+    fake_request = MagicMock()
+    fake_request.coroutine = AsyncMock()
+    with patch("app.graph.tools.get_supabase", new_callable=AsyncMock, return_value=client), \
+         patch("app.graph.tools.request_document", fake_request), \
+         patch("app.graph.tools.log_event", new_callable=AsyncMock), \
+         patch("app.email_sender.send_document_nudge_email", new_callable=AsyncMock) as mock_email:
+        result = await nudge_doctor_document.coroutine(
+            patient_message="Cadê o laudo?",
+            state=_make_state(patient_email=""),
+            config=CONFIG,
+            document_type="laudo",
+        )
+    assert result.startswith("NUDGE_NO_REQUEST")
+    assert "request_document com document_type='laudo'" in result
+    fake_request.coroutine.assert_not_awaited()
+    mock_email.assert_not_awaited()
 
 
 async def test_request_document_receita_controlada_registra_e_orienta_retirada():

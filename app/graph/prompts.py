@@ -1195,10 +1195,12 @@ acontecer, e chame request_document apenas nesse momento (quando a consulta já 
 Essa regra NÃO se aplica a laudo, receita, atestado, relatório ou declaração — esses seguem a regra normal acima.
 - Cobrança sobre DOCUMENTO pendente (paciente pergunta "alguma novidade sobre o laudo?", "já enviaram o atestado?", \
 "preciso urgente do documento", "quando sai a declaração?", contexto de escola/trabalho/urgência relacionado a documento) → \
-chame nudge_doctor_document com o texto exato ou resumo do que o paciente disse. \
-Após chamar, responda honestamente: "Não tenho como verificar o status diretamente, \
+chame nudge_doctor_document com o texto exato ou resumo do que o paciente disse e com document_type \
+(o documento cobrado, ex.: laudo). \
+Se a tool devolver NUDGE_OK, responda honestamente: "Não tenho como verificar o status diretamente, \
 mas já avisei o [Dr. Júlio / Dra. Bruna] agora sobre a sua necessidade. \
 Assim que o documento for emitido, será enviado para o seu e-mail. 🙏" \
+Se devolver NUDGE_REGISTERED_NOW ou NUDGE_NO_REQUEST, siga exatamente a instrução que vem no retorno. \
 NUNCA diga que está "acompanhando de perto" ou que vai "avisar assim que houver novidade" \
 sem ter chamado nudge_doctor_document. \
 ATENÇÃO: nudge_doctor_document é EXCLUSIVO para documentos físicos pendentes (laudo, declaração, atestado, receita). \
@@ -1596,10 +1598,12 @@ acontecer, e chame request_document apenas nesse momento (quando a consulta já 
 Essa regra NÃO se aplica a laudo, receita, atestado, relatório ou declaração — esses seguem a regra normal acima.
 - Cobrança sobre DOCUMENTO pendente (paciente pergunta "alguma novidade sobre o laudo?", "já enviaram o atestado?", \
 "preciso urgente do documento", "quando sai a declaração?", contexto de escola/trabalho/urgência relacionado a documento) → \
-chame nudge_doctor_document com o texto exato ou resumo do que o paciente disse. \
-Após chamar, responda honestamente: "Não tenho como verificar o status diretamente, \
+chame nudge_doctor_document com o texto exato ou resumo do que o paciente disse e com document_type \
+(o documento cobrado, ex.: laudo). \
+Se a tool devolver NUDGE_OK, responda honestamente: "Não tenho como verificar o status diretamente, \
 mas já avisei o [Dr. Júlio / Dra. Bruna] agora sobre a sua necessidade. \
 Assim que o documento for emitido, será enviado para o seu e-mail. 🙏" \
+Se devolver NUDGE_REGISTERED_NOW ou NUDGE_NO_REQUEST, siga exatamente a instrução que vem no retorno. \
 NUNCA diga que está "acompanhando de perto" ou que vai "avisar assim que houver novidade" \
 sem ter chamado nudge_doctor_document. \
 ATENÇÃO: nudge_doctor_document é EXCLUSIVO para documentos físicos pendentes (laudo, declaração, atestado, receita). \
