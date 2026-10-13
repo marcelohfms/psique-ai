@@ -275,6 +275,23 @@ async def get_last_patient_message(conversation_id: int) -> dict | None:
     }
 
 
+async def last_incoming_at(phone: str) -> int | None:
+    """Epoch (s) da última mensagem do contato na conversa da clínica, ou None.
+
+    Só leitura: não cria contato nem reabre conversa (ao contrário de
+    find_or_create_conversation)."""
+    digits = _strip_phone(phone)
+    async with httpx.AsyncClient(timeout=10) as client:
+        contact = await _search_contact(client, digits)
+        if not contact or not contact.get("id"):
+            return None
+        picked = _pick_conversation(await _get_contact_conversations(client, contact["id"]))
+    if picked is None:
+        return None
+    last = await get_last_patient_message(picked[0])
+    return (last or {}).get("created_at") or None
+
+
 # ── Contact / conversation lookup-or-create ───────────────────────────────────
 
 

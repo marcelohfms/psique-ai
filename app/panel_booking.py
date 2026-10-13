@@ -395,10 +395,34 @@ async def _window_open(phone: str) -> bool:
         )
         # O comprovante anexado pela atendente entra como role='user'
         # (dashboard/payments.mark_paid), mas não foi o contato quem escreveu.
-        return any(_RECEIPT_BY_ATTENDANT not in (r.get("content") or "") for r in res.data or [])
+        if any(_RECEIPT_BY_ATTENDANT not in (r.get("content") or "") for r in res.data or []):
+            return True
     except Exception:
         _logger.exception("panel _window_open falhou phone=%s", phone)
         return False
+    return await _paused_window_open(phone)
+
+
+async def _paused_window_open(phone: str) -> bool:
+    """Conversa pausada (eva-inativa): o webhook do Chatwoot sai antes de gravar em
+    `messages`, então a mensagem que a pessoa acabou de mandar para a atendente não
+    aparece ali e a janela parece fechada (caso Daniella/Bento, 13/10/2026: consulta
+    marcada pelo painel no meio da conversa e a confirmação não saiu). Só para esses
+    contatos, e só na hora de enviar, a hora da última mensagem vem do Chatwoot.
+    Nada é gravado. Erro = janela fechada, como acima."""
+    from app.chatwoot import last_incoming_at
+    try:
+        contact = await get_contact_by_phone(phone)
+        if not contact or not (contact.get("active") is False or contact.get("manual_hold")):
+            return False
+        last = await last_incoming_at(phone)
+    except Exception:
+        _logger.exception("panel _paused_window_open falhou phone=%s", phone)
+        return False
+    if not last:
+        return False
+    cutoff = datetime.now(timezone.utc) - timedelta(hours=WHATSAPP_WINDOW_HOURS)
+    return datetime.fromtimestamp(last, timezone.utc) >= cutoff
 
 
 async def deliver_message(patient_id: str, contact_id: str, text_for, patient_name: str, doctor: str) -> dict:
