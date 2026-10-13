@@ -159,6 +159,19 @@ def _checkpointer_pool(conn_string: str):
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    """Checkpointer da Eva + agendador interno das rotinas (app/scheduler.py)."""
+    from app.scheduler import start_scheduler, stop_scheduler
+
+    async with _graph_lifespan(app):
+        await start_scheduler()
+        try:
+            yield
+        finally:
+            await stop_scheduler()
+
+
+@asynccontextmanager
+async def _graph_lifespan(app: FastAPI):
     """Initialize Supabase checkpointer on startup if connection string is set."""
     conn_string = os.getenv("SUPABASE_CONNECTION_STRING")
 
