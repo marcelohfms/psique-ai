@@ -825,7 +825,8 @@ async def test_window_open_ignora_comprovante_anexado_pela_atendente():
     confirmação; sem o filtro a janela parecia sempre aberta e o texto livre
     seria descartado pela Meta fora das 24h."""
     client, _ = _sb([_RECEIPT_ROW])
-    with patch("app.panel_booking.get_supabase", AsyncMock(return_value=client)):
+    with patch("app.panel_booking.get_supabase", AsyncMock(return_value=client)), \
+         patch("app.panel_booking.get_contact_by_phone", AsyncMock(return_value={"active": True})):
         assert await pb._window_open("5581999713131") is False
 
 
@@ -834,6 +835,69 @@ async def test_window_open_com_mensagem_do_contato():
     client, _ = _sb([_RECEIPT_ROW, {"created_at": "x", "content": "Obrigada"}])
     with patch("app.panel_booking.get_supabase", AsyncMock(return_value=client)):
         assert await pb._window_open("5581999713131") is True
+
+
+# Conversa pausada: o webhook do Chatwoot não grava em `messages`, então a
+# mensagem que a pessoa mandou à atendente não aparece e a janela parecia
+# fechada (caso Daniella/Bento, 13/10/2026). Só nesse caso olhamos o Chatwoot.
+
+def _hours_ago(h: float) -> int:
+    from datetime import datetime, timedelta, timezone
+    return int((datetime.now(timezone.utc) - timedelta(hours=h)).timestamp())
+
+
+async def _window_paused(contact, last_at):
+    client, _ = _sb([])
+    last = AsyncMock(return_value=last_at)
+    with patch("app.panel_booking.get_supabase", AsyncMock(return_value=client)), \
+         patch("app.panel_booking.get_contact_by_phone", AsyncMock(return_value=contact)), \
+         patch("app.chatwoot.last_incoming_at", last):
+        return await pb._window_open("5581991749847"), last
+
+
+@pytest.mark.asyncio
+async def test_window_open_pausado_usa_ultima_mensagem_do_chatwoot():
+    ok, last = await _window_paused({"active": False, "manual_hold": False}, _hours_ago(0.1))
+    assert ok is True
+    last.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_window_open_pausado_mensagem_antiga_continua_fechada():
+    ok, _ = await _window_paused({"active": False}, _hours_ago(30))
+    assert ok is False
+
+
+@pytest.mark.asyncio
+async def test_window_open_pausado_sem_mensagem_no_chatwoot():
+    ok, _ = await _window_paused({"active": False}, None)
+    assert ok is False
+
+
+@pytest.mark.asyncio
+async def test_window_open_contato_ativo_nao_consulta_chatwoot():
+    ok, last = await _window_paused({"active": True, "manual_hold": False}, _hours_ago(0.1))
+    assert ok is False
+    last.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_window_open_pausado_erro_no_chatwoot_fica_fechada():
+    client, _ = _sb([])
+    with patch("app.panel_booking.get_supabase", AsyncMock(return_value=client)), \
+         patch("app.panel_booking.get_contact_by_phone", AsyncMock(return_value={"active": False})), \
+         patch("app.chatwoot.last_incoming_at", AsyncMock(side_effect=RuntimeError("down"))):
+        assert await pb._window_open("5581991749847") is False
+
+
+@pytest.mark.asyncio
+async def test_window_open_mensagem_no_banco_nao_consulta_chatwoot():
+    client, _ = _sb([{"created_at": "x", "content": "Obrigada"}])
+    last = AsyncMock()
+    with patch("app.panel_booking.get_supabase", AsyncMock(return_value=client)), \
+         patch("app.chatwoot.last_incoming_at", last):
+        assert await pb._window_open("5581991749847") is True
+    last.assert_not_awaited()
 
 
 def _pay_patches(window: bool):

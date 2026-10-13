@@ -679,3 +679,25 @@ async def test_find_or_create_contact_id_creates_when_missing():
         }):
             got = await find_or_create_contact_id("5581999999999@s.whatsapp.net")
         assert got == 88
+
+
+async def test_last_incoming_at_le_sem_criar_nem_reabrir():
+    from app.chatwoot import last_incoming_at
+    convs = [{"id": 416, "inbox_id": 8, "status": "open"}]
+    with patch("app.chatwoot._search_contact", AsyncMock(return_value={"id": 443})), \
+         patch("app.chatwoot._get_contact_conversations", AsyncMock(return_value=convs)), \
+         patch("app.chatwoot._create_contact", AsyncMock()) as create, \
+         patch("app.chatwoot.get_last_patient_message", AsyncMock(return_value={"created_at": 1791909206})) as last, \
+         patch.dict("os.environ", {"CHATWOOT_INBOX_ID": "8"}):
+        got = await last_incoming_at("5581991749847@s.whatsapp.net")
+    assert got == 1791909206
+    last.assert_awaited_once_with(416)
+    create.assert_not_called()
+
+
+async def test_last_incoming_at_sem_contato():
+    from app.chatwoot import last_incoming_at
+    with patch("app.chatwoot._search_contact", AsyncMock(return_value=None)), \
+         patch("app.chatwoot.get_last_patient_message", AsyncMock()) as last:
+        assert await last_incoming_at("5581991749847") is None
+    last.assert_not_called()
