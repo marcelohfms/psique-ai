@@ -1,8 +1,6 @@
 name: Send scheduling stall nudges
 
 on:
-  schedule:
-    - cron: "*/30 * * * *"  # a cada 30 min; o script só envia entre 8h–20h Recife
   workflow_dispatch:         # allow manual runs for testing
 
 jobs:
@@ -23,7 +21,6 @@ jobs:
           SUPABASE_CONNECTION_STRING: ${{ secrets.SUPABASE_CONNECTION_STRING }}
           WHATSAPP_TOKEN: ${{ secrets.WHATSAPP_TOKEN }}
           WHATSAPP_PHONE_NUMBER_ID: ${{ secrets.WHATSAPP_PHONE_NUMBER_ID }}
-          PIX_KEY: ${{ secrets.PIX_KEY }}
           GOOGLE_CLIENT_ID: ${{ secrets.GOOGLE_CLIENT_ID }}
           GOOGLE_CLIENT_SECRET: ${{ secrets.GOOGLE_CLIENT_SECRET }}
           GOOGLE_REFRESH_TOKEN: ${{ secrets.GOOGLE_REFRESH_TOKEN }}

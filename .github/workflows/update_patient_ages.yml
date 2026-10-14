@@ -1,8 +1,6 @@
 name: Update patient ages
 
 on:
-  schedule:
-    - cron: "0 3 1 * *"  # 1st of each month at 03:00 UTC (midnight Recife)
   workflow_dispatch:       # allow manual runs
 
 jobs:

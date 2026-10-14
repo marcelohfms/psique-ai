@@ -1,8 +1,6 @@
 name: Send pending payments reminder
 
 on:
-  schedule:
-    - cron: "0 12 * * 1-6"  # 09h Recife (UTC-3), segunda a sábado
   workflow_dispatch:          # allow manual runs for testing
 
 jobs:

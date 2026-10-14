@@ -1,8 +1,6 @@
 name: Release pending reschedules
 
 on:
-  schedule:
-    - cron: "*/30 * * * *"  # every 30 minutes
   workflow_dispatch:
 
 jobs:

@@ -236,3 +236,14 @@ def test_no_job_requires_pix_key():
     Se voltar ao env, o _run_live pula a cobrança de taxa por 'missing env'."""
     for job in sch.JOBS:
         assert "PIX_KEY" not in job.env, job.name
+
+
+def test_no_github_cron_schedules():
+    """A Eva é a dona das rotinas: nenhum workflow dispara por cron.
+    Só sobra o workflow_dispatch (escape manual)."""
+    wf_dir = ROOT / ".github" / "workflows"
+    with_schedule = [
+        p.name for p in wf_dir.glob("*.yml")
+        if re.search(r"^\s*schedule:\s*$", p.read_text(), re.MULTILINE)
+    ]
+    assert with_schedule == [], with_schedule

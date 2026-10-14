@@ -1,8 +1,6 @@
 name: Sync contact attributes
 
 on:
-  schedule:
-    - cron: "*/30 * * * *"  # a cada 30 min
   workflow_dispatch:         # allow manual runs for testing
 
 jobs:

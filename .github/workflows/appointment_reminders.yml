@@ -1,8 +1,6 @@
 name: Send appointment reminders
 
 on:
-  schedule:
-    - cron: "*/10 * * * *"  # every 10 minutes
   workflow_dispatch:       # allow manual runs for testing
 
 jobs:
