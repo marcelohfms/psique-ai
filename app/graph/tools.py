@@ -2790,6 +2790,28 @@ def _document_success_message(document_type: str, is_controlled: bool) -> str:
     )
 
 
+def _document_patient_disambiguation_message(names: str) -> str:
+    """Retorno de request_document quando o contato tem vários pacientes e não dá
+    para saber de QUAL deles é o documento.
+
+    Sem isso a tool caía em state["patient_name"], que num contato multi-paciente
+    costuma ser o próprio contato e não o paciente da consulta: o pai Leandro
+    (5581999734009) pediu a nota fiscal da consulta da filha Catarina duas vezes
+    (09 e 14/10/2026) e as duas saíram no nome DELE — inclusive depois de ele
+    digitar "Paciente Catarina Vitória Silva dos Anjos", porque a tool não tinha
+    como receber esse nome. Os nomes citados aqui são todos pacientes DESTE
+    contato (get_users_by_phone), então é seguro listá-los."""
+    return (
+        f"[INSTRUÇÃO INTERNA — NÃO ENVIE AO PACIENTE] Este contato tem mais de um "
+        f"paciente ({names}). NADA foi registrado. Pergunte ao paciente para qual "
+        "deles é o documento e, assim que ele responder, chame request_document DE "
+        "NOVO com patient_name_override=[nome completo do paciente escolhido], "
+        "mantendo document_type, patient_email e os dados do responsável financeiro. "
+        "NUNCA diga que o documento foi solicitado/registrado antes de uma chamada "
+        "de request_document retornar sucesso."
+    )
+
+
 @tool
 async def request_document(
     document_type: Literal["nota_fiscal", "recibo", "laudo", "exame", "relatorio", "receita", "declaracao", "requisicao", "atestado"],
@@ -2800,11 +2822,17 @@ async def request_document(
     financial_name: str = "",
     financial_cpf: str = "",
     financial_email: str = "",
+    patient_name_override: str = "",
 ) -> str:
     """Registra uma solicitação de documento médico para o paciente.
     patient_email: e-mail informado pelo paciente para recebimento do documento.
     medication_note: obrigatório quando document_type='receita' — medicação(ões) solicitada(s).
     financial_name/financial_cpf/financial_email: obrigatórios quando document_type='nota_fiscal' e o responsável financeiro for diferente do paciente.
+    patient_name_override: nome completo do PACIENTE de quem é o documento, quando o
+      contato tem mais de um paciente (ex.: o pai pede a nota fiscal da consulta da
+      filha). Sem isso, num contato multi-paciente a tool NÃO grava e pede o nome.
+      Não confundir com o responsável financeiro (financial_name): na nota fiscal, o
+      paciente é de quem foi a consulta e o financeiro é quem pagou.
     Mapeamento de termos: 'recibo saúde' ou 'recibo para plano de saúde' → nota_fiscal.
     'recibo' simples (de consulta, de pagamento) → recibo.
     """
@@ -2830,11 +2858,49 @@ async def request_document(
 
     phone = config["configurable"]["phone"]
     patient_name = state.get("patient_name") or state.get("user_name") or ""
+    patient_age = state.get("patient_age")
+    patient_cpf = state.get("patient_cpf") or ""
+    doctor_key = state.get("preferred_doctor", "")
+
+    # ── Resolve DE QUAL paciente é o documento ─────────────────────────────────
+    # state["patient_name"] é uma string que, num contato com vários pacientes,
+    # costuma ser o próprio contato (is_self) e não o paciente da consulta — foi
+    # o que fez a nota fiscal da filha sair no nome do pai (caso Leandro/Catarina,
+    # 5581999734009, 09 e 14/10/2026). get_users_by_phone traz só os pacientes
+    # DESTE contato, então é a fonte segura para mirar o paciente certo. Espelha
+    # o patient_name_override que register_payment/confirm_appointment já usam.
+    all_users = await get_users_by_phone(phone)
+    resolved = None
+    if len(all_users) > 1:
+        if patient_name_override.strip():
+            resolved = _match_patient_by_name(all_users, patient_name_override)
+        if resolved is None:
+            # Multi-paciente sem conseguir singularizar um: não adivinha (gravaria
+            # no contato por padrão). Pede o nome e não registra nada.
+            names = ", ".join(
+                u.get("patient_name") or u.get("name") or "Paciente" for u in all_users
+            )
+            return _document_patient_disambiguation_message(names)
+    elif len(all_users) == 1:
+        resolved = all_users[0]
+
+    if resolved is not None:
+        from app.patients import _compute_age
+        patient_name = resolved.get("patient_name") or resolved.get("name") or patient_name
+        _age = _compute_age(resolved.get("birth_date"))
+        if _age is None:
+            _age = resolved.get("age")
+        if _age is not None:
+            patient_age = _age
+        if resolved.get("patient_cpf"):
+            patient_cpf = resolved["patient_cpf"]
+        _rkey = DOCTOR_NAMES.get(resolved.get("doctor_id") or "")
+        if _rkey:
+            doctor_key = _rkey
+
     if not patient_name:
         _u = await get_user_by_phone(phone)
         patient_name = (_u or {}).get("patient_name") or (_u or {}).get("name") or "Paciente"
-    patient_age = state.get("patient_age")
-    doctor_key = state.get("preferred_doctor", "")
     doctor_id = DOCTOR_IDS.get(doctor_key)
 
     # Fallback: use state values if not passed explicitly
@@ -2911,7 +2977,7 @@ async def request_document(
     try:
         doctor_key = state.get("preferred_doctor", "")
         doctor_label_doc = {"julio": "Dr. Júlio", "bruna": "Dra. Bruna"}.get(doctor_key, "")
-        patient_cpf_doc = state.get("patient_cpf") or ""
+        patient_cpf_doc = patient_cpf
         await append_document_request(patient_name, patient_age, phone, patient_email, document_type, medication_note, doctor_name=doctor_label_doc, patient_cpf=patient_cpf_doc, financial_name=financial_name, financial_cpf=financial_cpf, financial_email=financial_email)
         _doc_logger.warning("DOC_SHEETS_OK patient=%s", patient_name)
     except Exception:
