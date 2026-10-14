@@ -383,6 +383,9 @@ def _eva_denies_shift(text: str) -> bool:
 # Estes helpers alimentam o GUARD_STALE_SLOTS em patient_agent.
 
 STALE_SLOT_OFFER_MAX_AGE = timedelta(hours=2)
+# Janela em que a trava painel-marcou ainda pode disparar (cobre uma conversa
+# inteira com vai e volta de pagamento). Ver _recent_panel_booking.
+PANEL_BOOKING_GUARD_MAX_AGE = timedelta(hours=6)
 _SLOT_OFFER_MARKERS = ("prefere", "disponív", "disponiv", "vaga", "opç", "opc", "escolh", "melhor")
 _SLOT_TIME_RE = _re_mod.compile(r"\b(\d{1,2}):(\d{2})\b")
 
@@ -403,6 +406,25 @@ def _looks_like_slot_offer(text: str) -> bool:
     return any(m in low for m in _SLOT_OFFER_MARKERS)
 
 
+_NO_AVAIL_PHRASES = (
+    "não temos horário", "nao temos horario", "não temos horários", "nao temos horarios",
+    "não ficou disponível", "nao ficou disponivel",
+    "não há vaga", "nao ha vaga", "sem vaga",
+    "não há horário", "nao ha horario", "não tem horário", "nao tem horario",
+    "não tenho horário", "nao tenho horario",
+)
+
+
+def _denies_availability(text: str) -> bool:
+    """True quando a resposta nega que haja vaga/horário disponível. Conservador de
+    propósito: usado só dentro da janela estreita do GUARD_PANEL_BOOKED, onde negar
+    vaga é justamente a contradição a eliminar."""
+    if not text:
+        return False
+    low = text.lower()
+    return any(p in low for p in _NO_AVAIL_PHRASES)
+
+
 async def _last_slot_offer_is_stale(phone: str, now: datetime) -> bool:
     """True se o último slots_offered do telefone tem mais de STALE_SLOT_OFFER_MAX_AGE
     ou não existe (sem prova de que a lista é recente, melhor buscar de novo)."""
@@ -416,6 +438,74 @@ async def _last_slot_offer_is_stale(phone: str, now: datetime) -> bool:
     if ts.tzinfo is None:
         ts = ts.replace(tzinfo=timezone.utc)
     return now - ts > STALE_SLOT_OFFER_MAX_AGE
+
+
+async def _recent_panel_booking(phone: str, now: datetime, upcoming: list[dict]) -> dict | None:
+    """Consulta marcada pelo painel há pouco e ainda ativa, ou None.
+
+    Liga a trava que impede a Eva de contradizer (reofertar horários / negar vaga)
+    uma consulta que a clínica acabou de marcar pelo painel no meio da conversa
+    (caso Dario, 5581998196655, 14/10/2026). Todas as condições são obrigatórias:
+      1. existe appointment_booked com metadata.origem == 'painel' há menos de
+         PANEL_BOOKING_GUARD_MAX_AGE;
+      2. essa marcação é mais recente que o último slots_offered (ou não há) — é o
+         que desliga a trava sozinha quando a Eva faz uma busca nova e legítima;
+      3. a consulta apontada ainda está ativa (aparece em `upcoming` como scheduled,
+         não cancelada nem já realizada).
+    Devolve {'appointment_id', 'when'} (when = 'DD/MM às HH:MM' em Recife) ou None.
+    Qualquer erro de leitura devolve None (best-effort, nunca trava a conversa)."""
+    try:
+        booked_events = await get_events_by_type(phone, "appointment_booked", limit=10)
+    except Exception:
+        return None
+    panel = next(
+        (e for e in booked_events if (e.get("metadata") or {}).get("origem") == "painel"),
+        None,
+    )
+    if not panel:
+        return None
+    try:
+        booked_at = datetime.fromisoformat(panel["created_at"])
+    except (KeyError, ValueError, TypeError):
+        return None
+    if booked_at.tzinfo is None:
+        booked_at = booked_at.replace(tzinfo=timezone.utc)
+    if now - booked_at > PANEL_BOOKING_GUARD_MAX_AGE:
+        return None
+
+    try:
+        offers = await get_events_by_type(phone, "slots_offered", limit=1)
+    except Exception:
+        offers = []
+    if offers:
+        try:
+            offered_at = datetime.fromisoformat(offers[0]["created_at"])
+            if offered_at.tzinfo is None:
+                offered_at = offered_at.replace(tzinfo=timezone.utc)
+            if offered_at >= booked_at:
+                return None  # oferta mais nova que a marcação → trava desliga
+        except (KeyError, ValueError, TypeError):
+            pass
+
+    appt_id = (panel.get("metadata") or {}).get("appointment_id")
+    if not appt_id:
+        return None
+    match = next(
+        (a for a in (upcoming or [])
+         if a.get("appointment_id") == appt_id
+         and a.get("status") == "scheduled"
+         and not a.get("already_occurred")
+         and not a.get("canceled_unpaid")),
+        None,
+    )
+    if not match:
+        return None
+    from zoneinfo import ZoneInfo as _ZI
+    try:
+        dt = datetime.fromisoformat(match["start_time"]).astimezone(_ZI("America/Recife"))
+    except (KeyError, ValueError, TypeError):
+        return None
+    return {"appointment_id": appt_id, "when": dt.strftime("%d/%m às %H:%M")}
 
 
 def _detect_debora_insistence(messages: list) -> bool:
@@ -2929,6 +3019,24 @@ async def patient_agent_node(state: ConversationState, config: RunnableConfig) -
             "consulta dele, diga que não há consulta ativa e ofereça agendar."
         )
 
+    # ── Painel marcou a consulta: diretiva anti-contradição ──────────────────
+    # Quando a clínica marca pelo painel no meio da conversa, o histórico ainda
+    # tem as ofertas antigas da Eva e elas pesam mais que a lista de consultas
+    # acima (caso Dario, 5581998196655, 14/10/2026). A diretiva forte, de alta
+    # saliência (depois da lista), proíbe reabrir o agendamento.
+    _panel_booking = await _recent_panel_booking(
+        state["phone"], datetime.now(timezone.utc), upcoming
+    )
+    if _panel_booking:
+        system_prompt += (
+            "\n\nATENÇÃO: a clínica acabou de marcar pelo painel a consulta de "
+            f"{_panel_booking['when']}. Essa consulta está CONFIRMADA. NÃO ofereça "
+            "outros horários, NÃO diga que não há vaga, NÃO reabra o agendamento. "
+            "Trate essa consulta como a consulta ativa. Se o paciente enviar "
+            "comprovante, registre o pagamento normalmente. Se o paciente quiser "
+            "cancelar ou remarcar, siga o fluxo normal."
+        )
+
     import logging as _log
     _logger = _log.getLogger(__name__)
 
@@ -3395,6 +3503,38 @@ async def patient_agent_node(state: ConversationState, config: RunnableConfig) -
                     _combined_shift, state.get("phone"),
                 )
                 response = AIMessage(content="", tool_calls=[_forced_ns])
+
+    # ── GUARD_PANEL_BOOKED: a Eva não contradiz consulta marcada pelo painel ──
+    # Caso Dario (5581998196655, 14/10/2026): a clínica marcou pelo painel no meio
+    # da conversa e a Eva, ainda com as ofertas antigas no histórico, reofertou
+    # horários e negou a vaga recém-confirmada. Dentro da janela da marcação
+    # (_panel_booking, calculado junto da injeção no prompt), se a resposta ofertar
+    # horários ou negar vaga, troca-se por uma confirmação da consulta real e
+    # encerra o turno. Roda ANTES do GUARD_STALE_SLOTS para que uma oferta não seja
+    # "refrescada" por uma busca nova.
+    if (
+        not response.tool_calls
+        and response.content
+        and _panel_booking
+        and _first_internal_marker_idx(response.content) < 0
+        and (_looks_like_slot_offer(str(response.content))
+             or _denies_availability(str(response.content)))
+    ):
+        _confirm = (
+            f"Sua consulta já está agendada para {_panel_booking['when']}. "
+            "Está tudo certo por aqui. Se precisar de qualquer coisa, é só me dizer. 😊"
+        )
+        _logger.warning(
+            "GUARD_PANEL_BOOKED: resposta contradizia consulta marcada pelo painel — "
+            "substituindo por confirmação phone=%s", state.get("phone"),
+        )
+        await send_text(state["phone"], _confirm)
+        await save_message(state["phone"], "assistant", _confirm)
+        return {
+            "messages": [AIMessage(content=_confirm)],
+            "pending_appointment": None,
+            "silent_mode": False,
+        }
 
     # ── Guard: lista de horários copiada de oferta antiga ────────────────────
     # A Eva reaproveita do histórico horários oferecidos dias antes, sem chamar

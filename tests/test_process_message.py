@@ -6199,6 +6199,7 @@ async def _run_stale_slots(state, events, reply=_STALE_OFFER_REPLY):
          patch("app.graph.nodes.get_user_by_phone", new_callable=AsyncMock, return_value={"price_adjustment_notified_at": "2026-01-01"}), \
          patch("app.graph.nodes.get_last_assistant_message_time", new_callable=AsyncMock, return_value=None), \
          patch("app.graph.nodes.get_events_by_type", new_callable=AsyncMock, return_value=events) as mock_events, \
+         patch("app.graph.nodes._recent_panel_booking", new_callable=AsyncMock, return_value=None), \
          patch("app.google_calendar.format_doctor_schedules", return_value="seg-sex"):
         mock_llm = MagicMock()
         mock_llm.ainvoke = fake_ainvoke
@@ -6965,3 +6966,201 @@ def test_is_transient_network_error():
     assert not _is_transient_network_error(
         httpx.HTTPStatusError("500", request=req, response=httpx.Response(500, request=req))
     )
+
+
+# ── _recent_panel_booking: trava painel-marcou ───────────────────────────────
+# Caso Dario (5581998196655, 14/10/2026): a clínica marcou pelo painel e a Eva,
+# com ofertas antigas no histórico, reofertou e negou a vaga recém-confirmada.
+
+def _panel_events(booked_minutes_ago=5, offered_minutes_ago=None, origem="painel",
+                  appointment_id="evt-painel"):
+    from datetime import datetime, timedelta, timezone
+    now = datetime.now(timezone.utc)
+    booked = [{
+        "event_type": "appointment_booked",
+        "metadata": {"origem": origem, "appointment_id": appointment_id},
+        "created_at": (now - timedelta(minutes=booked_minutes_ago)).isoformat(),
+    }]
+    offers = []
+    if offered_minutes_ago is not None:
+        offers = [{
+            "event_type": "slots_offered",
+            "created_at": (now - timedelta(minutes=offered_minutes_ago)).isoformat(),
+        }]
+    return booked, offers
+
+
+def _active_upcoming(appointment_id="evt-painel"):
+    return [{
+        "appointment_id": appointment_id,
+        "status": "scheduled",
+        "start_time": "2026-10-14T17:00:00+00:00",
+        "already_occurred": False,
+        "canceled_unpaid": False,
+    }]
+
+
+def _patch_panel_events(booked, offers):
+    async def fake_events(phone, event_type, limit=50):
+        return {"appointment_booked": booked, "slots_offered": offers}.get(event_type, [])
+    return patch("app.graph.nodes.get_events_by_type", side_effect=fake_events)
+
+
+async def test_recent_panel_booking_matches_fresh_panel_booking():
+    from datetime import datetime, timezone
+    from app.graph.nodes import _recent_panel_booking
+    booked, offers = _panel_events(booked_minutes_ago=5, offered_minutes_ago=30)
+    with _patch_panel_events(booked, offers):
+        result = await _recent_panel_booking(
+            PHONE, datetime.now(timezone.utc), _active_upcoming(),
+        )
+    assert result is not None
+    assert result["appointment_id"] == "evt-painel"
+    assert result["when"] == "14/10 às 14:00"
+
+
+async def test_recent_panel_booking_off_when_offer_is_newer():
+    from datetime import datetime, timezone
+    from app.graph.nodes import _recent_panel_booking
+    # oferta de 2min atrás é mais nova que a marcação de 5min → trava desliga
+    booked, offers = _panel_events(booked_minutes_ago=5, offered_minutes_ago=2)
+    with _patch_panel_events(booked, offers):
+        result = await _recent_panel_booking(
+            PHONE, datetime.now(timezone.utc), _active_upcoming(),
+        )
+    assert result is None
+
+
+async def test_recent_panel_booking_off_when_booking_too_old():
+    from datetime import datetime, timezone
+    from app.graph.nodes import _recent_panel_booking
+    booked, offers = _panel_events(booked_minutes_ago=7 * 60, offered_minutes_ago=None)
+    with _patch_panel_events(booked, offers):
+        result = await _recent_panel_booking(
+            PHONE, datetime.now(timezone.utc), _active_upcoming(),
+        )
+    assert result is None
+
+
+async def test_recent_panel_booking_off_when_appointment_not_active():
+    from datetime import datetime, timezone
+    from app.graph.nodes import _recent_panel_booking
+    booked, offers = _panel_events(booked_minutes_ago=5)
+    canceled = [{**_active_upcoming()[0], "status": "scheduled", "canceled_unpaid": True}]
+    with _patch_panel_events(booked, offers):
+        result = await _recent_panel_booking(
+            PHONE, datetime.now(timezone.utc), canceled,
+        )
+    assert result is None
+
+
+async def test_recent_panel_booking_off_when_no_panel_event():
+    from datetime import datetime, timezone
+    from app.graph.nodes import _recent_panel_booking
+    booked, offers = _panel_events(booked_minutes_ago=5, origem="eva")  # não é painel
+    with _patch_panel_events(booked, offers):
+        result = await _recent_panel_booking(
+            PHONE, datetime.now(timezone.utc), _active_upcoming(),
+        )
+    assert result is None
+
+
+async def test_recent_panel_booking_none_on_read_error():
+    from datetime import datetime, timezone
+    from app.graph.nodes import _recent_panel_booking
+    with patch("app.graph.nodes.get_events_by_type",
+               side_effect=RuntimeError("db down")):
+        result = await _recent_panel_booking(
+            PHONE, datetime.now(timezone.utc), _active_upcoming(),
+        )
+    assert result is None
+
+
+def test_denies_availability():
+    from app.graph.nodes import _denies_availability
+    assert _denies_availability("Para hoje não temos horários disponíveis. 😕")
+    assert _denies_availability("O horário de 14:00 não ficou disponível para registrar agora.")
+    assert _denies_availability("Infelizmente não há vaga nesse dia.")
+    # Confirmação positiva não é negativa de vaga
+    assert not _denies_availability("Sua consulta já está agendada para 14/10 às 14:00.")
+    assert not _denies_availability("")
+
+
+async def test_panel_booking_directive_injected_into_prompt():
+    state = _make_patient_agent_state(messages=[HumanMessage(content="e aí, tem vaga pra hoje?")])
+    with patch("app.graph.nodes._recent_panel_booking", new_callable=AsyncMock,
+               return_value={"appointment_id": "evt-painel", "when": "14/10 às 14:00"}):
+        system_msg = await _run_patient_agent(state)
+    assert system_msg is not None
+    assert "acabou de marcar pelo painel" in system_msg.content
+    assert "14/10 às 14:00" in system_msg.content
+    assert "NÃO ofereça outros horários" in system_msg.content
+
+
+async def test_no_panel_booking_leaves_prompt_clean():
+    state = _make_patient_agent_state(messages=[HumanMessage(content="e aí, tem vaga pra hoje?")])
+    with patch("app.graph.nodes._recent_panel_booking", new_callable=AsyncMock,
+               return_value=None):
+        system_msg = await _run_patient_agent(state)
+    assert system_msg is not None
+    assert "acabou de marcar pelo painel" not in system_msg.content
+
+
+# ── GUARD_PANEL_BOOKED: Eva não contradiz consulta marcada pelo painel ───────
+
+async def _run_panel_booked(reply, panel_booking):
+    from app.graph.nodes import patient_agent_node
+
+    async def fake_ainvoke(messages):
+        return AIMessage(content=reply)
+
+    state = _make_patient_agent_state(messages=[HumanMessage(content="recebi?")])
+    with patch("app.graph.nodes._get_agent_llm") as mock_llm_fn, \
+         patch("app.graph.nodes.send_text", new_callable=AsyncMock) as mock_send, \
+         patch("app.graph.nodes.save_message", new_callable=AsyncMock), \
+         patch("app.graph.nodes.get_upcoming_appointments", new_callable=AsyncMock, return_value=[]), \
+         patch("app.graph.nodes.get_user_by_phone", new_callable=AsyncMock, return_value={"price_adjustment_notified_at": "2026-01-01"}), \
+         patch("app.graph.nodes.get_last_assistant_message_time", new_callable=AsyncMock, return_value=None), \
+         patch("app.graph.nodes._recent_panel_booking", new_callable=AsyncMock, return_value=panel_booking), \
+         patch("app.google_calendar.format_doctor_schedules", return_value="seg-sex"):
+        mock_llm = MagicMock()
+        mock_llm.ainvoke = fake_ainvoke
+        mock_llm_fn.return_value = mock_llm
+        result = await patient_agent_node(state, {})
+    return result, mock_send
+
+
+_PANEL = {"appointment_id": "evt-painel", "when": "14/10 às 14:00"}
+
+
+async def test_panel_booked_replaces_slot_offer():
+    reply = ("Para a Dra. Bruna os horários mais próximos são 05/11 às 09:00, "
+             "10:00 ou 15:00. Qual prefere?")
+    result, mock_send = await _run_panel_booked(reply, _PANEL)
+    sent = mock_send.await_args.args[1]
+    assert "14/10 às 14:00" in sent
+    assert "05/11" not in sent
+    assert result["messages"][-1].content == sent
+    assert not (result["messages"][-1].tool_calls or [])
+
+
+async def test_panel_booked_replaces_availability_denial():
+    reply = "O horário de 14:00 de 14/10 não ficou disponível para registrar agora. 😕"
+    result, mock_send = await _run_panel_booked(reply, _PANEL)
+    sent = mock_send.await_args.args[1]
+    assert "14/10 às 14:00" in sent
+    assert "não ficou disponível" not in sent.lower()
+
+
+async def test_panel_booked_lets_normal_reply_through():
+    reply = "Perfeito! Te espero no horário então. 😊"
+    result, mock_send = await _run_panel_booked(reply, _PANEL)
+    sent = mock_send.await_args.args[1]
+    assert sent == reply  # não foi uma oferta nem negativa → passa intacto
+
+
+async def test_no_panel_booking_lets_slot_offer_through():
+    reply = "Tenho 09:00 e 10:00 disponíveis. Qual prefere?"
+    result, mock_send = await _run_panel_booked(reply, None)
+    sent = mock_send.await_args.args[1]
+    assert sent == reply  # sem painel ativo, o guard não age
