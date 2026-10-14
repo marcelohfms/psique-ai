@@ -123,6 +123,32 @@ async def test_process_media_audio_returns_none_without_api_call():
     mock_download.assert_not_awaited()
 
 
+async def test_process_media_notifies_clinic_when_image_fails():
+    """Falha REAL ao processar imagem (download ou classificação lança exceção) não
+    pode sumir calada, como aconteceu no caso Virgínia/Lara (14/10/2026): a imagem só
+    aparecia no Chatwoot e ninguém era avisado. Agora o caminho de imagem avisa a
+    clínica, igual o de documento (_notify_document_processing_failure)."""
+    from app.media import process_media
+    with patch("app.media.describe_image", new_callable=AsyncMock, side_effect=RuntimeError("boom")), \
+         patch("app.email_sender.send_clinic_notification_email", new_callable=AsyncMock) as mock_notify:
+        result = await process_media("media-456", "image", phone="5581999736464@s.whatsapp.net")
+    assert result is None
+    mock_notify.assert_awaited_once()
+
+
+async def test_process_media_no_clinic_notify_when_image_handled_as_none():
+    """None SEM exceção não é falha: documento médico (laudo/exame) e imagem
+    irrelevante são tratados dentro de describe_image_bytes (thank-you/clínica já
+    avisada, ou descarte silencioso) e retornam None de propósito. Não gerar alarme
+    falso para esses — só a exceção do except dispara o aviso."""
+    from app.media import process_media
+    with patch("app.media.describe_image", new_callable=AsyncMock, return_value=None), \
+         patch("app.email_sender.send_clinic_notification_email", new_callable=AsyncMock) as mock_notify:
+        result = await process_media("media-456", "image", phone="5581999736464@s.whatsapp.net")
+    assert result is None
+    mock_notify.assert_not_awaited()
+
+
 # ── is_payment_receipt_message ────────────────────────────────────────────────
 # Usado pelo _route_entry para levar um comprovante ao patient_agent mesmo com o
 # cadastro incompleto. Precisa ser ESTRITO: só o que o classificador de visão
