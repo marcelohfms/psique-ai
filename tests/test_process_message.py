@@ -6965,3 +6965,111 @@ def test_is_transient_network_error():
     assert not _is_transient_network_error(
         httpx.HTTPStatusError("500", request=req, response=httpx.Response(500, request=req))
     )
+
+
+# ── _recent_panel_booking: trava painel-marcou ───────────────────────────────
+# Caso Dario (5581998196655, 14/10/2026): a clínica marcou pelo painel e a Eva,
+# com ofertas antigas no histórico, reofertou e negou a vaga recém-confirmada.
+
+def _panel_events(booked_minutes_ago=5, offered_minutes_ago=None, origem="painel",
+                  appointment_id="evt-painel"):
+    from datetime import datetime, timedelta, timezone
+    now = datetime.now(timezone.utc)
+    booked = [{
+        "event_type": "appointment_booked",
+        "metadata": {"origem": origem, "appointment_id": appointment_id},
+        "created_at": (now - timedelta(minutes=booked_minutes_ago)).isoformat(),
+    }]
+    offers = []
+    if offered_minutes_ago is not None:
+        offers = [{
+            "event_type": "slots_offered",
+            "created_at": (now - timedelta(minutes=offered_minutes_ago)).isoformat(),
+        }]
+    return booked, offers
+
+
+def _active_upcoming(appointment_id="evt-painel"):
+    return [{
+        "appointment_id": appointment_id,
+        "status": "scheduled",
+        "start_time": "2026-10-14T17:00:00+00:00",
+        "already_occurred": False,
+        "canceled_unpaid": False,
+    }]
+
+
+def _patch_panel_events(booked, offers):
+    async def fake_events(phone, event_type, limit=50):
+        return {"appointment_booked": booked, "slots_offered": offers}.get(event_type, [])
+    return patch("app.graph.nodes.get_events_by_type", side_effect=fake_events)
+
+
+async def test_recent_panel_booking_matches_fresh_panel_booking():
+    from datetime import datetime, timezone
+    from app.graph.nodes import _recent_panel_booking
+    booked, offers = _panel_events(booked_minutes_ago=5, offered_minutes_ago=30)
+    with _patch_panel_events(booked, offers):
+        result = await _recent_panel_booking(
+            PHONE, datetime.now(timezone.utc), _active_upcoming(),
+        )
+    assert result is not None
+    assert result["appointment_id"] == "evt-painel"
+    assert result["when"] == "14/10 às 14:00"
+
+
+async def test_recent_panel_booking_off_when_offer_is_newer():
+    from datetime import datetime, timezone
+    from app.graph.nodes import _recent_panel_booking
+    # oferta de 2min atrás é mais nova que a marcação de 5min → trava desliga
+    booked, offers = _panel_events(booked_minutes_ago=5, offered_minutes_ago=2)
+    with _patch_panel_events(booked, offers):
+        result = await _recent_panel_booking(
+            PHONE, datetime.now(timezone.utc), _active_upcoming(),
+        )
+    assert result is None
+
+
+async def test_recent_panel_booking_off_when_booking_too_old():
+    from datetime import datetime, timezone
+    from app.graph.nodes import _recent_panel_booking
+    booked, offers = _panel_events(booked_minutes_ago=7 * 60, offered_minutes_ago=None)
+    with _patch_panel_events(booked, offers):
+        result = await _recent_panel_booking(
+            PHONE, datetime.now(timezone.utc), _active_upcoming(),
+        )
+    assert result is None
+
+
+async def test_recent_panel_booking_off_when_appointment_not_active():
+    from datetime import datetime, timezone
+    from app.graph.nodes import _recent_panel_booking
+    booked, offers = _panel_events(booked_minutes_ago=5)
+    canceled = [{**_active_upcoming()[0], "status": "scheduled", "canceled_unpaid": True}]
+    with _patch_panel_events(booked, offers):
+        result = await _recent_panel_booking(
+            PHONE, datetime.now(timezone.utc), canceled,
+        )
+    assert result is None
+
+
+async def test_recent_panel_booking_off_when_no_panel_event():
+    from datetime import datetime, timezone
+    from app.graph.nodes import _recent_panel_booking
+    booked, offers = _panel_events(booked_minutes_ago=5, origem="eva")  # não é painel
+    with _patch_panel_events(booked, offers):
+        result = await _recent_panel_booking(
+            PHONE, datetime.now(timezone.utc), _active_upcoming(),
+        )
+    assert result is None
+
+
+async def test_recent_panel_booking_none_on_read_error():
+    from datetime import datetime, timezone
+    from app.graph.nodes import _recent_panel_booking
+    with patch("app.graph.nodes.get_events_by_type",
+               side_effect=RuntimeError("db down")):
+        result = await _recent_panel_booking(
+            PHONE, datetime.now(timezone.utc), _active_upcoming(),
+        )
+    assert result is None

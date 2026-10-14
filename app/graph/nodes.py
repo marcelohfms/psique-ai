@@ -383,6 +383,9 @@ def _eva_denies_shift(text: str) -> bool:
 # Estes helpers alimentam o GUARD_STALE_SLOTS em patient_agent.
 
 STALE_SLOT_OFFER_MAX_AGE = timedelta(hours=2)
+# Janela em que a trava painel-marcou ainda pode disparar (cobre uma conversa
+# inteira com vai e volta de pagamento). Ver _recent_panel_booking.
+PANEL_BOOKING_GUARD_MAX_AGE = timedelta(hours=6)
 _SLOT_OFFER_MARKERS = ("prefere", "disponív", "disponiv", "vaga", "opç", "opc", "escolh", "melhor")
 _SLOT_TIME_RE = _re_mod.compile(r"\b(\d{1,2}):(\d{2})\b")
 
@@ -416,6 +419,74 @@ async def _last_slot_offer_is_stale(phone: str, now: datetime) -> bool:
     if ts.tzinfo is None:
         ts = ts.replace(tzinfo=timezone.utc)
     return now - ts > STALE_SLOT_OFFER_MAX_AGE
+
+
+async def _recent_panel_booking(phone: str, now: datetime, upcoming: list[dict]) -> dict | None:
+    """Consulta marcada pelo painel há pouco e ainda ativa, ou None.
+
+    Liga a trava que impede a Eva de contradizer (reofertar horários / negar vaga)
+    uma consulta que a clínica acabou de marcar pelo painel no meio da conversa
+    (caso Dario, 5581998196655, 14/10/2026). Todas as condições são obrigatórias:
+      1. existe appointment_booked com metadata.origem == 'painel' há menos de
+         PANEL_BOOKING_GUARD_MAX_AGE;
+      2. essa marcação é mais recente que o último slots_offered (ou não há) — é o
+         que desliga a trava sozinha quando a Eva faz uma busca nova e legítima;
+      3. a consulta apontada ainda está ativa (aparece em `upcoming` como scheduled,
+         não cancelada nem já realizada).
+    Devolve {'appointment_id', 'when'} (when = 'DD/MM às HH:MM' em Recife) ou None.
+    Qualquer erro de leitura devolve None (best-effort, nunca trava a conversa)."""
+    try:
+        booked_events = await get_events_by_type(phone, "appointment_booked", limit=10)
+    except Exception:
+        return None
+    panel = next(
+        (e for e in booked_events if (e.get("metadata") or {}).get("origem") == "painel"),
+        None,
+    )
+    if not panel:
+        return None
+    try:
+        booked_at = datetime.fromisoformat(panel["created_at"])
+    except (KeyError, ValueError, TypeError):
+        return None
+    if booked_at.tzinfo is None:
+        booked_at = booked_at.replace(tzinfo=timezone.utc)
+    if now - booked_at > PANEL_BOOKING_GUARD_MAX_AGE:
+        return None
+
+    try:
+        offers = await get_events_by_type(phone, "slots_offered", limit=1)
+    except Exception:
+        offers = []
+    if offers:
+        try:
+            offered_at = datetime.fromisoformat(offers[0]["created_at"])
+            if offered_at.tzinfo is None:
+                offered_at = offered_at.replace(tzinfo=timezone.utc)
+            if offered_at >= booked_at:
+                return None  # oferta mais nova que a marcação → trava desliga
+        except (KeyError, ValueError, TypeError):
+            pass
+
+    appt_id = (panel.get("metadata") or {}).get("appointment_id")
+    if not appt_id:
+        return None
+    match = next(
+        (a for a in (upcoming or [])
+         if a.get("appointment_id") == appt_id
+         and a.get("status") == "scheduled"
+         and not a.get("already_occurred")
+         and not a.get("canceled_unpaid")),
+        None,
+    )
+    if not match:
+        return None
+    from zoneinfo import ZoneInfo as _ZI
+    try:
+        dt = datetime.fromisoformat(match["start_time"]).astimezone(_ZI("America/Recife"))
+    except (KeyError, ValueError, TypeError):
+        return None
+    return {"appointment_id": appt_id, "when": dt.strftime("%d/%m às %H:%M")}
 
 
 def _detect_debora_insistence(messages: list) -> bool:
