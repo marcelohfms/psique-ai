@@ -292,6 +292,7 @@ class PagarBody(BaseModel):
     phone: str
     drive_link: str = ""  # link do comprovante já enviado ao Drive (ver /pagamentos/{id}/comprovante)
     receipt_filename: str = ""  # nome do arquivo no Drive, devolvido pela mesma rota
+    file_md5: str = ""  # md5 do arquivo, devolvido pela mesma rota (trava de comprovante repetido)
 
 
 @app.post("/api/pagamentos/{appointment_id}/comprovante")
@@ -301,16 +302,32 @@ async def api_upload_comprovante(
     data_hora: str = Form(...),
     valor: str = Form(...),
     file: UploadFile = File(...),
+    phone: str = Form(default=""),
+    confirmar_duplicado: bool = Form(default=False),
     username: str = Depends(verify_credentials),
 ):
     content = await file.read()
     mimetype = file.content_type or "image/jpeg"
+    # Trava de comprovante repetido (caso Miguel Costa Loureiro, 08/10/2026): o
+    # mesmo arquivo não sobe nem é registrado sem a confirmação da atendente.
+    md5 = payments.file_md5(content)
+    try:
+        previous = await payments.find_previous_receipt(get_supabase(), md5)
+    except Exception:
+        logger.warning("DUPLICATE_RECEIPT_CHECK falhou; segue sem a trava", exc_info=True)
+        previous = None
+    if previous and not confirmar_duplicado:
+        raise HTTPException(status_code=409, detail={
+            "duplicado": True, "mensagem": payments.describe_previous_receipt(previous),
+        })
     try:
         drive_link, filename = await payments.upload_comprovante(paciente, data_hora, valor, content, mimetype)
     except Exception:
         logger.exception("UPLOAD_COMPROVANTE_FAILED appt=%s paciente=%s", appointment_id, paciente)
         raise HTTPException(status_code=502, detail="Falha ao enviar comprovante ao Drive")
-    return {"drive_link": drive_link, "receipt_filename": filename}
+    if previous:
+        await payments.log_duplicate_confirmed(phone, appointment_id, md5, previous)
+    return {"drive_link": drive_link, "receipt_filename": filename, "file_md5": md5}
 
 
 class RetornoBody(BaseModel):
@@ -390,6 +407,7 @@ async def api_pagar(
         body.paciente, body.medico, body.data_hora, body.phone,
         drive_link=body.drive_link,
         receipt_filename=body.receipt_filename,
+        file_md5=body.file_md5,
     )
     return {"ok": True}
 
