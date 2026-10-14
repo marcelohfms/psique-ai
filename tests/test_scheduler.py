@@ -222,3 +222,17 @@ async def test_claim_slot_fails_closed_on_db_error(monkeypatch):
         raise RuntimeError("dns")
     monkeypatch.setattr("app.supabase_client.get_supabase", _boom)
     assert await sch.claim_slot(Job("x", "x", At(8)), _t(13, 8)) is None
+
+
+# ── Guardas da virada (2026-10-14) ──────────────────────────────────────────────
+
+def test_scheduler_is_live():
+    """A virada: o agendador executa de verdade. Não reverter sem querer."""
+    assert sch.SCHEDULER_LIVE is True
+
+
+def test_no_job_requires_pix_key():
+    """PIX_KEY é falso-positivo: os scripts usam a constante CORRECT_PIX_KEY.
+    Se voltar ao env, o _run_live pula a cobrança de taxa por 'missing env'."""
+    for job in sch.JOBS:
+        assert "PIX_KEY" not in job.env, job.name

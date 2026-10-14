@@ -45,9 +45,9 @@ JOB_TIMEOUT_SECONDS = 15 * 60
 SHUTDOWN_GRACE_SECONDS = 20
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 
-# Modo sombra: calcula e registra, não executa. Virar para True junto com a
-# remoção dos `schedule:` dos workflows do GitHub.
-SCHEDULER_LIVE = False
+# Ao vivo: o agendador executa as rotinas. Os `schedule:` dos workflows do GitHub
+# foram removidos na virada (2026-10-14); só o `workflow_dispatch` manual ficou.
+SCHEDULER_LIVE = True
 
 # Eventos (tabela events, phone fixo) para auditoria e trava das rodadas.
 EVENT_PHONE = "agendador"
@@ -137,13 +137,13 @@ JOBS: tuple[Job, ...] = (
         _SUPABASE + _WHATSAPP + _CHATWOOT),
     Job("payment_reminders", "send_payment_reminders", Every(30),
         _SUPABASE + _PG + _WHATSAPP + _CHATWOOT + _GOOGLE + _SMTP
-        + ("PIX_KEY", "CLINIC_NOTIFY_EMAIL")),
+        + ("CLINIC_NOTIFY_EMAIL",)),
     Job("release_pending_reschedules", "release_pending_reschedules", Every(30),
         _SUPABASE + _WHATSAPP + _CHATWOOT + _GOOGLE),
     Job("lead_stall_nudges", "send_lead_stall_nudges", Every(30),
-        _SUPABASE + _PG + _WHATSAPP + _CHATWOOT + _GOOGLE + ("PIX_KEY",)),
+        _SUPABASE + _PG + _WHATSAPP + _CHATWOOT + _GOOGLE),
     Job("scheduling_stall_nudges", "send_scheduling_stall_nudges", Every(30),
-        _SUPABASE + _PG + _WHATSAPP + _CHATWOOT + _GOOGLE + ("PIX_KEY",)),
+        _SUPABASE + _PG + _WHATSAPP + _CHATWOOT + _GOOGLE),
     Job("sync_contact_attributes", "sync_contact_attributes", Every(30),
         _SUPABASE + _CHATWOOT),
     Job("return_reminders", "send_return_reminders", At(8),
