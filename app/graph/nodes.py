@@ -406,6 +406,25 @@ def _looks_like_slot_offer(text: str) -> bool:
     return any(m in low for m in _SLOT_OFFER_MARKERS)
 
 
+_NO_AVAIL_PHRASES = (
+    "não temos horário", "nao temos horario", "não temos horários", "nao temos horarios",
+    "não ficou disponível", "nao ficou disponivel",
+    "não há vaga", "nao ha vaga", "sem vaga",
+    "não há horário", "nao ha horario", "não tem horário", "nao tem horario",
+    "não tenho horário", "nao tenho horario",
+)
+
+
+def _denies_availability(text: str) -> bool:
+    """True quando a resposta nega que haja vaga/horário disponível. Conservador de
+    propósito: usado só dentro da janela estreita do GUARD_PANEL_BOOKED, onde negar
+    vaga é justamente a contradição a eliminar."""
+    if not text:
+        return False
+    low = text.lower()
+    return any(p in low for p in _NO_AVAIL_PHRASES)
+
+
 async def _last_slot_offer_is_stale(phone: str, now: datetime) -> bool:
     """True se o último slots_offered do telefone tem mais de STALE_SLOT_OFFER_MAX_AGE
     ou não existe (sem prova de que a lista é recente, melhor buscar de novo)."""

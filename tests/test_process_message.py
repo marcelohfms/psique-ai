@@ -7073,3 +7073,13 @@ async def test_recent_panel_booking_none_on_read_error():
             PHONE, datetime.now(timezone.utc), _active_upcoming(),
         )
     assert result is None
+
+
+def test_denies_availability():
+    from app.graph.nodes import _denies_availability
+    assert _denies_availability("Para hoje não temos horários disponíveis. 😕")
+    assert _denies_availability("O horário de 14:00 não ficou disponível para registrar agora.")
+    assert _denies_availability("Infelizmente não há vaga nesse dia.")
+    # Confirmação positiva não é negativa de vaga
+    assert not _denies_availability("Sua consulta já está agendada para 14/10 às 14:00.")
+    assert not _denies_availability("")
