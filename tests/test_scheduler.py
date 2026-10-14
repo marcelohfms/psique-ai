@@ -242,8 +242,9 @@ def test_no_github_cron_schedules():
     """A Eva é a dona das rotinas: nenhum workflow dispara por cron.
     Só sobra o workflow_dispatch (escape manual)."""
     wf_dir = ROOT / ".github" / "workflows"
+    workflows = [*wf_dir.glob("*.yml"), *wf_dir.glob("*.yaml")]
     with_schedule = [
-        p.name for p in wf_dir.glob("*.yml")
+        p.name for p in workflows
         if re.search(r"^\s*schedule:\s*$", p.read_text(), re.MULTILINE)
     ]
     assert with_schedule == [], with_schedule
