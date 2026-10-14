@@ -484,6 +484,34 @@ async def describe_image(media_id: str, phone: str = "") -> str:
     return await describe_image_bytes(image_bytes, phone)
 
 
+async def _notify_image_processing_failure(phone: str, media_id: str) -> None:
+    """Best-effort: alert the clinic that an IMAGE failed to process, so an attendant
+    can pick it up from the Chatwoot/WhatsApp conversation instead of the comprovante
+    disappearing without a trace.
+
+    Mirrors app.main._notify_document_processing_failure for the image path, which
+    until now swallowed any exception and returned None silently — an image-only
+    message (no caption) then vanished with no row in `messages`, no event and no
+    alert (caso Virgínia/Lara, 14/10/2026). Only genuine failures reach here: a
+    medical document or an irrelevant image is handled inside describe_image_bytes
+    and returns None WITHOUT raising, so it never triggers this notice.
+    """
+    try:
+        from app.email_sender import send_clinic_notification_email
+        phone_clean = phone.replace("@s.whatsapp.net", "")
+        await send_clinic_notification_email(
+            f"Falha ao processar imagem — {phone_clean}",
+            f"Número: {phone_clean}\nmedia_id: {media_id}\n\n"
+            "O paciente enviou uma IMAGEM que não pôde ser processada automaticamente. "
+            "Possível comprovante de pagamento.\n\n"
+            "Por favor, verifique a imagem diretamente no WhatsApp/Chatwoot e trate "
+            "manualmente (ex.: registre o comprovante pelo painel), em vez de pedir "
+            "para o paciente reenviar.",
+        )
+    except Exception:
+        logger.exception("IMAGE_FAILURE_CLINIC_NOTIFY failed phone=%s", phone)
+
+
 async def process_media(media_id: str, media_type: str, phone: str = "") -> str | None:
     """
     Returns described text for image messages.
@@ -496,4 +524,9 @@ async def process_media(media_id: str, media_type: str, phone: str = "") -> str 
             return await describe_image(media_id, phone)
     except Exception:
         logger.exception("Failed to process media %s (type=%s)", media_id, media_type)
+        # Falha real de imagem avisa a clínica (paridade com o caminho de documento).
+        # Só a exceção chega aqui: laudo/exame e imagem irrelevante retornam None sem
+        # lançar, então não geram alarme falso. Nunca deixa o aviso derrubar a ingestão.
+        if media_type == "image":
+            await _notify_image_processing_failure(phone, media_id)
     return None
