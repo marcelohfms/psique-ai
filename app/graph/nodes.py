@@ -3019,6 +3019,24 @@ async def patient_agent_node(state: ConversationState, config: RunnableConfig) -
             "consulta dele, diga que não há consulta ativa e ofereça agendar."
         )
 
+    # ── Painel marcou a consulta: diretiva anti-contradição ──────────────────
+    # Quando a clínica marca pelo painel no meio da conversa, o histórico ainda
+    # tem as ofertas antigas da Eva e elas pesam mais que a lista de consultas
+    # acima (caso Dario, 5581998196655, 14/10/2026). A diretiva forte, de alta
+    # saliência (depois da lista), proíbe reabrir o agendamento.
+    _panel_booking = await _recent_panel_booking(
+        state["phone"], datetime.now(timezone.utc), upcoming
+    )
+    if _panel_booking:
+        system_prompt += (
+            "\n\nATENÇÃO: a clínica acabou de marcar pelo painel a consulta de "
+            f"{_panel_booking['when']}. Essa consulta está CONFIRMADA. NÃO ofereça "
+            "outros horários, NÃO diga que não há vaga, NÃO reabra o agendamento. "
+            "Trate essa consulta como a consulta ativa. Se o paciente enviar "
+            "comprovante, registre o pagamento normalmente. Se o paciente quiser "
+            "cancelar ou remarcar, siga o fluxo normal."
+        )
+
     import logging as _log
     _logger = _log.getLogger(__name__)
 

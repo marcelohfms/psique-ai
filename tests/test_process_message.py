@@ -6199,6 +6199,7 @@ async def _run_stale_slots(state, events, reply=_STALE_OFFER_REPLY):
          patch("app.graph.nodes.get_user_by_phone", new_callable=AsyncMock, return_value={"price_adjustment_notified_at": "2026-01-01"}), \
          patch("app.graph.nodes.get_last_assistant_message_time", new_callable=AsyncMock, return_value=None), \
          patch("app.graph.nodes.get_events_by_type", new_callable=AsyncMock, return_value=events) as mock_events, \
+         patch("app.graph.nodes._recent_panel_booking", new_callable=AsyncMock, return_value=None), \
          patch("app.google_calendar.format_doctor_schedules", return_value="seg-sex"):
         mock_llm = MagicMock()
         mock_llm.ainvoke = fake_ainvoke
@@ -7083,3 +7084,23 @@ def test_denies_availability():
     # Confirmação positiva não é negativa de vaga
     assert not _denies_availability("Sua consulta já está agendada para 14/10 às 14:00.")
     assert not _denies_availability("")
+
+
+async def test_panel_booking_directive_injected_into_prompt():
+    state = _make_patient_agent_state(messages=[HumanMessage(content="e aí, tem vaga pra hoje?")])
+    with patch("app.graph.nodes._recent_panel_booking", new_callable=AsyncMock,
+               return_value={"appointment_id": "evt-painel", "when": "14/10 às 14:00"}):
+        system_msg = await _run_patient_agent(state)
+    assert system_msg is not None
+    assert "acabou de marcar pelo painel" in system_msg.content
+    assert "14/10 às 14:00" in system_msg.content
+    assert "NÃO ofereça outros horários" in system_msg.content
+
+
+async def test_no_panel_booking_leaves_prompt_clean():
+    state = _make_patient_agent_state(messages=[HumanMessage(content="e aí, tem vaga pra hoje?")])
+    with patch("app.graph.nodes._recent_panel_booking", new_callable=AsyncMock,
+               return_value=None):
+        system_msg = await _run_patient_agent(state)
+    assert system_msg is not None
+    assert "acabou de marcar pelo painel" not in system_msg.content
