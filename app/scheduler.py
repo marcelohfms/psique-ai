@@ -21,10 +21,11 @@ Como funciona:
 Só liga com SCHEDULER_ENABLED=1, que o Dockerfile de produção define. Rodar a Eva
 local (`uvicorn --reload`) ou os testes nunca dispara cron.
 
-SCHEDULER_LIVE=False é o modo sombra: o agendador calcula e registra o que rodaria
-(evento scheduler_shadow) mas não executa nada, enquanto o GitHub continua sendo
-o dono das rotinas. Serve para conferir horários e variáveis de ambiente em
-produção antes da virada.
+SCHEDULER_LIVE controla a execução: True (padrão desde a virada de 2026-10-14) a
+Eva executa as rotinas; False é o modo sombra, que só calcula e registra o que
+rodaria (evento scheduler_shadow) sem executar — foi como rodou antes da virada,
+com o GitHub ainda dono. O modo sombra fica disponível para uma próxima mudança
+grande que queira reconferir horários e variáveis em produção antes de ligar.
 """
 import asyncio
 import logging
