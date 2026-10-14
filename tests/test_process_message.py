@@ -7104,3 +7104,63 @@ async def test_no_panel_booking_leaves_prompt_clean():
         system_msg = await _run_patient_agent(state)
     assert system_msg is not None
     assert "acabou de marcar pelo painel" not in system_msg.content
+
+
+# ── GUARD_PANEL_BOOKED: Eva não contradiz consulta marcada pelo painel ───────
+
+async def _run_panel_booked(reply, panel_booking):
+    from app.graph.nodes import patient_agent_node
+
+    async def fake_ainvoke(messages):
+        return AIMessage(content=reply)
+
+    state = _make_patient_agent_state(messages=[HumanMessage(content="recebi?")])
+    with patch("app.graph.nodes._get_agent_llm") as mock_llm_fn, \
+         patch("app.graph.nodes.send_text", new_callable=AsyncMock) as mock_send, \
+         patch("app.graph.nodes.save_message", new_callable=AsyncMock), \
+         patch("app.graph.nodes.get_upcoming_appointments", new_callable=AsyncMock, return_value=[]), \
+         patch("app.graph.nodes.get_user_by_phone", new_callable=AsyncMock, return_value={"price_adjustment_notified_at": "2026-01-01"}), \
+         patch("app.graph.nodes.get_last_assistant_message_time", new_callable=AsyncMock, return_value=None), \
+         patch("app.graph.nodes._recent_panel_booking", new_callable=AsyncMock, return_value=panel_booking), \
+         patch("app.google_calendar.format_doctor_schedules", return_value="seg-sex"):
+        mock_llm = MagicMock()
+        mock_llm.ainvoke = fake_ainvoke
+        mock_llm_fn.return_value = mock_llm
+        result = await patient_agent_node(state, {})
+    return result, mock_send
+
+
+_PANEL = {"appointment_id": "evt-painel", "when": "14/10 às 14:00"}
+
+
+async def test_panel_booked_replaces_slot_offer():
+    reply = ("Para a Dra. Bruna os horários mais próximos são 05/11 às 09:00, "
+             "10:00 ou 15:00. Qual prefere?")
+    result, mock_send = await _run_panel_booked(reply, _PANEL)
+    sent = mock_send.await_args.args[1]
+    assert "14/10 às 14:00" in sent
+    assert "05/11" not in sent
+    assert result["messages"][-1].content == sent
+    assert not (result["messages"][-1].tool_calls or [])
+
+
+async def test_panel_booked_replaces_availability_denial():
+    reply = "O horário de 14:00 de 14/10 não ficou disponível para registrar agora. 😕"
+    result, mock_send = await _run_panel_booked(reply, _PANEL)
+    sent = mock_send.await_args.args[1]
+    assert "14/10 às 14:00" in sent
+    assert "não ficou disponível" not in sent.lower()
+
+
+async def test_panel_booked_lets_normal_reply_through():
+    reply = "Perfeito! Te espero no horário então. 😊"
+    result, mock_send = await _run_panel_booked(reply, _PANEL)
+    sent = mock_send.await_args.args[1]
+    assert sent == reply  # não foi uma oferta nem negativa → passa intacto
+
+
+async def test_no_panel_booking_lets_slot_offer_through():
+    reply = "Tenho 09:00 e 10:00 disponíveis. Qual prefere?"
+    result, mock_send = await _run_panel_booked(reply, None)
+    sent = mock_send.await_args.args[1]
+    assert sent == reply  # sem painel ativo, o guard não age

@@ -3504,6 +3504,38 @@ async def patient_agent_node(state: ConversationState, config: RunnableConfig) -
                 )
                 response = AIMessage(content="", tool_calls=[_forced_ns])
 
+    # ── GUARD_PANEL_BOOKED: a Eva não contradiz consulta marcada pelo painel ──
+    # Caso Dario (5581998196655, 14/10/2026): a clínica marcou pelo painel no meio
+    # da conversa e a Eva, ainda com as ofertas antigas no histórico, reofertou
+    # horários e negou a vaga recém-confirmada. Dentro da janela da marcação
+    # (_panel_booking, calculado junto da injeção no prompt), se a resposta ofertar
+    # horários ou negar vaga, troca-se por uma confirmação da consulta real e
+    # encerra o turno. Roda ANTES do GUARD_STALE_SLOTS para que uma oferta não seja
+    # "refrescada" por uma busca nova.
+    if (
+        not response.tool_calls
+        and response.content
+        and _panel_booking
+        and _first_internal_marker_idx(response.content) < 0
+        and (_looks_like_slot_offer(str(response.content))
+             or _denies_availability(str(response.content)))
+    ):
+        _confirm = (
+            f"Sua consulta já está agendada para {_panel_booking['when']}. "
+            "Está tudo certo por aqui. Se precisar de qualquer coisa, é só me dizer. 😊"
+        )
+        _logger.warning(
+            "GUARD_PANEL_BOOKED: resposta contradizia consulta marcada pelo painel — "
+            "substituindo por confirmação phone=%s", state.get("phone"),
+        )
+        await send_text(state["phone"], _confirm)
+        await save_message(state["phone"], "assistant", _confirm)
+        return {
+            "messages": [AIMessage(content=_confirm)],
+            "pending_appointment": None,
+            "silent_mode": False,
+        }
+
     # ── Guard: lista de horários copiada de oferta antiga ────────────────────
     # A Eva reaproveita do histórico horários oferecidos dias antes, sem chamar
     # get_available_slots, e oferece vaga que já foi ocupada (caso Juliana/Bento,
