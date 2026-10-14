@@ -2,13 +2,20 @@
 
 Autocontido: não importa app/ (a imagem Docker do dashboard não contém app/).
 """
+import asyncio
+import logging
+import os
 from calendar import monthrange
 from datetime import date, datetime, timedelta
 from zoneinfo import ZoneInfo
 
+from google.oauth2.credentials import Credentials
+from googleapiclient.discovery import build
+
 from payments import DOCTOR_KEY
 
 _TZ = ZoneInfo("America/Recife")
+_log = logging.getLogger(__name__)
 
 RETURN_INTERVALS = ("15_dias", "1_mes", "2_meses", "3_meses", "4_meses", "6_meses")
 
@@ -234,6 +241,68 @@ async def save_classification(
     return (result.data or [payload])[0]
 
 
+# Marca visual de falta no Google Calendar: cor "Tomate" (vermelho) e "❌" no
+# título. Espelha a convenção da confirmação (verde + "✅") em app/google_calendar.
+# O "✅" some quando vira falta: quem não compareceu não pode ficar marcado como
+# presença confirmada. (O dashboard não importa app/ — a imagem Docker não o tem —
+# então a lógica do Calendar vive aqui, autocontida.)
+_NO_SHOW_COLOR_ID = "11"
+_NO_SHOW_PREFIX = "❌ "
+_CONFIRMED_PREFIX = "✅ "
+
+
+def _no_show_summary(summary: str) -> str:
+    """Novo título do evento: tira o "✅" de presença e põe "❌" de falta.
+
+    Idempotente — não empilha "❌" se já estiver lá — e preserva o resto do
+    título, inclusive edições manuais da clínica."""
+    summary = summary or ""
+    if summary.startswith(_CONFIRMED_PREFIX.strip()):
+        summary = summary[len(_CONFIRMED_PREFIX.strip()):].lstrip()
+    if not summary.startswith(_NO_SHOW_PREFIX.strip()):
+        summary = f"{_NO_SHOW_PREFIX}{summary}".strip()
+    return summary
+
+
+def _patch_event_no_show_sync(calendar_id: str, event_id: str) -> None:
+    creds = Credentials(
+        token=None,
+        refresh_token=os.environ["GOOGLE_REFRESH_TOKEN"],
+        token_uri="https://oauth2.googleapis.com/token",
+        client_id=os.environ["GOOGLE_CLIENT_ID"],
+        client_secret=os.environ["GOOGLE_CLIENT_SECRET"],
+        scopes=["https://www.googleapis.com/auth/calendar"],
+    )
+    service = build("calendar", "v3", credentials=creds)
+    event = service.events().get(calendarId=calendar_id, eventId=event_id).execute()
+    patch = {"summary": _no_show_summary(event.get("summary") or ""), "colorId": _NO_SHOW_COLOR_ID}
+    service.events().patch(calendarId=calendar_id, eventId=event_id, body=patch).execute()
+
+
+async def _mark_calendar_no_show(client, doctor_id: str | None, event_id: str) -> None:
+    """Pinta o evento de vermelho com "❌". Best-effort: se o Calendar falhar
+    (evento apagado à mão, agenda indisponível), a falta já está gravada no banco
+    — fonte da verdade — e nada é desfeito."""
+    if not doctor_id or not event_id:
+        return
+    try:
+        res = await (
+            client.from_("doctors")
+            .select("agenda_id")
+            .eq("doctor_id", doctor_id)
+            .limit(1)
+            .execute()
+        )
+        rows = res.data or []
+        calendar_id = rows[0].get("agenda_id") if rows else None
+        if not calendar_id:
+            return
+        loop = asyncio.get_running_loop()
+        await loop.run_in_executor(None, _patch_event_no_show_sync, calendar_id, event_id)
+    except Exception as exc:  # noqa: BLE001
+        _log.warning("CALENDAR_NO_SHOW_FAILED appt=%s error=%s", event_id, exc)
+
+
 async def mark_no_show(client, appointment_id: str) -> None:
     """Marca a consulta como falta (`status='no_show'`).
 
@@ -242,13 +311,29 @@ async def mark_no_show(client, appointment_id: str) -> None:
     olham `completed`/`scheduled`, isso tira a consulta da fila do médico e
     das pendências da atendente. A taxa já paga fica retida (default passivo);
     override é manual, pela atendente, no fluxo de reembolso existente.
+
+    Além do banco, pinta o evento no Google Calendar de vermelho com "❌" para
+    a clínica enxergar a falta na agenda. O Calendar é best-effort: o banco é a
+    fonte da verdade e não é desfeito se a pintura falhar.
     """
+    res = await (
+        client.from_("appointments")
+        .select("doctor_id")
+        .eq("appointment_id", appointment_id)
+        .limit(1)
+        .execute()
+    )
+    rows = res.data or []
+    doctor_id = rows[0].get("doctor_id") if rows else None
+
     await (
         client.from_("appointments")
         .update({"status": "no_show", "updated_at": datetime.now(_TZ).isoformat()})
         .eq("appointment_id", appointment_id)
         .execute()
     )
+
+    await _mark_calendar_no_show(client, doctor_id, appointment_id)
 
 
 async def save_discharge(
