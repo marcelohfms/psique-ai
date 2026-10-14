@@ -378,6 +378,66 @@ async def test_mark_no_show_tira_da_fila(fake_client):
     assert out == []
 
 
+# ── _no_show_summary (título do evento) ─────────────────────────────────────
+
+
+def test_no_show_summary_tira_confirmado_e_poe_falta():
+    assert rr._no_show_summary("✅ Consulta — João [Presencial]") == "❌ Consulta — João [Presencial]"
+
+
+def test_no_show_summary_titulo_simples_ganha_x():
+    assert rr._no_show_summary("Consulta — João [Presencial]") == "❌ Consulta — João [Presencial]"
+
+
+def test_no_show_summary_idempotente():
+    assert rr._no_show_summary("❌ Consulta — João [Presencial]") == "❌ Consulta — João [Presencial]"
+
+
+def test_no_show_summary_titulo_vazio():
+    assert rr._no_show_summary("") == "❌"
+
+
+# ── mark_no_show + Google Calendar ──────────────────────────────────────────
+
+
+async def test_mark_no_show_pinta_calendario(fake_client, monkeypatch):
+    fake_client.store["appointments"] = [_appt("a1", "p1", "João", status="scheduled")]
+    fake_client.store["doctors"] = [{"doctor_id": JULIO_ID, "agenda_id": "dr.julio@gmail.com"}]
+    chamadas = []
+    monkeypatch.setattr(rr, "_patch_event_no_show_sync", lambda cal, ev: chamadas.append((cal, ev)))
+
+    await rr.mark_no_show(fake_client, "a1")
+
+    assert fake_client.store["appointments"][0]["status"] == "no_show"
+    assert chamadas == [("dr.julio@gmail.com", "a1")]
+
+
+async def test_mark_no_show_sem_agenda_nao_chama_calendar(fake_client, monkeypatch):
+    fake_client.store["appointments"] = [_appt("a1", "p1", "João", status="scheduled")]
+    # Sem linha em doctors → não há agenda_id para pintar.
+    chamadas = []
+    monkeypatch.setattr(rr, "_patch_event_no_show_sync", lambda cal, ev: chamadas.append((cal, ev)))
+
+    await rr.mark_no_show(fake_client, "a1")
+
+    assert fake_client.store["appointments"][0]["status"] == "no_show"
+    assert chamadas == []
+
+
+async def test_mark_no_show_calendar_falha_nao_derruba_falta(fake_client, monkeypatch):
+    fake_client.store["appointments"] = [_appt("a1", "p1", "João", status="scheduled")]
+    fake_client.store["doctors"] = [{"doctor_id": JULIO_ID, "agenda_id": "dr.julio@gmail.com"}]
+
+    def _explode(cal, ev):
+        raise RuntimeError("evento apagado à mão")
+
+    monkeypatch.setattr(rr, "_patch_event_no_show_sync", _explode)
+
+    await rr.mark_no_show(fake_client, "a1")  # não levanta
+
+    assert fake_client.store["appointments"][0]["status"] == "no_show"
+
+
 # ── drop_today_already_pending ──────────────────────────────────────────────
 
 
