@@ -1,8 +1,6 @@
 name: Send no-show messages
 
 on:
-  schedule:
-    - cron: "0 12 * * *"  # ~9h Recife (UTC-3)
   workflow_dispatch:        # allow manual runs for testing
 
 jobs:

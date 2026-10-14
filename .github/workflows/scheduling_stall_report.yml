@@ -1,8 +1,6 @@
 name: Send scheduling stall report
 
 on:
-  schedule:
-    - cron: "0 11 * * *"  # 08h Recife (UTC-3), todo dia
   workflow_dispatch:        # allow manual runs for testing
 
 jobs:

@@ -1,8 +1,6 @@
 name: Send doctor daily agenda
 
 on:
-  schedule:
-    - cron: "0 21 * * *"  # 18h Recife (UTC-3) every day
   workflow_dispatch:       # allow manual runs for testing
 
 jobs:

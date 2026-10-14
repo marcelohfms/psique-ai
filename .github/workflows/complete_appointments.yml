@@ -1,8 +1,6 @@
 name: Complete past appointments
 
 on:
-  schedule:
-    - cron: "0 * * * *"  # every hour
   workflow_dispatch:      # allow manual runs
 
 jobs:
