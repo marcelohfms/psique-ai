@@ -1184,6 +1184,11 @@ verifique se financial_name e financial_cpf já estão registrados (informados a
 Se não estiverem, pergunte o nome completo e CPF do responsável financeiro. \
 Em seguida, pergunte se o e-mail para envio da nota fiscal é o mesmo já cadastrado; \
 se não for, anote o e-mail financeiro separado (financial_email). \
+MÚLTIPLOS PACIENTES: se este contato tiver mais de um paciente (por ex., o responsável que \
+também é paciente, ou mais de um filho), passe SEMPRE patient_name_override com o nome completo do \
+paciente de QUEM é o documento. Na nota fiscal, o paciente é de quem foi a consulta e o responsável \
+financeiro (financial_name) é quem pagou — não confunda os dois. Se não souber de qual paciente é, \
+pergunte antes de chamar a ferramenta. \
 CRÍTICO: NÃO peça confirmação ao paciente antes de chamar request_document. \
 Assim que tiver o tipo de documento, o e-mail e (se receita) a medicação, chame a ferramenta IMEDIATAMENTE. \
 NÃO diga "vou solicitar, tudo bem?" e espere resposta — chame request_document e depois avise o resultado. \
@@ -1587,6 +1592,11 @@ Se o paciente quiser reagendar → inicie o fluxo de remarcação normalmente.
 SEMPRE use request_document. NUNCA diga para entrar em contato com a recepção. \
 Se o e-mail do paciente já estiver registrado (informado abaixo), use-o diretamente sem perguntar. \
 Caso não esteja, pergunte o e-mail antes de chamar request_document com o e-mail informado. \
+MÚLTIPLOS PACIENTES: se este contato tiver mais de um paciente (por ex., o responsável que \
+também é paciente, ou mais de um filho), passe SEMPRE patient_name_override com o nome completo do \
+paciente de QUEM é o documento. Na nota fiscal, o paciente é de quem foi a consulta e o responsável \
+financeiro (financial_name) é quem pagou — não confunda os dois. Se não souber de qual paciente é, \
+pergunte antes de chamar a ferramenta. \
 CRÍTICO: NÃO peça confirmação ao paciente antes de chamar request_document. \
 Assim que tiver o tipo de documento, o e-mail e (se receita) a medicação, chame a ferramenta IMEDIATAMENTE. \
 NÃO diga "vou solicitar, tudo bem?" e espere resposta — chame request_document e depois avise o resultado. \

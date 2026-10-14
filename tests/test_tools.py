@@ -3979,6 +3979,7 @@ async def test_request_document_inserts_record_and_returns_success():
     from app.graph.tools import request_document
     client, _, _ = _make_supabase_client()
     with patch("app.graph.tools.get_supabase", new_callable=AsyncMock, return_value=client), \
+         patch("app.graph.tools.get_users_by_phone", new_callable=AsyncMock, return_value=[]), \
          patch("app.graph.tools.log_event", new_callable=AsyncMock), \
          patch("app.graph.tools._notify_clinic", new_callable=AsyncMock), \
          patch("app.google_sheets.append_document_request", new_callable=AsyncMock), \
@@ -3998,6 +3999,7 @@ async def test_request_document_accepts_requisicao_type():
     from app.graph.tools import request_document
     client, _, _ = _make_supabase_client()
     with patch("app.graph.tools.get_supabase", new_callable=AsyncMock, return_value=client), \
+         patch("app.graph.tools.get_users_by_phone", new_callable=AsyncMock, return_value=[]), \
          patch("app.graph.tools.log_event", new_callable=AsyncMock), \
          patch("app.graph.tools._notify_clinic", new_callable=AsyncMock) as mock_notify, \
          patch("app.google_sheets.append_document_request", new_callable=AsyncMock) as mock_sheets, \
@@ -4023,6 +4025,7 @@ async def test_request_document_accepts_atestado_type():
     from app.graph.tools import request_document
     client, _, _ = _make_supabase_client()
     with patch("app.graph.tools.get_supabase", new_callable=AsyncMock, return_value=client), \
+         patch("app.graph.tools.get_users_by_phone", new_callable=AsyncMock, return_value=[]), \
          patch("app.graph.tools.log_event", new_callable=AsyncMock), \
          patch("app.graph.tools._notify_clinic", new_callable=AsyncMock) as mock_notify, \
          patch("app.google_sheets.append_document_request", new_callable=AsyncMock) as mock_sheets, \
@@ -4045,6 +4048,7 @@ async def test_request_document_succeeds_even_if_sheets_and_email_fail():
     from app.graph.tools import request_document
     client, _, _ = _make_supabase_client()
     with patch("app.graph.tools.get_supabase", new_callable=AsyncMock, return_value=client), \
+         patch("app.graph.tools.get_users_by_phone", new_callable=AsyncMock, return_value=[]), \
          patch("app.graph.tools.log_event", new_callable=AsyncMock), \
          patch("app.graph.tools._notify_clinic", new_callable=AsyncMock), \
          patch("app.google_sheets.append_document_request", side_effect=Exception("sheets down")), \
@@ -4087,6 +4091,7 @@ async def test_request_document_skips_duplicate_within_window():
     from app.graph.tools import request_document
     client, events_table, other_table = _make_supabase_client_with_recent_doc_event()
     with patch("app.graph.tools.get_supabase", new_callable=AsyncMock, return_value=client), \
+         patch("app.graph.tools.get_users_by_phone", new_callable=AsyncMock, return_value=[]), \
          patch("app.graph.tools.log_event", new_callable=AsyncMock) as mock_log, \
          patch("app.graph.tools._notify_clinic", new_callable=AsyncMock) as mock_notify, \
          patch("app.google_sheets.append_document_request", new_callable=AsyncMock) as mock_sheets, \
@@ -4257,6 +4262,7 @@ async def test_request_document_receita_controlada_registra_e_orienta_retirada()
     from app.graph.tools import request_document
     client, _, _ = _make_supabase_client()
     with patch("app.graph.tools.get_supabase", new_callable=AsyncMock, return_value=client), \
+         patch("app.graph.tools.get_users_by_phone", new_callable=AsyncMock, return_value=[]), \
          patch("app.graph.tools.log_event", new_callable=AsyncMock), \
          patch("app.graph.tools._notify_clinic", new_callable=AsyncMock) as mock_notify, \
          patch("app.google_sheets.append_document_request", new_callable=AsyncMock) as mock_sheets, \
@@ -4284,6 +4290,7 @@ async def test_request_document_receita_nuit_flash_orienta_retirada():
     from app.graph.tools import request_document
     client, _, _ = _make_supabase_client()
     with patch("app.graph.tools.get_supabase", new_callable=AsyncMock, return_value=client), \
+         patch("app.graph.tools.get_users_by_phone", new_callable=AsyncMock, return_value=[]), \
          patch("app.graph.tools.log_event", new_callable=AsyncMock), \
          patch("app.graph.tools._notify_clinic", new_callable=AsyncMock) as mock_notify, \
          patch("app.google_sheets.append_document_request", new_callable=AsyncMock), \
@@ -4319,6 +4326,7 @@ async def test_request_document_receita_nomes_comerciais_orienta_retirada(medica
     from app.graph.tools import request_document
     client, _, _ = _make_supabase_client()
     with patch("app.graph.tools.get_supabase", new_callable=AsyncMock, return_value=client), \
+         patch("app.graph.tools.get_users_by_phone", new_callable=AsyncMock, return_value=[]), \
          patch("app.graph.tools.log_event", new_callable=AsyncMock), \
          patch("app.graph.tools._notify_clinic", new_callable=AsyncMock) as mock_notify, \
          patch("app.google_sheets.append_document_request", new_callable=AsyncMock), \
@@ -4352,6 +4360,122 @@ async def test_request_document_receita_sem_medicacao_pede_medicacao():
         )
     assert "medicação" in result.lower()
     mock_sheets.assert_not_awaited()
+
+
+# Contato com pai (paciente dele mesmo) + filha, ambos no mesmo WhatsApp.
+_LEANDRO = {"id": "leandro-id", "patient_name": "Leandro dos Anjos Santos", "name": "Leandro dos Anjos Santos", "birth_date": "06/06/1986"}
+_CATARINA = {"id": "catarina-id", "patient_name": "Catarina Vitória Silva dos Anjos", "name": "Leandro dos Anjos Santos", "birth_date": "03/07/2007"}
+
+
+async def test_request_document_override_targets_named_patient():
+    """Num contato com mais de um paciente, a nota fiscal deve ser registrada no
+    paciente que o remetente nomeou — não no nome congelado em state["patient_name"].
+    Caso Leandro/Catarina (5581999734009, 09-14/10/2026): o pai pediu a NF da consulta
+    da FILHA duas vezes, mas a tool, sem parâmetro de paciente, gravava sempre o nome
+    do pai (que também é paciente e estava no state), inclusive quando ele digitou
+    "Paciente Catarina Vitória Silva dos Anjos"."""
+    from app.graph.tools import request_document
+    client, table, _ = _make_supabase_client()
+    with patch("app.graph.tools.get_supabase", new_callable=AsyncMock, return_value=client), \
+         patch("app.graph.tools.get_users_by_phone", new_callable=AsyncMock, return_value=[_LEANDRO, _CATARINA]), \
+         patch("app.graph.tools.log_event", new_callable=AsyncMock), \
+         patch("app.graph.tools._notify_clinic", new_callable=AsyncMock) as mock_notify, \
+         patch("app.google_sheets.append_document_request", new_callable=AsyncMock) as mock_sheets, \
+         patch("app.email_sender.send_document_request_email", new_callable=AsyncMock) as mock_email:
+        result = await request_document.coroutine(
+            document_type="nota_fiscal",
+            patient_email="leoanjossantos@gmail.com",
+            state=_make_state(user_name="Leandro dos Anjos Santos", patient_name="Leandro dos Anjos Santos", preferred_doctor="bruna"),
+            config=CONFIG,
+            financial_name="Leandro Anjos dos Santos",
+            financial_cpf="056.449.644-85",
+            patient_name_override="Catarina Vitória Silva dos Anjos",
+        )
+    assert "✅" in result
+    # A linha gravada em documents aponta a FILHA como paciente.
+    _insert_payload = table.insert.call_args[0][0]
+    assert _insert_payload["metadata"]["patient_name"] == "Catarina Vitória Silva dos Anjos"
+    # Responsável financeiro continua sendo o pai.
+    assert _insert_payload["metadata"]["financial_name"] == "Leandro Anjos dos Santos"
+    # Planilha e e-mail ao médico também recebem o nome da filha.
+    assert mock_sheets.await_args.args[0] == "Catarina Vitória Silva dos Anjos"
+    assert mock_email.await_args.args[2] == "Catarina Vitória Silva dos Anjos"
+    assert "Catarina Vitória Silva dos Anjos" in mock_notify.await_args.kwargs["subject"]
+
+
+async def test_request_document_multi_patient_without_override_asks_which_patient():
+    """Contato com múltiplos pacientes e SEM patient_name_override: em vez de gravar no
+    escuro pelo state["patient_name"] (que pode ser o próprio contato, não o paciente da
+    consulta), a tool pede o nome e NÃO grava nada — mesma rede de segurança da
+    register_payment/confirm_appointment."""
+    from app.graph.tools import request_document
+    client, table, _ = _make_supabase_client()
+    with patch("app.graph.tools.get_supabase", new_callable=AsyncMock, return_value=client), \
+         patch("app.graph.tools.get_users_by_phone", new_callable=AsyncMock, return_value=[_LEANDRO, _CATARINA]), \
+         patch("app.graph.tools.log_event", new_callable=AsyncMock) as mock_log, \
+         patch("app.graph.tools._notify_clinic", new_callable=AsyncMock) as mock_notify, \
+         patch("app.google_sheets.append_document_request", new_callable=AsyncMock) as mock_sheets, \
+         patch("app.email_sender.send_document_request_email", new_callable=AsyncMock) as mock_email:
+        result = await request_document.coroutine(
+            document_type="nota_fiscal",
+            patient_email="leoanjossantos@gmail.com",
+            state=_make_state(patient_name="Leandro dos Anjos Santos"),
+            config=CONFIG,
+        )
+    assert "NÃO ENVIE AO PACIENTE" in result
+    assert "Catarina Vitória Silva dos Anjos" in result
+    assert "Leandro dos Anjos Santos" in result
+    assert not table.insert.called
+    mock_sheets.assert_not_awaited()
+    mock_notify.assert_not_awaited()
+    mock_log.assert_not_awaited()
+
+
+async def test_request_document_multi_patient_override_no_match_asks():
+    """Override que não casa com exatamente um paciente do contato (typo, nome parcial
+    ambíguo) NÃO pode cair no nome do state — pede o nome completo, sem gravar."""
+    from app.graph.tools import request_document
+    client, table, _ = _make_supabase_client()
+    with patch("app.graph.tools.get_supabase", new_callable=AsyncMock, return_value=client), \
+         patch("app.graph.tools.get_users_by_phone", new_callable=AsyncMock, return_value=[_LEANDRO, _CATARINA]), \
+         patch("app.graph.tools.log_event", new_callable=AsyncMock), \
+         patch("app.graph.tools._notify_clinic", new_callable=AsyncMock) as mock_notify, \
+         patch("app.google_sheets.append_document_request", new_callable=AsyncMock) as mock_sheets, \
+         patch("app.email_sender.send_document_request_email", new_callable=AsyncMock):
+        result = await request_document.coroutine(
+            document_type="nota_fiscal",
+            patient_email="leoanjossantos@gmail.com",
+            state=_make_state(patient_name="Leandro dos Anjos Santos"),
+            config=CONFIG,
+            patient_name_override="Katarina",
+        )
+    assert "NÃO ENVIE AO PACIENTE" in result
+    assert not table.insert.called
+    mock_sheets.assert_not_awaited()
+    mock_notify.assert_not_awaited()
+
+
+async def test_request_document_single_patient_contact_unaffected():
+    """Contato com um único paciente: sem override, grava normalmente (resolução não
+    muda o comportamento da imensa maioria dos contatos)."""
+    from app.graph.tools import request_document
+    client, table, _ = _make_supabase_client()
+    with patch("app.graph.tools.get_supabase", new_callable=AsyncMock, return_value=client), \
+         patch("app.graph.tools.get_users_by_phone", new_callable=AsyncMock, return_value=[_CATARINA]), \
+         patch("app.graph.tools.log_event", new_callable=AsyncMock), \
+         patch("app.graph.tools._notify_clinic", new_callable=AsyncMock), \
+         patch("app.google_sheets.append_document_request", new_callable=AsyncMock) as mock_sheets, \
+         patch("app.email_sender.send_document_request_email", new_callable=AsyncMock):
+        result = await request_document.coroutine(
+            document_type="nota_fiscal",
+            patient_email="leoanjossantos@gmail.com",
+            state=_make_state(patient_name="Catarina Vitória Silva dos Anjos"),
+            config=CONFIG,
+        )
+    assert "✅" in result
+    assert table.insert.called
+    _insert_payload = table.insert.call_args[0][0]
+    assert _insert_payload["metadata"]["patient_name"] == "Catarina Vitória Silva dos Anjos"
 
 
 # ── transfer_to_human ─────────────────────────────────────────────────────────
