@@ -73,6 +73,40 @@ def _is_duplicate_phone_text(phone: str, text: str) -> bool:
     return False
 
 
+# Audio auto-reply dedup. O aviso "Não consigo processar áudios" é emitido por dois
+# caminhos independentes — o webhook da Meta (extract_message) e o webhook do
+# Chatwoot (_handle_chatwoot_payload) — e cada um pode reentregar a mesma mídia. A
+# trava por msg_id só existe no caminho da Meta, então um único áudio chegava a
+# disparar três avisos idênticos (caso Carlos Cardozo, conv #501, 15/10/2026).
+# A dedup aqui é por telefone (forma crua, sem o 9 e sem o sufixo JID), colapsando
+# os dois caminhos e os reenvios numa janela curta.
+_AUDIO_NOTICE = "Não consigo processar áudios. Por favor, envie sua mensagem em texto. 😊"
+_audio_notice_sent: dict[str, float] = {}
+_AUDIO_NOTICE_TTL = 60.0
+
+async def _send_audio_not_supported(phone: str) -> None:
+    """Send the audio-not-supported notice at most once per phone within the TTL.
+
+    The key is set BEFORE the await so two coroutines racing from the two webhooks
+    serialize on it (single-threaded asyncio) and only the first actually sends.
+    """
+    import time
+    from app.phone import _phone_variants, _strip_phone
+    now = time.monotonic()
+    stale = [k for k, t in _audio_notice_sent.items() if now - t > _AUDIO_NOTICE_TTL]
+    for k in stale:
+        del _audio_notice_sent[k]
+    # Canonical with-9 form, so the 12- and 13-digit forks of the same number share
+    # one key and don't both get a notice.
+    _variants = _phone_variants(phone)
+    key = _variants[0] if _variants else _strip_phone(phone)
+    if key in _audio_notice_sent:
+        logger.info("Audio notice already sent recently for %s — skipping duplicate", key)
+        return
+    _audio_notice_sent[key] = now
+    await send_text(phone, _AUDIO_NOTICE)
+
+
 async def _recover_messages_lost_to_restart() -> None:
     """Reprocess user messages that arrived right before a server restart.
 
@@ -348,7 +382,7 @@ async def extract_message(payload: dict) -> tuple[str, str] | None:
         return phone, text
 
     if msg_type == "audio":
-        await send_text(phone, "Não consigo processar áudios. Por favor, envie sua mensagem em texto. 😊")
+        await _send_audio_not_supported(phone)
         return None
 
     if msg_type == "image":
@@ -1758,7 +1792,7 @@ async def _handle_chatwoot_payload(payload: dict) -> None:
                 caption = text
                 attachment_text = await _process_chatwoot_attachments(attachments, phone=phone)
                 if attachment_text == "[audio-nao-suportado]":
-                    await send_text(phone, "Não consigo processar áudios. Por favor, envie sua mensagem em texto. 😊")
+                    await _send_audio_not_supported(phone)
                     return
                 if attachment_text:
                     text = f"{caption}\n{attachment_text}" if caption else attachment_text
