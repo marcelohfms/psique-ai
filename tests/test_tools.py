@@ -2404,6 +2404,89 @@ async def test_confirm_attendance_rejects_appointment_of_other_contact():
     assert "não pertence" in result.lower()
 
 
+async def test_confirm_attendance_rejects_when_more_than_one_day_ahead():
+    """Regra: a presença só é confirmada com 1 dia de antecedência. Uma consulta a
+    vários dias de distância NÃO pode ter confirmed_at gravado (consultas futuras não
+    devem ter marcação de confirmação)."""
+    from app.graph.tools import confirm_attendance
+    client, table, execute = _make_supabase_client()
+    far = (datetime.now(TZ) + timedelta(days=5)).isoformat()
+    execute.return_value = MagicMock(data=[{
+        "confirmed_at": None, "status": "scheduled",
+        "patient_id": "p-1", "start_time": far,
+    }])
+    with patch("app.graph.tools.get_supabase", new_callable=AsyncMock, return_value=client), \
+         patch("app.graph.tools.get_users_by_phone", new_callable=AsyncMock, return_value=[{"id": "p-1"}]), \
+         patch("app.graph.tools.log_event", new_callable=AsyncMock) as mock_log:
+        result = await confirm_attendance.coroutine(
+            appointment_id="evt-distante", state=_make_state(), config=CONFIG,
+        )
+    table.update.assert_not_called()         # NÃO gravou confirmed_at
+    mock_log.assert_not_awaited()            # NÃO logou
+    assert "INSTRUÇÃO INTERNA" in result
+    assert not result.startswith("Presença confirmada")
+
+
+async def test_confirm_attendance_accepts_when_appointment_is_tomorrow():
+    from app.graph.tools import confirm_attendance
+    client, table, execute = _make_supabase_client()
+    tomorrow = (datetime.now(TZ) + timedelta(days=1)).isoformat()
+    execute.return_value = MagicMock(data=[{
+        "confirmed_at": None, "status": "scheduled",
+        "patient_id": "p-1", "start_time": tomorrow,
+    }])
+    with patch("app.graph.tools.get_supabase", new_callable=AsyncMock, return_value=client), \
+         patch("app.graph.tools.get_users_by_phone", new_callable=AsyncMock, return_value=[{"id": "p-1"}]), \
+         patch("app.graph.tools.log_event", new_callable=AsyncMock) as mock_log:
+        result = await confirm_attendance.coroutine(
+            appointment_id="evt-amanha", state=_make_state(), config=CONFIG,
+        )
+    table.update.assert_called()
+    mock_log.assert_awaited()
+    assert "confirmada" in result.lower()
+
+
+async def test_confirm_attendance_accepts_when_appointment_is_today():
+    from app.graph.tools import confirm_attendance
+    client, table, execute = _make_supabase_client()
+    today = datetime.now(TZ).isoformat()
+    execute.return_value = MagicMock(data=[{
+        "confirmed_at": None, "status": "scheduled",
+        "patient_id": "p-1", "start_time": today,
+    }])
+    with patch("app.graph.tools.get_supabase", new_callable=AsyncMock, return_value=client), \
+         patch("app.graph.tools.get_users_by_phone", new_callable=AsyncMock, return_value=[{"id": "p-1"}]), \
+         patch("app.graph.tools.log_event", new_callable=AsyncMock) as mock_log:
+        result = await confirm_attendance.coroutine(
+            appointment_id="evt-hoje", state=_make_state(), config=CONFIG,
+        )
+    table.update.assert_called()
+    mock_log.assert_awaited()
+    assert "confirmada" in result.lower()
+
+
+async def test_confirm_attendance_fail_open_when_start_time_missing_or_unreadable():
+    """A trava de véspera é fail-open: se o start_time vier ausente ou ilegível, a
+    confirmação NÃO é bloqueada, para nunca travar uma confirmação legítima por uma
+    anomalia de dado. Comportamento load-bearing, então fica fixado por teste."""
+    from app.graph.tools import confirm_attendance
+    for st in (None, "não-é-data"):
+        client, table, execute = _make_supabase_client()
+        execute.return_value = MagicMock(data=[{
+            "confirmed_at": None, "status": "scheduled",
+            "patient_id": "p-1", "start_time": st,
+        }])
+        with patch("app.graph.tools.get_supabase", new_callable=AsyncMock, return_value=client), \
+             patch("app.graph.tools.get_users_by_phone", new_callable=AsyncMock, return_value=[{"id": "p-1"}]), \
+             patch("app.graph.tools.log_event", new_callable=AsyncMock) as mock_log:
+            result = await confirm_attendance.coroutine(
+                appointment_id="evt-sem-data", state=_make_state(), config=CONFIG,
+            )
+        table.update.assert_called()        # gravou confirmed_at mesmo sem data válida
+        mock_log.assert_awaited()
+        assert result.startswith("Presença confirmada")
+
+
 # ── cancel_appointment ────────────────────────────────────────────────────────
 
 async def test_cancel_appointment_cancels_and_notifies():

@@ -3377,7 +3377,7 @@ async def confirm_attendance(
     # loga de novo.
     existing = (
         await client.from_("appointments")
-        .select("confirmed_at, status, patient_id, doctor_id")
+        .select("confirmed_at, status, patient_id, doctor_id, start_time")
         .eq("appointment_id", appointment_id)
         .limit(1)
         .execute()
@@ -3438,6 +3438,28 @@ async def confirm_attendance(
             "endereço da clínica. Responda apenas com uma frase curta e acolhedora "
             'confirmando que já está tudo certo (ex.: "Tudo certo, já está confirmado! 😊").'
         )
+
+    # Regra de negócio: a presença só é confirmada com 1 dia de antecedência (a
+    # partir da véspera). Consultas mais distantes NÃO podem ter confirmed_at
+    # gravado — o lembrete de véspera pedirá a confirmação na hora certa. Sem esta
+    # trava, uma mensagem afirmativa do paciente ("sim", "confirmado") numa conversa
+    # com uma consulta futura listada marcava presença dias antes.
+    # start_time vem do banco em UTC; .astimezone(TZ) dá a data real de Recife.
+    start_time_str = rows[0].get("start_time")
+    if start_time_str:
+        try:
+            appt_date = datetime.fromisoformat(start_time_str).astimezone(TZ).date()
+            days_ahead = (appt_date - datetime.now(TZ).date()).days
+        except (ValueError, TypeError):
+            days_ahead = 0  # data ilegível não bloqueia a confirmação (fail-open)
+        if days_ahead >= 2:
+            return (
+                "[INSTRUÇÃO INTERNA — NÃO ENVIE AO PACIENTE] Ainda não é a véspera "
+                "desta consulta, então NÃO confirme a presença agora e NÃO diga "
+                '"presença confirmada". A confirmação de presença só vale a partir '
+                "do dia anterior à consulta. Agradeça o paciente de forma acolhedora "
+                "e diga que vai pedir a confirmação mais perto da data da consulta."
+            )
 
     await client.from_("appointments").update({
         "confirmed_at": datetime.now(TZ).isoformat(),
