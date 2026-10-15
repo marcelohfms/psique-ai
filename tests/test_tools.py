@@ -5341,6 +5341,85 @@ async def test_register_payment_unreadable_amount_notifies_clinic_not_patient():
     assert isinstance(result, str) and result
 
 
+def _make_override_client_with_booker(candidates: list[dict], appt: dict):
+    """Como _make_supabase_client_for_override, mas a consulta (call 2) é passada
+    pelo teste — para carregar `contact_id` (quem agendou) na linha."""
+    ilike_result = MagicMock(data=candidates)
+    apt_data = MagicMock(data=[appt])
+    empty = MagicMock(data=[])
+
+    def _side_effect(*_a, **_kw):
+        _side_effect.call_count += 1
+        if _side_effect.call_count == 1:
+            return ilike_result
+        if _side_effect.call_count == 2:
+            return apt_data
+        return empty
+    _side_effect.call_count = 0
+
+    table = MagicMock()
+    for m in ("select", "eq", "in_", "limit", "single", "maybe_single",
+              "gte", "gt", "lt", "order", "insert", "update", "upsert", "is_", "ilike"):
+        getattr(table, m).return_value = table
+    table.execute = AsyncMock(side_effect=_side_effect)
+
+    events_table = MagicMock()
+    for m in ("select", "eq", "in_", "limit", "gte", "order"):
+        getattr(events_table, m).return_value = events_table
+    events_table.execute = AsyncMock(return_value=MagicMock(data=[]))
+
+    client = MagicMock()
+    client.from_.side_effect = lambda name: events_table if name == "events" else table
+    return client
+
+
+async def test_register_payment_terceiro_confirma_para_quem_agendou():
+    """Ponta gêmea do caso Bento: um terceiro manda o comprovante informando o
+    nome do paciente (patient_name_override). O aviso extra ao número do paciente
+    deve ir para QUEM AGENDOU a consulta paga (appointments.contact_id), não para
+    o primeiro contato de role 'consulta' (get_contacts_for_patient[0]), que não
+    tem ordem garantida."""
+    from app.graph.tools import register_payment
+    appt = {
+        "appointment_id": "apt-1",
+        "start_time": "2026-12-01T12:00:00+00:00",
+        "end_time": "2026-12-01T13:00:00+00:00",
+        "doctor_id": "d5baa58b-a788-4f40-b8c0-512c189150be",
+        "paid_at": None,
+        "booking_fee_paid_at": None,
+        "status": "scheduled",
+        "consultation_type": "retorno",
+        "booking_fee_waived": False,
+        "is_courtesy": False,
+        "contact_id": "c-daniella",  # quem agendou
+    }
+    client = _make_override_client_with_booker(
+        [{"id": "bento-id", "name": "Bento Libonati", "doctor_id": "d5baa58b-a788-4f40-b8c0-512c189150be"}],
+        appt,
+    )
+    with patch("app.graph.tools.get_supabase", new_callable=AsyncMock, return_value=client), \
+         patch("app.patients.get_contact_by_phone", new_callable=AsyncMock, return_value={"id": "sender-contact"}), \
+         patch("app.patients.get_patients_by_contact", new_callable=AsyncMock, return_value=[{"id": "bento-id"}]), \
+         patch("app.patients.get_contacts_for_patient", new_callable=AsyncMock, return_value=[{"phone": "5581990000001"}]), \
+         patch("app.patients.get_contact_by_id", new_callable=AsyncMock, return_value={"phone": "5581991749847", "name": "Daniella"}), \
+         patch("app.graph.tools.log_event", new_callable=AsyncMock), \
+         patch("app.google_sheets.append_payment_receipt", new_callable=AsyncMock), \
+         patch("app.google_drive.rename_file", new_callable=AsyncMock, return_value=""), \
+         patch("app.graph.tools._notify_clinic", new_callable=AsyncMock), \
+         patch("app.graph.tools.send_text", new_callable=AsyncMock) as mock_send:
+        result = await register_payment.coroutine(
+            amount="100,00",
+            drive_link="https://drive.google.com/file/d/abc/view",
+            patient_name_override="Bento Libonati",
+            state=_make_state(),
+            config=CONFIG,
+        )
+
+    assert "✅" in result
+    mock_send.assert_awaited_once()
+    assert mock_send.await_args.args[0] == "5581991749847@s.whatsapp.net"
+
+
 def _make_supabase_client_for_override(candidates: list[dict]):
     """Supabase client for patient_name_override tests: call 1 is the `patients`
     ilike search (returns `candidates`), call 2 is the scheduled-appointment lookup
