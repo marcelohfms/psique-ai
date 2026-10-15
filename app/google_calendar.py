@@ -1051,3 +1051,24 @@ async def mark_event_confirmed(calendar_id: str, event_id: str) -> None:
     service = build("calendar", "v3", credentials=creds)
     loop = asyncio.get_running_loop()
     await loop.run_in_executor(None, _mark_event_confirmed, service, calendar_id, event_id)
+
+
+def _unmark_event_confirmed(service, calendar_id: str, event_id: str) -> None:
+    # Desfaz a marca de confirmado: tira o "✅ " do título (preservando o resto,
+    # inclusive edições manuais da clínica) e limpa o colorId para voltar à cor
+    # padrão do calendário. Simétrico a _mark_event_confirmed.
+    event = service.events().get(calendarId=calendar_id, eventId=event_id).execute()
+    summary = event.get("summary") or ""
+    prefix = CONFIRMED_PREFIX.strip()
+    if summary.startswith(prefix):
+        summary = summary[len(prefix):].lstrip()
+    patch = {"summary": summary, "colorId": None}
+    service.events().patch(calendarId=calendar_id, eventId=event_id, body=patch).execute()
+
+
+async def mark_event_unconfirmed(calendar_id: str, event_id: str) -> None:
+    """Desfaz a marca de confirmado: remove o "✅" do título e volta a cor ao padrão."""
+    creds = _credentials()
+    service = build("calendar", "v3", credentials=creds)
+    loop = asyncio.get_running_loop()
+    await loop.run_in_executor(None, _unmark_event_confirmed, service, calendar_id, event_id)

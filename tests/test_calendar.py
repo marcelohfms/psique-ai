@@ -1029,6 +1029,48 @@ async def test_mark_event_confirmed_does_not_duplicate_checkmark():
     assert body["colorId"] == "2"
 
 
+async def test_mark_event_unconfirmed_strips_checkmark_and_clears_color():
+    from app.google_calendar import mark_event_unconfirmed
+
+    service = MagicMock()
+    service.events.return_value.get.return_value.execute.return_value = {
+        "summary": "✅ Consulta — Maria [Presencial]",
+    }
+    patch_mock = service.events.return_value.patch
+    patch_mock.return_value.execute.return_value = {}
+
+    with patch("app.google_calendar._credentials", return_value=MagicMock()), \
+         patch("app.google_calendar.build", return_value=service):
+        await mark_event_unconfirmed("cal-test", "evt-1")
+
+    _, kwargs = patch_mock.call_args
+    body = kwargs["body"]
+    assert body["colorId"] is None                       # volta à cor padrão
+    assert "✅" not in body["summary"]
+    assert body["summary"] == "Consulta — Maria [Presencial]"
+
+
+async def test_mark_event_unconfirmed_is_noop_on_unmarked_title():
+    """Evento sem marca: título fica igual (não há ✅ para remover); cor volta ao padrão."""
+    from app.google_calendar import mark_event_unconfirmed
+
+    service = MagicMock()
+    service.events.return_value.get.return_value.execute.return_value = {
+        "summary": "Consulta — Maria [Presencial]",
+    }
+    patch_mock = service.events.return_value.patch
+    patch_mock.return_value.execute.return_value = {}
+
+    with patch("app.google_calendar._credentials", return_value=MagicMock()), \
+         patch("app.google_calendar.build", return_value=service):
+        await mark_event_unconfirmed("cal-test", "evt-1")
+
+    _, kwargs = patch_mock.call_args
+    body = kwargs["body"]
+    assert body["summary"] == "Consulta — Maria [Presencial]"
+    assert body["colorId"] is None
+
+
 # ── grid_violation ─────────────────────────────────────────────────────────────
 from datetime import datetime as _dt
 from zoneinfo import ZoneInfo as _ZI
