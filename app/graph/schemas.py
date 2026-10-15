@@ -99,6 +99,24 @@ class CollectInfoOutput(BaseModel):
     consultation_reason: str | None = None
     referral_professional: str | None = None
     is_complete: bool = False
+    # Handoff para atendente humano. O LLM de coleta não tem ferramentas, então não
+    # consegue chamar transfer_to_human; estes campos são o sinal que o
+    # collect_info_node usa para executar a transferência de verdade.
+    wants_human_handoff: bool = Field(
+        default=False,
+        description=(
+            "true quando o paciente pede para falar com um atendente humano, uma "
+            "pessoa de verdade, a recepção ou a Débora, ou quando é um caso que você "
+            "não resolve sozinha e deve ser transferido. No fluxo normal de cadastro, false."
+        ),
+    )
+    handoff_reason: str | None = Field(
+        default=None,
+        description=(
+            "Quando wants_human_handoff=true, um resumo curto do que o paciente deseja, "
+            "para a nota interna da equipe (ex.: 'Paciente quer falar com atendente sobre reembolso')."
+        ),
+    )
 
     @model_validator(mode="before")
     @classmethod

@@ -1767,6 +1767,44 @@ async def collect_info_node(state: ConversationState, config: RunnableConfig) ->
     # completo com um campo obrigatório vazio (ver abaixo).
     update: dict = {}
 
+    # ── Handoff para atendente humano durante a coleta de cadastro ────────────
+    # O LLM de coleta usa structured-output SEM tools (_get_collect_llm), então é
+    # incapaz de chamar transfer_to_human: quando o paciente pedia atendente humano,
+    # a Eva só escrevia "vou te transferir" e o texto saía sem transferência de
+    # verdade (Eva seguia ativa, equipe não era avisada, nenhum evento human_transfer).
+    # Caso real: lead Emilly (5581984503756, 15/10/2026) — 5 promessas, 0 transfer,
+    # a atendente desligou a Eva na mão. A decisão vem do campo estruturado
+    # wants_human_handoff; como rede de segurança, detectamos a promessa no texto
+    # (result.reply, antes de qualquer override determinístico). Em silent_mode
+    # (instrução da atendente) não transferimos — transfer_to_human devolveria erro,
+    # que vazaria ao paciente.
+    _wants_handoff = (
+        bool(getattr(result, "wants_human_handoff", False))
+        or _promises_human_transfer(result.reply)
+    )
+    if _wants_handoff and not state.get("silent_mode"):
+        _handoff_reason = (
+            (getattr(result, "handoff_reason", None) or "").strip()
+            or "Paciente em cadastro pediu atendimento humano."
+        )
+        import logging as _log_ch
+        _log_ch.getLogger(__name__).info(
+            "COLLECT_HANDOFF: lead pediu atendimento humano durante a coleta — "
+            "forçando transfer_to_human phone=%s", state.get("phone"),
+        )
+        from app.graph.tools import transfer_to_human as _transfer_fn
+        # transfer_to_human faz o trabalho de verdade: pausa a Eva (active=False),
+        # posta a nota interna com o resumo e desatribui o bot no Chatwoot. Devolve
+        # o texto OFICIAL de transferência, que vai ao paciente — nunca o reply cru,
+        # que pode conter a falsa promessa "vou te transferir".
+        _transfer_text = await _transfer_fn.coroutine(
+            reason=_handoff_reason, state=state, config=config,
+        )
+        await send_text(state["phone"], _transfer_text)
+        await save_message(state["phone"], "assistant", _transfer_text)
+        update["messages"] = [AIMessage(content=_transfer_text)]
+        return update
+
     for field in [
         "user_name", "patient_name",
         "birth_date", "patient_cpf", "guardian_relationship", "guardian_name", "guardian_cpf",
@@ -2153,6 +2191,82 @@ def _first_internal_marker_idx(text: str) -> int:
     paciente (vazando a nota) ou o descartariam. Caso Wayne 5581999597907."""
     _lower = (text or "").lower()
     return min((_lower.find(p) for p in _INTERNAL_NOTE_PREFIXES if p in _lower), default=-1)
+
+
+# Frases com que a Eva promete, em texto, transferir o paciente para um atendente
+# humano. Usadas por dois guards: o COLLECT_HANDOFF (collect_info_node, cujo LLM é
+# structured-output SEM tools) e o GUARD_TRANSFER (patient_agent_node). A lista é
+# propositalmente mais ampla que as 4 frases originais — o modelo inventa variações
+# ("vou passar você", "estou te transferindo") que a lista curta deixava escapar,
+# e com elas a Eva prometia transferir sem a transferência acontecer (lead Emilly,
+# 5581984503756, 15/10/2026: 5 promessas, 0 transfer).
+_TRANSFER_PROMISE_PHRASES = (
+    # Verbo "transferir" — em contexto de clínica quase sempre = handoff humano.
+    "vou transferir", "vou te transferir", "vou transferir voc",
+    "já vou te transferir", "transferindo para",
+    "estou te transferindo", "estou transferindo", "já estou transferindo",
+    # Verbo "encaminhar" (paridade com o guard original, que já tinha "vou encaminhar").
+    "vou encaminhar", "vou te encaminhar",
+    # Alvo humano explícito — pega "passar/encaminhar/direcionar você PARA um atendente",
+    # sem casar com os muitos sentidos inocentes de "passar/encaminhar" sozinhos.
+    "para um atendente", "para a atendente", "para uma atendente", "para o atendente",
+    "para o atendimento humano",
+    # Chamar/acionar a equipe ou um atendente.
+    "chamar um atendente", "chamar a atendente", "chamar uma atendente", "chamar o atendente",
+    "acionar a equipe", "acionar um atendente", "acionar a atendente",
+    "nossa equipe vai assumir", "a equipe vai assumir",
+)
+# Negações: "não vou transferir", "não posso transferir" contêm as frases acima
+# como substring. Sem esta checagem, uma recusa explícita forçaria a transferência.
+_TRANSFER_NEGATIONS = (
+    "não vou transferir", "nao vou transferir",
+    "não vou te transferir", "nao vou te transferir",
+    "não posso transferir", "nao posso transferir",
+    "não consigo transferir", "nao consigo transferir",
+    "não vou passar", "nao vou passar",
+    "não vou encaminhar", "nao vou encaminhar",
+)
+
+
+def _promises_human_transfer(text: str) -> bool:
+    """True quando o texto promete transferir o paciente para um atendente humano.
+    Ignora negações explícitas ("não vou transferir") para não forçar a transferência
+    justamente quando a Eva está recusando."""
+    _lower = (text or "").lower()
+    if any(n in _lower for n in _TRANSFER_NEGATIONS):
+        return False
+    return any(p in _lower for p in _TRANSFER_PROMISE_PHRASES)
+
+
+async def _force_transfer_to_human(
+    state: dict, config: RunnableConfig, patient_text: str, *, already_sent: bool
+) -> list:
+    """Executa transfer_to_human quando a Eva prometeu transferir mas não chamou a
+    tool, e devolve o par [AIMessage, ToolMessage] para o estado do grafo.
+
+    Quando already_sent=False, envia antes o texto da Eva ao paciente (e grava).
+    Quando True, assume que o texto já foi enviado/gravado pelo chamador."""
+    from langchain_core.messages import AIMessage as _AIMsg, ToolMessage as _TMsg
+    import uuid as _uuid
+    if not already_sent:
+        await send_text(state["phone"], patient_text)
+        await save_message(state["phone"], "assistant", patient_text)
+    _tc_id = str(_uuid.uuid4())
+    _forced_tc = {
+        "name": "transfer_to_human",
+        "args": {"reason": "Eva prometeu transferir mas não chamou a tool — transferência forçada pelo guard."},
+        "id": _tc_id,
+        "type": "tool_use",
+    }
+    _forced_ai = _AIMsg(content=patient_text, tool_calls=[_forced_tc])
+    from app.graph.tools import transfer_to_human as _transfer_fn
+    _transfer_result = await _transfer_fn.coroutine(
+        reason="Paciente aguarda atendimento. Eva prometeu transferir.",
+        state=state,
+        config=config,
+    )
+    _tool_msg = _TMsg(content=str(_transfer_result), tool_call_id=_tc_id)
+    return [_forced_ai, _tool_msg]
 
 
 def _correct_confirmation_summary_time(content: str, state: dict) -> str | None:
@@ -3396,32 +3510,12 @@ async def patient_agent_node(state: ConversationState, config: RunnableConfig) -
         # paciente e ainda forçaria um handoff indevido.
         and _first_internal_marker_idx(response.content) < 0
     ):
-        _transfer_phrases = (
-            "vou transferir",
-            "vou te transferir",
-            "transferindo para",
-            "vou encaminhar",
-        )
-        _resp_lower = response.content.lower()
-        _promised_transfer = any(p in _resp_lower for p in _transfer_phrases)
-        if _promised_transfer:
+        if _promises_human_transfer(response.content):
             _logger.info("GUARD_TRANSFER: LLM promised transfer but called no tool — forcing transfer_to_human")
             # Send Eva's message to the patient first, then execute the transfer tool
-            await send_text(state["phone"], response.content)
-            await save_message(state["phone"], "assistant", response.content)
-            from langchain_core.messages import AIMessage as _AIMsg3, ToolMessage as _TMsg3
-            import uuid as _uuid3
-            _tc_id = str(_uuid3.uuid4())
-            _forced_tc = {"name": "transfer_to_human", "args": {"reason": "Eva prometeu transferir mas não chamou a tool — transferência forçada pelo guard."}, "id": _tc_id, "type": "tool_use"}
-            _forced_ai = _AIMsg3(content=response.content, tool_calls=[_forced_tc])
-            from app.graph.tools import transfer_to_human as _transfer_fn
-            _transfer_result = await _transfer_fn.coroutine(
-                reason="Paciente aguarda atendimento. Eva prometeu transferir.",
-                state=state,
-                config=config,
-            )
-            _tool_msg = _TMsg3(content=str(_transfer_result), tool_call_id=_tc_id)
-            return {"messages": [_forced_ai, _tool_msg]}
+            return {"messages": await _force_transfer_to_human(
+                state, config, response.content, already_sent=False,
+            )}
 
     # ── Guarda: horário errado no resumo de confirmação (modelo barato) ──────
     # O gpt-5.6-luna às vezes escreve, no resumo "Só confirmar antes de registrar",
@@ -3637,6 +3731,30 @@ async def patient_agent_node(state: ConversationState, config: RunnableConfig) -
 
             # Histórico fiel: grava o conteúdo completo uma vez.
             await save_message(phone, "assistant", _content)
+
+            # Endurecimento do GUARD_TRANSFER: quando a parte voltada ao PACIENTE
+            # promete transferência (e nenhuma tool foi chamada), força
+            # transfer_to_human. O guard de cima foi pulado porque o texto tinha
+            # marcador de nota interna; sem isto a Eva prometeria transferir e a
+            # transferência não aconteceria. Age SÓ sobre _patient_part — a nota
+            # (que pode conter "vou transferir") nunca dispara a transferência.
+            if (
+                _patient_part
+                and not state.get("silent_mode")
+                and _promises_human_transfer(_patient_part)
+            ):
+                _logger.info(
+                    "GUARD_TRANSFER_MARKER: promessa de transferência na parte do "
+                    "paciente (texto tinha nota interna) — forçando transfer_to_human phone=%s",
+                    phone,
+                )
+                return {
+                    "messages": await _force_transfer_to_human(
+                        state, config, _patient_part, already_sent=True,
+                    ),
+                    **_sync_updates,
+                    "silent_mode": False,
+                }
         else:
             await send_text(phone, _content)
             await save_message(phone, "assistant", _content)
