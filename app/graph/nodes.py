@@ -3517,6 +3517,40 @@ async def patient_agent_node(state: ConversationState, config: RunnableConfig) -
                 state, config, response.content, already_sent=False,
             )}
 
+    # ── Guard: promessa de transferência JUNTO de outra tool no mesmo turno ───
+    # O guard acima exige `not response.tool_calls`; se a Eva chama OUTRA tool (não
+    # transfer_to_human) e ainda escreve "vou te transferir", ele é pulado e a
+    # transferência não acontece. Aqui injetamos transfer_to_human junto das tools
+    # já chamadas, SEM descartá-las — elas rodam normalmente no ToolNode (não se
+    # perde register_payment/confirm_appointment/etc.) e a transferência acontece em
+    # seguida. Não enviamos a promessa crua agora (há tool_calls): o texto final vai
+    # ao paciente no turno seguinte, após o ToolNode. Pula em silent_mode e quando o
+    # texto é nota interna (o split cuida dela).
+    if (
+        response.tool_calls
+        and not state.get("silent_mode")
+        and response.content
+        and _first_internal_marker_idx(response.content) < 0
+        and not any(tc.get("name") == "transfer_to_human" for tc in response.tool_calls)
+        and _promises_human_transfer(response.content)
+    ):
+        import uuid as _uuid_gtwt
+        _logger.info(
+            "GUARD_TRANSFER_WITH_TOOL: promessa de transferência junto de outra tool "
+            "(%s) — injetando transfer_to_human phone=%s",
+            [tc.get("name") for tc in response.tool_calls], state.get("phone"),
+        )
+        _inj_tc = {
+            "name": "transfer_to_human",
+            "args": {"reason": "Eva prometeu transferir mas chamou outra tool — transferência injetada pelo guard."},
+            "id": str(_uuid_gtwt.uuid4()),
+            "type": "tool_call",
+        }
+        response = AIMessage(
+            content=response.content,
+            tool_calls=list(response.tool_calls) + [_inj_tc],
+        )
+
     # ── Guarda: horário errado no resumo de confirmação (modelo barato) ──────
     # O gpt-5.6-luna às vezes escreve, no resumo "Só confirmar antes de registrar",
     # um horário que o paciente não escolheu (tipicamente 08:00, o 1º da grade).

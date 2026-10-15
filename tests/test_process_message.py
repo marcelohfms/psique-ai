@@ -7325,3 +7325,68 @@ async def test_patient_agent_transfer_promise_with_internal_note_still_transfers
     # A nota interna foi postada e a transferência REALMENTE aconteceu.
     assert len(notes) == 1 and "reembolso" in notes[0]
     transfer_mock.assert_awaited_once()
+
+
+async def test_patient_agent_transfer_promise_with_other_tool_injects_transfer():
+    """Caso 'outra tool no mesmo turno': quando a Eva promete transferir mas chama
+    OUTRA tool (não transfer_to_human), o GUARD_TRANSFER é pulado (há tool_calls).
+    Deve INJETAR transfer_to_human junto da tool existente — sem descartá-la — para
+    a transferência acontecer no ToolNode depois. A tool original é preservada."""
+    from app.graph.nodes import patient_agent_node
+    from app.graph.tools import transfer_to_human
+
+    state = _make_patient_agent_state(messages=[HumanMessage(content="que dia é amanhã? e quero falar com uma pessoa")])
+    other_tc = {"name": "consultar_data", "args": {"data": "amanhã"}, "id": "tc-orig", "type": "tool_call"}
+    ai_response = AIMessage(
+        content="Vou te transferir para uma atendente agora.",
+        tool_calls=[other_tc],
+    )
+    transfer_mock = AsyncMock(return_value="Transferido.")
+    with patch("app.graph.nodes._get_agent_llm") as mock_llm_fn, \
+         patch("app.graph.nodes.send_text", new_callable=AsyncMock) as mock_send, \
+         patch("app.graph.nodes.save_message", new_callable=AsyncMock), \
+         patch.object(transfer_to_human, "coroutine", transfer_mock), \
+         _GUARD_RECEIPT_PATCHES["get_upcoming_appointments"], \
+         _GUARD_RECEIPT_PATCHES["get_user_by_phone"], \
+         _GUARD_RECEIPT_PATCHES["get_last_assistant_message_time"], \
+         _GUARD_RECEIPT_PATCHES["format_doctor_schedules"]:
+        mock_llm = MagicMock()
+        mock_llm.ainvoke = AsyncMock(return_value=ai_response)
+        mock_llm_fn.return_value = mock_llm
+        result = await patient_agent_node(state, CONFIG)
+
+    out_msg = result["messages"][0]
+    names = [tc.get("name") for tc in (out_msg.tool_calls or [])]
+    assert "consultar_data" in names, f"a tool original foi descartada: {names}"
+    assert "transfer_to_human" in names, f"transfer_to_human não foi injetada: {names}"
+    # A transferência roda no ToolNode, não dentro do nó: a promessa crua não é
+    # enviada agora (há tool_calls), e a tool não é executada aqui.
+    transfer_mock.assert_not_awaited()
+    mock_send.assert_not_awaited()
+
+
+async def test_patient_agent_other_tool_without_promise_does_not_inject_transfer():
+    """Sem promessa de transferência no texto, uma tool normal NÃO ganha
+    transfer_to_human injetada."""
+    from app.graph.nodes import patient_agent_node
+    from app.graph.tools import transfer_to_human
+
+    state = _make_patient_agent_state(messages=[HumanMessage(content="que dia é amanhã?")])
+    other_tc = {"name": "consultar_data", "args": {"data": "amanhã"}, "id": "tc-orig", "type": "tool_call"}
+    ai_response = AIMessage(content="Deixa eu verificar 😊", tool_calls=[other_tc])
+    transfer_mock = AsyncMock(return_value="Transferido.")
+    with patch("app.graph.nodes._get_agent_llm") as mock_llm_fn, \
+         patch("app.graph.nodes.send_text", new_callable=AsyncMock), \
+         patch("app.graph.nodes.save_message", new_callable=AsyncMock), \
+         patch.object(transfer_to_human, "coroutine", transfer_mock), \
+         _GUARD_RECEIPT_PATCHES["get_upcoming_appointments"], \
+         _GUARD_RECEIPT_PATCHES["get_user_by_phone"], \
+         _GUARD_RECEIPT_PATCHES["get_last_assistant_message_time"], \
+         _GUARD_RECEIPT_PATCHES["format_doctor_schedules"]:
+        mock_llm = MagicMock()
+        mock_llm.ainvoke = AsyncMock(return_value=ai_response)
+        mock_llm_fn.return_value = mock_llm
+        result = await patient_agent_node(state, CONFIG)
+
+    names = [tc.get("name") for tc in (result["messages"][0].tool_calls or [])]
+    assert names == ["consultar_data"], f"injeção indevida: {names}"
