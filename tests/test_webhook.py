@@ -22,6 +22,15 @@ def clear_dedup_cache():
     yield
     _main._seen_msg_ids.clear()
 
+
+@pytest.fixture
+def mute_save_message():
+    """Silencia save_message nos testes do caminho de saída da atendente que só
+    verificam o espelhamento no checkpoint — sem este patch a gravação real em
+    `messages` tentaria I/O e dormiria nos retries."""
+    with patch("app.main.save_message", new_callable=AsyncMock) as m:
+        yield m
+
 # Strip @s.whatsapp.net to get the raw number Meta sends
 _NUMBER = PHONE.replace("@s.whatsapp.net", "")
 
@@ -1152,7 +1161,7 @@ def _chatwoot_public_agent_payload(
     return payload
 
 
-async def test_chatwoot_public_agent_message_is_saved_once(mock_chatbot):
+async def test_chatwoot_public_agent_message_is_saved_once(mock_chatbot, mute_save_message):
     """A public message from the attendant is mirrored into the checkpoint so Eva has
     the context — exactly once."""
     from app.main import _handle_chatwoot_payload
@@ -1165,7 +1174,7 @@ async def test_chatwoot_public_agent_message_is_saved_once(mock_chatbot):
     assert injected[0].content.startswith("Bom dia!")
 
 
-async def test_chatwoot_public_agent_message_deduped_across_deliveries(mock_chatbot):
+async def test_chatwoot_public_agent_message_deduped_across_deliveries(mock_chatbot, mute_save_message):
     """The same message_created reaches /chatwoot-webhook twice — once via the account
     webhook and once via the agent bot's outgoing_url, both pointing at the same URL.
     Only the first delivery may be written to the checkpoint."""
@@ -1179,7 +1188,7 @@ async def test_chatwoot_public_agent_message_deduped_across_deliveries(mock_chat
     mock_chatbot.aupdate_state.assert_called_once()
 
 
-async def test_chatwoot_public_agent_message_updated_is_not_resaved(mock_chatbot):
+async def test_chatwoot_public_agent_message_updated_is_not_resaved(mock_chatbot, mute_save_message):
     """Chatwoot fires message_updated on every delivery-status change (sent → delivered
     → read). Those must never append another copy of the same text to the thread."""
     from app.main import _handle_chatwoot_payload
@@ -1194,7 +1203,7 @@ async def test_chatwoot_public_agent_message_updated_is_not_resaved(mock_chatbot
     mock_chatbot.aupdate_state.assert_called_once()
 
 
-async def test_chatwoot_public_agent_message_updated_alone_is_ignored(mock_chatbot):
+async def test_chatwoot_public_agent_message_updated_alone_is_ignored(mock_chatbot, mute_save_message):
     """A message_updated whose message_created was never seen (e.g. bot restarted) must
     not be synced either — status updates are not new content."""
     from app.main import _handle_chatwoot_payload
@@ -1207,7 +1216,7 @@ async def test_chatwoot_public_agent_message_updated_alone_is_ignored(mock_chatb
     mock_chatbot.aupdate_state.assert_not_called()
 
 
-async def test_chatwoot_distinct_public_agent_messages_are_both_saved(mock_chatbot):
+async def test_chatwoot_distinct_public_agent_messages_are_both_saved(mock_chatbot, mute_save_message):
     """Dedup is per Chatwoot message id — two different messages from the attendant,
     even with identical text, must both reach the checkpoint."""
     from app.main import _handle_chatwoot_payload
@@ -1219,9 +1228,57 @@ async def test_chatwoot_distinct_public_agent_messages_are_both_saved(mock_chatb
     assert mock_chatbot.aupdate_state.call_count == 2
 
 
-async def test_chatwoot_public_agent_message_without_id_still_saved(mock_chatbot):
+async def test_chatwoot_public_agent_message_persisted_to_messages(mock_chatbot):
+    """A mensagem pública da atendente precisa ser gravada em `messages` com o papel
+    'attendant'. Antes ela ia só para o checkpoint da Eva e sumia do painel e do
+    monitoramento, que leem a tabela `messages` (caso Dário, 14/10/2026)."""
+    from app.main import _handle_chatwoot_payload
+
+    mock_chatbot.aupdate_state = AsyncMock()
+    with patch("app.main.save_message", new_callable=AsyncMock) as mock_save:
+        await _handle_chatwoot_payload(
+            _chatwoot_public_agent_payload(message_id=1007, content="Já resolvi aqui pra você.")
+        )
+
+    mock_save.assert_awaited_once()
+    _phone, role, content = mock_save.call_args[0]
+    assert role == "attendant"
+    assert content == "Já resolvi aqui pra você."
+
+
+async def test_chatwoot_public_agent_message_persisted_once_across_deliveries(mock_chatbot):
+    """A dedup por message id vale também para a gravação em `messages`: o mesmo
+    message_created chega duas vezes (webhook da conta + outgoing_url do agent bot) e
+    não pode virar duas linhas."""
+    from app.main import _handle_chatwoot_payload
+
+    mock_chatbot.aupdate_state = AsyncMock()
+    payload = _chatwoot_public_agent_payload(message_id=1008)
+    with patch("app.main.save_message", new_callable=AsyncMock) as mock_save:
+        await _handle_chatwoot_payload(payload)
+        await _handle_chatwoot_payload(dict(payload))
+
+    mock_save.assert_awaited_once()
+
+
+async def test_chatwoot_private_note_not_persisted_as_attendant_message(mock_chatbot):
+    """Nota privada é instrução interna para a Eva, não é fala para o paciente. Ela não
+    pode virar uma mensagem de papel 'attendant' em `messages`."""
+    from app.main import _handle_chatwoot_payload
+
+    payload = _chatwoot_public_agent_payload(message_id=1009)
+    payload["private"] = True
+    with patch("app.main._handle_attendant_note", new_callable=AsyncMock), \
+         patch("app.main.save_message", new_callable=AsyncMock) as mock_save:
+        await _handle_chatwoot_payload(payload)
+
+    mock_save.assert_not_called()
+
+
+async def test_chatwoot_public_agent_message_without_id_still_saved(mock_chatbot, mute_save_message):
     """Payloads without a message id (older/agent-bot shapes) must keep the previous
-    behaviour — better a rare duplicate than losing the attendant's message."""
+    behaviour — better a rare duplicate than losing the attendant's message. Vale tanto
+    para o checkpoint quanto para a gravação em `messages`."""
     from app.main import _handle_chatwoot_payload
 
     mock_chatbot.aupdate_state = AsyncMock()
@@ -1230,6 +1287,8 @@ async def test_chatwoot_public_agent_message_without_id_still_saved(mock_chatbot
     await _handle_chatwoot_payload(payload)
 
     mock_chatbot.aupdate_state.assert_called_once()
+    mute_save_message.assert_awaited_once()
+    assert mute_save_message.call_args[0][1] == "attendant"
 
 
 def _chatwoot_delivery_status_payload(

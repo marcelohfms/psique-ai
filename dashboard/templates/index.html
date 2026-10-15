@@ -86,7 +86,9 @@
   // ── Render helpers ─────────────────────────────────────────────────────────
   function renderConvItem(conv) {
     const isBot = conv.last_role === 'assistant';
-    const preview = (isBot ? '🤖 ' : '') + (conv.last_message || '').slice(0, 50);
+    const isAttendant = conv.last_role === 'attendant';
+    const prefix = isBot ? '🤖 ' : (isAttendant ? '👩‍💼 ' : '');
+    const preview = prefix + (conv.last_message || '').slice(0, 50);
     return `
       <div
         class="conv-item flex items-center gap-3 px-4 py-3 hover:bg-gray-50 cursor-pointer transition-colors"
@@ -108,14 +110,23 @@
 
   function renderMessage(msg) {
     const isUser = msg.role === 'user';
+    const isAttendant = msg.role === 'attendant';
     const align = isUser ? 'justify-start' : 'justify-end';
+    // Atendente humana fica à direita como a Eva, mas com cor própria e um rótulo,
+    // para quem lê o painel distinguir na hora quem respondeu.
     const bubble = isUser
       ? 'bg-white text-gray-800 rounded-tl-none'
-      : 'bg-wa-bubble text-gray-800 rounded-tr-none';
+      : (isAttendant
+          ? 'bg-amber-100 text-gray-800 rounded-tr-none'
+          : 'bg-wa-bubble text-gray-800 rounded-tr-none');
+    const label = isAttendant
+      ? '<div class="text-[10px] font-semibold text-amber-700 mb-0.5">Atendente</div>'
+      : '';
     const time = fmtTime(msg.created_at);
     return `
       <div class="flex ${align}">
         <div class="max-w-[70%] px-3 py-2 rounded-xl shadow-sm ${bubble}">
+          ${label}
           <div class="text-sm whitespace-pre-wrap break-words">${escHtml(msg.content)}</div>
           <div class="text-[10px] text-gray-400 text-right mt-1">${time}</div>
         </div>

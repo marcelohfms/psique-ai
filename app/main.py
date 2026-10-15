@@ -1680,6 +1680,15 @@ async def _handle_chatwoot_payload(payload: dict) -> None:
                         {"messages": [AIMessage(content=_content_out)]},
                         as_node="patient_agent",
                     )
+                    # Também persiste em `messages` com papel próprio 'attendant'. Sem
+                    # isto a fala da atendente ia só para o checkpoint e sumia do painel
+                    # e do monitoramento, que leem a tabela `messages` (caso Dário,
+                    # 14/10/2026). Papel 'attendant' de propósito: não é 'user' (a trava
+                    # _recover_messages_lost_to_restart só reprocessa 'user', senão a Eva
+                    # responderia à própria atendente) e não é 'assistant' (fica
+                    # distinguível da Eva no painel). A dedup _already_synced_outgoing
+                    # acima já garante uma gravação por message id.
+                    await save_message(_phone_out, "attendant", _content_out)
                     logger.info("OUTGOING_SAVED phone=%s content=%.80s", _phone_out, _content_out)
             elif not _is_human_agent and not _is_private:
                 # Outgoing bot message — already saved to checkpoint by the graph's
