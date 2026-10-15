@@ -78,17 +78,22 @@ def _is_duplicate_phone_text(phone: str, text: str) -> bool:
 # Chatwoot (_handle_chatwoot_payload) — e cada um pode reentregar a mesma mídia. A
 # trava por msg_id só existe no caminho da Meta, então um único áudio chegava a
 # disparar três avisos idênticos (caso Carlos Cardozo, conv #501, 15/10/2026).
-# A dedup aqui é por telefone (forma crua, sem o 9 e sem o sufixo JID), colapsando
-# os dois caminhos e os reenvios numa janela curta.
+# A dedup aqui é por telefone (forma canônica, colapsando o fork de 12/13 dígitos),
+# cobrindo os dois caminhos e os reenvios numa janela curta.
 _AUDIO_NOTICE = "Não consigo processar áudios. Por favor, envie sua mensagem em texto. 😊"
+# Marcador gravado em `messages` só para deixar rastro de que um áudio chegou. O
+# conteúdo do áudio não é transcrito nem guardado — a Eva não processa áudio. Sem
+# isso, um áudio não deixa nenhuma linha em `messages` e a investigação por ali dá
+# falso negativo.
+_AUDIO_RECEIVED_MARKER = "[áudio recebido]"
 _audio_notice_sent: dict[str, float] = {}
 _AUDIO_NOTICE_TTL = 60.0
 
 async def _send_audio_not_supported(phone: str) -> None:
-    """Send the audio-not-supported notice at most once per phone within the TTL.
+    """Record an audio-received marker and send the notice, once per phone per TTL.
 
     The key is set BEFORE the await so two coroutines racing from the two webhooks
-    serialize on it (single-threaded asyncio) and only the first actually sends.
+    serialize on it (single-threaded asyncio) and only the first records and sends.
     """
     import time
     from app.phone import _phone_variants, _strip_phone
@@ -104,6 +109,8 @@ async def _send_audio_not_supported(phone: str) -> None:
         logger.info("Audio notice already sent recently for %s — skipping duplicate", key)
         return
     _audio_notice_sent[key] = now
+    # Grava o rastro antes de avisar. Role "user": foi o paciente que mandou o áudio.
+    await save_message(phone, "user", _AUDIO_RECEIVED_MARKER)
     await send_text(phone, _AUDIO_NOTICE)
 
 

@@ -113,7 +113,8 @@ async def test_audio_message_sends_notice_and_returns_none():
     import app.main as _m
     _m._audio_notice_sent.clear()
     from app.main import extract_message
-    with patch("app.main.send_text", new_callable=AsyncMock) as mock_send:
+    with patch("app.main.send_text", new_callable=AsyncMock) as mock_send, \
+         patch("app.main.save_message", new_callable=AsyncMock):
         result = await extract_message(_meta_payload(msg_type="audio"))
     assert result is None
     mock_send.assert_called_once()
@@ -312,18 +313,32 @@ async def test_audio_notice_deduped_across_paths():
     import app.main as main
     main._audio_notice_sent.clear()
     phone = "5581999999999@s.whatsapp.net"
-    with patch("app.main.send_text", new_callable=AsyncMock) as mock_send:
+    with patch("app.main.send_text", new_callable=AsyncMock) as mock_send, \
+         patch("app.main.save_message", new_callable=AsyncMock):
         await main._send_audio_not_supported(phone)  # caminho Meta
         await main._send_audio_not_supported(phone)  # caminho Chatwoot (mesmo áudio)
     mock_send.assert_called_once()
     assert "áudio" in mock_send.call_args[0][1].lower()
 
 
+async def test_audio_received_marker_saved_once_without_content():
+    """Chega um rastro '[áudio recebido]' em `messages`, sem conteúdo, e sem duplicar."""
+    import app.main as main
+    main._audio_notice_sent.clear()
+    phone = "5581999999999@s.whatsapp.net"
+    with patch("app.main.send_text", new_callable=AsyncMock), \
+         patch("app.main.save_message", new_callable=AsyncMock) as mock_save:
+        await main._send_audio_not_supported(phone)  # caminho Meta
+        await main._send_audio_not_supported(phone)  # caminho Chatwoot (mesmo áudio)
+    mock_save.assert_called_once_with(phone, "user", "[áudio recebido]")
+
+
 async def test_audio_notice_sent_per_distinct_phone():
     """Telefones diferentes recebem cada um o seu aviso — a dedup é por telefone."""
     import app.main as main
     main._audio_notice_sent.clear()
-    with patch("app.main.send_text", new_callable=AsyncMock) as mock_send:
+    with patch("app.main.send_text", new_callable=AsyncMock) as mock_send, \
+         patch("app.main.save_message", new_callable=AsyncMock):
         await main._send_audio_not_supported("5581999999999@s.whatsapp.net")
         await main._send_audio_not_supported("5581988888888@s.whatsapp.net")
     assert mock_send.call_count == 2
@@ -333,7 +348,8 @@ async def test_audio_notice_key_ignores_9th_digit_fork():
     """As formas de 12 e 13 dígitos do mesmo número colapsam num aviso só."""
     import app.main as main
     main._audio_notice_sent.clear()
-    with patch("app.main.send_text", new_callable=AsyncMock) as mock_send:
+    with patch("app.main.send_text", new_callable=AsyncMock) as mock_send, \
+         patch("app.main.save_message", new_callable=AsyncMock):
         await main._send_audio_not_supported("5547984729628@s.whatsapp.net")  # com o 9
         await main._send_audio_not_supported("554784729628@s.whatsapp.net")   # sem o 9
     mock_send.assert_called_once()
@@ -343,7 +359,8 @@ async def test_duplicate_audio_webhook_sends_notice_only_once():
     """Áudio reentregue pela Meta (mesmo caminho, retry) manda o aviso uma vez só."""
     import app.main as main
     main._audio_notice_sent.clear()
-    with patch("app.main.send_text", new_callable=AsyncMock) as mock_send:
+    with patch("app.main.send_text", new_callable=AsyncMock) as mock_send, \
+         patch("app.main.save_message", new_callable=AsyncMock):
         await extract_message_audio(main)
         await extract_message_audio(main)
     mock_send.assert_called_once()
