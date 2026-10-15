@@ -573,11 +573,11 @@ async def compute_pendencias(client, patient_ids: list[str] | None = None) -> li
     query = (
         client.from_("appointments")
         .select(
-            "appointment_id, patient_id, start_time, doctor_id, paid_at, "
+            "appointment_id, patient_id, contact_id, start_time, doctor_id, paid_at, "
             "booking_fee_paid_at, booking_fee_waived, consultation_type, status, "
             "is_courtesy, "
             "patients(name, birth_date, custom_price, "
-            "patient_contacts(is_self, contacts(phone, name)))"
+            "patient_contacts(is_self, contacts(id, phone, name)))"
         )
         .in_("status", ["scheduled", "completed"])
     )
@@ -614,14 +614,29 @@ async def compute_pendencias(client, patient_ids: list[str] | None = None) -> li
         birth_date = patient.get("birth_date")
         custom_price = patient.get("custom_price")
 
-        # Busca telefone via patient_contacts → contacts
+        # Telefone de destino da confirmação: SEMPRE quem agendou
+        # (appointments.contact_id). Caso Bento (05/10/2026): a baixa foi na
+        # Daniella (mãe, agendou e pagou) mas a confirmação caiu no Sandro (pai)
+        # porque pegávamos patient_contacts[0], que não tem ordem garantida.
+        # Menor de idade não tem contato is_self, então o fallback [0] era um
+        # responsável qualquer. O booker resolve isso de forma determinística.
         phone = ""
         patient_contacts = patient.get("patient_contacts") or []
-        self_contact = next((pc for pc in patient_contacts if pc.get("is_self")), None)
-        pc_row = self_contact or (patient_contacts[0] if patient_contacts else None)
-        if pc_row:
-            contact = pc_row.get("contacts") or {}
-            phone = contact.get("phone") or ""
+        booker_id = first.get("contact_id")
+        if booker_id:
+            for pc in patient_contacts:
+                contact = pc.get("contacts") or {}
+                if contact.get("id") == booker_id and contact.get("phone"):
+                    phone = contact["phone"]
+                    break
+        if not phone:
+            # Fallback (booker ausente ou não vinculado): próprio paciente, senão
+            # o primeiro contato vinculado.
+            self_contact = next((pc for pc in patient_contacts if pc.get("is_self")), None)
+            pc_row = self_contact or (patient_contacts[0] if patient_contacts else None)
+            if pc_row:
+                contact = pc_row.get("contacts") or {}
+                phone = contact.get("phone") or ""
 
         doctor_display = DOCTOR_DISPLAY.get(first.get("doctor_id", ""), "Médico")
 

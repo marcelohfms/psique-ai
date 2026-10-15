@@ -188,6 +188,37 @@ async def test_compute_pendencias_fallback_telefone_sem_is_self(fake_client):
     assert all(p["phone"] == "5581988887777" for p in out)
 
 
+async def test_compute_pendencias_telefone_e_de_quem_agendou(fake_client):
+    # Menor com dois responsáveis: a confirmação de pagamento deve ir para quem
+    # AGENDOU (appointments.contact_id), não para o primeiro contato da lista.
+    # Caso Bento (05/10/2026): a atendente deu baixa na Daniella (mãe, agendou e
+    # pagou) e a confirmação foi parar no Sandro (pai), porque o código pegava
+    # patient_contacts[0]. O booker fica na coluna contact_id da consulta.
+    appt = _appt("a1", "p1", "Bento", "ignorado")
+    appt["contact_id"] = "c-daniella"
+    appt["patients"]["patient_contacts"] = [
+        {"is_self": False, "contacts": {"id": "c-sandro", "phone": "5581990000001", "name": "Sandro"}},
+        {"is_self": False, "contacts": {"id": "c-daniella", "phone": "5581991749847", "name": "Daniella"}},
+    ]
+    fake_client.store["appointments"] = [appt]
+    out = await payments.compute_pendencias(fake_client)
+    assert out
+    assert all(p["phone"] == "5581991749847" for p in out)
+
+
+async def test_compute_pendencias_booker_fora_dos_vinculos_cai_no_fallback(fake_client):
+    # Se o contact_id não bate com nenhum contato vinculado (vínculo removido
+    # depois), não quebra: cai no fallback is_self → primeiro contato.
+    appt = _appt("a1", "p1", "João", "5581999990000")
+    appt["contact_id"] = "c-sumido"
+    appt["patients"]["patient_contacts"] = [
+        {"is_self": True, "contacts": {"id": "c-self", "phone": "5581999990000", "name": "João"}},
+    ]
+    fake_client.store["appointments"] = [appt]
+    out = await payments.compute_pendencias(fake_client)
+    assert all(p["phone"] == "5581999990000" for p in out)
+
+
 # ── _calc_valor_consulta ──────────────────────────────────────────────────────
 
 
