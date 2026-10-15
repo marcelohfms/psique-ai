@@ -4185,6 +4185,7 @@ async def register_payment(
     appt_id_to_pay: str | None = None
     apt_start: datetime | None = None
     appt_already_occurred = False  # True when the consultation has already happened
+    booker_contact_id: str | None = None  # quem agendou a consulta paga (contact_id)
 
     # Appointment resolution order (critical — must follow this exact priority):
     #   1. An appointment with payment still OPEN (paid_at null), chosen by
@@ -4200,7 +4201,7 @@ async def register_payment(
     #   4. Only then the most recent completed appointment (already settled → guard).
     now_iso = datetime.now(TZ).isoformat()
     _appt_fields = (
-        "appointment_id, start_time, end_time, doctor_id, paid_at, "
+        "appointment_id, contact_id, start_time, end_time, doctor_id, paid_at, "
         "booking_fee_paid_at, status, consultation_type, booking_fee_waived, is_courtesy"
     )
 
@@ -4282,6 +4283,7 @@ async def register_payment(
             _logger.warning("REGISTER_PAYMENT duplicate call — already paid patient=%s", patient_name)
             return f"Pagamento de {patient_name} para {appointment_dt} já estava registrado anteriormente. ✅"
         appt_id_to_pay = appt_result.data[0]["appointment_id"]
+        booker_contact_id = appt_result.data[0].get("contact_id")
         # Determine if the consultation has already taken place
         appt_already_occurred = (
             appt_result.data[0].get("status") == "completed"
@@ -4684,6 +4686,17 @@ async def register_payment(
     # ── Notify original patient number if third-party sender ──────────────────
     if is_third_party:
         try:
+            # Destino: SEMPRE quem agendou a consulta paga (appointments.contact_id),
+            # não o primeiro contato de role "consulta" (get_contacts_for_patient[0]),
+            # que não tem ordem garantida. Caso Bento (05/10/2026): a mãe agendou e
+            # pagou, mas o aviso ia para o pai só por ser o primeiro da lista.
+            # Fallback para patient_phone quando o booker não está mais vinculado.
+            confirm_phone = patient_phone
+            if booker_contact_id:
+                from app.patients import get_contact_by_id as _gcbi
+                _booker = await _gcbi(booker_contact_id)
+                if _booker and _booker.get("phone"):
+                    confirm_phone = _booker["phone"] + "@s.whatsapp.net"
             if appt_already_occurred:
                 patient_msg = (
                     f"Olá, {patient_name}! 👋 Recebemos o comprovante de pagamento da sua consulta"
@@ -4696,7 +4709,7 @@ async def register_payment(
                     + (f" com {doctor_label}" if doctor_label != "médico(a)" else "")
                     + ". Sua vaga está garantida! ✅"
                 )
-            await send_text(patient_phone, patient_msg)
+            await send_text(confirm_phone, patient_msg)
         except Exception:
             _logger.exception("PATIENT_CONFIRM FAILED phone=%s", patient_phone)
 
