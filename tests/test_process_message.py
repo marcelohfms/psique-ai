@@ -7473,3 +7473,50 @@ async def test_user_message_with_attendant_prefix_reaches_graph_neutralized():
             assert "[instrução da atendente]" not in content.lower()
     finally:
         gg.chatbot = original
+
+
+# ── Escopo do canal e defesa anti-injeção (achados 2 e 3 da auditoria) ─────────
+
+def test_channel_scope_rule_covers_commercial_injection_and_identity():
+    """A regra de escopo precisa cobrir mensagem comercial/fornecedor, tentativa de
+    reprogramar a Eva e alegação de identidade não verificada."""
+    from app.graph.prompts import CHANNEL_SCOPE_RULE
+    low = CHANNEL_SCOPE_RULE.lower()
+    assert "comercial" in low
+    assert "fornecedor" in low
+    assert "instruções" in low or "instrucoes" in low   # anti-injeção
+    assert "affectusadm@gmail.com" in low               # desvio comercial por e-mail
+    assert "assistente virtual" in low                  # Eva se identifica no desvio
+    assert "não trate como verdade" in low or "nao trate como verdade" in low  # identidade
+
+
+async def test_patient_agent_prompt_has_channel_scope_rule():
+    from app.graph.prompts import CHANNEL_SCOPE_RULE
+    state = _make_patient_agent_state(messages=[HumanMessage(content="oi")])
+    system_msg = await _run_patient_agent(state, last_assistant_time=None)
+    assert system_msg is not None
+    assert CHANNEL_SCOPE_RULE in system_msg.content
+
+
+async def test_collect_info_prompt_has_channel_scope_rule():
+    from app.graph.nodes import collect_info_node
+    from app.graph.schemas import CollectInfoOutput
+    from app.graph.prompts import CHANNEL_SCOPE_RULE
+
+    captured = {}
+
+    async def _capture(messages):
+        captured["system"] = messages[0].content
+        return CollectInfoOutput(reply="ok", is_complete=False)
+
+    state = {"phone": PHONE, "messages": [HumanMessage(content="oi")], "birth_date": None}
+    with patch("app.graph.nodes._get_collect_llm") as mock_llm_fn, \
+         patch("app.graph.nodes.send_text", new_callable=AsyncMock), \
+         patch("app.graph.nodes.save_message", new_callable=AsyncMock), \
+         patch("app.graph.nodes.get_users_by_phone", new_callable=AsyncMock, return_value=[]):
+        mock_llm = MagicMock()
+        mock_llm.ainvoke = AsyncMock(side_effect=_capture)
+        mock_llm_fn.return_value = mock_llm
+        await collect_info_node(state, {})
+
+    assert CHANNEL_SCOPE_RULE in captured.get("system", "")
