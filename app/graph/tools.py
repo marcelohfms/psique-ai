@@ -322,6 +322,16 @@ def _business_days(start: date, end: date):
         day += timedelta(days=1)
 
 
+def _week_offset_for(target: date) -> int:
+    """Offset de semana (no esquema de _week_range) da semana que contém `target`.
+    Usado para reancorar a varredura de dias úteis num piso de data futuro."""
+    _, end0 = _week_range(0)
+    if target <= end0:
+        return 0
+    next_monday = end0 + timedelta(days=1)
+    return 1 + (target - next_monday).days // 7
+
+
 async def _prefetch_supabase_busy(doctor: str, first_day: date, last_day: date):
     """Busca UMA vez as faixas ocupadas do Supabase para toda a varredura.
 
@@ -557,23 +567,37 @@ async def pick_doctor_by_earliest_availability(
     return best_doctor or (candidates[0] if candidates else None)
 
 
-async def _search_any_day(calendar_id: str, doctor: str, preferred_shift: str, slot_duration_minutes: int) -> str:
+async def _search_any_day(
+    calendar_id: str, doctor: str, preferred_shift: str, slot_duration_minutes: int,
+    not_before: date | None = None,
+) -> str:
     """Busca dias úteis futuros (qualquer dia da semana) quando o paciente não
     tem preferência de dia (ex: "qualquer dia"). Busca primeiro a semana atual
     (até 3 dias distintos com vaga); se encontrar menos de 2 dias distintos,
     também busca a semana seguinte inteira; se ainda assim não achar nada,
     continua expandindo semana a semana (limite de segurança) até achar algo —
-    nunca informa ao paciente que "não encontrou"."""
+    nunca informa ao paciente que "não encontrou".
+
+    not_before: piso de data ("a partir do dia X"). Reancora a varredura na semana
+    que contém o piso e nunca oferta um dia anterior a ele."""
     from app.google_calendar import get_available_slots as _get_slots
 
-    _horizon_start, _ = _week_range(0)
-    _, _horizon_end = _week_range(_ANY_DAY_MAX_WEEKS)
+    # Reancora a varredura: com piso futuro, a "semana base" é a do piso, não a atual.
+    base_off = _week_offset_for(not_before) if not_before else 0
+
+    def _after_floor(day: date) -> bool:
+        return not_before is None or day >= not_before
+
+    _horizon_start, _ = _week_range(base_off)
+    _, _horizon_end = _week_range(base_off + _ANY_DAY_MAX_WEEKS)
     _sb_busy = await _prefetch_supabase_busy(doctor, _horizon_start, _horizon_end)
 
     found: list[tuple[date, dict]] = []
 
-    start, end = _week_range(0)
+    start, end = _week_range(base_off)
     for day in _business_days(start, end):
+        if not _after_floor(day):
+            continue
         day_shifts = await _slots_for_any_day(
             day, calendar_id, doctor, preferred_shift, slot_duration_minutes, _get_slots,
             supabase_busy=_sb_busy,
@@ -586,8 +610,10 @@ async def _search_any_day(calendar_id: str, doctor: str, preferred_shift: str, s
     extended = False
     if len(found) < _ANY_DAY_MIN_DISTINCT_DAYS:
         extended = True
-        start, end = _week_range(1)
+        start, end = _week_range(base_off + 1)
         for day in _business_days(start, end):
+            if not _after_floor(day):
+                continue
             day_shifts = await _slots_for_any_day(
                 day, calendar_id, doctor, preferred_shift, slot_duration_minutes, _get_slots,
                 supabase_busy=_sb_busy,
@@ -595,11 +621,13 @@ async def _search_any_day(calendar_id: str, doctor: str, preferred_shift: str, s
             if day_shifts:
                 found.append((day, day_shifts))
 
-    week_offset = 2
-    while len(found) < _ANY_DAY_MIN_DISTINCT_DAYS and week_offset <= _ANY_DAY_MAX_WEEKS:
+    week_offset = base_off + 2
+    while len(found) < _ANY_DAY_MIN_DISTINCT_DAYS and week_offset <= base_off + _ANY_DAY_MAX_WEEKS:
         extended = True
         start, end = _week_range(week_offset)
         for day in _business_days(start, end):
+            if not _after_floor(day):
+                continue
             day_shifts = await _slots_for_any_day(
                 day, calendar_id, doctor, preferred_shift, slot_duration_minutes, _get_slots,
                 supabase_busy=_sb_busy,
@@ -625,12 +653,15 @@ async def _search_any_day(calendar_id: str, doctor: str, preferred_shift: str, s
 async def _search_week(
     week_offset: int, calendar_id: str, doctor: str,
     preferred_shift: str, slot_duration_minutes: int,
+    not_before: date | None = None,
 ) -> str:
     """Lista os horários de UMA semana específica (offset em relação à atual):
     week_offset=0 → dias úteis restantes desta semana; week_offset>=1 → seg–sex
     daquela semana. Diferente de _search_any_day, não há teto de dias — a semana
     já é um intervalo limitado. Se a semana alvo não tiver nenhuma vaga, delega a
-    _search_any_day para oferecer os próximos dias com vaga."""
+    _search_any_day para oferecer os próximos dias com vaga.
+
+    not_before: piso de data — nunca oferta um dia anterior a ele."""
     from app.google_calendar import get_available_slots as _get_slots
 
     start, end = _week_range(week_offset)
@@ -638,6 +669,8 @@ async def _search_week(
 
     found: list[tuple[date, dict]] = []
     for day in _business_days(start, end):
+        if not_before is not None and day < not_before:
+            continue
         day_shifts = await _slots_for_any_day(
             day, calendar_id, doctor, preferred_shift, slot_duration_minutes, _get_slots,
             supabase_busy=_sb_busy,
@@ -651,6 +684,7 @@ async def _search_week(
             doctor=doctor,
             preferred_shift=preferred_shift,
             slot_duration_minutes=slot_duration_minutes,
+            not_before=not_before,
         )
 
     sections = [_format_any_day_section(day, day_shifts, preferred_shift) for day, day_shifts in found]
@@ -664,10 +698,24 @@ async def get_available_slots(
     slot_duration_minutes: Literal[60, 120],
     state: Annotated[dict, InjectedState],
     config: RunnableConfig,
+    earliest_date: str | None = None,
 ) -> str:
     """
     Busca horários disponíveis no Google Calendar para o médico do paciente.
     Se preferred_day for um dia da semana (ex: "quarta"), busca até 4 semanas à frente.
+
+    earliest_date (PISO DE DATA, opcional, formato dd/mm): a partir de quando buscar.
+    Preencha SEMPRE que o paciente pedir horários "a partir do dia X", "depois do dia
+    X", "só a partir de tal data", "fora dessa semana" etc. Combine com preferred_day:
+    para "qualquer dia depois do dia 13/11" → preferred_day="qualquer dia",
+    earliest_date="13/11". A ferramenta não oferta nenhum dia anterior ao piso. NÃO
+    embuta a expressão no preferred_day (ex: NÃO mande "qualquer dia depois do dia 15");
+    use este campo. Deixe vazio quando não houver piso.
+
+    NUNCA descreva ao paciente o funcionamento interno da busca (ex: "o sistema está
+    entendendo 'próxima semana' como...", "não consigo forçar a busca depois do dia X").
+    Se não conseguir montar a busca que o paciente pediu, peça com gentileza uma data
+    exata em dd/mm e use-a no earliest_date — sem narrar a dificuldade técnica.
 
     FORMATO DE DATAS:
     - Data específica: sempre dd/mm (ex: "17/06"), NUNCA nome do dia da semana.
@@ -695,7 +743,7 @@ async def get_available_slots(
       ferramenta pedindo exatamente esse turno e recebido "não há horários".
     """
     result = await _get_available_slots_impl(
-        preferred_day, preferred_shift, slot_duration_minutes, state, config
+        preferred_day, preferred_shift, slot_duration_minutes, state, config, earliest_date
     )
     # Rastreio de "pediu data e não continuou" (carrinho abandonado de consulta):
     # registra a oferta SÓ quando horários reais foram apresentados. O texto de uma
@@ -712,6 +760,7 @@ async def get_available_slots(
                     "preferred_day": preferred_day,
                     "preferred_shift": preferred_shift,
                     "slot_duration_minutes": slot_duration_minutes,
+                    "earliest_date": earliest_date,
                 },
             )
     except Exception:
@@ -725,12 +774,19 @@ async def _get_available_slots_impl(
     slot_duration_minutes: Literal[60, 120],
     state: Annotated[dict, InjectedState],
     config: RunnableConfig,
+    earliest_date: str | None = None,
 ) -> str:
     """Implementação de get_available_slots (sem o decorator @tool). Toda a lógica
     de busca e formatação de horários vive aqui; o wrapper público acima registra
     o evento slots_offered quando esta função devolve horários reais. O contrato
     voltado ao LLM está no docstring do wrapper."""
     from app.google_calendar import get_available_slots as _get_slots, _parse_day, DOCTOR_SCHEDULES, SHIFT_HOURS, _WEEKDAYS_PT
+
+    # Piso de data ("a partir do dia X"): só vale se parsear e for futuro. Um piso no
+    # passado ou ininteligível é ignorado (não restringe a busca) — ver caso Mateus.
+    not_before = _parse_day(earliest_date) if earliest_date else None
+    if not_before is not None and not_before <= datetime.now(TZ).date():
+        not_before = None
 
     doctor = await _resolve_doctor(state, config)
     calendar_id = await _get_doctor_calendar_id(doctor)
@@ -797,6 +853,7 @@ async def _get_available_slots_impl(
             doctor=doctor,
             preferred_shift=preferred_shift,
             slot_duration_minutes=slot_duration_minutes,
+            not_before=not_before,
         )
 
     # ── Expressão de semana (sem dia específico) → oferece a relação da semana
@@ -810,11 +867,13 @@ async def _get_available_slots_impl(
             return await _search_week(
                 week_offset=1, calendar_id=calendar_id, doctor=doctor,
                 preferred_shift=preferred_shift, slot_duration_minutes=slot_duration_minutes,
+                not_before=not_before,
             )
         if any(m in preferred_day_norm for m in _this_week_markers):
             return await _search_week(
                 week_offset=0, calendar_id=calendar_id, doctor=doctor,
                 preferred_shift=preferred_shift, slot_duration_minutes=slot_duration_minutes,
+                not_before=not_before,
             )
         # Catch-all deliberadamente amplo: qualquer menção a "semana" sem dia nomeado
         # (incl. "fim de semana") cai em "próximos dias com vaga" em vez de travar.
@@ -822,6 +881,7 @@ async def _get_available_slots_impl(
             return await _search_any_day(
                 calendar_id=calendar_id, doctor=doctor,
                 preferred_shift=preferred_shift, slot_duration_minutes=slot_duration_minutes,
+                not_before=not_before,
             )
 
     # ── "qualquer" shift: check all shifts and return summary ─────────────────
@@ -829,6 +889,11 @@ async def _get_available_slots_impl(
         base_date_q = _parse_day(preferred_day)
         if base_date_q is None:
             return "Não entendi a data. Por favor informe um dia específico (ex: segunda, 19/05, amanhã)."
+
+        # Piso de data: para nome de dia da semana, avança para a 1ª ocorrência >= piso.
+        if not_before is not None and weekday_key is not None:
+            while base_date_q < not_before:
+                base_date_q += timedelta(weeks=1)
 
         # For weekday names: try up to 4 weeks until we find a date with slots.
         # For specific dates: single attempt only.
@@ -886,6 +951,10 @@ async def _get_available_slots_impl(
             )
 
         base_date = _parse_day(preferred_day)  # nearest future occurrence
+        # Piso de data: avança para a 1ª ocorrência desse dia da semana >= piso.
+        if not_before is not None:
+            while base_date < not_before:
+                base_date += timedelta(weeks=1)
         day_label = _WEEKDAY_LABELS_PT.get(weekday_key, preferred_day)
 
         for week_offset in range(4):
