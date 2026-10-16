@@ -1028,18 +1028,32 @@ async def test_collect_info_persists_doctor_when_mentioned():
 
 
 async def test_collect_info_does_not_guess_doctor_when_both_mentioned():
-    """If both doctors are mentioned, do not auto-pick one."""
+    """If both doctors are mentioned, do not auto-pick one.
+
+    A pergunta sobre a diferença entre os médicos é uma dúvida (tem '?' e cita
+    'Dr.'/'Dra.'), então o turno é roteado ao LLM (FASE 1). O que o teste garante é
+    que a menção ambígua aos dois médicos NÃO faz a Eva escolher um por conta própria."""
     from app.graph.nodes import collect_info_node
+    from app.graph.schemas import CollectInfoOutput
     from langchain_core.messages import HumanMessage
 
+    llm_result = CollectInfoOutput(
+        reply="O Dr. Júlio e a Dra. Bruna são ótimos! A principal diferença é a faixa "
+              "etária que cada um atende. Quer que eu te explique melhor?",
+        is_complete=False,
+    )
     state = _base_minor_state(
         user_name=None, patient_name=None, patient_cpf=None, preferred_doctor=None,
         messages=[HumanMessage(content="Quero agendar — qual a diferença entre Dr. Júlio e Dra. Bruna?")],
     )
-    with patch("app.graph.nodes.send_text", new_callable=AsyncMock), \
+    with patch("app.graph.nodes._get_collect_llm") as mock_llm_fn, \
+         patch("app.graph.nodes.send_text", new_callable=AsyncMock), \
          patch("app.graph.nodes.save_message", new_callable=AsyncMock), \
          patch("app.graph.nodes.get_users_by_phone", new_callable=AsyncMock, return_value=[]), \
          patch("app.graph.nodes.upsert_user", new_callable=AsyncMock) as mock_upsert:
+        mock_llm = MagicMock()
+        mock_llm.ainvoke = AsyncMock(return_value=llm_result)
+        mock_llm_fn.return_value = mock_llm
         result = await collect_info_node(state, {})
 
     assert result.get("preferred_doctor") is None
@@ -3107,6 +3121,55 @@ async def test_collect_info_answers_info_question_without_consuming_field():
     # o CPF não foi consumido nem falsamente marcado inválido
     assert result.get("patient_cpf") is None
     assert "inválido" not in mock_send.call_args[0][1].lower()
+
+
+async def test_collect_info_first_contact_info_question_answers_without_asking_name():
+    """Auditoria comportamental (16/10/2026): um remetente NOVO (sem cadastro) cuja
+    PRIMEIRA mensagem é só uma pergunta de informação ('Quanto custa a consulta e
+    onde fica a clínica?') deve ter a dúvida respondida na hora (FASE 1 do prompt),
+    sem receber o início do cadastro ('Pode me informar o seu nome completo?').
+
+    O bug: a palavra 'consulta' liga _has_request, e o Step 1 (saudação + primeira
+    pergunta do cadastro) disparava a pergunta do nome roteirizada ANTES de deixar o
+    LLM decidir se é FASE 1 (dúvida) ou FASE 2 (agendar). O turno nem chegava ao LLM."""
+    from app.graph.nodes import collect_info_node
+    from app.graph.schemas import CollectInfoOutput
+    from langchain_core.messages import HumanMessage
+
+    captured = {}
+
+    async def _capture(messages):
+        captured["system"] = messages[0].content
+        return CollectInfoOutput(
+            reply="A primeira consulta custa R$ 850,00 e a clínica fica no RioMar "
+                  "Trade Center, em Recife. Em que mais posso te ajudar? 😊",
+            is_complete=False,
+        )
+
+    state = {
+        "phone": PHONE,
+        "user_name": None,
+        "messages": [HumanMessage(content="Quanto custa a consulta e onde fica a clínica?")],
+    }
+    with patch("app.graph.nodes._get_collect_llm") as mock_llm_fn, \
+         patch("app.graph.nodes.send_text", new_callable=AsyncMock) as mock_send, \
+         patch("app.graph.nodes.save_message", new_callable=AsyncMock), \
+         patch("app.graph.nodes.get_users_by_phone", new_callable=AsyncMock, return_value=[]), \
+         patch("app.graph.nodes.upsert_user", new_callable=AsyncMock, return_value="id"):
+        mock_llm = MagicMock()
+        mock_llm.ainvoke = AsyncMock(side_effect=_capture)
+        mock_llm_fn.return_value = mock_llm
+        await collect_info_node(state, {})
+
+    # O LLM decide FASE 1 vs FASE 2 — o turno NÃO pode ser curto-circuitado pelo Step 1.
+    mock_llm.ainvoke.assert_awaited_once()
+    sent = mock_send.call_args[0][1].lower()
+    # Não pede cadastro: nem o nome, nem a frase da saudação roteirizada.
+    assert "nome completo" not in sent
+    assert "colher algumas informações" not in sent
+    # FASE 1 (primeiro contato): não injeta a instrução de "retomar o cadastro" que
+    # vale só para interrupções no meio da FASE 2.
+    assert "retome o cadastro" not in captured["system"].lower()
 
 
 async def test_collect_info_accepts_cpf_after_invalid_reprompt():

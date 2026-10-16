@@ -1238,8 +1238,15 @@ async def collect_info_node(state: ConversationState, config: RunnableConfig) ->
         and _is_info_question(_last_human())
     )
 
-    # Step 1: greeting + first MISSING question (skip fields already in state)
-    if not _has_greeted and _has_request:
+    # Step 1: greeting + first MISSING question (skip fields already in state).
+    # MAS não quando a primeira mensagem é só uma pergunta de informação (preço,
+    # endereço, convênio...): isso é a FASE 1 do prompt, que manda RESPONDER a dúvida
+    # sem pedir cadastro. A palavra "consulta" liga _has_request mesmo em "quanto
+    # custa a consulta?", e sem este guard o Step 1 disparava a pergunta do nome
+    # roteirizada antes de o LLM decidir FASE 1 (dúvida) vs FASE 2 (agendar) —
+    # auditoria comportamental 16/10/2026. _is_interruption já reconhece a pergunta
+    # de informação com cadastro incompleto; aqui ela deixa o turno cair no LLM.
+    if not _has_greeted and _has_request and not _is_interruption:
         first_q = _nq()
         if first_q:
             greeting = (
@@ -1687,9 +1694,12 @@ async def collect_info_node(state: ConversationState, config: RunnableConfig) ->
     )
     # Escopo do canal e defesa anti-injeção (achados 2 e 3 da auditoria comportamental).
     _collect_system += CHANNEL_SCOPE_RULE
-    # Interrupção com pergunta de informação: instrua o LLM a responder a dúvida e
-    # retomar exatamente a pergunta pendente do cadastro, sem pular etapas.
-    if _is_interruption:
+    # Interrupção com pergunta de informação NO MEIO do cadastro (FASE 2, já
+    # saudado): instrua o LLM a responder a dúvida e retomar exatamente a pergunta
+    # pendente, sem pular etapas. No PRIMEIRO contato (FASE 1) a dúvida é só
+    # respondida, sem empurrar cadastro — por isso a instrução de retomada fica
+    # condicionada a _has_greeted (auditoria comportamental 16/10/2026).
+    if _is_interruption and _has_greeted:
         _pending_q = _nq()
         _collect_system += (
             f"\n\nO paciente interrompeu o cadastro com uma pergunta: "
