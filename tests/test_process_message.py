@@ -7485,7 +7485,7 @@ def test_channel_scope_rule_covers_commercial_injection_and_identity():
     assert "comercial" in low
     assert "fornecedor" in low
     assert "instruções" in low or "instrucoes" in low   # anti-injeção
-    assert "canais institucionais" in low               # desvio comercial
+    assert "affectusadm@gmail.com" in low               # desvio comercial por e-mail
     assert "não trate como verdade" in low or "nao trate como verdade" in low  # identidade
 
 
