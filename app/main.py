@@ -1050,6 +1050,29 @@ async def _handle_payload(payload: dict) -> None:
         logger.exception("Error handling webhook payload")
 
 
+def _payload_log_summary(payload: dict) -> str:
+    """Resumo do payload do webhook para log, SEM dado pessoal.
+
+    Antes o payload inteiro ia pro log em DEBUG (texto da mensagem, telefone,
+    nome). Aqui devolvemos só o id e o tipo da mensagem (ou do status), o
+    suficiente para correlacionar com os outros logs sem expor conteúdo nem
+    número (achado 5 da auditoria comportamental)."""
+    try:
+        value = payload["entry"][0]["changes"][0]["value"]
+    except (KeyError, IndexError, TypeError):
+        return "payload não reconhecido"
+    msgs = value.get("messages") or []
+    if msgs:
+        m = msgs[0]
+        return f"message id={m.get('id')} type={m.get('type')} (+{len(msgs) - 1} outras)" \
+            if len(msgs) > 1 else f"message id={m.get('id')} type={m.get('type')}"
+    statuses = value.get("statuses") or []
+    if statuses:
+        s = statuses[0]
+        return f"status id={s.get('id')} status={s.get('status')}"
+    return "evento sem mensagens (status/sistema)"
+
+
 def _valid_meta_signature(raw_body: bytes, signature_header: str | None) -> bool:
     """Verify Meta's X-Hub-Signature-256 (HMAC-SHA256 of the raw body with the app secret)."""
     if not signature_header or not signature_header.startswith("sha256="):
@@ -1066,7 +1089,7 @@ async def webhook(request: Request, x_hub_signature_256: str | None = Header(def
         logger.warning("Webhook signature validation failed — rejecting request.")
         raise HTTPException(status_code=401, detail="Invalid signature")
     payload = json.loads(raw_body)
-    logger.debug("Webhook payload: %s", payload)
+    logger.debug("Webhook recebido: %s", _payload_log_summary(payload))
     asyncio.create_task(_handle_payload(payload))
     return {"status": "ok"}
 
