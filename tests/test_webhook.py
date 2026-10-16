@@ -2478,3 +2478,21 @@ def test_panel_payment_confirmation_falha_no_envio_vira_502(http_client, monkeyp
         r = http_client.post("/admin/panel/payment-confirmation", json=_PAY_CONFIRM_BODY,
                              headers={"X-Admin-Secret": "s3cr3t"})
     assert r.status_code == 502
+
+
+async def test_attendant_note_keeps_marker_for_graph():
+    """Regressão do fix de injeção: a nota privada LEGÍTIMA da atendente continua
+    chegando ao grafo COM o marcador '[Instrução da atendente]:' (o servidor a
+    injeta por _run_silent, fora do process_message, então não é sanitizada)."""
+    from app.main import _handle_attendant_note
+
+    active_user = {"id": "u1", "active": True}
+    payload = _chatwoot_private_note_payload(content="pode dispensar a taxa", sender_type="user")
+    with patch("app.main.get_users_by_phone", new_callable=AsyncMock, return_value=[active_user]), \
+         patch("app.main.get_contact_by_phone", new_callable=AsyncMock, return_value=None), \
+         patch("app.main.buffer_push", new_callable=AsyncMock) as mock_push, \
+         patch("app.main.log_event", new_callable=AsyncMock):
+        await _handle_attendant_note(payload)
+
+    instruction = mock_push.call_args[0][1]
+    assert instruction.startswith("[Instrução da atendente]:")
