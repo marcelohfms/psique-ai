@@ -91,6 +91,41 @@ async def test_collect_info_node_overrides_reply_on_invalid_birth_date():
     assert "dd/mm/aaaa" in sent_text
     assert "Anotei" not in sent_text  # original reply must not be sent
 
+
+async def test_collect_info_prompt_includes_current_date():
+    """O prompt do cadastro precisa informar a data atual ao modelo. Sem isso o LLM
+    calcula idade com um 'hoje' errado e trata adulto como menor (caso Emilly,
+    nascida 28/02/2008, tratada como 17 em 15/10/2026)."""
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+    from app.graph.nodes import collect_info_node
+    from app.graph.schemas import CollectInfoOutput
+
+    captured = {}
+
+    async def _capture(messages):
+        captured["system"] = messages[0].content
+        return CollectInfoOutput(reply="ok", is_complete=False)
+
+    state = {
+        "phone": PHONE,
+        "messages": [HumanMessage(content="nasci em 28/02/2008")],
+        "birth_date": None,
+    }
+    with patch("app.graph.nodes._get_collect_llm") as mock_llm_fn, \
+         patch("app.graph.nodes.send_text", new_callable=AsyncMock), \
+         patch("app.graph.nodes.save_message", new_callable=AsyncMock), \
+         patch("app.graph.nodes.get_users_by_phone", new_callable=AsyncMock, return_value=[]):
+        mock_llm = MagicMock()
+        mock_llm.ainvoke = AsyncMock(side_effect=_capture)
+        mock_llm_fn.return_value = mock_llm
+        await collect_info_node(state, {})
+
+    system = captured.get("system", "")
+    hoje = datetime.now(ZoneInfo("America/Recife")).strftime("%d/%m/%Y")
+    assert "Data e hora atual" in system
+    assert hoje in system
+
 # A user record with only the minimum required fields (name + is_patient).
 # Intentionally missing birth_date, email, age — they should NOT trigger collect_info.
 _KNOWN_USER = {
