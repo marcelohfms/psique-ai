@@ -8099,3 +8099,43 @@ async def test_find_previous_receipt_db_error_is_fail_open():
     client = MagicMock()
     client.from_.return_value = events_table
     assert await _find_previous_receipt(client, "abc", "https://x") is None
+
+
+# ── Achado 6: rótulo da nota de transferência (Paciente vs Contato) ────────────
+
+async def test_transfer_note_labels_known_patient_as_paciente():
+    """Com paciente cadastrado no número, a nota mantém o rótulo 'Paciente'."""
+    from app.graph.tools import transfer_to_human
+    from app.chatwoot import register_conversation, _store
+    _store.clear()
+    register_conversation(PHONE, 77)
+    with patch("app.graph.tools.upsert_user", new_callable=AsyncMock), \
+         patch("app.graph.tools.log_event", new_callable=AsyncMock), \
+         patch("app.graph.tools.send_text", new_callable=AsyncMock), \
+         patch("app.graph.tools.unassign_agent_bot", new_callable=AsyncMock), \
+         patch("app.database.get_user_by_phone", new_callable=AsyncMock,
+               return_value={"patient_name": "Carlos Silva", "name": "Carlos"}), \
+         patch("app.chatwoot.add_private_note", new_callable=AsyncMock) as mock_note:
+        await transfer_to_human.coroutine(reason="x", state=_make_state(), config=CONFIG)
+    note = mock_note.call_args[0][1]
+    assert "👤 Paciente: Carlos Silva" in note
+
+
+async def test_transfer_note_labels_unknown_sender_as_contato():
+    """Remetente sem paciente cadastrado (ex.: contato comercial) NÃO é rotulado
+    'Paciente' na nota de transferência."""
+    from app.graph.tools import transfer_to_human
+    from app.chatwoot import register_conversation, _store
+    _store.clear()
+    register_conversation(PHONE, 78)
+    state = _make_state(patient_name=None, user_name=None, is_patient=None)
+    with patch("app.graph.tools.upsert_user", new_callable=AsyncMock), \
+         patch("app.graph.tools.log_event", new_callable=AsyncMock), \
+         patch("app.graph.tools.send_text", new_callable=AsyncMock), \
+         patch("app.graph.tools.unassign_agent_bot", new_callable=AsyncMock), \
+         patch("app.database.get_user_by_phone", new_callable=AsyncMock, return_value=None), \
+         patch("app.chatwoot.add_private_note", new_callable=AsyncMock) as mock_note:
+        await transfer_to_human.coroutine(reason="x", state=state, config=CONFIG)
+    note = mock_note.call_args[0][1]
+    assert "Paciente:" not in note
+    assert "👤 Contato:" in note

@@ -5125,19 +5125,25 @@ async def transfer_to_human(
         # Always prefer the DB record over state.patient_name, which may contain
         # raw conversation text (e.g. "Ainda não é paciente, mas o nome dele é...").
         patient_name = state.get("patient_name") or state.get("user_name") or "Não informado"
+        # Rótulo "Paciente" só quando há paciente de fato (registro no banco pelo
+        # número). Um contato comercial ou outro não-paciente transferido não pode
+        # ser anunciado como "Paciente" na nota (achado 6 da auditoria).
+        _is_known_patient = False
         try:
             from app.database import get_user_by_phone as _get_user_by_phone
             _fb = await _get_user_by_phone(phone)
             if _fb:
                 patient_name = _fb.get("patient_name") or _fb.get("name") or patient_name
+                _is_known_patient = True
         except Exception:
             pass
+        _contact_label = "Paciente" if _is_known_patient else "Contato"
         doctor = state.get("preferred_doctor", "")
         doctor_label = {"julio": "Dr. Júlio", "bruna": "Dra. Bruna"}.get(doctor, "Não informado")
         number = phone.replace("@s.whatsapp.net", "")
         note_lines = [
             "📋 *Transferido pelo bot*",
-            f"👤 Paciente: {patient_name}",
+            f"👤 {_contact_label}: {patient_name}",
             f"📞 Número: {number}",
             f"🩺 Médico: {doctor_label}",
         ]
