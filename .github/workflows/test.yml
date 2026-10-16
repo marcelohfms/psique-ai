@@ -17,3 +17,12 @@ jobs:
       - uses: astral-sh/setup-uv@v5
       - run: uv sync --group dev
       - run: uv run pytest --tb=short
+      # O painel (dashboard/) é um projeto uv separado, com deps próprios e que
+      # importa `main` direto em vez de `app.main` — por isso não entra na sessão
+      # de pytest da raiz (colidiria o nome do módulo). Roda em passo próprio para
+      # que a suíte de segurança do painel (auth, escopo, rate limiting) também
+      # seja exercitada no CI antes do merge.
+      - run: uv sync --group dev
+        working-directory: dashboard
+      - run: uv run pytest --tb=short
+        working-directory: dashboard
