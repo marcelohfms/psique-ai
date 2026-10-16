@@ -91,6 +91,60 @@ def test_senha_insegura_recusa_ws(monkeypatch, insecure):
             pass
 
 
+# ── Rate limiting do login (força bruta) ────────────────────────────────────────
+#
+# O painel usa HTTP Basic em cada rota (o navegador reenvia a senha a cada
+# request), então sem limite um atacante pode varrer senhas contra qualquer rota
+# protegida. O limiter conta falhas por IP numa janela deslizante e, passado o
+# teto, devolve 429 por um tempo — mesmo que a senha venha certa durante o
+# bloqueio. Acerto zera o contador.
+
+def test_forca_bruta_bloqueia_apos_teto(monkeypatch):
+    monkeypatch.setattr(dashboard_main, "_AUTH_FAIL_MAX", 5)
+    c = _client()
+    # Esgota o teto de tentativas erradas: cada uma ainda responde 401.
+    for _ in range(5):
+        r = c.get("/", auth=("user", "senha-errada"))
+        assert r.status_code == 401
+    # A próxima leva 429 mesmo com a senha CERTA — o IP está em cooldown.
+    r = c.get("/", auth=("user", BASIC_PW))
+    assert r.status_code == 429
+    assert "Retry-After" in r.headers
+
+
+def test_senha_correta_zera_contador(monkeypatch):
+    monkeypatch.setattr(dashboard_main, "_AUTH_FAIL_MAX", 5)
+    c = _client()
+    # Quase no teto, mas um acerto no meio zera a contagem.
+    for _ in range(4):
+        assert c.get("/", auth=("user", "errada")).status_code == 401
+    assert c.get("/", auth=("user", BASIC_PW)).status_code == 200
+    # Contador zerado: uma nova falha é só 401, não 429.
+    assert c.get("/", auth=("user", "errada")).status_code == 401
+
+
+def test_requisicao_legitima_nao_dispara_limiter(monkeypatch):
+    """Uso normal (sempre com a senha certa) nunca bate no 429."""
+    monkeypatch.setattr(dashboard_main, "_AUTH_FAIL_MAX", 5)
+    c = _client()
+    for _ in range(20):
+        assert c.get("/", auth=("user", BASIC_PW)).status_code == 200
+
+
+def test_ws_forca_bruta_bloqueia_ate_senha_certa(monkeypatch):
+    """O limiter é compartilhado: força bruta no /ws também entra em cooldown."""
+    monkeypatch.setattr(dashboard_main, "_AUTH_FAIL_MAX", 5)
+    c = _client()
+    for _ in range(5):
+        with pytest.raises(WebSocketDisconnect):
+            with c.websocket_connect("/ws", headers={"Authorization": _basic_header("user", "errada")}):
+                pass
+    # Agora até o handshake com a senha certa é derrubado (IP bloqueado).
+    with pytest.raises(WebSocketDisconnect):
+        with c.websocket_connect("/ws", headers={"Authorization": _basic_header("user", BASIC_PW)}):
+            pass
+
+
 # ── Cabeçalhos de segurança ────────────────────────────────────────────────────
 
 def test_cabecalhos_de_seguranca_presentes():
