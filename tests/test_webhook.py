@@ -2496,3 +2496,30 @@ async def test_attendant_note_keeps_marker_for_graph():
 
     instruction = mock_push.call_args[0][1]
     assert instruction.startswith("[Instrução da atendente]:")
+
+
+# ── Achado 5: resumo do payload sem dado pessoal no log do webhook ─────────────
+
+def test_payload_log_summary_omits_message_text_and_phone():
+    """O resumo de log do payload não pode conter o texto da mensagem nem o telefone
+    (antes o payload inteiro ia pro log em DEBUG)."""
+    from app.main import _payload_log_summary
+    payload = {"entry": [{"changes": [{"value": {"messages": [{
+        "id": "wamid.ABC123", "from": "5581999998888", "type": "text",
+        "text": {"body": "segredo do paciente sobre medicação"},
+    }]}}]}]}
+    s = _payload_log_summary(payload)
+    assert "wamid.ABC123" in s
+    assert "text" in s
+    assert "segredo do paciente" not in s
+    assert "5581999998888" not in s
+
+
+def test_payload_log_summary_handles_status_and_malformed():
+    from app.main import _payload_log_summary
+    status = {"entry": [{"changes": [{"value": {"statuses": [{"id": "wamid.S1", "status": "delivered"}]}}]}]}
+    s = _payload_log_summary(status)
+    assert "wamid.S1" in s and "delivered" in s
+    # malformado não pode estourar
+    assert isinstance(_payload_log_summary({}), str)
+    assert isinstance(_payload_log_summary({"entry": "x"}), str)
