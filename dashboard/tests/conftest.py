@@ -12,6 +12,19 @@ os.environ.setdefault("ATTENDANT_PANEL_TOKEN", "test-token")
 os.environ.setdefault("DASHBOARD_PASSWORD", "s3nha-teste")
 
 
+@pytest.fixture(autouse=True)
+def _reset_auth_rate_limit():
+    """Zera o contador de falhas de autenticação entre testes.
+
+    O limiter é estado de módulo e todos os TestClient compartilham o mesmo IP
+    ("testclient"), então falhas de um teste vazariam para o próximo e poderiam
+    disparar o 429 em testes que nada têm a ver com força bruta."""
+    import main
+    main._auth_fails.clear()
+    yield
+    main._auth_fails.clear()
+
+
 def _comparable(val):
     """Normaliza strings ISO 8601 pra datetime antes de comparar (gte/lt/gt).
 

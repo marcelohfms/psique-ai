@@ -3,9 +3,11 @@ import base64
 import binascii
 import logging
 import os
+import time
 from contextlib import asynccontextmanager
 from datetime import date, datetime, timezone
 from secrets import compare_digest
+from threading import Lock
 
 from dotenv import load_dotenv
 
@@ -42,16 +44,76 @@ if not _password_configured():
     )
 
 
-def verify_credentials(credentials: HTTPBasicCredentials = Depends(security)) -> str:
+# ── Rate limiting do login (anti força bruta) ───────────────────────────────────
+#
+# O painel autentica por HTTP Basic em cada rota (o navegador reenvia a senha a
+# cada request), então sem limite um atacante pode varrer senhas contra qualquer
+# rota protegida. Guardamos as falhas por IP numa janela deslizante em memória;
+# passado o teto, o IP entra em cooldown e leva 429 mesmo que a senha venha certa.
+# Um acerto zera o contador daquele IP.
+#
+# Em memória de propósito, sem dependência nova (slowapi): o dashboard roda em um
+# único serviço e o alvo é força bruta de uma mesma origem. Se um dia o painel
+# escalar para múltiplos workers, trocar por um store compartilhado (Redis).
+_AUTH_FAIL_WINDOW_S = 300   # janela deslizante: 5 minutos
+_AUTH_FAIL_MAX = 10         # falhas toleradas por IP na janela antes do cooldown
+_auth_fails: dict[str, list[float]] = {}
+_auth_fails_lock = Lock()
+
+
+def _client_ip(scope) -> str:
+    """IP do cliente de um Request ou WebSocket; 'unknown' se indisponível."""
+    client = getattr(scope, "client", None)
+    return client.host if client and client.host else "unknown"
+
+
+def _auth_is_blocked(ip: str) -> bool:
+    """True se o IP estourou o teto de falhas dentro da janela (poda as velhas)."""
+    now = time.monotonic()
+    with _auth_fails_lock:
+        fails = [t for t in _auth_fails.get(ip, []) if now - t < _AUTH_FAIL_WINDOW_S]
+        if fails:
+            _auth_fails[ip] = fails
+        else:
+            _auth_fails.pop(ip, None)
+        return len(fails) >= _AUTH_FAIL_MAX
+
+
+def _record_auth_failure(ip: str) -> None:
+    now = time.monotonic()
+    with _auth_fails_lock:
+        fails = [t for t in _auth_fails.get(ip, []) if now - t < _AUTH_FAIL_WINDOW_S]
+        fails.append(now)
+        _auth_fails[ip] = fails
+    logger.warning("DASHBOARD_AUTH_FAIL ip=%s falhas_na_janela=%s", ip, len(fails))
+
+
+def _clear_auth_failures(ip: str) -> None:
+    with _auth_fails_lock:
+        _auth_fails.pop(ip, None)
+
+
+def verify_credentials(
+    request: Request, credentials: HTTPBasicCredentials = Depends(security)
+) -> str:
+    ip = _client_ip(request)
+    if _auth_is_blocked(ip):
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail="Muitas tentativas de login. Tente de novo em alguns minutos.",
+            headers={"Retry-After": str(_AUTH_FAIL_WINDOW_S)},
+        )
     correct = _password_configured() and compare_digest(
         credentials.password.encode(), DASHBOARD_PASSWORD.encode()
     )
     if not correct:
+        _record_auth_failure(ip)
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Incorrect credentials",
             headers={"WWW-Authenticate": "Basic"},
         )
+    _clear_auth_failures(ip)
     return credentials.username
 
 
@@ -443,9 +505,15 @@ def _ws_authorized(ws: WebSocket) -> bool:
 
 @app.websocket("/ws")
 async def websocket_endpoint(ws: WebSocket):
-    if not _ws_authorized(ws):
+    ip = _client_ip(ws)
+    if _auth_is_blocked(ip):
         await ws.close(code=status.WS_1008_POLICY_VIOLATION)
         return
+    if not _ws_authorized(ws):
+        _record_auth_failure(ip)
+        await ws.close(code=status.WS_1008_POLICY_VIOLATION)
+        return
+    _clear_auth_failures(ip)
     await manager.connect(ws)
     try:
         while True:
