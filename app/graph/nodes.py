@@ -1673,7 +1673,9 @@ async def collect_info_node(state: ConversationState, config: RunnableConfig) ->
 
         # All programmatic steps complete — _extracted will be merged into update below
 
+    from app.dates import build_date_reference
     _collect_system = COLLECT_SYSTEM.format(
+        current_date=build_date_reference(datetime.now(ZoneInfo("America/Recife"))),
         collected=collected,
         pricing_rules=get_pricing_rules(datetime.now()),
         # A FASE 1 e as interrupções mandam a Eva responder dúvidas de endereço e
