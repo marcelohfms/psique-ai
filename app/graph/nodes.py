@@ -3312,6 +3312,41 @@ async def patient_agent_node(state: ConversationState, config: RunnableConfig) -
     if _receipt_needs_register and not any(
         tc.get("name") == "register_payment" for tc in (response.tool_calls or [])
     ):
+        # Comprovante de número SEM paciente cadastrado: não há consulta para anexar
+        # o pagamento, e register_payment devolveria só "informe o nome". Forçar a tool
+        # transformaria uma imagem comercial mal classificada (ou de um não-paciente)
+        # numa pergunta robótica de pagamento (achado 4 da auditoria comportamental).
+        # Nada legítimo se perde: register_payment nunca registra sem paciente resolvido.
+        # Em caso de falha na consulta, força por segurança (preserva o caso Isadora).
+        try:
+            _sender_has_patient = bool(await get_users_by_phone(state.get("phone")))
+        except Exception:
+            _logger.exception(
+                "GUARD_RECEIPT_REGISTER: get_users_by_phone falhou — forçando por segurança phone=%s",
+                state.get("phone"),
+            )
+            _sender_has_patient = True
+    else:
+        _sender_has_patient = True
+
+    if _receipt_needs_register and not _sender_has_patient:
+        _logger.warning(
+            "GUARD_RECEIPT_REGISTER: comprovante de número sem paciente — não força "
+            "register_payment, deixa a resposta natural seguir. phone=%s",
+            state.get("phone"),
+        )
+        try:
+            await log_event("payment_receipt_from_unknown_number", state.get("phone"), {
+                "image_description": _receipt_content[:200],
+            })
+        except Exception:
+            _logger.exception(
+                "log_event payment_receipt_from_unknown_number falhou phone=%s", state.get("phone")
+            )
+
+    if _receipt_needs_register and _sender_has_patient and not any(
+        tc.get("name") == "register_payment" for tc in (response.tool_calls or [])
+    ):
         import re as _re_rp
         import uuid as _uuid_rp
         _dl_m = _re_rp.search(r"\[drive_link:(\S+?)\]", _receipt_content)

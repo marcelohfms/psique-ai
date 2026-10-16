@@ -4928,8 +4928,12 @@ _GUARD_RECEIPT_PATCHES = dict(
 )
 
 
-async def _run_agent_with_response(state: dict, ai_response) -> tuple[dict, AsyncMock]:
-    """Roda patient_agent_node com a resposta da LLM mockada; retorna (result, send_text)."""
+async def _run_agent_with_response(state: dict, ai_response, users=None) -> tuple[dict, AsyncMock]:
+    """Roda patient_agent_node com a resposta da LLM mockada; retorna (result, send_text).
+
+    `users` controla o retorno de get_users_by_phone no guard de comprovante. Default:
+    um paciente cadastrado (guard força register_payment). Passe [] para simular um
+    número sem paciente."""
     from app.graph.nodes import patient_agent_node
 
     async def fake_ainvoke(messages):
@@ -4938,6 +4942,9 @@ async def _run_agent_with_response(state: dict, ai_response) -> tuple[dict, Asyn
     with patch("app.graph.nodes._get_agent_llm") as mock_llm_fn, \
          patch("app.graph.nodes.send_text", new_callable=AsyncMock) as mock_send, \
          patch("app.graph.nodes.save_message", new_callable=AsyncMock), \
+         patch("app.graph.nodes.log_event", new_callable=AsyncMock), \
+         patch("app.graph.nodes.get_users_by_phone", new_callable=AsyncMock,
+               return_value=[{"id": "u1"}] if users is None else users), \
          _GUARD_RECEIPT_PATCHES["get_upcoming_appointments"], \
          _GUARD_RECEIPT_PATCHES["get_user_by_phone"], \
          _GUARD_RECEIPT_PATCHES["get_last_assistant_message_time"], \
@@ -5022,6 +5029,31 @@ async def test_receipt_guard_does_not_refire_after_register_payment_ran():
 
     assert not _register_payment_calls(result), "guard reinjetou register_payment após execução"
     mock_send.assert_awaited()  # resposta final vai ao paciente normalmente
+
+
+async def test_receipt_from_unknown_number_does_not_force_register_payment():
+    """Comprovante (ou imagem comercial mal classificada) vindo de número SEM paciente
+    cadastrado: o guard NÃO força register_payment (não há consulta para anexar), e a
+    resposta natural da Eva segue. Evita puxar um não-paciente para um fluxo de pagamento
+    (achado 4 da auditoria comportamental)."""
+    state = _make_patient_agent_state(messages=[HumanMessage(content=_RECEIPT_MSG)])
+    ai_response = AIMessage(content="Oi! Sou a Eva, assistente virtual da Clínica Psique. Como posso ajudar?")
+
+    result, mock_send = await _run_agent_with_response(state, ai_response, users=[])
+
+    assert not _register_payment_calls(result), "guard forçou register_payment para número sem paciente"
+    mock_send.assert_awaited()  # resposta natural da Eva vai ao remetente
+
+
+async def test_receipt_from_registered_patient_still_forces_register_payment():
+    """Regressão: com paciente cadastrado no número, o guard continua forçando
+    register_payment (caso Isadora não pode regredir)."""
+    state = _make_patient_agent_state(messages=[HumanMessage(content=_RECEIPT_MSG)])
+    ai_response = AIMessage(content="A taxa de reserva já foi recebida! 😊")
+
+    result, mock_send = await _run_agent_with_response(state, ai_response, users=[{"id": "u1"}])
+
+    assert len(_register_payment_calls(result)) == 1, "guard deixou de forçar para paciente real"
 
 
 async def test_receipt_guard_does_not_duplicate_llm_call():
