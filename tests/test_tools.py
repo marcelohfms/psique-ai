@@ -4265,6 +4265,39 @@ async def test_keep_original_appointment_calendar_failure_keeps_pending_status()
     table.update.assert_not_called()
 
 
+async def test_keep_original_born_confirmed_when_tomorrow():
+    """Reverter para o horário original que cai amanhã nasce confirmada."""
+    from app.graph.tools import keep_original_appointment
+    client, table, execute = _make_supabase_client()
+    tomorrow = (datetime.now(TZ) + timedelta(days=1)).replace(hour=14, minute=0, second=0, microsecond=0)
+    end = tomorrow + timedelta(minutes=60)
+    execute.return_value = MagicMock(data={
+        "appointment_id": "evt-old", "status": "pending_reschedule",
+        "patient_id": "user-1",
+        "start_time": tomorrow.isoformat(), "end_time": end.isoformat(),
+        "modality": "presencial", "patients": {"name": "Maria", "email": "m@x.com"},
+    })
+    with patch("app.graph.tools.get_supabase", new_callable=AsyncMock, return_value=client), \
+         patch("app.graph.tools.get_users_by_phone", new_callable=AsyncMock, return_value=[{"id": "user-1"}]), \
+         patch("app.graph.tools._resolve_doctor", new_callable=AsyncMock, return_value="julio"), \
+         patch("app.graph.tools._get_doctor_calendar_id", new_callable=AsyncMock, return_value="cal123"), \
+         patch("app.google_calendar._credentials", return_value=MagicMock()), \
+         patch("googleapiclient.discovery.build", return_value=MagicMock()), \
+         patch("app.google_calendar._get_busy", return_value=[]), \
+         patch("app.google_calendar.create_event", new_callable=AsyncMock, return_value="evt-new"), \
+         patch("app.graph.tools.log_event", new_callable=AsyncMock), \
+         patch("app.graph.tools._notify_clinic", new_callable=AsyncMock), \
+         patch("app.google_calendar.mark_event_confirmed", new_callable=AsyncMock) as mock_mark:
+        await keep_original_appointment.coroutine(
+            appointment_id="evt-old",
+            state=_make_state(),
+            config=CONFIG,
+        )
+    payload = table.update.call_args[0][0]
+    assert payload.get("confirmed_at") is not None
+    mock_mark.assert_awaited_once_with("cal123", "evt-new")
+
+
 # ── request_document ──────────────────────────────────────────────────────────
 
 async def test_request_document_inserts_record_and_returns_success():

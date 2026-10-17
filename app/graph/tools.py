@@ -2329,12 +2329,21 @@ async def keep_original_appointment(
         return f"Não foi possível recriar o evento no Google Calendar. Erro: {e}"
 
     # Só status/evento/flags de remarcação mudam — booking_fee_paid_at/paid_at ficam intactos.
-    await client.from_("appointments").update({
+    _now = datetime.now(TZ)
+    _born_confirmed = is_born_confirmed(start, _now)
+    _keep_update = {
         "appointment_id": new_event_id,
         "status": "scheduled",
         "reschedule_requested_at": None,
-        "updated_at": datetime.now(TZ).isoformat(),
-    }).eq("appointment_id", appointment_id).execute()
+        "updated_at": _now.isoformat(),
+    }
+    if _born_confirmed:
+        # Horário original na véspera/mesmo dia: nasce confirmada ao ser revertida.
+        _keep_update["confirmed_at"] = _now.isoformat()
+    await client.from_("appointments").update(_keep_update).eq("appointment_id", appointment_id).execute()
+
+    if _born_confirmed:
+        await _apply_confirmation(client, calendar_id, new_event_id, phone, auto=True)
 
     await log_event("reschedule_reverted", phone, {
         "appointment_id": appointment_id,
