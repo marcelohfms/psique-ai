@@ -407,6 +407,44 @@ async def test_rollback_calls_cancel_event():
     mocks[3].assert_awaited_once_with("cal", "evt1")
 
 
+@pytest.mark.asyncio
+async def test_create_appointments_born_confirmed_when_tomorrow():
+    """Consulta marcada pelo painel para amanhã nasce confirmada."""
+    client, q = _sb([])
+    tomorrow = (FROZEN_NOW + timedelta(days=1)).replace(hour=9, minute=0, second=0, microsecond=0)
+    with patch("app.panel_booking.get_supabase", new_callable=AsyncMock, return_value=client), \
+         patch("app.graph.tools._get_doctor_calendar_id", new_callable=AsyncMock, return_value="cal"), \
+         patch("app.google_calendar.create_event", new_callable=AsyncMock, return_value="evt1"), \
+         patch("app.google_calendar.cancel_event", new_callable=AsyncMock), \
+         patch("app.panel_booking.log_event", new_callable=AsyncMock), \
+         patch("app.graph.tools.log_event", new_callable=AsyncMock) as mock_tools_log, \
+         patch("app.google_calendar.mark_event_confirmed", new_callable=AsyncMock) as mock_mark, \
+         patch("app.panel_booking._notify_clinic_async"):
+        await pb.create_appointments(_req(parts=[{"start": tomorrow, "minutes": 60}]))
+    rows = q.insert.call_args[0][0]
+    assert rows[0].get("confirmed_at") is not None
+    mock_mark.assert_awaited_once_with("cal", "evt1")
+    assert any(c.args[0] == "appointment_confirmed" for c in mock_tools_log.await_args_list)
+
+
+@pytest.mark.asyncio
+async def test_create_appointments_not_confirmed_when_far():
+    """Consulta marcada pelo painel para daqui a 8 dias segue o fluxo normal."""
+    client, q = _sb([])
+    with patch("app.panel_booking.get_supabase", new_callable=AsyncMock, return_value=client), \
+         patch("app.graph.tools._get_doctor_calendar_id", new_callable=AsyncMock, return_value="cal"), \
+         patch("app.google_calendar.create_event", new_callable=AsyncMock, return_value="evt1"), \
+         patch("app.google_calendar.cancel_event", new_callable=AsyncMock), \
+         patch("app.panel_booking.log_event", new_callable=AsyncMock), \
+         patch("app.graph.tools.log_event", new_callable=AsyncMock), \
+         patch("app.google_calendar.mark_event_confirmed", new_callable=AsyncMock) as mock_mark, \
+         patch("app.panel_booking._notify_clinic_async"):
+        await pb.create_appointments(_req())  # MON_9 = 2026-10-05, 8 dias à frente do FROZEN_NOW
+    rows = q.insert.call_args[0][0]
+    assert rows[0].get("confirmed_at") is None
+    mock_mark.assert_not_awaited()
+
+
 # ── mensagem ao paciente ──────────────────────────────────────────────────────
 
 @pytest.mark.asyncio

@@ -12,6 +12,7 @@ from zoneinfo import ZoneInfo
 
 from app.booking_texts import DOCTOR_LABELS, confirmation_text, format_appt_line
 from app.database import DOCTOR_IDS, get_supabase, log_event, save_message
+from app.dates import is_born_confirmed
 from app.google_calendar import grid_violation
 from app.patients import (
     _is_held,
@@ -229,7 +230,7 @@ def _is_minor_julio(patient: dict, doctor: str, day) -> bool:
 
 async def create_appointments(req: dict) -> dict:
     """Cria o(s) evento(s) e a(s) linha(s). Tudo ou nada."""
-    from app.graph.tools import _get_doctor_calendar_id
+    from app.graph.tools import _get_doctor_calendar_id, _apply_confirmation
     from app.google_calendar import cancel_event, create_event
 
     doctor = req["doctor"]
@@ -249,6 +250,7 @@ async def create_appointments(req: dict) -> dict:
         raise BookingError("parts e session_note incompatíveis (split malformado)")
 
     now_iso = datetime.now(TZ).isoformat()
+    _clock = _now()  # relógio do módulo (testável/congelável); NÃO sombrear a função _now
     fee, kind = _fee_fields(req, now_iso)
     # Split (1ª consulta infantil em duas sessões) é sempre primeira_consulta,
     # mesmo que a atendente esqueça de marcar a caixinha.
@@ -282,6 +284,7 @@ async def create_appointments(req: dict) -> dict:
                 "modality": req["modality"],
                 "consultation_type": ctype,
                 "session_note": note or None,
+                "confirmed_at": _clock.isoformat() if is_born_confirmed(start, _clock) else None,
                 **fee,
             }
             for event_id, start, minutes, note in created
@@ -305,6 +308,8 @@ async def create_appointments(req: dict) -> dict:
             "origem": "painel", "atendente": req.get("agent") or "", "encaixe": bool(req.get("encaixe")),
             "appointment_id": event_id,
         })
+        if is_born_confirmed(start, _clock):
+            await _apply_confirmation(client, calendar_id, event_id, req["phone"], auto=True)
     if req.get("notify_clinic", True):  # remarcação tardia manda o próprio aviso
         modality_label = "Online" if req["modality"] == "online" else "Presencial"
         _notify_clinic_async(

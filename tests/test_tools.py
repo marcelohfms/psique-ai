@@ -1902,6 +1902,58 @@ async def test_confirm_appointment_slot_clash_guard_bypassed_by_force_encaixe():
 
 
 
+async def test_confirm_appointment_born_confirmed_when_tomorrow():
+    """Consulta marcada para amanhã nasce confirmada: grava confirmed_at, pinta o
+    evento de verde e registra appointment_confirmed(auto)."""
+    from app.graph.tools import confirm_appointment
+    client, table, execute = _make_supabase_client()
+    tomorrow = (datetime.now(TZ) + timedelta(days=1)).replace(hour=9, minute=0, second=0, microsecond=0)
+    with patch("app.graph.tools._get_doctor_calendar_id", new_callable=AsyncMock, return_value="cal123"), \
+         patch("app.google_calendar.create_event", new_callable=AsyncMock, return_value="evt-tom"), \
+         patch("app.google_calendar.grid_violation", return_value=None), \
+         patch("app.graph.tools.get_supabase", new_callable=AsyncMock, return_value=client), \
+         patch("app.graph.tools.get_users_by_phone", new_callable=AsyncMock, return_value=[{"id": "user-1", "_contact_id": "c-1"}]), \
+         patch("app.graph.tools.get_user_by_phone", new_callable=AsyncMock, return_value={"id": "user-1", "_contact_id": "c-1"}), \
+         patch("app.graph.tools.log_event", new_callable=AsyncMock) as mock_log, \
+         patch("app.google_calendar.mark_event_confirmed", new_callable=AsyncMock) as mock_mark, \
+         patch("app.graph.tools._notify_clinic", new_callable=AsyncMock):
+        await confirm_appointment.coroutine(
+            slot_datetime=tomorrow.strftime("%Y-%m-%dT%H:%M:%S"),
+            slot_duration_minutes=60,
+            state=_make_state(),
+            config=CONFIG,
+        )
+    payload = table.insert.call_args[0][0]
+    assert payload.get("confirmed_at") is not None
+    mock_mark.assert_awaited_once_with("cal123", "evt-tom")
+    assert any(c.args[0] == "appointment_confirmed" for c in mock_log.await_args_list)
+
+
+async def test_confirm_appointment_not_confirmed_when_far():
+    """Consulta a 5 dias segue o fluxo normal: confirmed_at nulo, sem pintar."""
+    from app.graph.tools import confirm_appointment
+    client, table, execute = _make_supabase_client()
+    far = (datetime.now(TZ) + timedelta(days=5)).replace(hour=9, minute=0, second=0, microsecond=0)
+    with patch("app.graph.tools._get_doctor_calendar_id", new_callable=AsyncMock, return_value="cal123"), \
+         patch("app.google_calendar.create_event", new_callable=AsyncMock, return_value="evt-far"), \
+         patch("app.google_calendar.grid_violation", return_value=None), \
+         patch("app.graph.tools.get_supabase", new_callable=AsyncMock, return_value=client), \
+         patch("app.graph.tools.get_users_by_phone", new_callable=AsyncMock, return_value=[{"id": "user-1", "_contact_id": "c-1"}]), \
+         patch("app.graph.tools.get_user_by_phone", new_callable=AsyncMock, return_value={"id": "user-1", "_contact_id": "c-1"}), \
+         patch("app.graph.tools.log_event", new_callable=AsyncMock), \
+         patch("app.google_calendar.mark_event_confirmed", new_callable=AsyncMock) as mock_mark, \
+         patch("app.graph.tools._notify_clinic", new_callable=AsyncMock):
+        await confirm_appointment.coroutine(
+            slot_datetime=far.strftime("%Y-%m-%dT%H:%M:%S"),
+            slot_duration_minutes=60,
+            state=_make_state(),
+            config=CONFIG,
+        )
+    payload = table.insert.call_args[0][0]
+    assert payload.get("confirmed_at") is None
+    mock_mark.assert_not_awaited()
+
+
 # ── confirm_appointment: 1ª consulta de menor dividida em duas sessões ─────────
 
 def _split_state(**kwargs) -> dict:
@@ -3218,6 +3270,66 @@ async def test_reschedule_appointment_updates_event_and_notifies():
     mock_notify.assert_called()
 
 
+async def test_reschedule_born_confirmed_when_tomorrow():
+    """Remarcar para amanhã nasce confirmada: grava confirmed_at e pinta o evento."""
+    from app.graph.tools import reschedule_appointment
+    client, table, execute = _make_supabase_client()
+    execute.return_value = MagicMock(data={
+        "start_time": "2026-01-01T09:00:00+00:00",  # data antiga (passado): a data mudou
+        "patient_id": "user-1", "patients": {"name": "Maria"},
+        "booking_fee_paid_at": None, "booking_fee_waived": False,
+        "reschedule_initiated_by": "patient",
+    })
+    tomorrow = (datetime.now(TZ) + timedelta(days=1)).replace(hour=10, minute=0, second=0, microsecond=0)
+    with patch("app.graph.tools._get_doctor_calendar_id", new_callable=AsyncMock, return_value="cal123"), \
+         patch("app.google_calendar.update_event", new_callable=AsyncMock), \
+         patch("app.graph.tools.get_supabase", new_callable=AsyncMock, return_value=client), \
+         patch("app.graph.tools.get_users_by_phone", new_callable=AsyncMock, return_value=[{"id": "user-1"}]), \
+         patch("app.graph.tools.log_event", new_callable=AsyncMock), \
+         patch("app.google_calendar.mark_event_confirmed", new_callable=AsyncMock) as mock_mark, \
+         patch("app.graph.tools._notify_clinic", new_callable=AsyncMock):
+        await reschedule_appointment.coroutine(
+            appointment_id="evt-abc",
+            new_slot_datetime=tomorrow.strftime("%Y-%m-%dT%H:%M:%S"),
+            slot_duration_minutes=60,
+            state=_make_state(),
+            config=CONFIG,
+        )
+    payload = table.update.call_args[0][0]
+    assert payload.get("confirmed_at") is not None
+    mock_mark.assert_awaited_once_with("cal123", "evt-abc")
+
+
+async def test_reschedule_clears_confirmed_when_far():
+    """Remarcar para data distante zera confirmed_at (comportamento atual preservado)."""
+    from app.graph.tools import reschedule_appointment
+    client, table, execute = _make_supabase_client()
+    execute.return_value = MagicMock(data={
+        "start_time": "2026-01-01T09:00:00+00:00",
+        "patient_id": "user-1", "patients": {"name": "Maria"},
+        "booking_fee_paid_at": None, "booking_fee_waived": False,
+        "reschedule_initiated_by": "patient",
+    })
+    far = (datetime.now(TZ) + timedelta(days=7)).replace(hour=10, minute=0, second=0, microsecond=0)
+    with patch("app.graph.tools._get_doctor_calendar_id", new_callable=AsyncMock, return_value="cal123"), \
+         patch("app.google_calendar.update_event", new_callable=AsyncMock), \
+         patch("app.graph.tools.get_supabase", new_callable=AsyncMock, return_value=client), \
+         patch("app.graph.tools.get_users_by_phone", new_callable=AsyncMock, return_value=[{"id": "user-1"}]), \
+         patch("app.graph.tools.log_event", new_callable=AsyncMock), \
+         patch("app.google_calendar.mark_event_confirmed", new_callable=AsyncMock) as mock_mark, \
+         patch("app.graph.tools._notify_clinic", new_callable=AsyncMock):
+        await reschedule_appointment.coroutine(
+            appointment_id="evt-abc",
+            new_slot_datetime=far.strftime("%Y-%m-%dT%H:%M:%S"),
+            slot_duration_minutes=60,
+            state=_make_state(),
+            config=CONFIG,
+        )
+    payload = table.update.call_args[0][0]
+    assert payload.get("confirmed_at") is None
+    mock_mark.assert_not_awaited()
+
+
 # ── lote mark_reschedule_in_progress + reschedule_appointment ────────────────
 # Caso Maria Augusta (5587996056531, 29/09/2026): a Eva chamou as duas tools na
 # mesma resposta, o ToolNode rodou em paralelo e o reschedule leu a consulta como
@@ -4274,6 +4386,39 @@ async def test_keep_original_appointment_calendar_failure_keeps_pending_status()
         )
     assert "Não foi possível" in result
     table.update.assert_not_called()
+
+
+async def test_keep_original_born_confirmed_when_tomorrow():
+    """Reverter para o horário original que cai amanhã nasce confirmada."""
+    from app.graph.tools import keep_original_appointment
+    client, table, execute = _make_supabase_client()
+    tomorrow = (datetime.now(TZ) + timedelta(days=1)).replace(hour=14, minute=0, second=0, microsecond=0)
+    end = tomorrow + timedelta(minutes=60)
+    execute.return_value = MagicMock(data={
+        "appointment_id": "evt-old", "status": "pending_reschedule",
+        "patient_id": "user-1",
+        "start_time": tomorrow.isoformat(), "end_time": end.isoformat(),
+        "modality": "presencial", "patients": {"name": "Maria", "email": "m@x.com"},
+    })
+    with patch("app.graph.tools.get_supabase", new_callable=AsyncMock, return_value=client), \
+         patch("app.graph.tools.get_users_by_phone", new_callable=AsyncMock, return_value=[{"id": "user-1"}]), \
+         patch("app.graph.tools._resolve_doctor", new_callable=AsyncMock, return_value="julio"), \
+         patch("app.graph.tools._get_doctor_calendar_id", new_callable=AsyncMock, return_value="cal123"), \
+         patch("app.google_calendar._credentials", return_value=MagicMock()), \
+         patch("googleapiclient.discovery.build", return_value=MagicMock()), \
+         patch("app.google_calendar._get_busy", return_value=[]), \
+         patch("app.google_calendar.create_event", new_callable=AsyncMock, return_value="evt-new"), \
+         patch("app.graph.tools.log_event", new_callable=AsyncMock), \
+         patch("app.graph.tools._notify_clinic", new_callable=AsyncMock), \
+         patch("app.google_calendar.mark_event_confirmed", new_callable=AsyncMock) as mock_mark:
+        await keep_original_appointment.coroutine(
+            appointment_id="evt-old",
+            state=_make_state(),
+            config=CONFIG,
+        )
+    payload = table.update.call_args[0][0]
+    assert payload.get("confirmed_at") is not None
+    mock_mark.assert_awaited_once_with("cal123", "evt-new")
 
 
 # ── request_document ──────────────────────────────────────────────────────────
@@ -8262,3 +8407,72 @@ async def test_transfer_note_labels_unknown_sender_as_contato():
     note = mock_note.call_args[0][1]
     assert "Paciente:" not in note
     assert "👤 Contato:" in note
+
+
+async def test_register_payment_reactivation_born_confirmed_when_tomorrow():
+    """Reativar uma consulta cancelada cujo horário original cai amanhã e segue
+    livre: recria o evento, grava confirmed_at e pinta o Calendar."""
+    from app.graph.tools import register_payment
+
+    julio_id = "d5baa58b-a788-4f40-b8c0-512c189150be"
+    slot_start = (datetime.now(TZ) + timedelta(days=1)).replace(hour=14, minute=0, second=0, microsecond=0)
+    slot_end = slot_start + timedelta(hours=1)
+
+    results = [
+        MagicMock(data=[{"id": "user-123", "name": "Ricardo", "doctor_id": julio_id}]),
+        MagicMock(data=[]),  # scheduled → nenhum
+        MagicMock(data=[{"appointment_id": "apt-ricardo"}]),  # canceled futuro c/ taxa pendente
+        MagicMock(data=[{  # canceled_result da reativação
+            "appointment_id": "apt-ricardo",
+            "start_time": slot_start.isoformat(),
+            "end_time": slot_end.isoformat(),
+            "doctor_id": julio_id,
+            "modality": "presencial",
+        }]),
+        MagicMock(data={"agenda_id": "cal-julio"}),  # doctors.agenda_id (.single())
+        MagicMock(data=[]),  # update → scheduled + booking_fee_paid_at + confirmed_at
+        MagicMock(data={}),  # patients.custom_price (maybe_single)
+    ]
+    execute = AsyncMock(side_effect=results)
+    table = MagicMock()
+    for m in ("select", "eq", "in_", "limit", "single", "maybe_single", "ilike",
+              "gte", "gt", "lt", "neq", "order", "insert", "update", "upsert", "is_"):
+        getattr(table, m).return_value = table
+    table.execute = execute
+
+    events_table = MagicMock()
+    for m in ("select", "eq", "in_", "limit", "gte", "order"):
+        getattr(events_table, m).return_value = events_table
+    events_table.execute = AsyncMock(return_value=MagicMock(data=[]))
+
+    client = MagicMock()
+
+    def _from(name):
+        return events_table if name == "events" else table
+    client.from_.side_effect = _from
+
+    with patch("app.graph.tools.get_supabase", new_callable=AsyncMock, return_value=client), \
+         patch("app.patients.get_contact_by_phone", new_callable=AsyncMock, return_value={"id": "contact-1"}), \
+         patch("app.patients.get_patients_by_contact", new_callable=AsyncMock, return_value=[{"id": "user-123"}]), \
+         patch("app.patients.get_contacts_for_patient", new_callable=AsyncMock, return_value=[{"phone": "5581988912861"}]), \
+         patch("app.google_calendar._credentials", return_value=MagicMock()), \
+         patch("googleapiclient.discovery.build", return_value=MagicMock()), \
+         patch("app.google_calendar._get_busy", return_value=[]), \
+         patch("app.google_calendar.create_event", new_callable=AsyncMock, return_value="evt-react"), \
+         patch("app.google_calendar.mark_event_confirmed", new_callable=AsyncMock) as mock_mark, \
+         patch("app.graph.tools.log_event", new_callable=AsyncMock), \
+         patch("app.graph.tools._notify_clinic", new_callable=AsyncMock), \
+         patch("app.google_drive.rename_file", new_callable=AsyncMock), \
+         patch("app.google_sheets.append_payment_receipt", new_callable=AsyncMock), \
+         patch("app.graph.tools.send_text", new_callable=AsyncMock):
+        await register_payment.coroutine(
+            amount="100,00",
+            drive_link="https://drive.google.com/file/d/abc/view",
+            state=_make_state(),
+            config=CONFIG,
+            patient_name_override="Ricardo",
+        )
+
+    update_payloads = [c.args[0] for c in table.update.call_args_list]
+    assert any(p.get("confirmed_at") for p in update_payloads), update_payloads
+    mock_mark.assert_awaited_once_with("cal-julio", "evt-react")
