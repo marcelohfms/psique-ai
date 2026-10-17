@@ -76,3 +76,12 @@ def build_date_reference(now: datetime) -> str:
             prefix = " " * 9
         lines.append(f"  {prefix}{d.strftime('%d/%m')} ({weekday_pt(d)})")
     return "\n".join(lines)
+
+
+def is_born_confirmed(start: datetime, now: datetime) -> bool:
+    """True quando a consulta está a 1 dia ou menos — véspera ou mesmo dia —
+    no momento em que ganha o horário. Datas no passado retornam False (não são
+    véspera nem mesmo dia). Ambos os argumentos devem ser timezone-aware; a
+    comparação é feita pela data real de Recife."""
+    days_ahead = (start.astimezone(TZ).date() - now.astimezone(TZ).date()).days
+    return 0 <= days_ahead <= 1

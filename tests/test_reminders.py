@@ -140,3 +140,31 @@ async def test_appt_reminder_adult_with_self_only_self():
         )
     grc.assert_awaited_once_with("p-joao", appt, include_inactive=True)
     assert send.await_count == 1
+
+
+@pytest.mark.asyncio
+async def test_day_before_query_skips_confirmed():
+    """A query da véspera filtra confirmed_at IS NULL: consulta já confirmada —
+    inclusive a que nasceu confirmada na marcação — não recebe o lembrete."""
+    from datetime import datetime as _dt
+
+    class _FakeDt(_dt):
+        @classmethod
+        def now(cls, tz=None):
+            return _dt(2026, 6, 19, 7, 0, tzinfo=TZ)  # dentro da janela 7h-12h
+
+    table = MagicMock()
+    for m in ("select", "eq", "is_", "gt", "gte", "lt", "lte"):
+        getattr(table, m).return_value = table
+    table.execute = AsyncMock(return_value=MagicMock(data=[]))
+    client = MagicMock()
+    client.from_.return_value = table
+
+    with patch("supabase.acreate_client", new_callable=AsyncMock, return_value=client), \
+         patch("scripts.send_appointment_reminders.datetime", _FakeDt), \
+         patch.dict(os.environ, {"SUPABASE_URL": "x", "SUPABASE_KEY": "y"}, clear=False):
+        os.environ.pop("SUPABASE_CONNECTION_STRING", None)
+        await rem.main()
+
+    is_filters = [c.args for c in table.is_.call_args_list]
+    assert ("confirmed_at", "null") in is_filters, is_filters

@@ -13,6 +13,7 @@ import logging
 
 from app.whatsapp import send_text
 from app.database import get_supabase, log_event, upsert_user, get_user_by_phone, get_users_by_phone, DOCTOR_IDS, DOCTOR_NAMES
+from app.dates import is_born_confirmed
 from app.phone import _phone_variants
 from app.chatwoot import get_conversation_id, unassign_agent_bot, add_label
 from app.graph.prompts import CORRECT_PIX_KEY
@@ -1575,6 +1576,9 @@ async def confirm_appointment(
             _bfw = _bfw or bool(_split_sibling.get("booking_fee_waived"))
             _bfp_at = _split_sibling.get("booking_fee_paid_at") or _bfp_at
 
+        _now = datetime.now(TZ)
+        _born_confirmed = is_born_confirmed(start, _now)
+
         await client.from_("appointments").insert({
             "patient_id": user["id"] if user else None,
             "contact_id": user.get("_contact_id") if user else None,
@@ -1587,6 +1591,9 @@ async def confirm_appointment(
             "consultation_type": consultation_type,
             "booking_fee_waived": _bfw,
             "booking_fee_paid_at": _bfp_at,
+            # Véspera ou mesmo dia → o paciente acabou de marcar, a presença já
+            # está, na prática, confirmada. Nasce confirmada e pula o lembrete.
+            "confirmed_at": _now.isoformat() if _born_confirmed else None,
         }).execute()
     except Exception as e:
         _logger.error("CONFIRM_DEBUG persist FAILED (rolling back calendar event): %s", e, exc_info=True)
@@ -1604,6 +1611,9 @@ async def confirm_appointment(
         "patient_name": patient_name,
         "session_note": session_note,
     })
+
+    if _born_confirmed:
+        await _apply_confirmation(client, calendar_id, event_id, phone, auto=True)
 
     session_label = f" ({session_note})" if session_note else ""
     modality_line = f"\nModalidade: {'Online' if effective_modality == 'online' else 'Presencial'}" if effective_modality else ""
@@ -2319,12 +2329,21 @@ async def keep_original_appointment(
         return f"Não foi possível recriar o evento no Google Calendar. Erro: {e}"
 
     # Só status/evento/flags de remarcação mudam — booking_fee_paid_at/paid_at ficam intactos.
-    await client.from_("appointments").update({
+    _now = datetime.now(TZ)
+    _born_confirmed = is_born_confirmed(start, _now)
+    _keep_update = {
         "appointment_id": new_event_id,
         "status": "scheduled",
         "reschedule_requested_at": None,
-        "updated_at": datetime.now(TZ).isoformat(),
-    }).eq("appointment_id", appointment_id).execute()
+        "updated_at": _now.isoformat(),
+    }
+    if _born_confirmed:
+        # Horário original na véspera/mesmo dia: nasce confirmada ao ser revertida.
+        _keep_update["confirmed_at"] = _now.isoformat()
+    await client.from_("appointments").update(_keep_update).eq("appointment_id", appointment_id).execute()
+
+    if _born_confirmed:
+        await _apply_confirmation(client, calendar_id, new_event_id, phone, auto=True)
 
     await log_event("reschedule_reverted", phone, {
         "appointment_id": appointment_id,
@@ -2754,18 +2773,20 @@ async def reschedule_appointment(
 
     # Update DB record
     new_end = new_start + timedelta(minutes=slot_duration_minutes)
+    # A nova data nasce confirmada quando o paciente confirma a remarcação E a
+    # data realmente mudou E ela cai na véspera/mesmo dia. Caso contrário,
+    # confirmed_at é zerado: a confirmação da data antiga não vale para a nova
+    # (caso Isaac 13/09) e, longe da data, o lembrete de véspera pede a confirmação.
+    _now = datetime.now(TZ)
+    _date_changed = old_dt is None or old_dt != new_start
+    _born_confirmed = confirmed_by_patient and _date_changed and is_born_confirmed(new_start, _now)
     reschedule_update: dict = {
         "start_time": new_start.isoformat(),
         "end_time": new_end.isoformat(),
-        "updated_at": datetime.now(TZ).isoformat(),
+        "updated_at": _now.isoformat(),
         "reminder_day_before_sent_at": None,
         "reminder_day_of_sent_at": None,
-        # A confirmação de presença vale para uma DATA específica. Ao mudar a data,
-        # a confirmação da data antiga deixa de valer — o paciente ainda não
-        # confirmou a nova. Se confirmed_at sobrevivesse, a trava de idempotência
-        # em confirm_attendance suprimiria a confirmação genuína da nova data (nem
-        # regravava nem pintava o evento de verde no Calendar). Caso Isaac 13/09.
-        "confirmed_at": None,
+        "confirmed_at": _now.isoformat() if _born_confirmed else None,
     }
 
     # Only mark as scheduled and clear reschedule flag if patient confirmed
@@ -2781,6 +2802,8 @@ async def reschedule_appointment(
     if clinic_swap:
         reschedule_update["reschedule_initiated_by"] = "clinic"
     await client.from_("appointments").update(reschedule_update).eq("appointment_id", appointment_id).execute()
+    if _born_confirmed:
+        await _apply_confirmation(client, calendar_id, appointment_id, phone, auto=True)
 
     _weekday_new = _WEEKDAY_LABELS_PT.get(new_start.weekday(), "")
     formatted_new = f"{_weekday_new}, {new_start.strftime('%d/%m/%Y às %H:%M')}" if _weekday_new else new_start.strftime("%d/%m/%Y às %H:%M")
@@ -3428,6 +3451,35 @@ async def nudge_external_contact(
         )
 
 
+async def _apply_confirmation(
+    client,
+    calendar_id: str | None,
+    event_id: str,
+    phone: str,
+    *,
+    auto: bool = True,
+) -> None:
+    """Aplica os efeitos de confirmação de presença: pinta o evento de verde com
+    "✅" no Google Calendar e registra o evento appointment_confirmed. O
+    confirmed_at já foi gravado na linha pelo caller (no insert/update). Uma falha
+    no Calendar NUNCA derruba o fluxo — só registra um aviso. auto=True marca
+    metadata.auto para a auditoria distinguir a confirmação automática
+    (véspera/mesmo dia na marcação) da confirmação feita pelo paciente em
+    confirm_attendance (auto=False)."""
+    if calendar_id:
+        try:
+            from app.google_calendar import mark_event_confirmed
+            await mark_event_confirmed(calendar_id, event_id)
+        except Exception as e:  # noqa: BLE001
+            logging.getLogger(__name__).warning(
+                "MARK_CONFIRMED_FAILED appt=%s error=%s", event_id, e
+            )
+    meta = {"appointment_id": event_id}
+    if auto:
+        meta["auto"] = True
+    await log_event("appointment_confirmed", phone, meta)
+
+
 @tool
 async def confirm_attendance(
     appointment_id: str,
@@ -3534,9 +3586,10 @@ async def confirm_attendance(
         "confirmed_at": datetime.now(TZ).isoformat(),
     }).eq("appointment_id", appointment_id).execute()
 
-    # Marca o evento no Google Calendar como confirmado (verde + "✅" no título),
-    # para a clínica ver de relance quais consultas o paciente já confirmou. Uma
-    # falha aqui não pode derrubar a confirmação em si — só registra no log.
+    # Marca o evento no Google Calendar como confirmado (verde + "✅") e registra
+    # o evento appointment_confirmed. auto=False: foi o paciente que confirmou,
+    # não a regra automática de véspera/mesmo dia na marcação.
+    calendar_id = None
     doctor_id = rows[0].get("doctor_id")
     if doctor_id:
         try:
@@ -3548,17 +3601,15 @@ async def confirm_attendance(
                 .execute()
             )
             calendar_id = (cal.data or {}).get("agenda_id")
-            if calendar_id:
-                from app.google_calendar import mark_event_confirmed
-                await mark_event_confirmed(calendar_id, appointment_id)
         except Exception as e:  # noqa: BLE001
             logging.getLogger(__name__).warning(
-                "MARK_CONFIRMED_FAILED appt=%s error=%s", appointment_id, e
+                "MARK_CONFIRMED_LOOKUP_FAILED appt=%s error=%s", appointment_id, e
             )
 
-    await log_event("appointment_confirmed", config["configurable"]["phone"], {
-        "appointment_id": appointment_id,
-    })
+    await _apply_confirmation(
+        client, calendar_id, appointment_id,
+        config["configurable"]["phone"], auto=False,
+    )
 
     return "Presença confirmada! ✅"
 
@@ -4446,12 +4497,20 @@ async def register_payment(
                         patient_email=state.get("patient_email") or "",
                         patient_number=patient_phone,
                     )
-                    await client.from_("appointments").update({
+                    _now = datetime.now(TZ)
+                    _born_confirmed = is_born_confirmed(slot_start, _now)
+                    _react_update = {
                         "status": "scheduled",
-                        "booking_fee_paid_at": datetime.now(TZ).isoformat(),
+                        "booking_fee_paid_at": _now.isoformat(),
                         "appointment_id": new_event_id,
-                        "updated_at": datetime.now(TZ).isoformat(),
-                    }).eq("appointment_id", canceled_appt["appointment_id"]).execute()
+                        "updated_at": _now.isoformat(),
+                    }
+                    if _born_confirmed:
+                        # Horário reativado na véspera/mesmo dia: nasce confirmada.
+                        _react_update["confirmed_at"] = _now.isoformat()
+                    await client.from_("appointments").update(_react_update).eq("appointment_id", canceled_appt["appointment_id"]).execute()
+                    if _born_confirmed:
+                        await _apply_confirmation(client, calendar_id, new_event_id, patient_phone, auto=True)
                     appointment_dt   = slot_start.strftime("%d/%m/%Y %H:%M")
                     appt_id_to_pay   = None  # already paid above
                     confirmation_msg = (
