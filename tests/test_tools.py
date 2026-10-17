@@ -4047,6 +4047,129 @@ async def test_reschedule_appointment_same_datetime_logs_modality_changed():
     assert "appointment_rescheduled" not in logged_event_types
 
 
+async def test_reschedule_appointment_same_datetime_preserves_confirmed_at():
+    """Troca de modalidade por engano (a Eva chamou reschedule em vez de
+    change_modality, mantendo a MESMA data/hora) NÃO pode zerar a confirmação de
+    presença de uma consulta já confirmada: como a data não muda, confirmed_at e a
+    marca ✅/verde no Calendar continuam valendo. Só a remarcação de verdade (data
+    nova) zera a confirmação (caso Isaac)."""
+    from app.graph.tools import reschedule_appointment
+    client, table, execute = _make_supabase_client()
+    execute.return_value = MagicMock(data={
+        "start_time": "2026-03-25T13:00:00+00:00",  # 10:00 em Recife (UTC-3)
+        "patient_id": "user-1",
+        "patients": {"name": "Maria"},
+        "confirmed_at": "2026-03-24T10:00:00+00:00",
+    })
+    with patch("app.graph.tools._get_doctor_calendar_id", new_callable=AsyncMock, return_value="cal123"), \
+         patch("app.google_calendar.update_event", new_callable=AsyncMock) as mock_update, \
+         patch("app.graph.tools.get_supabase", new_callable=AsyncMock, return_value=client), \
+         patch("app.graph.tools.get_users_by_phone", new_callable=AsyncMock, return_value=[{"id": "user-1"}]), \
+         patch("app.graph.tools.log_event", new_callable=AsyncMock), \
+         patch("app.graph.tools._notify_clinic", new_callable=AsyncMock):
+        await reschedule_appointment.coroutine(
+            appointment_id="evt-abc",
+            new_slot_datetime="2026-03-25T10:00:00",  # mesma data/hora
+            slot_duration_minutes=60,
+            state=_make_state(),
+            config=CONFIG,
+            modality="online",
+        )
+    reschedule_update = next(
+        c.args[0] for c in table.update.call_args_list
+        if c.args and isinstance(c.args[0], dict) and "reminder_day_before_sent_at" in c.args[0]
+    )
+    assert reschedule_update["confirmed_at"] == "2026-03-24T10:00:00+00:00", \
+        "troca de modalidade (mesma data) não pode zerar confirmed_at"
+    # o evento no Calendar mantém a marca de confirmado (✅ + verde)
+    assert mock_update.await_args.kwargs.get("confirmed") is True
+
+
+async def test_reschedule_appointment_new_datetime_still_clears_calendar_mark():
+    """Remarcação de verdade (data nova) continua tirando a marca de confirmado do
+    evento no Calendar — a confirmação da data antiga não vale para a data nova."""
+    from app.graph.tools import reschedule_appointment
+    client, table, execute = _make_supabase_client()
+    execute.return_value = MagicMock(data={
+        "start_time": "2026-03-23T09:00:00+00:00",
+        "patient_id": "user-1",
+        "patients": {"name": "Maria"},
+        "confirmed_at": "2026-03-22T10:00:00+00:00",
+    })
+    with patch("app.graph.tools._get_doctor_calendar_id", new_callable=AsyncMock, return_value="cal123"), \
+         patch("app.google_calendar.update_event", new_callable=AsyncMock) as mock_update, \
+         patch("app.graph.tools.get_supabase", new_callable=AsyncMock, return_value=client), \
+         patch("app.graph.tools.get_users_by_phone", new_callable=AsyncMock, return_value=[{"id": "user-1"}]), \
+         patch("app.graph.tools.log_event", new_callable=AsyncMock), \
+         patch("app.graph.tools._notify_clinic", new_callable=AsyncMock):
+        await reschedule_appointment.coroutine(
+            appointment_id="evt-abc",
+            new_slot_datetime="2026-03-25T10:00:00",  # data nova
+            slot_duration_minutes=60,
+            state=_make_state(),
+            config=CONFIG,
+        )
+    assert mock_update.await_args.kwargs.get("confirmed") is False
+
+
+async def test_change_modality_keeps_calendar_confirmation_mark_when_confirmed():
+    """change_modality não muda a data, então a confirmação de presença segue
+    válida — o evento no Calendar deve manter a marca ✅/verde (confirmed=True)."""
+    from app.graph.tools import change_modality
+    client, table, execute = _make_supabase_client()
+    execute.return_value = MagicMock(data={
+        "start_time": "2026-08-03T18:00:00+00:00",   # 15:00 em Recife
+        "end_time": "2026-08-03T19:00:00+00:00",
+        "patient_id": "user-1",
+        "modality": "presencial",
+        "confirmed_at": "2026-08-02T10:00:00+00:00",
+        "patients": {"name": "Maria", "email": "maria@example.com"},
+    })
+    with patch("app.graph.tools._get_doctor_calendar_id", new_callable=AsyncMock, return_value="cal123"), \
+         patch("app.google_calendar.update_event", new_callable=AsyncMock) as mock_update, \
+         patch("app.google_calendar.get_modality_for_slot", return_value="escolha"), \
+         patch("app.graph.tools.get_supabase", new_callable=AsyncMock, return_value=client), \
+         patch("app.graph.tools.get_users_by_phone", new_callable=AsyncMock, return_value=[{"id": "user-1"}]), \
+         patch("app.graph.tools.log_event", new_callable=AsyncMock), \
+         patch("app.graph.tools._notify_clinic", new_callable=AsyncMock):
+        await change_modality.coroutine(
+            appointment_id="evt-abc",
+            new_modality="online",
+            state=_make_state(),
+            config=CONFIG,
+        )
+    assert mock_update.await_args.kwargs.get("confirmed") is True
+
+
+async def test_change_modality_does_not_mark_calendar_when_unconfirmed():
+    """Se a consulta ainda não foi confirmada, change_modality não pode inventar a
+    marca ✅/verde no Calendar — confirmed=False."""
+    from app.graph.tools import change_modality
+    client, table, execute = _make_supabase_client()
+    execute.return_value = MagicMock(data={
+        "start_time": "2026-08-03T18:00:00+00:00",
+        "end_time": "2026-08-03T19:00:00+00:00",
+        "patient_id": "user-1",
+        "modality": "presencial",
+        "confirmed_at": None,
+        "patients": {"name": "Maria", "email": "maria@example.com"},
+    })
+    with patch("app.graph.tools._get_doctor_calendar_id", new_callable=AsyncMock, return_value="cal123"), \
+         patch("app.google_calendar.update_event", new_callable=AsyncMock) as mock_update, \
+         patch("app.google_calendar.get_modality_for_slot", return_value="escolha"), \
+         patch("app.graph.tools.get_supabase", new_callable=AsyncMock, return_value=client), \
+         patch("app.graph.tools.get_users_by_phone", new_callable=AsyncMock, return_value=[{"id": "user-1"}]), \
+         patch("app.graph.tools.log_event", new_callable=AsyncMock), \
+         patch("app.graph.tools._notify_clinic", new_callable=AsyncMock):
+        await change_modality.coroutine(
+            appointment_id="evt-abc",
+            new_modality="online",
+            state=_make_state(),
+            config=CONFIG,
+        )
+    assert mock_update.await_args.kwargs.get("confirmed") is False
+
+
 async def test_confirm_appointment_presencial_restriction_on_online_only_slot():
     """Restrição presencial NÃO pode sobrepor slot online-only — deve continuar online."""
     from app.graph.tools import confirm_appointment

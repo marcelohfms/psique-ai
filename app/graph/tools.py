@@ -2390,7 +2390,7 @@ async def change_modality(
     client = await get_supabase()
     phone = config["configurable"]["phone"]
     appt_result = await client.from_("appointments").select(
-        "start_time, end_time, patient_id, modality, patients(name, email)"
+        "start_time, end_time, patient_id, modality, confirmed_at, patients(name, email)"
     ).eq("appointment_id", appointment_id).maybe_single().execute()
 
     if not appt_result.data:
@@ -2445,6 +2445,11 @@ async def change_modality(
     patient_age = state.get("patient_age") or 99
     is_minor_first = patient_age < 18 and not state.get("is_patient", False)
 
+    # A data não muda aqui, então a confirmação de presença segue valendo: se a
+    # consulta já estava confirmada, o update_event precisa de confirmed=True para
+    # não apagar a marca ✅/verde do evento ao reescrever o título.
+    _keep_confirmation = bool(appt_result.data.get("confirmed_at"))
+
     # Update Google Calendar event
     try:
         await update_event(
@@ -2458,6 +2463,7 @@ async def change_modality(
             modality=new_modality,
             patient_email=patient_email,
             patient_number=config["configurable"]["phone"],
+            confirmed=_keep_confirmation,
         )
     except Exception as e:
         _logger.error("CHANGE_MODALITY update_event FAILED appt=%s error=%s", appointment_id, e, exc_info=True)
@@ -2590,7 +2596,7 @@ async def reschedule_appointment(
     # not the actual patient — e.g. when the phone has multiple patients like parent + child).
     client = await get_supabase()
     phone = config["configurable"]["phone"]
-    appt_result = await client.from_("appointments").select("start_time, patient_id, patients(name), reschedule_initiated_by, booking_fee_paid_at, booking_fee_waived").eq("appointment_id", appointment_id).maybe_single().execute()
+    appt_result = await client.from_("appointments").select("start_time, patient_id, patients(name), reschedule_initiated_by, booking_fee_paid_at, booking_fee_waived, confirmed_at").eq("appointment_id", appointment_id).maybe_single().execute()
 
     # Validate that this appointment actually belongs to this phone number
     _phone_clean = phone.replace("@s.whatsapp.net", "")
@@ -2656,6 +2662,15 @@ async def reschedule_appointment(
             old_dt = datetime.fromisoformat(old_start_time).astimezone(TZ)
         except ValueError:
             old_dt = None
+
+    # Troca de modalidade por engano: a Eva chamou reschedule_appointment em vez de
+    # change_modality e a data/hora NÃO muda (old_dt == new_start). Como a data
+    # continua a mesma, a confirmação de presença segue válida — não zeramos
+    # confirmed_at nem tiramos a marca ✅/verde do evento no Calendar. Só a
+    # remarcação de verdade (data nova) invalida a confirmação (caso Isaac 13/09).
+    _is_modality_only = old_dt is not None and old_dt == new_start
+    _existing_confirmed_at = (appt_result.data or {}).get("confirmed_at")
+    _keep_confirmation = bool(_is_modality_only and _existing_confirmed_at)
 
     # ── Trava determinística da regra das 24h (taxa já paga) ─────────────────
     # Backstop da mesma regra aplicada em mark_reschedule_in_progress: se o
@@ -2763,6 +2778,7 @@ async def reschedule_appointment(
                     modality=effective_modality,
                     patient_email=state.get("patient_email") or "",
                     patient_number=config["configurable"]["phone"],
+                    confirmed=_keep_confirmation,
                 )
             except Exception as e:
                 _logger.error("RESCHEDULE_DEBUG update_event FAILED appt=%s error=%s", appointment_id, e, exc_info=True)
@@ -2786,7 +2802,18 @@ async def reschedule_appointment(
         "updated_at": _now.isoformat(),
         "reminder_day_before_sent_at": None,
         "reminder_day_of_sent_at": None,
-        "confirmed_at": _now.isoformat() if _born_confirmed else None,
+        # A confirmação de presença vale para uma DATA específica.
+        # - Troca de modalidade por engano (mesma data/hora, _is_modality_only):
+        #   a data não mudou, então a confirmação continua valendo — preservamos o
+        #   confirmed_at atual (e o update_event mantém o ✅/verde no Calendar).
+        # - Remarcação de verdade (data nova): a confirmação da data antiga deixa de
+        #   valer (caso Isaac 13/09). A nova data nasce confirmada quando cai na
+        #   véspera/mesmo dia (_born_confirmed); senão zera e o lembrete de véspera
+        #   pede a confirmação.
+        "confirmed_at": (
+            _existing_confirmed_at if _is_modality_only
+            else (_now.isoformat() if _born_confirmed else None)
+        ),
     }
 
     # Only mark as scheduled and clear reschedule flag if patient confirmed
