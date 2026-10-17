@@ -2764,18 +2764,20 @@ async def reschedule_appointment(
 
     # Update DB record
     new_end = new_start + timedelta(minutes=slot_duration_minutes)
+    # A nova data nasce confirmada quando o paciente confirma a remarcação E a
+    # data realmente mudou E ela cai na véspera/mesmo dia. Caso contrário,
+    # confirmed_at é zerado: a confirmação da data antiga não vale para a nova
+    # (caso Isaac 13/09) e, longe da data, o lembrete de véspera pede a confirmação.
+    _now = datetime.now(TZ)
+    _date_changed = old_dt is None or old_dt != new_start
+    _born_confirmed = confirmed_by_patient and _date_changed and is_born_confirmed(new_start, _now)
     reschedule_update: dict = {
         "start_time": new_start.isoformat(),
         "end_time": new_end.isoformat(),
-        "updated_at": datetime.now(TZ).isoformat(),
+        "updated_at": _now.isoformat(),
         "reminder_day_before_sent_at": None,
         "reminder_day_of_sent_at": None,
-        # A confirmação de presença vale para uma DATA específica. Ao mudar a data,
-        # a confirmação da data antiga deixa de valer — o paciente ainda não
-        # confirmou a nova. Se confirmed_at sobrevivesse, a trava de idempotência
-        # em confirm_attendance suprimiria a confirmação genuína da nova data (nem
-        # regravava nem pintava o evento de verde no Calendar). Caso Isaac 13/09.
-        "confirmed_at": None,
+        "confirmed_at": _now.isoformat() if _born_confirmed else None,
     }
 
     # Only mark as scheduled and clear reschedule flag if patient confirmed
@@ -2791,6 +2793,8 @@ async def reschedule_appointment(
     if clinic_swap:
         reschedule_update["reschedule_initiated_by"] = "clinic"
     await client.from_("appointments").update(reschedule_update).eq("appointment_id", appointment_id).execute()
+    if _born_confirmed:
+        await _apply_confirmation(client, calendar_id, appointment_id, phone, auto=True)
 
     _weekday_new = _WEEKDAY_LABELS_PT.get(new_start.weekday(), "")
     formatted_new = f"{_weekday_new}, {new_start.strftime('%d/%m/%Y às %H:%M')}" if _weekday_new else new_start.strftime("%d/%m/%Y às %H:%M")
