@@ -1902,6 +1902,58 @@ async def test_confirm_appointment_slot_clash_guard_bypassed_by_force_encaixe():
 
 
 
+async def test_confirm_appointment_born_confirmed_when_tomorrow():
+    """Consulta marcada para amanhã nasce confirmada: grava confirmed_at, pinta o
+    evento de verde e registra appointment_confirmed(auto)."""
+    from app.graph.tools import confirm_appointment
+    client, table, execute = _make_supabase_client()
+    tomorrow = (datetime.now(TZ) + timedelta(days=1)).replace(hour=9, minute=0, second=0, microsecond=0)
+    with patch("app.graph.tools._get_doctor_calendar_id", new_callable=AsyncMock, return_value="cal123"), \
+         patch("app.google_calendar.create_event", new_callable=AsyncMock, return_value="evt-tom"), \
+         patch("app.google_calendar.grid_violation", return_value=None), \
+         patch("app.graph.tools.get_supabase", new_callable=AsyncMock, return_value=client), \
+         patch("app.graph.tools.get_users_by_phone", new_callable=AsyncMock, return_value=[{"id": "user-1", "_contact_id": "c-1"}]), \
+         patch("app.graph.tools.get_user_by_phone", new_callable=AsyncMock, return_value={"id": "user-1", "_contact_id": "c-1"}), \
+         patch("app.graph.tools.log_event", new_callable=AsyncMock) as mock_log, \
+         patch("app.google_calendar.mark_event_confirmed", new_callable=AsyncMock) as mock_mark, \
+         patch("app.graph.tools._notify_clinic", new_callable=AsyncMock):
+        await confirm_appointment.coroutine(
+            slot_datetime=tomorrow.strftime("%Y-%m-%dT%H:%M:%S"),
+            slot_duration_minutes=60,
+            state=_make_state(),
+            config=CONFIG,
+        )
+    payload = table.insert.call_args[0][0]
+    assert payload.get("confirmed_at") is not None
+    mock_mark.assert_awaited_once_with("cal123", "evt-tom")
+    assert any(c.args[0] == "appointment_confirmed" for c in mock_log.await_args_list)
+
+
+async def test_confirm_appointment_not_confirmed_when_far():
+    """Consulta a 5 dias segue o fluxo normal: confirmed_at nulo, sem pintar."""
+    from app.graph.tools import confirm_appointment
+    client, table, execute = _make_supabase_client()
+    far = (datetime.now(TZ) + timedelta(days=5)).replace(hour=9, minute=0, second=0, microsecond=0)
+    with patch("app.graph.tools._get_doctor_calendar_id", new_callable=AsyncMock, return_value="cal123"), \
+         patch("app.google_calendar.create_event", new_callable=AsyncMock, return_value="evt-far"), \
+         patch("app.google_calendar.grid_violation", return_value=None), \
+         patch("app.graph.tools.get_supabase", new_callable=AsyncMock, return_value=client), \
+         patch("app.graph.tools.get_users_by_phone", new_callable=AsyncMock, return_value=[{"id": "user-1", "_contact_id": "c-1"}]), \
+         patch("app.graph.tools.get_user_by_phone", new_callable=AsyncMock, return_value={"id": "user-1", "_contact_id": "c-1"}), \
+         patch("app.graph.tools.log_event", new_callable=AsyncMock), \
+         patch("app.google_calendar.mark_event_confirmed", new_callable=AsyncMock) as mock_mark, \
+         patch("app.graph.tools._notify_clinic", new_callable=AsyncMock):
+        await confirm_appointment.coroutine(
+            slot_datetime=far.strftime("%Y-%m-%dT%H:%M:%S"),
+            slot_duration_minutes=60,
+            state=_make_state(),
+            config=CONFIG,
+        )
+    payload = table.insert.call_args[0][0]
+    assert payload.get("confirmed_at") is None
+    mock_mark.assert_not_awaited()
+
+
 # ── confirm_appointment: 1ª consulta de menor dividida em duas sessões ─────────
 
 def _split_state(**kwargs) -> dict:

@@ -13,6 +13,7 @@ import logging
 
 from app.whatsapp import send_text
 from app.database import get_supabase, log_event, upsert_user, get_user_by_phone, get_users_by_phone, DOCTOR_IDS, DOCTOR_NAMES
+from app.dates import is_born_confirmed
 from app.phone import _phone_variants
 from app.chatwoot import get_conversation_id, unassign_agent_bot, add_label
 from app.graph.prompts import CORRECT_PIX_KEY
@@ -1575,6 +1576,9 @@ async def confirm_appointment(
             _bfw = _bfw or bool(_split_sibling.get("booking_fee_waived"))
             _bfp_at = _split_sibling.get("booking_fee_paid_at") or _bfp_at
 
+        _now = datetime.now(TZ)
+        _born_confirmed = is_born_confirmed(start, _now)
+
         await client.from_("appointments").insert({
             "patient_id": user["id"] if user else None,
             "contact_id": user.get("_contact_id") if user else None,
@@ -1587,6 +1591,9 @@ async def confirm_appointment(
             "consultation_type": consultation_type,
             "booking_fee_waived": _bfw,
             "booking_fee_paid_at": _bfp_at,
+            # Véspera ou mesmo dia → o paciente acabou de marcar, a presença já
+            # está, na prática, confirmada. Nasce confirmada e pula o lembrete.
+            "confirmed_at": _now.isoformat() if _born_confirmed else None,
         }).execute()
     except Exception as e:
         _logger.error("CONFIRM_DEBUG persist FAILED (rolling back calendar event): %s", e, exc_info=True)
@@ -1604,6 +1611,9 @@ async def confirm_appointment(
         "patient_name": patient_name,
         "session_note": session_note,
     })
+
+    if _born_confirmed:
+        await _apply_confirmation(client, calendar_id, event_id, phone, auto=True)
 
     session_label = f" ({session_note})" if session_note else ""
     modality_line = f"\nModalidade: {'Online' if effective_modality == 'online' else 'Presencial'}" if effective_modality else ""
