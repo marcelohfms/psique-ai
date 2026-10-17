@@ -3428,6 +3428,35 @@ async def nudge_external_contact(
         )
 
 
+async def _apply_confirmation(
+    client,
+    calendar_id: str | None,
+    event_id: str,
+    phone: str,
+    *,
+    auto: bool = True,
+) -> None:
+    """Aplica os efeitos de confirmação de presença: pinta o evento de verde com
+    "✅" no Google Calendar e registra o evento appointment_confirmed. O
+    confirmed_at já foi gravado na linha pelo caller (no insert/update). Uma falha
+    no Calendar NUNCA derruba o fluxo — só registra um aviso. auto=True marca
+    metadata.auto para a auditoria distinguir a confirmação automática
+    (véspera/mesmo dia na marcação) da confirmação feita pelo paciente em
+    confirm_attendance (auto=False)."""
+    if calendar_id:
+        try:
+            from app.google_calendar import mark_event_confirmed
+            await mark_event_confirmed(calendar_id, event_id)
+        except Exception as e:  # noqa: BLE001
+            logging.getLogger(__name__).warning(
+                "MARK_CONFIRMED_FAILED appt=%s error=%s", event_id, e
+            )
+    meta = {"appointment_id": event_id}
+    if auto:
+        meta["auto"] = True
+    await log_event("appointment_confirmed", phone, meta)
+
+
 @tool
 async def confirm_attendance(
     appointment_id: str,
@@ -3534,9 +3563,10 @@ async def confirm_attendance(
         "confirmed_at": datetime.now(TZ).isoformat(),
     }).eq("appointment_id", appointment_id).execute()
 
-    # Marca o evento no Google Calendar como confirmado (verde + "✅" no título),
-    # para a clínica ver de relance quais consultas o paciente já confirmou. Uma
-    # falha aqui não pode derrubar a confirmação em si — só registra no log.
+    # Marca o evento no Google Calendar como confirmado (verde + "✅") e registra
+    # o evento appointment_confirmed. auto=False: foi o paciente que confirmou,
+    # não a regra automática de véspera/mesmo dia na marcação.
+    calendar_id = None
     doctor_id = rows[0].get("doctor_id")
     if doctor_id:
         try:
@@ -3548,17 +3578,15 @@ async def confirm_attendance(
                 .execute()
             )
             calendar_id = (cal.data or {}).get("agenda_id")
-            if calendar_id:
-                from app.google_calendar import mark_event_confirmed
-                await mark_event_confirmed(calendar_id, appointment_id)
         except Exception as e:  # noqa: BLE001
             logging.getLogger(__name__).warning(
-                "MARK_CONFIRMED_FAILED appt=%s error=%s", appointment_id, e
+                "MARK_CONFIRMED_LOOKUP_FAILED appt=%s error=%s", appointment_id, e
             )
 
-    await log_event("appointment_confirmed", config["configurable"]["phone"], {
-        "appointment_id": appointment_id,
-    })
+    await _apply_confirmation(
+        client, calendar_id, appointment_id,
+        config["configurable"]["phone"], auto=False,
+    )
 
     return "Presença confirmada! ✅"
 
