@@ -30,16 +30,19 @@ compara-se a data da consulta com a data de hoje, no fuso de Recife
 
 ```
 days_ahead = (start.astimezone(TZ).date() - now.astimezone(TZ).date()).days
-nasce_confirmada = days_ahead <= 1
+nasce_confirmada = 0 <= days_ahead <= 1
 ```
 
 - `days_ahead == 0` (mesmo dia) → nasce confirmada
 - `days_ahead == 1` (véspera) → nasce confirmada
 - `days_ahead >= 2` (dois dias ou mais) → fluxo normal, recebe o lembrete
+- `days_ahead < 0` (data no passado) → NÃO nasce confirmada
 
-Isso é a mesma conta que `confirm_attendance` já usa para só deixar o paciente
-confirmar a partir da véspera (lá, `days_ahead >= 2` bloqueia a confirmação).
-A fronteira fica coerente entre os dois lados.
+A fronteira superior (`<= 1`) é a mesma que `confirm_attendance` já usa para só
+deixar o paciente confirmar a partir da véspera (lá, `days_ahead >= 2` bloqueia).
+A fronteira inferior (`>= 0`) exclui datas no passado: uma data que já passou não
+é véspera nem mesmo dia, então não deve nascer confirmada (importa para
+remarcações e reativações, onde a nova data poderia, por erro, cair no passado).
 
 "Nascer confirmada" significa confirmar de verdade, com os três efeitos que
 `confirm_attendance` já produz hoje:
