@@ -4497,12 +4497,20 @@ async def register_payment(
                         patient_email=state.get("patient_email") or "",
                         patient_number=patient_phone,
                     )
-                    await client.from_("appointments").update({
+                    _now = datetime.now(TZ)
+                    _born_confirmed = is_born_confirmed(slot_start, _now)
+                    _react_update = {
                         "status": "scheduled",
-                        "booking_fee_paid_at": datetime.now(TZ).isoformat(),
+                        "booking_fee_paid_at": _now.isoformat(),
                         "appointment_id": new_event_id,
-                        "updated_at": datetime.now(TZ).isoformat(),
-                    }).eq("appointment_id", canceled_appt["appointment_id"]).execute()
+                        "updated_at": _now.isoformat(),
+                    }
+                    if _born_confirmed:
+                        # Horário reativado na véspera/mesmo dia: nasce confirmada.
+                        _react_update["confirmed_at"] = _now.isoformat()
+                    await client.from_("appointments").update(_react_update).eq("appointment_id", canceled_appt["appointment_id"]).execute()
+                    if _born_confirmed:
+                        await _apply_confirmation(client, calendar_id, new_event_id, patient_phone, auto=True)
                     appointment_dt   = slot_start.strftime("%d/%m/%Y %H:%M")
                     appt_id_to_pay   = None  # already paid above
                     confirmation_msg = (

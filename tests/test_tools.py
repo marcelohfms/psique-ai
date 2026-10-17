@@ -8284,3 +8284,72 @@ async def test_transfer_note_labels_unknown_sender_as_contato():
     note = mock_note.call_args[0][1]
     assert "Paciente:" not in note
     assert "👤 Contato:" in note
+
+
+async def test_register_payment_reactivation_born_confirmed_when_tomorrow():
+    """Reativar uma consulta cancelada cujo horário original cai amanhã e segue
+    livre: recria o evento, grava confirmed_at e pinta o Calendar."""
+    from app.graph.tools import register_payment
+
+    julio_id = "d5baa58b-a788-4f40-b8c0-512c189150be"
+    slot_start = (datetime.now(TZ) + timedelta(days=1)).replace(hour=14, minute=0, second=0, microsecond=0)
+    slot_end = slot_start + timedelta(hours=1)
+
+    results = [
+        MagicMock(data=[{"id": "user-123", "name": "Ricardo", "doctor_id": julio_id}]),
+        MagicMock(data=[]),  # scheduled → nenhum
+        MagicMock(data=[{"appointment_id": "apt-ricardo"}]),  # canceled futuro c/ taxa pendente
+        MagicMock(data=[{  # canceled_result da reativação
+            "appointment_id": "apt-ricardo",
+            "start_time": slot_start.isoformat(),
+            "end_time": slot_end.isoformat(),
+            "doctor_id": julio_id,
+            "modality": "presencial",
+        }]),
+        MagicMock(data={"agenda_id": "cal-julio"}),  # doctors.agenda_id (.single())
+        MagicMock(data=[]),  # update → scheduled + booking_fee_paid_at + confirmed_at
+        MagicMock(data={}),  # patients.custom_price (maybe_single)
+    ]
+    execute = AsyncMock(side_effect=results)
+    table = MagicMock()
+    for m in ("select", "eq", "in_", "limit", "single", "maybe_single", "ilike",
+              "gte", "gt", "lt", "neq", "order", "insert", "update", "upsert", "is_"):
+        getattr(table, m).return_value = table
+    table.execute = execute
+
+    events_table = MagicMock()
+    for m in ("select", "eq", "in_", "limit", "gte", "order"):
+        getattr(events_table, m).return_value = events_table
+    events_table.execute = AsyncMock(return_value=MagicMock(data=[]))
+
+    client = MagicMock()
+
+    def _from(name):
+        return events_table if name == "events" else table
+    client.from_.side_effect = _from
+
+    with patch("app.graph.tools.get_supabase", new_callable=AsyncMock, return_value=client), \
+         patch("app.patients.get_contact_by_phone", new_callable=AsyncMock, return_value={"id": "contact-1"}), \
+         patch("app.patients.get_patients_by_contact", new_callable=AsyncMock, return_value=[{"id": "user-123"}]), \
+         patch("app.patients.get_contacts_for_patient", new_callable=AsyncMock, return_value=[{"phone": "5581988912861"}]), \
+         patch("app.google_calendar._credentials", return_value=MagicMock()), \
+         patch("googleapiclient.discovery.build", return_value=MagicMock()), \
+         patch("app.google_calendar._get_busy", return_value=[]), \
+         patch("app.google_calendar.create_event", new_callable=AsyncMock, return_value="evt-react"), \
+         patch("app.google_calendar.mark_event_confirmed", new_callable=AsyncMock) as mock_mark, \
+         patch("app.graph.tools.log_event", new_callable=AsyncMock), \
+         patch("app.graph.tools._notify_clinic", new_callable=AsyncMock), \
+         patch("app.google_drive.rename_file", new_callable=AsyncMock), \
+         patch("app.google_sheets.append_payment_receipt", new_callable=AsyncMock), \
+         patch("app.graph.tools.send_text", new_callable=AsyncMock):
+        await register_payment.coroutine(
+            amount="100,00",
+            drive_link="https://drive.google.com/file/d/abc/view",
+            state=_make_state(),
+            config=CONFIG,
+            patient_name_override="Ricardo",
+        )
+
+    update_payloads = [c.args[0] for c in table.update.call_args_list]
+    assert any(p.get("confirmed_at") for p in update_payloads), update_payloads
+    mock_mark.assert_awaited_once_with("cal-julio", "evt-react")
