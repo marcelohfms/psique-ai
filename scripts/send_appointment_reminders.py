@@ -84,6 +84,12 @@ def _plain_message(template_name: str, first_name: str, doctor_label: str, time_
             f"Olá! Lembrete da Psiquê: {first_name} tem consulta amanhã "
             f"com {doctor_label} às {time_str}. Consegue confirmar a presença?"
         )
+    if template_name == "lembrete_confirmacao_tarde":
+        return (
+            f"Olá! Ainda não recebi a confirmação de presença de {first_name} "
+            f"na consulta de amanhã com {doctor_label} às {time_str}. "
+            f"Consegue confirmar pra mim?"
+        )
     # Day-of reminder
     if is_online:
         return (

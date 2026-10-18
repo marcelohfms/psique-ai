@@ -168,3 +168,14 @@ async def test_day_before_query_skips_confirmed():
 
     is_filters = [c.args for c in table.is_.call_args_list]
     assert ("confirmed_at", "null") in is_filters, is_filters
+
+
+def test_plain_message_confirmation_nudge():
+    msg = rem._plain_message(
+        "lembrete_confirmacao_tarde", "João", "Dr. Júlio", "14:00")
+    assert "João" in msg
+    assert "Dr. Júlio" in msg
+    assert "14:00" in msg
+    assert "confirma" in msg.lower()
+    # Neutro quanto à modalidade: sem "online" no texto
+    assert "online" not in msg.lower()
