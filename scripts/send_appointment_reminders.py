@@ -4,6 +4,8 @@ Runs every 30 minutes via GitHub Actions.
 
 - Day before: sends between 07h-20h Recife the day before the appointment
 - Day of:     sends up to 2h before the appointment starts (never after)
+- Afternoon nudge: sends between 14h-18h Recife the day before, only when the
+  morning reminder already went out and the patient has not confirmed yet.
 
 After sending, the reminder timestamp is saved directly on the appointment row
 (same pattern as payment_reminder_sent_at).
@@ -11,6 +13,7 @@ After sending, the reminder timestamp is saved directly on the appointment row
 Requires in Supabase:
   ALTER TABLE appointments ADD COLUMN IF NOT EXISTS reminder_day_before_sent_at timestamptz;
   ALTER TABLE appointments ADD COLUMN IF NOT EXISTS reminder_day_of_sent_at timestamptz;
+  ALTER TABLE appointments ADD COLUMN IF NOT EXISTS confirmation_nudge_sent_at timestamptz;
 """
 import asyncio
 import logging
@@ -83,6 +86,12 @@ def _plain_message(template_name: str, first_name: str, doctor_label: str, time_
         return (
             f"Olá! Lembrete da Psiquê: {first_name} tem consulta amanhã "
             f"com {doctor_label} às {time_str}. Consegue confirmar a presença?"
+        )
+    if template_name == "lembrete_confirmacao_tarde":
+        return (
+            f"Olá! Ainda não recebi a confirmação de presença de {first_name} "
+            f"na consulta de amanhã com {doctor_label} às {time_str}. "
+            f"Consegue confirmar pra mim?"
         )
     # Day-of reminder
     if is_online:
@@ -230,6 +239,25 @@ async def main():
         )
         day_before_appts = result.data or []
 
+    # ── Confirmation nudge: tarde da véspera, 14h Recife, janela até 18h ────────
+    # Segunda (e última) cobrança só para quem recebeu o lembrete da manhã e ainda
+    # não confirmou presença. confirmation_nudge_sent_at só é gravado no sucesso,
+    # então rodar de novo depois de um restart não duplica o envio.
+    confirmation_nudge_appts = []
+    if 14 <= now.hour < 18:
+        result = await (
+            client.from_("appointments")
+            .select("appointment_id, start_time, doctor_id, modality, patient_id, contact_id, patients(name)")
+            .eq("status", "scheduled")
+            .not_.is_("reminder_day_before_sent_at", "null")
+            .is_("confirmed_at", "null")
+            .is_("confirmation_nudge_sent_at", "null")
+            .gte("start_time", f"{tomorrow_start}T00:00:00")
+            .lt("start_time", f"{tomorrow_end}T00:00:00")
+            .execute()
+        )
+        confirmation_nudge_appts = result.data or []
+
     # ── Day-of reminders: send at min(7h, appointment - 2h) ─────────────────
     # For appointments before 9h: reminder goes 2h before (even if before 7h).
     # For appointments at 9h or later: reminder goes at 7h.
@@ -259,6 +287,7 @@ async def main():
 
     print(f"Day-before reminders to send: {len(day_before_appts)}")
     print(f"Day-of reminders to send: {len(day_of_appts)}")
+    print(f"Confirmation nudges to send: {len(confirmation_nudge_appts)}")
 
     conn_string = os.environ.get("SUPABASE_CONNECTION_STRING")
     graph = None
@@ -283,6 +312,7 @@ async def main():
         batch = [
             *((a, "lembrete_dia_anteior", "reminder_day_before_sent_at") for a in day_before_appts),
             *((a, "lembrete_dia_consulta", "reminder_day_of_sent_at") for a in day_of_appts),
+            *((a, "lembrete_confirmacao_tarde", "confirmation_nudge_sent_at") for a in confirmation_nudge_appts),
         ]
 
         for i, (appt, template_name, sent_col) in enumerate(batch):

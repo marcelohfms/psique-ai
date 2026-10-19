@@ -111,6 +111,7 @@ async def test_day_of_query_selects_patient_id():
     table = MagicMock()
     for m in ("select", "eq", "is_", "gt", "gte", "lt", "lte"):
         getattr(table, m).return_value = table
+    table.not_ = table  # main() usa .not_.is_ na janela da tarde (hora real)
     table.execute = AsyncMock(return_value=MagicMock(data=[]))
     client = MagicMock()
     client.from_.return_value = table
@@ -168,3 +169,93 @@ async def test_day_before_query_skips_confirmed():
 
     is_filters = [c.args for c in table.is_.call_args_list]
     assert ("confirmed_at", "null") in is_filters, is_filters
+
+
+def test_plain_message_confirmation_nudge():
+    msg = rem._plain_message(
+        "lembrete_confirmacao_tarde", "João", "Dr. Júlio", "14:00")
+    assert "João" in msg
+    assert "Dr. Júlio" in msg
+    assert "14:00" in msg
+    assert "confirma" in msg.lower()
+    # Neutro quanto à modalidade: sem "online" no texto
+    assert "online" not in msg.lower()
+
+
+@pytest.mark.asyncio
+async def test_nudge_marks_confirmation_nudge_sent_at():
+    client, table = _client()
+    now = datetime(2026, 6, 19, 14, 0, tzinfo=TZ)
+    with patch("scripts.send_appointment_reminders.consultation_reminder_contacts",
+               new_callable=AsyncMock, return_value=[{"phone": "5581111"}]), \
+         patch("scripts.send_appointment_reminders.send_reminder_template",
+               new_callable=AsyncMock) as mock_send:
+        sent = await rem._send_reminder_to_contacts(
+            client, _appt(), "lembrete_confirmacao_tarde",
+            "confirmation_nudge_sent_at", now, None)
+    assert sent == ["5581111"]
+    mock_send.assert_awaited_once()
+    # template enviado é o da cobrança (sem troca para variante online)
+    assert mock_send.await_args.args[1] == "lembrete_confirmacao_tarde"
+    table.update.assert_called_once()
+    assert table.update.call_args.args[0] == {"confirmation_nudge_sent_at": now.isoformat()}
+
+
+def _chain_client():
+    table = MagicMock()
+    for m in ("select", "eq", "is_", "gt", "gte", "lt", "lte"):
+        getattr(table, m).return_value = table
+    # `.not_` é acessado como atributo (não chamado) e expõe `.is_`. Fazendo
+    # table.not_ = table, o `.not_.is_(...)` vira o mesmo table.is_ já encadeado,
+    # e suas chamadas entram em table.is_.call_args_list.
+    table.not_ = table
+    table.execute = AsyncMock(return_value=MagicMock(data=[]))
+    client = MagicMock()
+    client.from_.return_value = table
+    return client, table
+
+
+@pytest.mark.asyncio
+async def test_nudge_query_runs_inside_afternoon_window():
+    client, table = _chain_client()
+    fake_now = datetime(2026, 6, 19, 14, 0, tzinfo=TZ)
+
+    class _FakeDatetime:
+        @staticmethod
+        def now(tz=None):
+            return fake_now
+        fromisoformat = staticmethod(datetime.fromisoformat)
+
+    with patch("supabase.acreate_client", new_callable=AsyncMock, return_value=client), \
+         patch("scripts.send_appointment_reminders.datetime", _FakeDatetime), \
+         patch.dict(os.environ, {"SUPABASE_URL": "x", "SUPABASE_KEY": "y"}, clear=False):
+        os.environ.pop("SUPABASE_CONNECTION_STRING", None)
+        await rem.main()
+
+    # not_.is_ e is_ compartilham o mesmo mock (ver _chain_client), então todas
+    # as colunas filtradas aparecem em table.is_.call_args_list.
+    is_cols = [c.args[0] for c in table.is_.call_args_list]
+    assert "confirmed_at" in is_cols
+    assert "confirmation_nudge_sent_at" in is_cols
+    assert "reminder_day_before_sent_at" in is_cols
+
+
+@pytest.mark.asyncio
+async def test_nudge_query_skipped_outside_window():
+    client, table = _chain_client()
+    fake_now = datetime(2026, 6, 19, 19, 0, tzinfo=TZ)  # 19h: fora da janela
+
+    class _FakeDatetime:
+        @staticmethod
+        def now(tz=None):
+            return fake_now
+        fromisoformat = staticmethod(datetime.fromisoformat)
+
+    with patch("supabase.acreate_client", new_callable=AsyncMock, return_value=client), \
+         patch("scripts.send_appointment_reminders.datetime", _FakeDatetime), \
+         patch.dict(os.environ, {"SUPABASE_URL": "x", "SUPABASE_KEY": "y"}, clear=False):
+        os.environ.pop("SUPABASE_CONNECTION_STRING", None)
+        await rem.main()
+
+    is_cols = [c.args[0] for c in table.is_.call_args_list]
+    assert "confirmation_nudge_sent_at" not in is_cols
