@@ -511,3 +511,40 @@ def test_enhance_for_reread_never_raises_on_garbage():
     reforço, não pode derrubar a leitura)."""
     from app.media import _enhance_for_reread
     assert _enhance_for_reread(b"not-an-image") == b"not-an-image"
+
+
+# ── classify_image_raw (leitor isolado p/ reconciliação) ──────────────────────
+
+async def test_classify_image_raw_returns_kind_without_side_effects():
+    """O leitor usado pela reconciliação (cron) só classifica: NUNCA sobe ao Drive,
+    envia ao paciente ou manda e-mail. Senão cada rodada do cron reprocessaria o
+    comprovante. Aqui um comprovante volta ('payment', ...) sem tocar nos efeitos."""
+    from app.media import classify_image_raw
+    fake_openai = AsyncMock()
+    fake_openai.chat.completions.create = AsyncMock(
+        return_value=_mock_openai_response("COMPROVANTE DE PAGAMENTO: R$ 100,00 Pix")
+    )
+    with patch("app.media._get_openai", return_value=fake_openai), \
+         patch("app.google_drive.upload_image", new_callable=AsyncMock) as mock_up, \
+         patch("app.whatsapp.send_text", new_callable=AsyncMock) as mock_send, \
+         patch("app.email_sender.send_clinic_notification_email", new_callable=AsyncMock) as mock_mail:
+        kind, canonical = await classify_image_raw(b"fake-bytes", phone="5581999999999@s.whatsapp.net")
+
+    assert kind == "payment"
+    assert canonical.upper().startswith("COMPROVANTE DE PAGAMENTO")
+    mock_up.assert_not_awaited()
+    mock_send.assert_not_awaited()
+    mock_mail.assert_not_awaited()
+
+
+async def test_classify_image_raw_ignore():
+    """Imagem de bom dia volta ('ignore', ...) — o cron não alerta sobre ela."""
+    from app.media import classify_image_raw
+    fake_openai = AsyncMock()
+    fake_openai.chat.completions.create = AsyncMock(
+        return_value=_mock_openai_response("IGNORAR")
+    )
+    with patch("app.media._get_openai", return_value=fake_openai):
+        kind, _canonical = await classify_image_raw(b"fake-bytes")
+
+    assert kind == "ignore"

@@ -426,6 +426,12 @@ async def extract_message(payload: dict) -> tuple[str, str] | None:
             return (phone, caption) if caption else None
         text = await process_media(media_id, "image", phone=phone)
         if not text:
+            if not caption:
+                # Imagem sem legenda que não virou texto: descartada aqui. Antes isso
+                # sumia sem rastro (comprovante mudo); o log garante ao menos uma linha
+                # auditável com o media_id. A rede de segurança (reconcile_dropped_receipts)
+                # é quem pega o caso de verdade quando foi comprovante.
+                logger.warning("IMAGE_ONLY_DROPPED phone=%s media_id=%s", phone, media_id)
             # Image processing failed — fall back to caption so the message isn't lost
             return (phone, caption) if caption else None
         if caption:

@@ -701,3 +701,85 @@ async def test_last_incoming_at_sem_contato():
          patch("app.chatwoot.get_last_patient_message", AsyncMock()) as last:
         assert await last_incoming_at("5581991749847") is None
     last.assert_not_called()
+
+
+# ── list_recent_incoming_attachments (reconciliação) ──────────────────────────
+
+def _resp(payload_json):
+    r = MagicMock()
+    r.status_code = 200
+    r.raise_for_status = MagicMock()
+    r.json = MagicMock(return_value=payload_json)
+    return r
+
+
+async def test_list_recent_incoming_attachments_fetches_messages_per_conversation():
+    """O endpoint que LISTA conversas embute só a última mensagem; o comprovante que
+    sumiu quase nunca é a última (o paciente manda "enviei" depois, ou chega um
+    auto-reply). Então a função tem que BUSCAR as mensagens de cada conversa na janela,
+    não confiar nas embutidas. Só anexos de entrada (message_type=0) dentro da janela
+    contam; saída e fora da janela são ignorados; a conversa antiga nem é buscada."""
+    from app.chatwoot import list_recent_incoming_attachments
+
+    until_ts = 1_792_400_000
+    since_ts = until_ts - 3600
+    in_window = until_ts - 600
+    too_old = until_ts - 7200
+
+    # A conversa 505 está na janela, mas sua ÚNICA mensagem embutida é um texto sem anexo
+    # (o "enviei" que veio depois do comprovante). O comprovante só aparece no GET.
+    conv_in = {
+        "id": 505,
+        "last_activity_at": in_window,
+        "meta": {"sender": {"phone_number": "+5581971052827"}},
+        "messages": [{"message_type": 0, "created_at": in_window, "content": "enviei", "attachments": []}],
+    }
+    conv_old = {  # abaixo do piso → faz a paginação parar e NÃO deve ser buscada
+        "id": 400,
+        "last_activity_at": since_ts - 100,
+        "meta": {"sender": {"phone_number": "+5581900000000"}},
+        "messages": [],
+    }
+    msgs_505 = {"payload": [
+        {"message_type": 0, "created_at": in_window,
+         "attachments": [{"id": 999, "file_type": "image", "data_url": "https://cw/a.jpg"}]},
+        {"message_type": 1, "created_at": in_window,
+         "attachments": [{"id": 1000, "file_type": "image", "data_url": "https://cw/out.jpg"}]},
+        {"message_type": 0, "created_at": too_old,
+         "attachments": [{"id": 1001, "file_type": "image", "data_url": "https://cw/old.jpg"}]},
+    ]}
+
+    fetched_urls = []
+
+    def _get(url, **kwargs):
+        fetched_urls.append(url)
+        if url.endswith("/conversations"):
+            return _resp({"data": {"payload": [conv_in, conv_old]}})
+        if url.endswith("/conversations/505/messages"):
+            return _resp(msgs_505)
+        return _resp({"payload": []})
+
+    with patch("httpx.AsyncClient") as mock_client_cls:
+        mock_client = AsyncMock()
+        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_client.__aexit__ = AsyncMock(return_value=False)
+        mock_client.get = AsyncMock(side_effect=_get)
+        mock_client_cls.return_value = mock_client
+
+        with patch.dict("os.environ", {
+            "CHATWOOT_BASE_URL": "https://chat.example.com",
+            "CHATWOOT_ACCOUNT_ID": "1",
+            "CHATWOOT_USER_TOKEN": "user-token",
+        }):
+            result = await list_recent_incoming_attachments(since_ts, until_ts)
+
+    assert len(result) == 1
+    att = result[0]
+    assert att["attachment_id"] == 999
+    assert att["phone"] == "5581971052827"
+    assert att["created_at"] == in_window
+    assert att["data_url"] == "https://cw/a.jpg"
+    assert att["conversation_id"] == 505
+    # buscou as mensagens da conversa na janela, mas NÃO as da conversa antiga
+    assert any(u.endswith("/conversations/505/messages") for u in fetched_urls)
+    assert not any(u.endswith("/conversations/400/messages") for u in fetched_urls)
