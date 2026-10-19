@@ -47,11 +47,12 @@ async def has_trace(phone: str, created_at: int) -> bool:
     """
     variants = _phone_variants(phone)
     lower = _iso(created_at - TRACE_TOLERANCE_S)
+    upper = _iso(created_at + TRACE_TOLERANCE_S)
     client = await get_supabase()
 
     msgs = (
         await client.from_("messages").select("id")
-        .in_("phone", variants).gte("created_at", lower)
+        .in_("phone", variants).gte("created_at", lower).lte("created_at", upper)
         .or_("content.ilike.%[imagem]%,content.ilike.%Recebemos seu documento%")
         .limit(1).execute()
     )
@@ -60,7 +61,7 @@ async def has_trace(phone: str, created_at: int) -> bool:
 
     evs = (
         await client.from_("events").select("id")
-        .in_("phone", variants).gte("created_at", lower)
+        .in_("phone", variants).gte("created_at", lower).lte("created_at", upper)
         .in_("event_type", list(_RECEIPT_EVENTS))
         .limit(1).execute()
     )
@@ -114,26 +115,32 @@ async def reconcile(now: datetime, *, floor_min: int = 10, window_min: int = 60)
     candidates = await list_recent_incoming_attachments(since_ts, until_ts)
     alerts = 0
     for cand in candidates:
-        aid = cand.get("attachment_id")
-        if await already_alerted(aid):
-            continue
-        if await has_trace(cand.get("phone", ""), cand.get("created_at", 0)):
-            continue
+        # Um candidato ruim (429 da OpenAI, download que falha, SMTP fora) NUNCA pode
+        # derrubar a rodada e perder os demais — a rede tem que seguir pelos outros.
         try:
+            aid = cand.get("attachment_id")
+            phone = cand.get("phone", "")
+            if not phone:
+                logger.warning("RECONCILE_SKIP_NO_PHONE attachment_id=%s", aid)
+                continue
+            if await already_alerted(aid):
+                continue
+            if await has_trace(phone, cand.get("created_at", 0)):
+                continue
             img = await _download_bytes(cand.get("data_url", ""))
+            kind, _canonical = await classify_image_raw(img, phone)
+            if kind not in ("payment", "document"):
+                continue
+            await _alert_clinic(cand, kind)
+            await log_event(RECEIPT_DROP_EVENT, phone, {
+                "attachment_id": aid,
+                "conversation_id": cand.get("conversation_id"),
+                "kind": kind,
+            })
+            alerts += 1
         except Exception:
-            logger.exception("RECONCILE_DOWNLOAD_FAILED attachment_id=%s", aid)
+            logger.exception("RECONCILE_CANDIDATE_FAILED attachment_id=%s", cand.get("attachment_id"))
             continue
-        kind, _canonical = await classify_image_raw(img, cand.get("phone", ""))
-        if kind not in ("payment", "document"):
-            continue
-        await _alert_clinic(cand, kind)
-        await log_event(RECEIPT_DROP_EVENT, cand.get("phone", ""), {
-            "attachment_id": aid,
-            "conversation_id": cand.get("conversation_id"),
-            "kind": kind,
-        })
-        alerts += 1
 
     logger.info("RECONCILE done candidates=%d alerts=%d", len(candidates), alerts)
     return alerts
