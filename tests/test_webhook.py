@@ -2523,3 +2523,18 @@ def test_payload_log_summary_handles_status_and_malformed():
     # malformado não pode estourar
     assert isinstance(_payload_log_summary({}), str)
     assert isinstance(_payload_log_summary({"entry": "x"}), str)
+
+
+async def test_image_only_drop_is_logged(caplog):
+    """Imagem sem legenda cujo process_media volta vazio é descartada; antes do PR
+    dela não sobrava rastro nenhum. Agora deixa ao menos uma linha de log com o
+    media_id, para auditar na produção (comprovante mudo)."""
+    from app.main import extract_message
+    with patch("app.media.process_media", new_callable=AsyncMock, return_value=None):
+        with caplog.at_level(logging.WARNING):
+            result = await extract_message(_meta_payload(msg_type="image"))
+    assert result is None
+    assert any(
+        "IMAGE_ONLY_DROPPED" in r.getMessage() and "media-456" in r.getMessage()
+        for r in caplog.records
+    )
