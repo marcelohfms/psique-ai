@@ -2375,9 +2375,61 @@ async def test_confirm_attendance_survives_calendar_marking_failure():
             config=CONFIG,
         )
 
-    assert result.startswith("Presença confirmada")
+    assert "Presença confirmada" in result
     appts.update.assert_called()      # gravou confirmed_at mesmo assim
     mock_log.assert_awaited()         # logou o evento mesmo assim
+
+
+async def test_confirm_attendance_online_instructs_link_not_address():
+    """Consulta ONLINE: a tool decide a modalidade pelo banco e devolve uma instrução
+    que manda falar do LINK e proíbe o texto presencial ("te esperamos"/endereço).
+    Caso Maria Silvânia (18/10/2026): a Eva confirmou presença de consulta online
+    com o texto presencial, sem avisar que o link seria enviado."""
+    from app.graph.tools import confirm_attendance
+    client, table, execute = _make_supabase_client()
+    execute.return_value = MagicMock(data=[{
+        "confirmed_at": None, "status": "scheduled", "patient_id": "p-1",
+        "doctor_id": "doc-9", "modality": "online",
+    }])
+    with patch("app.graph.tools.get_supabase", new_callable=AsyncMock, return_value=client), \
+         patch("app.graph.tools.get_users_by_phone", new_callable=AsyncMock, return_value=[{"id": "p-1"}]), \
+         patch("app.google_calendar.mark_event_confirmed", new_callable=AsyncMock), \
+         patch("app.graph.tools.log_event", new_callable=AsyncMock):
+        result = await confirm_attendance.coroutine(
+            appointment_id="evt-online",
+            state=_make_state(),
+            config=CONFIG,
+        )
+    table.update.assert_called()                 # gravou confirmed_at
+    assert "ONLINE" in result
+    assert "link" in result.lower()
+    assert "NÃO envie o endereço" in result
+    assert "te esperamos" in result.lower()      # proíbe explicitamente o texto presencial
+
+
+async def test_confirm_attendance_presencial_instructs_address_not_link():
+    """Consulta PRESENCIAL: a instrução manda enviar o endereço da clínica e proíbe
+    falar de link online."""
+    from app.graph.tools import confirm_attendance
+    client, table, execute = _make_supabase_client()
+    execute.return_value = MagicMock(data=[{
+        "confirmed_at": None, "status": "scheduled", "patient_id": "p-1",
+        "doctor_id": "doc-9", "modality": "presencial",
+    }])
+    with patch("app.graph.tools.get_supabase", new_callable=AsyncMock, return_value=client), \
+         patch("app.graph.tools.get_users_by_phone", new_callable=AsyncMock, return_value=[{"id": "p-1"}]), \
+         patch("app.google_calendar.mark_event_confirmed", new_callable=AsyncMock), \
+         patch("app.graph.tools.log_event", new_callable=AsyncMock):
+        result = await confirm_attendance.coroutine(
+            appointment_id="evt-presencial",
+            state=_make_state(),
+            config=CONFIG,
+        )
+    table.update.assert_called()
+    assert "PRESENCIAL" in result
+    assert "endereço" in result.lower()
+    assert "link" in result.lower()              # cita link só para proibir
+    assert "NÃO fale de link" in result
 
 
 async def test_confirm_attendance_is_idempotent_when_already_confirmed():
@@ -2581,7 +2633,7 @@ async def test_confirm_attendance_fail_open_when_start_time_missing_or_unreadabl
             )
         table.update.assert_called()        # gravou confirmed_at mesmo sem data válida
         mock_log.assert_awaited()
-        assert result.startswith("Presença confirmada")
+        assert "Presença confirmada" in result
 
 
 # ── cancel_appointment ────────────────────────────────────────────────────────

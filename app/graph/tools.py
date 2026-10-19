@@ -3446,7 +3446,7 @@ async def confirm_attendance(
     # loga de novo.
     existing = (
         await client.from_("appointments")
-        .select("confirmed_at, status, patient_id, doctor_id, start_time")
+        .select("confirmed_at, status, patient_id, doctor_id, start_time, modality")
         .eq("appointment_id", appointment_id)
         .limit(1)
         .execute()
@@ -3560,7 +3560,37 @@ async def confirm_attendance(
         "appointment_id": appointment_id,
     })
 
-    return "Presença confirmada! ✅"
+    # A modalidade da mensagem de confirmação é decidida AQUI, a partir do banco —
+    # não pela leitura, pela Eva, de uma tag "— Online/— Presencial" perdida no
+    # cabeçalho do prompt. Com reasoning desligado, a Eva ignorava a tag e caía no
+    # texto presencial padrão ("Te esperamos ... Até lá") mesmo em consulta online,
+    # sem avisar que o link seria enviado (caso Maria Silvânia, 18/10/2026). A tool
+    # devolve uma instrução que fixa a modalidade e proíbe o texto da outra.
+    _modality = rows[0].get("modality")
+    if _modality == "online":
+        return (
+            "[INSTRUÇÃO INTERNA — NÃO ENVIE AO PACIENTE] Presença confirmada ✅. "
+            "Esta consulta é ONLINE. Envie a confirmação de presença no formato "
+            "SE ONLINE descrito no prompt: confirme a presença e diga que, no horário "
+            "da consulta, o paciente receberá o link da consulta online. É OBRIGATÓRIO "
+            'avisar sobre o link. NÃO diga "te esperamos" e NÃO envie o endereço da clínica.'
+        )
+    if _modality == "presencial":
+        return (
+            "[INSTRUÇÃO INTERNA — NÃO ENVIE AO PACIENTE] Presença confirmada ✅. "
+            "Esta consulta é PRESENCIAL. Envie a confirmação de presença no formato "
+            'SE PRESENCIAL descrito no prompt ("Te esperamos ... Até lá.") e, em um '
+            "SEGUNDO parágrafo separado por linha em branco, o endereço da clínica. "
+            "NÃO fale de link de consulta online."
+        )
+    # Modalidade não informada: texto presencial sem endereço e sem falar de link
+    # — mesmo comportamento do caso "MODALIDADE NÃO INFORMADA" do prompt.
+    return (
+        "[INSTRUÇÃO INTERNA — NÃO ENVIE AO PACIENTE] Presença confirmada ✅. A "
+        "modalidade desta consulta não está informada. Envie apenas a confirmação de "
+        'presença ("Te esperamos ... Até lá.") SEM o endereço da clínica e SEM falar '
+        "de link de consulta online."
+    )
 
 
 def _expected_consultation_amount(
