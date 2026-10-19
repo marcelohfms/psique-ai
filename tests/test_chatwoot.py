@@ -701,3 +701,64 @@ async def test_last_incoming_at_sem_contato():
          patch("app.chatwoot.get_last_patient_message", AsyncMock()) as last:
         assert await last_incoming_at("5581991749847") is None
     last.assert_not_called()
+
+
+# ── list_recent_incoming_attachments (reconciliação) ──────────────────────────
+
+async def test_list_recent_incoming_attachments_filters_window_and_direction():
+    """Só anexos de mensagens RECEBIDAS (message_type=0) dentro da janela entram.
+    Mensagem de saída, anexo fora da janela e conversa antiga (last_activity_at
+    abaixo do piso) são ignorados; a paginação para na conversa antiga."""
+    from app.chatwoot import list_recent_incoming_attachments
+
+    until_ts = 1_792_400_000
+    since_ts = until_ts - 3600
+    in_window = until_ts - 600
+    too_old = until_ts - 7200
+
+    conv_in = {
+        "id": 505,
+        "last_activity_at": in_window,
+        "meta": {"sender": {"phone_number": "+5581971052827"}},
+        "messages": [
+            {"message_type": 0, "created_at": in_window,
+             "attachments": [{"id": 999, "file_type": "image", "data_url": "https://cw/a.jpg"}]},
+            {"message_type": 1, "created_at": in_window,
+             "attachments": [{"id": 1000, "file_type": "image", "data_url": "https://cw/out.jpg"}]},
+            {"message_type": 0, "created_at": too_old,
+             "attachments": [{"id": 1001, "file_type": "image", "data_url": "https://cw/old.jpg"}]},
+        ],
+    }
+    conv_old = {  # abaixo do piso → faz a paginação parar
+        "id": 400,
+        "last_activity_at": since_ts - 100,
+        "meta": {"sender": {"phone_number": "+5581900000000"}},
+        "messages": [],
+    }
+
+    mock_response = MagicMock()
+    mock_response.status_code = 200
+    mock_response.raise_for_status = MagicMock()
+    mock_response.json = MagicMock(return_value={"data": {"payload": [conv_in, conv_old]}})
+
+    with patch("httpx.AsyncClient") as mock_client_cls:
+        mock_client = AsyncMock()
+        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_client.__aexit__ = AsyncMock(return_value=False)
+        mock_client.get = AsyncMock(return_value=mock_response)
+        mock_client_cls.return_value = mock_client
+
+        with patch.dict("os.environ", {
+            "CHATWOOT_BASE_URL": "https://chat.example.com",
+            "CHATWOOT_ACCOUNT_ID": "1",
+            "CHATWOOT_USER_TOKEN": "user-token",
+        }):
+            result = await list_recent_incoming_attachments(since_ts, until_ts)
+
+    assert len(result) == 1
+    att = result[0]
+    assert att["attachment_id"] == 999
+    assert att["phone"] == "5581971052827"
+    assert att["created_at"] == in_window
+    assert att["data_url"] == "https://cw/a.jpg"
+    assert att["conversation_id"] == 505

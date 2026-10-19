@@ -275,6 +275,60 @@ async def get_last_patient_message(conversation_id: int) -> dict | None:
     }
 
 
+async def list_recent_incoming_attachments(since_ts: int, until_ts: int) -> list[dict]:
+    """Anexos de imagens/arquivos RECEBIDOS do paciente na janela [since_ts, until_ts]
+    (epoch s). Usado pelo cron de reconciliação (app/receipt_reconciliation.py) para
+    achar comprovante que sumiu na ingestão e nunca virou rastro no banco.
+
+    Lista conversas ordenadas por última atividade decrescente e para de paginar assim
+    que a `last_activity_at` da conversa cai abaixo de `since_ts` — evita varrer todas as
+    conversas do inbox a cada rodada. As mensagens recentes vêm embutidas em cada conversa,
+    então na prática não há GET por conversa.
+
+    Cada item: {attachment_id, phone (dígitos), created_at, data_url, conversation_id}.
+    Só mensagens de entrada (message_type == 0) com anexo image/file dentro da janela.
+    """
+    out: list[dict] = []
+    page = 1
+    base = f"{_base_url()}/api/v1/accounts/{_account_id()}/conversations"
+    async with httpx.AsyncClient(timeout=20) as client:
+        while True:
+            resp = await _request(
+                client, "GET", base, headers=_headers(),
+                params={"status": "all", "sort": "-last_activity_at", "page": page},
+            )
+            data = resp.json().get("data") or {}
+            convs = data.get("payload") or []
+            if not convs:
+                break
+            stop = False
+            for conv in convs:
+                if (conv.get("last_activity_at") or 0) < since_ts:
+                    stop = True
+                    break
+                phone = (((conv.get("meta") or {}).get("sender") or {}).get("phone_number") or "")
+                cid = conv.get("id")
+                for m in (conv.get("messages") or []):
+                    if m.get("message_type") != 0:
+                        continue
+                    ts = m.get("created_at") or 0
+                    if not (since_ts <= ts <= until_ts):
+                        continue
+                    for att in (m.get("attachments") or []):
+                        if att.get("file_type") in ("image", "file"):
+                            out.append({
+                                "attachment_id": att.get("id"),
+                                "phone": _strip_phone(phone),
+                                "created_at": ts,
+                                "data_url": att.get("data_url"),
+                                "conversation_id": cid,
+                            })
+            if stop:
+                break
+            page += 1
+    return out
+
+
 async def last_incoming_at(phone: str) -> int | None:
     """Epoch (s) da última mensagem do contato na conversa da clínica, ou None.
 
