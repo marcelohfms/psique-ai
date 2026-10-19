@@ -291,22 +291,15 @@ async def _reread_amount(
     return _find_brl_amount(out) or _find_brl_amount("R$ " + out)
 
 
-async def describe_image_bytes(
-    image_bytes: bytes,
-    phone: str = "",
-    source_bytes: bytes | None = None,
-    source_ext: str = "jpg",
-) -> str | None:
-    """Classify image/PDF and route accordingly.
+async def classify_image_raw(image_bytes: bytes, phone: str = "") -> tuple[str, str]:
+    """Classifica a imagem SEM nenhum efeito colateral e devolve (kind, canonical).
 
-    - Payment receipts (COMPROVANTE DE PAGAMENTO): upload to payments Drive folder and
-      return a description string so Eva can call register_payment.
-    - Medical documents (exams, laudos, etc.): upload to documents Drive folder with
-      filename "{doc_type}_{patient}_{date}.{ext}", send a thank-you message directly
-      to the patient, notify the clinic, and return None (so Eva is never invoked).
-
-    source_bytes: original file bytes to upload (e.g. raw PDF). If None, image_bytes is used.
-    source_ext: file extension for the uploaded file ('jpg' or 'pdf').
+    kind ∈ {"payment", "document", "ignore"}; canonical é o texto já normalizado por
+    classify_media_description. Ao contrário de describe_image_bytes, NÃO sobe nada ao
+    Drive, não envia mensagem ao paciente e não manda e-mail — por isso o cron de
+    reconciliação (app/receipt_reconciliation.py) usa esta função para filtrar
+    candidatos sem reprocessar o comprovante a cada rodada. describe_image_bytes também
+    passa por aqui para obter a classificação (DRY).
     """
     b64 = base64.b64encode(image_bytes).decode()
     # gpt-5.2: temperature=0 deixa a classificação determinística; reasoning_effort="none"
@@ -359,6 +352,36 @@ async def describe_image_bytes(
     logger.info("IMAGE_CLASSIFIER_RAW phone=%s output=%r", phone, raw_description[:300])
 
     kind, description = classify_media_description(raw_description)
+    # Diagnóstico de borda do classificador (fica aqui, onde raw_description existe):
+    if kind == "payment" and not _strip_decoration(raw_description).upper().startswith(RECEIPT_PREFIX):
+        logger.warning(
+            "IMAGE_CLASSIFIER_RESCUED_AS_PAYMENT phone=%s output=%r",
+            phone, raw_description[:300])
+    if kind == "document" and not _has_known_doc_prefix(description):
+        logger.warning(
+            "IMAGE_CLASSIFIER_UNRECOGNIZED phone=%s output=%r — caindo no fluxo de documento",
+            phone, raw_description[:300])
+    return kind, description
+
+
+async def describe_image_bytes(
+    image_bytes: bytes,
+    phone: str = "",
+    source_bytes: bytes | None = None,
+    source_ext: str = "jpg",
+) -> str | None:
+    """Classify image/PDF and route accordingly.
+
+    - Payment receipts (COMPROVANTE DE PAGAMENTO): upload to payments Drive folder and
+      return a description string so Eva can call register_payment.
+    - Medical documents (exams, laudos, etc.): upload to documents Drive folder with
+      filename "{doc_type}_{patient}_{date}.{ext}", send a thank-you message directly
+      to the patient, notify the clinic, and return None (so Eva is never invoked).
+
+    source_bytes: original file bytes to upload (e.g. raw PDF). If None, image_bytes is used.
+    source_ext: file extension for the uploaded file ('jpg' or 'pdf').
+    """
+    kind, description = await classify_image_raw(image_bytes, phone)
 
     # Imagens irrelevantes (bom dia, motivacionais, etc.) — descartar silenciosamente
     if kind == "ignore":
@@ -366,14 +389,6 @@ async def describe_image_bytes(
         return None
 
     is_payment = kind == "payment"
-    if is_payment and not _strip_decoration(raw_description).upper().startswith(RECEIPT_PREFIX):
-        logger.warning(
-            "IMAGE_CLASSIFIER_RESCUED_AS_PAYMENT phone=%s output=%r",
-            phone, raw_description[:300])
-    if not is_payment and not _has_known_doc_prefix(description):
-        logger.warning(
-            "IMAGE_CLASSIFIER_UNRECOGNIZED phone=%s output=%r — caindo no fluxo de documento",
-            phone, raw_description[:300])
     doc_type = _extract_doc_type(description)
     now = datetime.now(TZ)
     now_str = now.strftime("%Y%m%d_%H%M%S")
