@@ -3333,7 +3333,12 @@ async def test_reschedule_born_confirmed_when_tomorrow():
         "reschedule_initiated_by": "patient",
     })
     tomorrow = (datetime.now(TZ) + timedelta(days=1)).replace(hour=10, minute=0, second=0, microsecond=0)
-    with patch("app.graph.tools._get_doctor_calendar_id", new_callable=AsyncMock, return_value="cal123"), \
+    # Neutraliza o calendário real de bloqueios: "amanhã" é dinâmico e, em dias que
+    # caem num SCHEDULE_EXCEPTIONS do médico, o reschedule recusaria o horário e o
+    # teste falharia dependendo da data em que o CI roda (ex.: julio bloqueado em
+    # 19/10/2026).
+    with patch("app.google_calendar.SCHEDULE_EXCEPTIONS", {}), \
+         patch("app.graph.tools._get_doctor_calendar_id", new_callable=AsyncMock, return_value="cal123"), \
          patch("app.google_calendar.update_event", new_callable=AsyncMock), \
          patch("app.graph.tools.get_supabase", new_callable=AsyncMock, return_value=client), \
          patch("app.graph.tools.get_users_by_phone", new_callable=AsyncMock, return_value=[{"id": "user-1"}]), \
@@ -3363,7 +3368,10 @@ async def test_reschedule_clears_confirmed_when_far():
         "reschedule_initiated_by": "patient",
     })
     far = (datetime.now(TZ) + timedelta(days=7)).replace(hour=10, minute=0, second=0, microsecond=0)
-    with patch("app.graph.tools._get_doctor_calendar_id", new_callable=AsyncMock, return_value="cal123"), \
+    # Mesma proteção do teste de "amanhã": data dinâmica não pode depender do
+    # calendário real de bloqueios do médico.
+    with patch("app.google_calendar.SCHEDULE_EXCEPTIONS", {}), \
+         patch("app.graph.tools._get_doctor_calendar_id", new_callable=AsyncMock, return_value="cal123"), \
          patch("app.google_calendar.update_event", new_callable=AsyncMock), \
          patch("app.graph.tools.get_supabase", new_callable=AsyncMock, return_value=client), \
          patch("app.graph.tools.get_users_by_phone", new_callable=AsyncMock, return_value=[{"id": "user-1"}]), \
