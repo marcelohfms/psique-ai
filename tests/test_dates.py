@@ -10,6 +10,7 @@ from app.dates import (
     date_suffix_pt,
     format_date_pt,
     build_date_reference,
+    is_born_confirmed,
     REFERENCE_WINDOW_DAYS,
 )
 
@@ -69,3 +70,21 @@ def test_build_date_reference_month_rollover():
 def test_build_date_reference_rejects_naive_datetime():
     with pytest.raises(ValueError):
         build_date_reference(datetime(2026, 6, 24, 9, 0))  # naive, no tzinfo
+
+
+def test_is_born_confirmed_boundaries():
+    now = datetime(2026, 6, 24, 15, 0, tzinfo=TZ)
+    # mesmo dia (mais cedo no mesmo dia também conta)
+    assert is_born_confirmed(datetime(2026, 6, 24, 9, 0, tzinfo=TZ), now) is True
+    # véspera
+    assert is_born_confirmed(datetime(2026, 6, 25, 9, 0, tzinfo=TZ), now) is True
+    # dois dias à frente → não
+    assert is_born_confirmed(datetime(2026, 6, 26, 9, 0, tzinfo=TZ), now) is False
+    # data no passado → não (não é véspera nem mesmo dia)
+    assert is_born_confirmed(datetime(2026, 6, 23, 9, 0, tzinfo=TZ), now) is False
+
+
+def test_is_born_confirmed_uses_recife_date_from_utc():
+    now = datetime(2026, 6, 24, 15, 0, tzinfo=TZ)
+    # 2026-06-25T01:00:00+00:00 == 2026-06-24 22:00 em Recife (UTC-3) → mesmo dia
+    assert is_born_confirmed(datetime.fromisoformat("2026-06-25T01:00:00+00:00"), now) is True

@@ -220,6 +220,9 @@ async def main():
             .select("appointment_id, start_time, doctor_id, modality, patient_id, contact_id, patients(name)")
             .eq("status", "scheduled")
             .is_("reminder_day_before_sent_at", "null")
+            # Consulta já confirmada (inclusive a que nasceu confirmada na véspera/
+            # mesmo dia) não precisa do lembrete de confirmação de presença.
+            .is_("confirmed_at", "null")
             .gte("start_time", f"{tomorrow_start}T00:00:00")
             .lt("start_time", f"{tomorrow_end}T00:00:00")
             .lte("created_at", booked_before)
