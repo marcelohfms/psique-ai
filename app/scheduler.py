@@ -66,6 +66,7 @@ _CHATWOOT = (
 )
 _GOOGLE = ("GOOGLE_CLIENT_ID", "GOOGLE_CLIENT_SECRET", "GOOGLE_REFRESH_TOKEN")
 _SMTP = ("SMTP_HOST", "SMTP_PORT", "SMTP_USER", "SMTP_PASSWORD")
+_OPENAI = ("OPENAI_API_KEY",)
 
 
 @dataclass(frozen=True)
@@ -163,6 +164,11 @@ JOBS: tuple[Job, ...] = (
         _SUPABASE + _SMTP),
     Job("update_patient_ages", "update_patient_ages", At(0, monthday=1, grace_hours=12),
         _SUPABASE),
+    # Rede de segurança: acha comprovante que sumiu na ingestão (webhook da Meta que
+    # não chegou) cruzando o Chatwoot com o banco e avisa a clínica. Ver
+    # app/receipt_reconciliation.py.
+    Job("reconcile_dropped_receipts", "reconcile_dropped_receipts", Every(15),
+        _SUPABASE + _CHATWOOT + _OPENAI + _SMTP + ("CLINIC_NOTIFY_EMAIL",)),
 )
 
 

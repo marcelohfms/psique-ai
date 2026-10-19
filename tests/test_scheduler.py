@@ -248,3 +248,14 @@ def test_no_github_cron_schedules():
         if re.search(r"^\s*schedule:\s*$", p.read_text(), re.MULTILINE)
     ]
     assert with_schedule == [], with_schedule
+
+
+def test_reconcile_job_registered_with_env():
+    """A rede de segurança roda a cada 15 min e declara as variáveis que precisa
+    (Chatwoot p/ listar, OpenAI p/ reclassificar, SMTP p/ avisar a clínica)."""
+    job = next((j for j in sch.JOBS if j.name == "reconcile_dropped_receipts"), None)
+    assert job is not None
+    assert isinstance(job.schedule, Every) and job.schedule.minutes == 15
+    env = set(job.env)
+    for var in ("OPENAI_API_KEY", "CHATWOOT_BASE_URL", "SMTP_HOST", "CLINIC_NOTIFY_EMAIL"):
+        assert var in env, var
