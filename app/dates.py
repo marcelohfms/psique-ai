@@ -78,6 +78,28 @@ def build_date_reference(now: datetime) -> str:
     return "\n".join(lines)
 
 
+def compute_age(birth_date: str | None, today: date) -> int | None:
+    """Idade em anos completos em `today`, a partir de uma data de nascimento.
+
+    Aceita os mesmos formatos bagunçados que o cadastro recebe (dd/mm/aaaa,
+    ddmmaaaa, ISO, etc.) porque reusa o parser do schema. Retorna None quando a
+    data é impossível de interpretar.
+
+    A idade é calculada aqui, no código, e injetada no prompt como fato pronto.
+    LLMs erram conta de calendário: a Eva já tratou uma paciente de 18 anos como
+    menor de idade duas vezes (Emilly, 5581984503756, 15 e 20/10/2026) porque
+    recalculava a idade a partir da data de nascimento e errava."""
+    if not birth_date:
+        return None
+    from app.graph.schemas import _parse_birth_date
+
+    parsed = _parse_birth_date(birth_date.strip()) if isinstance(birth_date, str) else None
+    if not parsed:
+        return None
+    bd = datetime.strptime(parsed, "%d/%m/%Y").date()
+    return today.year - bd.year - ((today.month, today.day) < (bd.month, bd.day))
+
+
 def is_born_confirmed(start: datetime, now: datetime) -> bool:
     """True quando a consulta está a 1 dia ou menos — véspera ou mesmo dia —
     no momento em que ganha o horário. Datas no passado retornam False (não são

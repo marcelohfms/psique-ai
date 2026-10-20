@@ -770,6 +770,19 @@ async def collect_info_node(state: ConversationState, config: RunnableConfig) ->
         "referral_professional": state.get("referral_professional"),
     }
 
+    # Idade SEMPRE recalculada no código a partir da data de nascimento, nunca
+    # confiando num patient_age herdado (a LLM já gravou idade errada e tratou
+    # paciente de 18 como menor — Emilly, 5581984503756, 15 e 20/10/2026). Recompor
+    # aqui, antes dos passos de responsável e da montagem do prompt, deixa a decisão
+    # menor/adulto determinística e auto-corretiva a cada turno.
+    from app.dates import compute_age as _compute_age
+    _today_recife = datetime.now(ZoneInfo("America/Recife")).date()
+    if state.get("birth_date"):
+        _derived_age = _compute_age(state.get("birth_date"), _today_recife)
+        if _derived_age is not None and _derived_age != state.get("patient_age"):
+            state = {**state, "patient_age": _derived_age}
+    collected["patient_age"] = state.get("patient_age")
+
     # ── Disambiguation: confirmação de paciente selecionado ──────────────────────
     if state.get("pending_confirmation_patient") is not None:
         candidate = state["pending_confirmation_patient"]
@@ -1446,9 +1459,9 @@ async def collect_info_node(state: ConversationState, config: RunnableConfig) ->
             if asked_birth and last_human:
                 parsed = _parse_birth_date(last_human)
                 if parsed:
-                    bd = datetime.strptime(parsed, "%d/%m/%Y")
-                    today = datetime.now()
-                    age = today.year - bd.year - ((today.month, today.day) < (bd.month, bd.day))
+                    # Idade calculada no código pela data real de Recife (nunca pela
+                    # LLM, que erra conta de calendário).
+                    age = _compute_age(parsed, _today_recife)
                     return await _extract_and_ask(
                         {"birth_date": parsed, "patient_age": age},
                         _nq(birth_date=parsed, patient_age=age),
@@ -1692,6 +1705,22 @@ async def collect_info_node(state: ConversationState, config: RunnableConfig) ->
         doctors_info=get_doctors_info(),
         medical_limits_rule=MEDICAL_LIMITS_RULE,
     )
+    # Idade como FATO pronto, igual aos rótulos de dia da semana: a LLM erra conta
+    # de calendário e já tratou paciente de 18 como menor (Emilly, 5581984503756,
+    # 15 e 20/10/2026). Entregar a idade já calculada e proibir o recálculo mata o
+    # erro na raiz.
+    _ci_age = state.get("patient_age")
+    _ci_bd = state.get("birth_date")
+    if _ci_bd and isinstance(_ci_age, int):
+        _ci_status = "menor de 18 anos" if _ci_age < 18 else "maior de 18 anos (adulto)"
+        _collect_system += (
+            f"\n\nIDADE JÁ CALCULADA (use este valor, NÃO recalcule): o paciente nasceu "
+            f"em {_ci_bd} e hoje tem {_ci_age} anos, portanto é {_ci_status}. Trate esta "
+            f"idade como fato definitivo. NUNCA recalcule a idade a partir da data de "
+            f"nascimento e NUNCA diga que o paciente 'só faz tal idade a partir de' alguma "
+            f"data. Se o paciente for maior de 18 anos, NUNCA peça dados de responsável."
+        )
+
     # Escopo do canal e defesa anti-injeção (achados 2 e 3 da auditoria comportamental).
     _collect_system += CHANNEL_SCOPE_RULE
     # Interrupção com pergunta de informação NO MEIO do cadastro (FASE 2, já

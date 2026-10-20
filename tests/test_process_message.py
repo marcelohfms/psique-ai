@@ -126,6 +126,55 @@ async def test_collect_info_prompt_includes_current_date():
     assert "Data e hora atual" in system
     assert hoje in system
 
+
+async def test_collect_info_prompt_states_adult_age_as_fact():
+    """Com a data de nascimento conhecida, o prompt entrega a idade já calculada e
+    marca o paciente como adulto — a LLM não deve recalcular (caso Emilly, nascida
+    28/02/2008, tratada como menor em 15 e 20/10/2026). Mesmo com um patient_age
+    errado herdado no state, o código recalcula e corrige."""
+    from app.graph.nodes import collect_info_node
+    from app.graph.schemas import CollectInfoOutput
+
+    captured = {}
+
+    async def _capture(messages):
+        captured["system"] = messages[0].content
+        return CollectInfoOutput(reply="ok", is_complete=False)
+
+    # Interrupção no meio do cadastro (já saudada) → o nó passa pela LLM, que é
+    # onde o fato de idade precisa estar.
+    state = {
+        "phone": PHONE,
+        "messages": [
+            AIMessage(content="Obrigada! Qual o seu e-mail para envio?"),
+            HumanMessage(content="antes, qual o valor da consulta com o Dr Júlio?"),
+        ],
+        "user_name": "Emilly",
+        "is_patient": True,
+        "patient_name": "Emilly",
+        "birth_date": "28/02/2008",
+        "patient_age": 17,  # valor ERRADO herdado — o código deve sobrescrever
+        "is_returning_patient": False,
+        "patient_cpf": "71771833459",
+        "preferred_doctor": "julio",
+    }
+    with patch("app.graph.nodes._get_collect_llm") as mock_llm_fn, \
+         patch("app.graph.nodes.send_text", new_callable=AsyncMock), \
+         patch("app.graph.nodes.save_message", new_callable=AsyncMock), \
+         patch("app.graph.nodes.get_users_by_phone", new_callable=AsyncMock, return_value=[]):
+        mock_llm = MagicMock()
+        mock_llm.ainvoke = AsyncMock(side_effect=_capture)
+        mock_llm_fn.return_value = mock_llm
+        await collect_info_node(state, {})
+
+    system = captured.get("system", "")
+    # patient_age=17 herdado foi sobrescrito para 18 pelo cálculo no código.
+    assert "hoje tem 18 anos" in system
+    assert "maior de 18 anos (adulto)" in system
+    # O bloco de fato classifica como adulto — nunca como menor.
+    _fact = system.split("IDADE JÁ CALCULADA (use este valor")[1]
+    assert "menor de 18 anos" not in _fact
+
 # A user record with only the minimum required fields (name + is_patient).
 # Intentionally missing birth_date, email, age — they should NOT trigger collect_info.
 _KNOWN_USER = {

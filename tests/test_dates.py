@@ -11,6 +11,7 @@ from app.dates import (
     format_date_pt,
     build_date_reference,
     is_born_confirmed,
+    compute_age,
     REFERENCE_WINDOW_DAYS,
 )
 
@@ -88,3 +89,38 @@ def test_is_born_confirmed_uses_recife_date_from_utc():
     now = datetime(2026, 6, 24, 15, 0, tzinfo=TZ)
     # 2026-06-25T01:00:00+00:00 == 2026-06-24 22:00 em Recife (UTC-3) → mesmo dia
     assert is_born_confirmed(datetime.fromisoformat("2026-06-25T01:00:00+00:00"), now) is True
+
+
+# ── compute_age ───────────────────────────────────────────────────────────────
+# A idade é calculada no código (LLMs erram conta de calendário). Caso real:
+# Emilly, nascida 28/02/2008, foi tratada como menor de 18 em 15/10/2026 e
+# 20/10/2026 porque a LLM recalculava a idade e errava.
+
+def test_compute_age_birthday_already_passed_this_year():
+    # Nasceu 28/02/2008; em 15/10/2026 já fez 18 (aniversário em fevereiro).
+    assert compute_age("28/02/2008", date(2026, 10, 15)) == 18
+    assert compute_age("28/02/2008", date(2026, 10, 20)) == 18
+
+
+def test_compute_age_birthday_not_yet_this_year():
+    # Nasceu 28/12/2008; em 15/10/2026 ainda tem 17 (aniversário em dezembro).
+    assert compute_age("28/12/2008", date(2026, 10, 15)) == 17
+
+
+def test_compute_age_on_exact_birthday():
+    # No próprio dia do aniversário, a idade já conta.
+    assert compute_age("28/02/2008", date(2026, 2, 28)) == 18
+    # Um dia antes, ainda não.
+    assert compute_age("28/02/2008", date(2026, 2, 27)) == 17
+
+
+def test_compute_age_accepts_messy_formats():
+    # Mesmos formatos que _parse_birth_date aceita.
+    assert compute_age("28022008", date(2026, 10, 15)) == 18
+    assert compute_age("2008-02-28", date(2026, 10, 15)) == 18
+
+
+def test_compute_age_unparseable_returns_none():
+    assert compute_age("não sei", date(2026, 10, 15)) is None
+    assert compute_age("", date(2026, 10, 15)) is None
+    assert compute_age(None, date(2026, 10, 15)) is None
