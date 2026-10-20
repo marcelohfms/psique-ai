@@ -1251,6 +1251,36 @@ async def collect_info_node(state: ConversationState, config: RunnableConfig) ->
         and _is_info_question(_last_human())
     )
 
+    # ── Handoff no FAST-PATH da coleta ────────────────────────────────────────
+    # O bloco COLLECT_HANDOFF (abaixo) só roda DEPOIS da LLM de coleta. Mas quando
+    # há um pedido na conversa (_has_request) e não é pergunta de informação, o nó
+    # segue o fast-path roteirizado (Steps 1-8) que devolve uma pergunta fixa SEM
+    # chamar a LLM e retorna antes daquele bloco. Um lead que pede atendente humano
+    # antes de dar o nome ficava preso sendo re-perguntado o nome, sem transferência
+    # (caso Emilly, 5581984503756, 15/10/2026: 0 eventos human_transfer na coleta).
+    # Detectamos o pedido direto na mensagem do paciente e forçamos transfer_to_human
+    # aqui, antes do fast-path engolir o turno. Em silent_mode (instrução da
+    # atendente) não transferimos — transfer_to_human devolveria erro ao paciente.
+    if (
+        _has_request
+        and not _is_interruption
+        and not state.get("silent_mode")
+        and _user_requests_human(_last_human())
+    ):
+        import logging as _log_fp
+        _log_fp.getLogger(__name__).info(
+            "COLLECT_HANDOFF_FASTPATH: lead pediu atendimento humano no fast-path da "
+            "coleta — forçando transfer_to_human phone=%s", state.get("phone"),
+        )
+        from app.graph.tools import transfer_to_human as _transfer_fn
+        _transfer_text = await _transfer_fn.coroutine(
+            reason="Paciente em cadastro pediu atendimento humano.",
+            state=state, config=config,
+        )
+        await send_text(state["phone"], _transfer_text)
+        await save_message(state["phone"], "assistant", _transfer_text)
+        return {**_persistent_updates, "messages": [AIMessage(content=_transfer_text)]}
+
     # Step 1: greeting + first MISSING question (skip fields already in state).
     # MAS não quando a primeira mensagem é só uma pergunta de informação (preço,
     # endereço, convênio...): isso é a FASE 1 do prompt, que manda RESPONDER a dúvida
@@ -2279,6 +2309,43 @@ def _promises_human_transfer(text: str) -> bool:
     if any(n in _lower for n in _TRANSFER_NEGATIONS):
         return False
     return any(p in _lower for p in _TRANSFER_PROMISE_PHRASES)
+
+
+# Frases com que o PACIENTE pede, em texto, para falar com um humano. Enquanto
+# _promises_human_transfer olha o lado da Eva (a promessa), esta lista olha o lado
+# do paciente (o pedido). É usada pelo fast-path roteirizado do collect_info_node,
+# que devolve uma pergunta fixa SEM chamar a LLM — ali o bloco COLLECT_HANDOFF
+# (que lê result.reply) nunca roda, então sem este detector o pedido de atendente
+# humano era engolido (caso Emilly, 5581984503756, 15/10/2026: lead pediu humano
+# antes de dar o nome e a Eva só re-perguntou o nome, 0 eventos human_transfer).
+_HUMAN_REQUEST_PHRASES = (
+    # "atendente/atendimento humano(a)" — pedido explícito por uma pessoa de verdade.
+    "atendente humano", "atendente humana", "atendimento humano",
+    # "falar com <alguém humano>".
+    "falar com atendente", "falar com um atendente", "falar com uma atendente",
+    "falar com a atendente", "falar com o atendente",
+    "falar com uma pessoa", "falar com alguém", "falar com alguem",
+    "falar com um humano", "falar com humano", "falar com uma humana",
+    "falar com a recepção", "falar com a recepcao",
+    "falar com recepção", "falar com recepcao",
+    "falar com a débora", "falar com a debora",
+    "falar com débora", "falar com debora",
+    # Pedir/chamar um atendente.
+    "quero um atendente", "quero uma atendente",
+    "queria um atendente", "queria uma atendente",
+    "quero falar com atendente", "chamar um atendente", "chamar uma atendente",
+    "chamar a atendente", "chamar atendente",
+    "me transfere", "me transfira",
+    # "pessoa/ser humano de verdade".
+    "pessoa de verdade", "uma pessoa de verdade",
+    "atendente de verdade", "um ser humano", "ser humano de verdade",
+)
+
+
+def _user_requests_human(text: str) -> bool:
+    """True quando o paciente pede, em texto, para falar com um atendente humano."""
+    _lower = (text or "").lower()
+    return any(p in _lower for p in _HUMAN_REQUEST_PHRASES)
 
 
 async def _force_transfer_to_human(

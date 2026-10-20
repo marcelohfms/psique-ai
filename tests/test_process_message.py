@@ -7571,6 +7571,104 @@ async def test_patient_agent_other_tool_without_promise_does_not_inject_transfer
     assert names == ["consultar_data"], f"injeção indevida: {names}"
 
 
+# ──────────────────────────────────────────────────────────────────────────────
+# Handoff no FAST-PATH roteirizado da coleta (lead sem nome, FASE 1)
+# ──────────────────────────────────────────────────────────────────────────────
+# O bloco COLLECT_HANDOFF só roda DEPOIS da LLM de coleta. Mas quando há um pedido
+# na conversa ("consulta"/"agendar") e não é pergunta de informação, o nó segue o
+# fast-path roteirizado (Steps 1-8) que devolve uma pergunta fixa SEM chamar a LLM
+# e retorna antes do bloco de handoff. Um lead que pede atendente humano antes de
+# dar o nome ficava preso sendo re-perguntado o nome, sem transferência de verdade
+# (caso Emilly real: 0 eventos human_transfer durante a coleta em 15/10/2026).
+# ══════════════════════════════════════════════════════════════════════════════
+
+async def _run_collect_fastpath(messages, *, silent_mode=None, extra_state=None):
+    """Roda collect_info_node num estado que cai no fast-path roteirizado (sem nome,
+    com pedido na conversa). A LLM de coleta é mockada só por segurança — o fast-path
+    não deve chamá-la. Retorna (update, send_text_mock, transfer_coroutine_mock)."""
+    from app.graph.nodes import collect_info_node
+    from app.graph.tools import transfer_to_human
+
+    state = {
+        "phone": PHONE,
+        "messages": messages,
+        "user_name": None,
+        "is_patient": None,
+        "patient_name": None,
+        "birth_date": None,
+        "silent_mode": silent_mode,
+    }
+    if extra_state:
+        state.update(extra_state)
+
+    transfer_mock = AsyncMock(return_value="👤 Vou transferir você para um de nossos atendentes. Um momento, por favor!")
+    with patch("app.graph.nodes._get_collect_llm") as mock_llm_fn, \
+         patch("app.graph.nodes.send_text", new_callable=AsyncMock) as mock_send, \
+         patch("app.graph.nodes.save_message", new_callable=AsyncMock), \
+         patch("app.graph.nodes.upsert_user", new_callable=AsyncMock), \
+         patch("app.graph.nodes.get_users_by_phone", new_callable=AsyncMock, return_value=[]), \
+         patch.object(transfer_to_human, "coroutine", transfer_mock):
+        mock_llm = MagicMock()
+        mock_llm.ainvoke = AsyncMock(side_effect=AssertionError("LLM não deve ser chamada no fast-path"))
+        mock_llm_fn.return_value = mock_llm
+        update = await collect_info_node(state, CONFIG)
+    return update, mock_send, transfer_mock
+
+
+async def test_collect_fastpath_handoff_when_no_name_yet_transfers():
+    """Lead já saudado, sem nome ainda, pede atendente humano em vez de responder a
+    pergunta do nome. O fast-path (Step 2) não pode engolir o pedido: tem que
+    transferir de verdade (caso Emilly, FASE 1)."""
+    msgs = [
+        HumanMessage(content="quero agendar uma consulta"),
+        AIMessage(content="Pode me informar o seu nome completo?"),
+        HumanMessage(content="na verdade quero falar com uma atendente humana"),
+    ]
+    update, mock_send, transfer_mock = await _run_collect_fastpath(msgs)
+
+    transfer_mock.assert_awaited_once()
+    sent = [c.args[1] for c in mock_send.await_args_list]
+    assert any("atendentes" in s for s in sent), f"texto oficial de transferência não enviado: {sent!r}"
+    # Não pode re-perguntar o nome em vez de transferir.
+    assert not any("nome completo" in s for s in sent), f"fast-path engoliu o handoff: {sent!r}"
+
+
+async def test_collect_fastpath_handoff_on_first_message_transfers():
+    """Primeiro contato (não saudado) com pedido + atendente humano na mesma mensagem:
+    o Step 1 de boas-vindas não pode mandar a pergunta do nome e esquecer o handoff."""
+    msgs = [HumanMessage(content="oi, quero agendar uma consulta e falar com um atendente humano")]
+    update, mock_send, transfer_mock = await _run_collect_fastpath(msgs)
+
+    transfer_mock.assert_awaited_once()
+    sent = [c.args[1] for c in mock_send.await_args_list]
+    assert any("atendentes" in s for s in sent), f"texto oficial de transferência não enviado: {sent!r}"
+
+
+async def test_collect_fastpath_normal_answer_does_not_transfer():
+    """Resposta normal do cadastro (o nome) no fast-path NÃO dispara transferência."""
+    msgs = [
+        HumanMessage(content="quero agendar uma consulta"),
+        AIMessage(content="Pode me informar o seu nome completo?"),
+        HumanMessage(content="Maria Silva Souza"),
+    ]
+    update, mock_send, transfer_mock = await _run_collect_fastpath(msgs)
+
+    transfer_mock.assert_not_awaited()
+
+
+async def test_collect_fastpath_handoff_silent_mode_does_not_transfer():
+    """Em silent_mode (instrução da atendente) o fast-path não transfere —
+    transfer_to_human devolveria erro que vazaria ao paciente."""
+    msgs = [
+        HumanMessage(content="quero agendar uma consulta"),
+        AIMessage(content="Pode me informar o seu nome completo?"),
+        HumanMessage(content="quero falar com uma atendente humana"),
+    ]
+    update, mock_send, transfer_mock = await _run_collect_fastpath(msgs, silent_mode=True)
+
+    transfer_mock.assert_not_awaited()
+
+
 # ── Segurança: prefixo de atendente falsificável pelo texto do paciente ────────
 # O marcador "[Instrução da atendente]:" só é legítimo quando o servidor o injeta
 # (nota privada do Chatwoot, via _run_silent). Se o texto do PACIENTE chega ao
