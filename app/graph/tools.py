@@ -753,9 +753,17 @@ async def get_available_slots(
     # robusto a reformulações. Fire-and-forget: nunca deixa o rastreio quebrar o fluxo.
     try:
         if re.search(r"\b\d{1,2}:\d{2}\b", result):
+            # Estende o debounce do buffer durante a escolha de dia/horário: o
+            # paciente costuma responder em várias linhas curtas logo após a oferta.
+            _phone = config["configurable"]["phone"]
+            try:
+                from app.buffer import mark_slots_offered
+                mark_slots_offered(_phone)
+            except Exception:
+                logger.exception("Falha ao estender debounce pós-oferta (ignorada)")
             await log_event(
                 "slots_offered",
-                config["configurable"]["phone"],
+                _phone,
                 {
                     "doctor": await _resolve_doctor(state, config),
                     "preferred_day": preferred_day,

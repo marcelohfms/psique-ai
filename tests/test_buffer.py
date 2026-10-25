@@ -13,10 +13,12 @@ def clear_buffer():
     buf._pending.clear()
     buf._phone_locks.clear()
     buf._holds.clear()
+    buf._recent_slot_offer.clear()
     yield
     buf._pending.clear()
     buf._phone_locks.clear()
     buf._holds.clear()
+    buf._recent_slot_offer.clear()
 
 
 async def test_single_message_delivered_after_debounce():
@@ -319,3 +321,68 @@ async def test_handler_error_does_not_propagate():
         await asyncio.sleep(0.05)
     # We just verify the test reaches here without raising
     handler.assert_awaited_once()
+
+
+# --- Debounce estendido durante o agendamento (horários recém-oferecidos) ---
+# Caso Leonardo Pimentel (5581989286556, 24/10): o paciente escreveu "Quarta" e,
+# 8s depois, "Dia 04". O debounce de 3s expirou na primeira linha, a Eva ofertou
+# a quarta errada (28/10) e, quando "Dia 04" chegou, respondeu de novo com 04/11.
+# Logo após oferecer horários, a janela de debounce sobe para dar tempo ao
+# paciente de escolher dia/horário em várias linhas.
+
+async def test_recent_slot_offer_coalesces_lines_sent_beyond_default_debounce():
+    """Com uma oferta recente, "Quarta" + "Dia 04" separados por mais que o debounce
+    padrão caem num ÚNICO turno (debounce estendido do agendamento)."""
+    from app.buffer import push, mark_slots_offered
+
+    handler = AsyncMock()
+    with patch("app.buffer.DEBOUNCE_SECONDS", 0.02), \
+         patch("app.buffer.SCHEDULING_DEBOUNCE_SECONDS", 0.3), \
+         patch("app.buffer._SLOT_OFFER_WINDOW_SECONDS", 5.0):
+        mark_slots_offered(PHONE)
+        await push(PHONE, "Quarta", handler)
+        await asyncio.sleep(0.08)        # > debounce padrão, < debounce do agendamento
+        handler.assert_not_awaited()     # ainda esperando a próxima linha
+        await push(PHONE, "Dia 04", handler)
+        await asyncio.sleep(0.4)
+
+    handler.assert_awaited_once()
+    combined_text = handler.call_args[0][1]
+    assert "Quarta" in combined_text
+    assert "Dia 04" in combined_text
+
+
+async def test_without_recent_offer_default_debounce_still_splits_turns():
+    """Controle: sem oferta recente, o debounce padrão vale e as duas linhas viram
+    dois turnos (comportamento inalterado fora do agendamento)."""
+    from app.buffer import push
+
+    handler = AsyncMock()
+    with patch("app.buffer.DEBOUNCE_SECONDS", 0.02), \
+         patch("app.buffer.SCHEDULING_DEBOUNCE_SECONDS", 0.3), \
+         patch("app.buffer._SLOT_OFFER_WINDOW_SECONDS", 5.0):
+        await push(PHONE, "Quarta", handler)
+        await asyncio.sleep(0.08)
+        await push(PHONE, "Dia 04", handler)
+        await asyncio.sleep(0.1)
+
+    assert handler.await_count == 2
+
+
+async def test_slot_offer_window_expires_back_to_default_debounce():
+    """A oferta só estende o debounce por uma janela curta. Passada a janela, volta
+    ao debounce padrão e as duas linhas voltam a virar dois turnos."""
+    from app.buffer import push, mark_slots_offered
+
+    handler = AsyncMock()
+    with patch("app.buffer.DEBOUNCE_SECONDS", 0.02), \
+         patch("app.buffer.SCHEDULING_DEBOUNCE_SECONDS", 0.3), \
+         patch("app.buffer._SLOT_OFFER_WINDOW_SECONDS", 0.05):
+        mark_slots_offered(PHONE)
+        await asyncio.sleep(0.1)         # oferta agora é mais velha que a janela
+        await push(PHONE, "Quarta", handler)
+        await asyncio.sleep(0.08)
+        await push(PHONE, "Dia 04", handler)
+        await asyncio.sleep(0.1)
+
+    assert handler.await_count == 2

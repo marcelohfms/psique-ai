@@ -1,6 +1,7 @@
 import asyncio
 import logging
 import os
+import time
 from collections import defaultdict
 from contextlib import contextmanager
 from dataclasses import dataclass, field
@@ -15,6 +16,40 @@ logger = logging.getLogger(__name__)
 _RATE_LIMIT_RETRY_SECONDS = float(os.getenv("RATE_LIMIT_RETRY_SECONDS", "65"))
 
 DEBOUNCE_SECONDS = float(os.getenv("DEBOUNCE_SECONDS", "3"))
+
+# Debounce estendido durante o agendamento. Logo depois de a Eva oferecer
+# horários (evento slots_offered), o paciente costuma escolher dia e horário em
+# várias linhas curtas ("Quarta" ... "Dia 04"). Com o debounce padrão de 3 s, a
+# primeira linha dispara sozinha e a Eva responde duas vezes, às vezes com a data
+# errada (caso Leonardo Pimentel, 5581989286556, 24/10/2026). Nessa janela o
+# debounce sobe para dar tempo de o paciente terminar de digitar.
+SCHEDULING_DEBOUNCE_SECONDS = float(os.getenv("SCHEDULING_DEBOUNCE_SECONDS", "9"))
+
+# Por quanto tempo, depois de uma oferta de horários, tratamos o paciente como
+# ainda escolhendo — e portanto aplicamos o debounce estendido.
+_SLOT_OFFER_WINDOW_SECONDS = float(os.getenv("SLOT_OFFER_DEBOUNCE_WINDOW_SECONDS", "180"))
+
+# phone → time.monotonic() da última oferta de horários. Alimentado por
+# mark_slots_offered() quando get_available_slots devolve horários reais.
+_recent_slot_offer: dict[str, float] = {}
+
+
+def mark_slots_offered(phone: str) -> None:
+    """Marca que a Eva acabou de oferecer horários para `phone`.
+
+    A partir daqui, e por `_SLOT_OFFER_WINDOW_SECONDS`, o buffer usa o debounce
+    estendido do agendamento para esse telefone.
+    """
+    _recent_slot_offer[phone] = time.monotonic()
+
+
+def _debounce_for(phone: str) -> float:
+    """Debounce a aplicar agora para `phone`: estendido se houve oferta de horários
+    recente (dentro da janela), senão o padrão."""
+    offered_at = _recent_slot_offer.get(phone)
+    if offered_at is not None and (time.monotonic() - offered_at) <= _SLOT_OFFER_WINDOW_SECONDS:
+        return SCHEDULING_DEBOUNCE_SECONDS
+    return DEBOUNCE_SECONDS
 
 # When the debounce window expires but an ainvoke is still running for the same
 # phone, the flush is deferred instead of dispatched: the pending messages keep
@@ -144,7 +179,7 @@ async def push(
         entry.deferred_since = None
         asyncio.create_task(_run(phone, combined, handler))
 
-    entry.handle = loop.call_later(DEBOUNCE_SECONDS, _fire)
+    entry.handle = loop.call_later(_debounce_for(phone), _fire)
 
 
 async def drain(timeout: float | None = None) -> int:
