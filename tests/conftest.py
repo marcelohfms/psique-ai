@@ -90,3 +90,15 @@ def _no_drive_md5_lookup():
     faz o próprio patch."""
     with patch("app.google_drive.get_file_md5", new_callable=AsyncMock, return_value=""):
         yield
+
+
+@pytest.fixture(autouse=True)
+def _clear_slot_offer_debounce():
+    """O marcador de oferta de horários (debounce estendido do agendamento) é estado
+    global de módulo. Um teste que oferece horários deixaria o telefone marcado e
+    estenderia o debounce de testes seguintes, quebrando timings (ex.: o teste de
+    hold de mídia do webhook). Zera antes e depois de cada teste."""
+    import app.buffer as buf
+    buf._recent_slot_offer.clear()
+    yield
+    buf._recent_slot_offer.clear()

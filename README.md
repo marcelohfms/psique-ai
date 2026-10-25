@@ -64,6 +64,8 @@ cp .env.example .env
 | Variável | Descrição |
 |----------|-----------|
 | `DEBOUNCE_SECONDS` | Tempo de debounce do buffer de mensagens (padrão: `3`) |
+| `SCHEDULING_DEBOUNCE_SECONDS` | Debounce estendido durante o agendamento, logo após a Eva oferecer horários (padrão: `9`) |
+| `SLOT_OFFER_DEBOUNCE_WINDOW_SECONDS` | Janela, em segundos, em que o debounce estendido vale após uma oferta de horários (padrão: `180`) |
 | `WHATSAPP_TOKEN` | Token permanente da Meta Cloud API |
 | `WHATSAPP_PHONE_NUMBER_ID` | ID do número de telefone na Meta Cloud API |
 | `WHATSAPP_VERIFY_TOKEN` | Token de verificação do webhook da Meta |
