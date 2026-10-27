@@ -1281,6 +1281,34 @@ async def collect_info_node(state: ConversationState, config: RunnableConfig) ->
         await save_message(state["phone"], "assistant", _transfer_text)
         return {**_persistent_updates, "messages": [AIMessage(content=_transfer_text)]}
 
+    # ── Cancelamento/remarcação no FAST-PATH da coleta ────────────────────────
+    # Mesma armadilha do handoff acima, para outra intenção: uma conversa presa no
+    # collect_info (cadastro nunca fechou porque o agendamento/pagamento vieram do
+    # painel) pede para cancelar/remarcar. O fast-path roteirizado devolveria a
+    # próxima pergunta de cadastro, e o collect_info não tem a tool cancel_appointment
+    # de qualquer forma. Cancelamento/remarcação mexem em taxa e reembolso, hoje
+    # tratados por um humano — então transferimos (caso Tarso/Amanda, 5581997441626,
+    # 27/10/2026). Não exige _has_request: a própria frase de cancelamento é o pedido.
+    # Em silent_mode não transferimos (transfer_to_human devolveria erro ao paciente).
+    if (
+        not _is_interruption
+        and not state.get("silent_mode")
+        and _user_requests_cancellation(_last_human())
+    ):
+        import logging as _log_cx
+        _log_cx.getLogger(__name__).info(
+            "COLLECT_CANCEL_FASTPATH: paciente em cadastro pediu cancelamento/"
+            "remarcação — forçando transfer_to_human phone=%s", state.get("phone"),
+        )
+        from app.graph.tools import transfer_to_human as _transfer_fn
+        _transfer_text = await _transfer_fn.coroutine(
+            reason="Paciente em cadastro pediu cancelamento/remarcação da consulta.",
+            state=state, config=config,
+        )
+        await send_text(state["phone"], _transfer_text)
+        await save_message(state["phone"], "assistant", _transfer_text)
+        return {**_persistent_updates, "messages": [AIMessage(content=_transfer_text)]}
+
     # Step 1: greeting + first MISSING question (skip fields already in state).
     # MAS não quando a primeira mensagem é só uma pergunta de informação (preço,
     # endereço, convênio...): isso é a FASE 1 do prompt, que manda RESPONDER a dúvida
@@ -2346,6 +2374,41 @@ def _user_requests_human(text: str) -> bool:
     """True quando o paciente pede, em texto, para falar com um atendente humano."""
     _lower = (text or "").lower()
     return any(p in _lower for p in _HUMAN_REQUEST_PHRASES)
+
+
+# Frases com que o PACIENTE pede, em texto, para CANCELAR ou REMARCAR a consulta.
+# Usada pelo mesmo fast-path roteirizado do collect_info_node. Uma conversa pode
+# ficar presa no collect_info mesmo com consulta marcada e paga (o agendamento veio
+# do painel da atendente, então o cadastro interno nunca fechou — is_self=None). Ali
+# o fast-path devolve a próxima pergunta de cadastro fixa, SEM LLM e sem a tool
+# cancel_appointment: o pedido de cancelar era engolido e a Eva re-perguntava o
+# cadastro (caso Tarso/Amanda, 5581997441626, 27/10/2026: "pode cancelar! já falei
+# com a Dra Bruna" → "é para você ou para outra pessoa?"). Cancelamento/remarcação
+# mexem em taxa/reembolso, tratados por humano — este detector força o handoff.
+_CANCEL_REQUEST_PHRASES = (
+    "cancelar", "cancela ", "cancela a", "cancela minha", "cancelamento", "cancelo a",
+    "desmarcar", "desmarca", "remarcar", "remarca ", "remarcação", "remarcacao",
+    "reagendar", "reagenda", "reagendamento", "adiar a consulta", "adiar minha consulta",
+    "mudar a data", "mudar o dia", "mudar o horário", "mudar o horario",
+    "trocar a data", "trocar o horário", "trocar o horario", "mudar a consulta de dia",
+)
+# Negações: "não quero cancelar"/"não vou remarcar" contêm as frases acima como
+# substring. Sem esta checagem, uma recusa explícita forçaria a transferência.
+_CANCEL_NEGATIONS = (
+    "não quero cancelar", "nao quero cancelar", "não vou cancelar", "nao vou cancelar",
+    "não precisa cancelar", "nao precisa cancelar", "não é pra cancelar", "nao e pra cancelar",
+    "não quero remarcar", "nao quero remarcar", "não vou remarcar", "nao vou remarcar",
+    "não quero desmarcar", "nao quero desmarcar", "não precisa remarcar", "nao precisa remarcar",
+)
+
+
+def _user_requests_cancellation(text: str) -> bool:
+    """True quando o paciente pede, em texto, para cancelar ou remarcar a consulta.
+    Ignora negações explícitas ("não quero cancelar")."""
+    _lower = (text or "").lower()
+    if any(n in _lower for n in _CANCEL_NEGATIONS):
+        return False
+    return any(p in _lower for p in _CANCEL_REQUEST_PHRASES)
 
 
 async def _force_transfer_to_human(
