@@ -8,7 +8,7 @@ from datetime import date, datetime, timezone
 
 from app.phone import _phone_variants, _strip_phone
 from app.supabase_client import get_supabase
-from app.utils import format_person_name
+from app.utils import format_person_name, is_operational_label
 
 logger = logging.getLogger(__name__)
 
@@ -16,9 +16,11 @@ logger = logging.getLogger(__name__)
 def _with_canonical_name(data: dict) -> dict:
     """Padroniza a caixa de `data['name']` antes de gravar, sem mutar o dict do
     chamador. Toda escrita de contato/paciente passa por aqui, então o nome
-    entra no banco com a inicial maiúscula venha como vier do paciente."""
-    if data.get("name"):
-        return {**data, "name": format_person_name(data["name"])}
+    entra no banco com a inicial maiúscula venha como vier do paciente. Rótulos
+    operacionais (representante de laboratório, placeholder) ficam intactos."""
+    name = data.get("name")
+    if name and not is_operational_label(name):
+        return {**data, "name": format_person_name(name)}
     return data
 
 
