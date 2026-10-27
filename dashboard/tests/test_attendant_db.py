@@ -366,6 +366,14 @@ def test_lista_de_parentesco_tem_acompanhante_e_nao_tem_outro():
     assert attendant_db.RELATIONSHIPS[0] == "mãe"
 
 
+def test_lista_de_parentesco_tem_filho():
+    # Filho(a) adulto cadastrando o número de um pai/mãe paciente.
+    assert "filho(a)" in attendant_db.RELATIONSHIPS
+    assert attendant_db.normalize_marker(False, "filho(a)") == {
+        "is_self": False, "relationship": "filho(a)",
+    }
+
+
 def test_marker_texto_false_nao_vira_proprio():
     assert attendant_db.normalize_marker("false", "mãe") == {"is_self": False, "relationship": "mãe"}
     with pytest.raises(ValueError):
