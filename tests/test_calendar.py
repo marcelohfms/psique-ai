@@ -662,6 +662,22 @@ def test_days_summary_marks_shifts_per_weekday():
     assert "quinta (manhã, tarde e noite)" in julio_line, julio_line
 
 
+def test_days_summary_forbids_inventing_calendar_dates():
+    """Caso Telma/Marcelo (5581999543940, 27/10/2026): nas boas-vindas, antes de
+    ter a ferramenta de horários, a Eva listou a grade certa (seg/qua/qui) e, na
+    mesma mensagem, mapeou isso para "as próximas datas possíveis são 30/10
+    (sexta)" — um dia em que o Dr. Júlio não atende. A súmula precisa proibir
+    explicitamente converter dia-da-semana em data de calendário por conta
+    própria; as datas concretas só saem de get_available_slots."""
+    from app.google_calendar import format_doctor_days_summary
+
+    header = format_doctor_days_summary().splitlines()[0]
+    low = header.lower()
+    assert "get_available_slots" in header, header
+    assert "próximas datas" in low, header
+    assert "data de calendário" in low or "datas de calendário" in low, header
+
+
 def test_days_summary_is_derived_from_doctor_schedules():
     """Mudar DOCTOR_SCHEDULES muda a súmula — nada de texto fixo."""
     from app.google_calendar import format_doctor_days_summary

@@ -306,7 +306,12 @@ def format_doctor_days_summary(days_ahead: int = 14) -> str:
     lines = [
         "DIAS DE ATENDIMENTO — grade real do sistema. Esta é a ÚNICA fonte sobre "
         "em que dias e turnos cada médico atende. NUNCA cite um dia que não esteja "
-        "aqui e NUNCA repita os turnos de um dia em outro:"
+        "aqui e NUNCA repita os turnos de um dia em outro. NÃO converta esses dias "
+        "da semana em data de calendário por conta própria: NUNCA calcule nem ofereça "
+        "'as próximas datas' de um médico (ex.: 'a próxima data possível é 30/10') "
+        "durante as boas-vindas ou o cadastro. As datas concretas com vaga só saem da "
+        "busca de horários (get_available_slots), no momento do agendamento. Aqui você "
+        "apenas informa EM QUE dias da semana e turnos cada médico atende:"
     ]
     for doctor_key in DOCTOR_SCHEDULES:
         days = _get_doctor_schedule(doctor_key, today)
