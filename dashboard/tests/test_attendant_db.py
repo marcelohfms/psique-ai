@@ -153,6 +153,24 @@ async def test_update_contact_whitelist(patched_client):
     assert row["id"] == "c1"             # id nunca é sobrescrito
 
 
+async def test_update_patient_padroniza_caixa_do_nome(patched_client):
+    patched_client.store["patients"] = [{"id": "p1", "name": "João"}]
+    await attendant_db.update_patient("p1", {"name": "ana da silva"})
+    assert patched_client.store["patients"][0]["name"] == "Ana da Silva"
+
+
+async def test_update_contact_padroniza_caixa_do_nome(patched_client):
+    patched_client.store["contacts"] = [{"id": "c1", "phone": "5581999998888", "name": "A"}]
+    await attendant_db.update_contact("c1", {"name": "MARIA DA SILVA"})
+    assert patched_client.store["contacts"][0]["name"] == "Maria da Silva"
+
+
+async def test_criar_ficha_padroniza_caixa_do_nome(patched_client):
+    created = await attendant_db.create_patient("joão dos santos", "01/02/2015")
+    assert created["name"] == "João dos Santos"
+    assert patched_client.store["patients"][0]["name"] == "João dos Santos"
+
+
 async def test_update_link_whitelist(patched_client):
     """`role` não é mais editável pelo painel (Task 11 review): a UI só edita
     is_self/relationship, então a whitelist deve ignorar "role" e "patient_id"

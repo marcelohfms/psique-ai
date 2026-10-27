@@ -130,6 +130,36 @@ def looks_like_name(text: str) -> bool:
     return True
 
 
+def _titlecase_token(word: str) -> str:
+    """Põe em maiúscula a inicial de cada pedaço de uma palavra, deixando o
+    resto minúsculo. Pedaço = sequência de letras; hífen e apóstrofo separam
+    pedaços e são preservados. 'SILVA' -> 'Silva', 'ana-clara' -> 'Ana-Clara',
+    "sant'anna" -> "Sant'Anna"."""
+    return _re.sub(
+        r"[^\W\d_]+",
+        lambda m: m.group(0)[:1].upper() + m.group(0)[1:].lower(),
+        word,
+    )
+
+
+def format_person_name(name: str | None) -> str:
+    """Forma canônica de um nome para GRAVAÇÃO: inicial maiúscula em cada
+    palavra, conectivos do português (de/da/do/das/dos/e) em minúsculo exceto
+    na primeira palavra, espaços internos colapsados.
+
+    Padroniza a caixa venha como vier do paciente — minúsculo, caixa-alta ou
+    misturado. 'maria da silva', 'MARIA DA SILVA' e 'Maria Da Silva' todos
+    viram 'Maria da Silva'. Não confundir com normalize_person_name, que é só
+    para COMPARAÇÃO (sem acento, tudo minúsculo)."""
+    words = (name or "").split()
+    if not words:
+        return ""
+    return " ".join(
+        w.lower() if i > 0 and _fold(w) in _LINKING_WORDS else _titlecase_token(w)
+        for i, w in enumerate(words)
+    )
+
+
 def display_name(full_name: str) -> str:
     """Return the name to use when addressing a contact/patient.
 

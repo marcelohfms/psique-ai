@@ -8,8 +8,18 @@ from datetime import date, datetime, timezone
 
 from app.phone import _phone_variants, _strip_phone
 from app.supabase_client import get_supabase
+from app.utils import format_person_name
 
 logger = logging.getLogger(__name__)
+
+
+def _with_canonical_name(data: dict) -> dict:
+    """Padroniza a caixa de `data['name']` antes de gravar, sem mutar o dict do
+    chamador. Toda escrita de contato/paciente passa por aqui, então o nome
+    entra no banco com a inicial maiúscula venha como vier do paciente."""
+    if data.get("name"):
+        return {**data, "name": format_person_name(data["name"])}
+    return data
 
 
 def normalize_phone(phone: str) -> str:
@@ -481,6 +491,7 @@ async def upsert_contact(phone: str, data: dict) -> str | None:
     """Insere ou atualiza um contato pelo número canônico. Retorna o id."""
     client = await get_supabase()
     canonical = normalize_phone(phone)
+    data = _with_canonical_name(data)
     existing = await get_contact_by_phone(canonical)
     if existing:
         await client.from_("contacts").update(data).eq("id", existing["id"]).execute()
@@ -493,6 +504,7 @@ async def upsert_contact(phone: str, data: dict) -> str | None:
 async def upsert_patient(data: dict, patient_id: str | None = None) -> str | None:
     """Insere um paciente novo ou atualiza um existente (por id). Retorna o id."""
     client = await get_supabase()
+    data = _with_canonical_name(data)
     if patient_id:
         await client.from_("patients").update(data).eq("id", patient_id).execute()
         return patient_id

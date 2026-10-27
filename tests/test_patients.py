@@ -150,6 +150,30 @@ async def test_upsert_contact_updates_when_present():
 
 
 @pytest.mark.asyncio
+async def test_upsert_contact_padroniza_caixa_do_nome_no_insert():
+    table = MagicMock()
+    table.select.return_value = table
+    table.eq.return_value = table
+    table.execute = AsyncMock(return_value=MagicMock(data=[]))  # contato ausente
+    insert_chain = MagicMock()
+    insert_chain.execute = AsyncMock(return_value=MagicMock(data=[{"id": "c-new", "phone": "5583988887777"}]))
+    table.insert.return_value = insert_chain
+    client = MagicMock()
+    client.from_.return_value = table
+    with patch("app.patients.get_supabase", new_callable=AsyncMock, return_value=client):
+        await patients.upsert_contact("5583988887777", {"name": "maria da silva"})
+    assert table.insert.call_args.args[0]["name"] == "Maria da Silva"
+
+
+@pytest.mark.asyncio
+async def test_upsert_contact_padroniza_caixa_do_nome_no_update():
+    client, table, execute = _client_returning([{"id": "c1", "phone": "5583988887777"}])
+    with patch("app.patients.get_supabase", new_callable=AsyncMock, return_value=client):
+        await patients.upsert_contact("5583988887777", {"name": "ANA SOUZA"})
+    assert table.update.call_args.args[0]["name"] == "Ana Souza"
+
+
+@pytest.mark.asyncio
 async def test_upsert_patient_insert_returns_id():
     insert_exec = AsyncMock(return_value=MagicMock(data=[{"id": "p-new"}]))
     table = MagicMock()
@@ -161,6 +185,33 @@ async def test_upsert_patient_insert_returns_id():
     with patch("app.patients.get_supabase", new_callable=AsyncMock, return_value=client):
         pid = await patients.upsert_patient({"name": "João"})
     assert pid == "p-new"
+
+
+@pytest.mark.asyncio
+async def test_upsert_patient_padroniza_caixa_do_nome_no_insert():
+    table = MagicMock()
+    insert_chain = MagicMock()
+    insert_chain.execute = AsyncMock(return_value=MagicMock(data=[{"id": "p-new"}]))
+    table.insert.return_value = insert_chain
+    client = MagicMock()
+    client.from_.return_value = table
+    with patch("app.patients.get_supabase", new_callable=AsyncMock, return_value=client):
+        await patients.upsert_patient({"name": "joão silva"})
+    assert table.insert.call_args.args[0]["name"] == "João Silva"
+
+
+@pytest.mark.asyncio
+async def test_upsert_patient_padroniza_caixa_do_nome_no_update_por_id():
+    update_exec = AsyncMock(return_value=MagicMock(data=[{"id": "p1"}]))
+    table = MagicMock()
+    for m in ("select", "eq", "in_", "insert", "update"):
+        getattr(table, m).return_value = table
+    table.update.return_value.eq.return_value.execute = update_exec
+    client = MagicMock()
+    client.from_.return_value = table
+    with patch("app.patients.get_supabase", new_callable=AsyncMock, return_value=client):
+        await patients.upsert_patient({"name": "PEDRO DOS SANTOS"}, patient_id="p1")
+    assert table.update.call_args.args[0]["name"] == "Pedro dos Santos"
 
 
 @pytest.mark.asyncio
@@ -280,6 +331,38 @@ def test_normalize_person_name_ignora_acentos_caixa_e_espacos():
         "maria jose alves de farias"
     assert patients.normalize_person_name("João") == patients.normalize_person_name("JOAO")
     assert patients.normalize_person_name(None) == ""
+
+
+def test_format_person_name_capitaliza_sobrenome_minusculo():
+    from app.utils import format_person_name
+    assert format_person_name("maria da silva") == "Maria da Silva"
+    assert format_person_name("ana souza") == "Ana Souza"
+    assert format_person_name("João silva") == "João Silva"
+
+
+def test_format_person_name_normaliza_caixa_alta():
+    from app.utils import format_person_name
+    assert format_person_name("MARIA DA SILVA") == "Maria da Silva"
+    assert format_person_name("JOÃO DOS SANTOS E SILVA") == "João dos Santos e Silva"
+
+
+def test_format_person_name_conectivo_na_primeira_palavra_fica_maiusculo():
+    from app.utils import format_person_name
+    assert format_person_name("da silva") == "Da Silva"
+
+
+def test_format_person_name_colapsa_espacos_e_trata_vazio():
+    from app.utils import format_person_name
+    assert format_person_name("  maria   josé  ") == "Maria José"
+    assert format_person_name("") == ""
+    assert format_person_name(None) == ""
+
+
+def test_format_person_name_hifen_e_apostrofo():
+    from app.utils import format_person_name
+    assert format_person_name("ana-clara souza") == "Ana-Clara Souza"
+    assert format_person_name("maria sant'anna") == "Maria Sant'Anna"
+    assert format_person_name("josé d'ávila") == "José D'Ávila"
 
 
 def _client_multi_table(rows_by_table):
