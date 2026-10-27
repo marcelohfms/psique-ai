@@ -142,6 +142,16 @@ def _titlecase_token(word: str) -> str:
     )
 
 
+def is_operational_label(name: str | None) -> bool:
+    """True quando o texto é um rótulo operacional da clínica, não um nome de
+    pessoa, e portanto NÃO deve ter a caixa padronizada por format_person_name.
+    Ex.: representante de laboratório com sigla ('Rep. Keka Araujo - EMS', o
+    title-case viraria 'Ems') e placeholder entre parênteses ('Fulano
+    (solicitar nome novamente)')."""
+    t = name or ""
+    return "(" in t or ")" in t or " - " in t
+
+
 def format_person_name(name: str | None) -> str:
     """Forma canônica de um nome para GRAVAÇÃO: inicial maiúscula em cada
     palavra, conectivos do português (de/da/do/das/dos/e) em minúsculo exceto

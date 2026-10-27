@@ -174,6 +174,16 @@ async def test_upsert_contact_padroniza_caixa_do_nome_no_update():
 
 
 @pytest.mark.asyncio
+async def test_upsert_contact_nao_mexe_em_rotulo_de_representante():
+    """Contato de representante de laboratório com sigla não é nome de pessoa; o
+    title-case destruiria a sigla ('EMS' -> 'Ems'). Fica intacto."""
+    client, table, execute = _client_returning([{"id": "c1", "phone": "5583988887777"}])
+    with patch("app.patients.get_supabase", new_callable=AsyncMock, return_value=client):
+        await patients.upsert_contact("5583988887777", {"name": "Rep. Keka Araujo - EMS"})
+    assert table.update.call_args.args[0]["name"] == "Rep. Keka Araujo - EMS"
+
+
+@pytest.mark.asyncio
 async def test_upsert_patient_insert_returns_id():
     insert_exec = AsyncMock(return_value=MagicMock(data=[{"id": "p-new"}]))
     table = MagicMock()

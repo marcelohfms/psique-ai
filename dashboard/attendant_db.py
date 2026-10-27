@@ -145,6 +145,14 @@ def _norm(text: str | None) -> str:
 _LINKING_WORDS = {"de", "da", "do", "das", "dos", "e"}
 
 
+def _is_operational_label(name: str | None) -> bool:
+    """Rótulo operacional (representante de laboratório com sigla, placeholder
+    entre parênteses) — não é nome de pessoa, não padroniza a caixa. Espelha
+    app.utils.is_operational_label (o dashboard não importa app/)."""
+    t = name or ""
+    return "(" in t or ")" in t or " - " in t
+
+
 def _format_person_name(name: str | None) -> str:
     """Forma canônica de um nome para GRAVAÇÃO: inicial maiúscula em cada
     palavra, conectivos (de/da/do/das/dos/e) minúsculos exceto na primeira
@@ -326,7 +334,8 @@ async def create_patient(name: str, birth_br: str) -> dict:
 
     `birth_br` já precisa vir normalizado por `normalize_birth_date` (formato
     dd/mm/aaaa); esta função não valida nem converte a data."""
-    clean_name = _format_person_name(name)
+    raw = " ".join((name or "").split())
+    clean_name = raw if _is_operational_label(raw) else _format_person_name(raw)
     if not clean_name:
         raise ValueError("Nome vazio.")
     born = datetime.strptime(birth_br, "%d/%m/%Y").date()
@@ -650,7 +659,7 @@ async def update_contact(contact_id: str, data: dict) -> None:
     payload = _filter(data, _CONTACT_FIELDS)
     if not payload:
         return
-    if payload.get("name"):
+    if payload.get("name") and not _is_operational_label(payload["name"]):
         payload["name"] = _format_person_name(payload["name"])
     client = await get_client()
     await client.from_("contacts").update(payload).eq("id", contact_id).execute()
@@ -660,7 +669,7 @@ async def update_patient(patient_id: str, data: dict) -> None:
     payload = _filter(data, _PATIENT_FIELDS)
     if not payload:
         return
-    if payload.get("name"):
+    if payload.get("name") and not _is_operational_label(payload["name"]):
         payload["name"] = _format_person_name(payload["name"])
     client = await get_client()
     await client.from_("patients").update(payload).eq("id", patient_id).execute()
