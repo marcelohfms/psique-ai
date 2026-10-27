@@ -601,7 +601,7 @@ def _filter(data: dict, allowed: set[str]) -> dict:
 # "acompanhante" contam como terceiros que não são responsáveis.
 RELATIONSHIPS = (
     "mãe", "pai", "avó", "avô", "tutor(a)", "responsável legal", "tio", "tia",
-    "irmão", "irmã", "padrasto", "madrasta", "cônjuge", "acompanhante",
+    "irmão", "irmã", "padrasto", "madrasta", "filho(a)", "cônjuge", "acompanhante",
 )
 
 
