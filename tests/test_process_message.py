@@ -7669,6 +7669,68 @@ async def test_collect_fastpath_handoff_silent_mode_does_not_transfer():
     transfer_mock.assert_not_awaited()
 
 
+# ── Fast-path: pedido de CANCELAMENTO/REMARCAÇÃO preso no collect_info ──────────
+# Caso Tarso/Amanda (5581997441626, 27/10/2026): a conversa ficou presa no
+# collect_info (cadastro nunca fechou — agendamento/pagamento vieram do painel).
+# No lembrete de véspera a mãe pediu "pode cancelar! já falei com a Dra Bruna" e a
+# Eva re-perguntou "é para você ou para outra pessoa?". O fast-path só tinha saída
+# para pergunta de info e para handoff (PR #320), nenhuma para cancelar/remarcar.
+
+def test_user_requests_cancellation_detector():
+    """O detector reconhece o pedido de cancelar/remarcar e ignora negações."""
+    from app.graph.nodes import _user_requests_cancellation
+    assert _user_requests_cancellation("por gentileza, pode cancelar! já falei com a dra")
+    assert _user_requests_cancellation("quero cancelar a consulta")
+    assert _user_requests_cancellation("preciso desmarcar")
+    assert _user_requests_cancellation("gostaria de remarcar minha consulta")
+    assert _user_requests_cancellation("dá pra reagendar para outro dia?")
+    # Negações e respostas normais do cadastro não disparam.
+    assert not _user_requests_cancellation("não quero cancelar, pode manter a consulta")
+    assert not _user_requests_cancellation("nao vou remarcar não")
+    assert not _user_requests_cancellation("Maria Silva Souza")
+    assert not _user_requests_cancellation("quero agendar uma consulta")
+
+
+async def test_collect_fastpath_cancellation_transfers():
+    """Paciente preso no cadastro pede para cancelar (caso Tarso/Amanda): o fast-path
+    não pode re-perguntar o cadastro — transfere para a atendente, que trata o
+    cancelamento e a taxa de reserva."""
+    msgs = [
+        AIMessage(content="Olá! Lembrete da Psiquê: Tarso tem consulta amanhã com Dra. Bruna às 15:00. Consegue confirmar a presença?"),
+        HumanMessage(content="Bom dia, por gentileza, pode cancelar! Já falei com Dra Bruna"),
+    ]
+    update, mock_send, transfer_mock = await _run_collect_fastpath(msgs)
+
+    transfer_mock.assert_awaited_once()
+    sent = [c.args[1] for c in mock_send.await_args_list]
+    assert any("atendentes" in s for s in sent), f"texto oficial de transferência não enviado: {sent!r}"
+    # Não pode re-perguntar o cadastro ("é para você ou para outra pessoa?").
+    assert not any("outra pessoa" in s for s in sent), f"fast-path engoliu o cancelamento: {sent!r}"
+
+
+async def test_collect_fastpath_reschedule_transfers():
+    """Pedido de remarcação no cadastro também transfere para a atendente."""
+    msgs = [
+        AIMessage(content="Pode me informar o seu nome completo?"),
+        HumanMessage(content="na verdade preciso remarcar minha consulta para outro dia"),
+    ]
+    update, mock_send, transfer_mock = await _run_collect_fastpath(msgs)
+
+    transfer_mock.assert_awaited_once()
+
+
+async def test_collect_fastpath_cancellation_silent_mode_does_not_transfer():
+    """Em silent_mode (instrução da atendente) o pedido de cancelamento não transfere —
+    transfer_to_human devolveria erro que vazaria ao paciente."""
+    msgs = [
+        AIMessage(content="Olá! Lembrete da Psiquê: Tarso tem consulta amanhã às 15:00."),
+        HumanMessage(content="pode cancelar a consulta, por favor"),
+    ]
+    update, mock_send, transfer_mock = await _run_collect_fastpath(msgs, silent_mode=True)
+
+    transfer_mock.assert_not_awaited()
+
+
 # ── Segurança: prefixo de atendente falsificável pelo texto do paciente ────────
 # O marcador "[Instrução da atendente]:" só é legítimo quando o servidor o injeta
 # (nota privada do Chatwoot, via _run_silent). Se o texto do PACIENTE chega ao
