@@ -4,6 +4,7 @@ Autocontida: replica as poucas queries necessárias usando o cliente Supabase
 do dashboard. NÃO importa app/ (a imagem Docker do dashboard não contém app/).
 """
 import logging
+import re
 import unicodedata
 import uuid
 from datetime import date, datetime, timezone
@@ -139,6 +140,31 @@ def _norm(text: str | None) -> str:
         c for c in unicodedata.normalize("NFKD", text or "") if not unicodedata.combining(c)
     )
     return " ".join(stripped.lower().split())
+
+
+_LINKING_WORDS = {"de", "da", "do", "das", "dos", "e"}
+
+
+def _format_person_name(name: str | None) -> str:
+    """Forma canônica de um nome para GRAVAÇÃO: inicial maiúscula em cada
+    palavra, conectivos (de/da/do/das/dos/e) minúsculos exceto na primeira
+    palavra, espaços colapsados. Padroniza venha como vier ('maria da silva',
+    'MARIA DA SILVA' -> 'Maria da Silva'). Cópia de app.utils.format_person_name
+    — o dashboard não importa app/ (ver cabeçalho do módulo)."""
+    def _cap(word: str) -> str:
+        return re.sub(
+            r"[^\W\d_]+",
+            lambda m: m.group(0)[:1].upper() + m.group(0)[1:].lower(),
+            word,
+        )
+
+    words = (name or "").split()
+    if not words:
+        return ""
+    return " ".join(
+        w.lower() if i > 0 and _norm(w) in _LINKING_WORDS else _cap(w)
+        for i, w in enumerate(words)
+    )
 
 
 def _ilike_pattern(query: str) -> str:
@@ -300,7 +326,7 @@ async def create_patient(name: str, birth_br: str) -> dict:
 
     `birth_br` já precisa vir normalizado por `normalize_birth_date` (formato
     dd/mm/aaaa); esta função não valida nem converte a data."""
-    clean_name = " ".join(name.split())
+    clean_name = _format_person_name(name)
     if not clean_name:
         raise ValueError("Nome vazio.")
     born = datetime.strptime(birth_br, "%d/%m/%Y").date()
@@ -624,6 +650,8 @@ async def update_contact(contact_id: str, data: dict) -> None:
     payload = _filter(data, _CONTACT_FIELDS)
     if not payload:
         return
+    if payload.get("name"):
+        payload["name"] = _format_person_name(payload["name"])
     client = await get_client()
     await client.from_("contacts").update(payload).eq("id", contact_id).execute()
 
@@ -632,6 +660,8 @@ async def update_patient(patient_id: str, data: dict) -> None:
     payload = _filter(data, _PATIENT_FIELDS)
     if not payload:
         return
+    if payload.get("name"):
+        payload["name"] = _format_person_name(payload["name"])
     client = await get_client()
     await client.from_("patients").update(payload).eq("id", patient_id).execute()
 
