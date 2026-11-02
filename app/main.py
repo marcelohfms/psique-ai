@@ -641,6 +641,14 @@ async def admin_panel_payment_confirmation(request: Request, x_admin_secret: str
     return await _run_panel(panel_booking.send_payment_confirmation, request)
 
 
+@app.post("/admin/panel/refund-message")
+async def admin_panel_refund_message(request: Request, x_admin_secret: str | None = Header(default=None)):
+    """Mensagem de reembolso (texto ou anexo) enviada pela atendente. Ver app/panel_booking.py."""
+    _check_admin_secret(x_admin_secret)
+    from app import panel_booking
+    return await _run_panel(panel_booking.send_refund_message, request)
+
+
 @app.post("/admin/panel/appointments/edit")
 async def admin_panel_appointments_edit(request: Request, x_admin_secret: str | None = Header(default=None)):
     """Alteração de consulta pelo painel. Ver app/panel_appointments.py."""

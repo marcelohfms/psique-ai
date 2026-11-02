@@ -684,3 +684,57 @@ async def send_payment_confirmation(body: dict) -> tuple[int, dict]:
     except Exception:
         _logger.exception("panel payment confirmation checkpoint falhou phone=%s", phone)
     return 200, {"sent": True, "via": via}
+
+
+async def send_refund_message(body: dict) -> tuple[int, dict]:
+    """Mensagem de reembolso da taxa de reserva (texto, com comprovante opcional em anexo).
+
+    Só dentro da janela de 24h: não existe template aprovado de reembolso e texto livre
+    fora da janela seria descartado pela Meta em silêncio. Fora dela, não envia e devolve
+    sent=False para o painel avisar a atendente.
+    """
+    import base64
+
+    phone = (body.get("phone") or "").strip()
+    text = (body.get("text") or "").strip()
+    media = body.get("media") or None
+    if not phone or not text:
+        raise PanelInputError("phone e text são obrigatórios")
+    file_bytes = b""
+    if media:
+        try:
+            file_bytes = base64.b64decode(media.get("b64") or "", validate=True)
+        except Exception:
+            raise PanelInputError("media.b64 inválido")
+        if not file_bytes or not media.get("filename") or not media.get("content_type"):
+            raise PanelInputError("media precisa de b64, filename e content_type")
+
+    thread = _thread(phone)
+    if not await _window_open(phone):
+        return 200, {"sent": False, "motivo": "janela_fechada"}
+    if media:
+        from app.chatwoot import find_or_create_conversation, send_message_with_attachment
+        conversation_id = await find_or_create_conversation(thread)
+        await send_message_with_attachment(
+            conversation_id, text, file_bytes, media["filename"], media["content_type"],
+        )
+        via = "anexo"
+    else:
+        await send_text(thread, text)
+        via = "texto"
+    try:
+        await save_message(thread, "assistant", text)
+    except Exception:
+        _logger.exception("panel refund message save_message falhou phone=%s", phone)
+    try:
+        from langchain_core.messages import AIMessage
+        from app.graph import graph as graph_module
+        cfg = {"configurable": {"thread_id": thread, "phone": thread}}
+        snapshot = await graph_module.chatbot.aget_state(cfg)
+        if snapshot.values:
+            await graph_module.chatbot.aupdate_state(
+                cfg, {"messages": [AIMessage(content=text)]}, as_node="patient_agent",
+            )
+    except Exception:
+        _logger.exception("panel refund message checkpoint falhou phone=%s", phone)
+    return 200, {"sent": True, "via": via}
