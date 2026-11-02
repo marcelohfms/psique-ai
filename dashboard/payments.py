@@ -914,13 +914,13 @@ async def mark_refund_completed(
     drive_link: str = "",
     receipt_filename: str = "",
     file_md5: str = "",
-) -> None:
+) -> bool:
     """Dá baixa no reembolso da taxa de reserva (R$ 100,00 devolvidos ao paciente).
 
     Carimba refund_completed_at, lança a linha de saída (-100) na planilha
     Pagamentos, loga o evento e, havendo comprovante, espelha em `messages`.
     Planilha, evento e espelho são best-effort. Idempotente: se a baixa já foi
-    dada, não faz nada.
+    dada, não faz nada. Devolve True se deu a baixa agora, False se já estava dada.
     """
     current = await (
         client.from_("appointments")
@@ -929,7 +929,7 @@ async def mark_refund_completed(
         .execute()
     )
     if any(r.get("refund_completed_at") for r in (current.data or [])):
-        return
+        return False
 
     now = datetime.now(timezone.utc).isoformat()
     await (
@@ -945,9 +945,9 @@ async def mark_refund_completed(
             phone=phone,
             doctor_name=medico,
             appointment_dt=data_hora,
-            amount="-100",
+            amount="-100,00",
             payment_type="Reembolso - Taxa de Reserva",
-            payment_method="",
+            payment_method="—",
             drive_link=drive_link,
             receipt_filename=receipt_filename,
         )
@@ -977,6 +977,7 @@ async def mark_refund_completed(
             }).execute()
         except Exception:
             logger.exception("RECEIPT_MSG_INSERT_FAILED (reembolso) patient=%s", paciente)
+    return True
 
 
 async def mark_fee_waived(

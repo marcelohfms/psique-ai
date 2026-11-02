@@ -1379,6 +1379,7 @@ def reembolso_fakes(monkeypatch):
     async def fake_mark(_client, appointment_id, paciente, medico, data_hora, phone,
                         drive_link="", receipt_filename="", file_md5=""):
         calls["mark"] = (appointment_id, drive_link, receipt_filename, file_md5)
+        return calls.get("mark_result", True)
     async def fake_find(_client, md5):
         return calls.get("previous")
     async def fake_names(phone, paciente):
@@ -1432,6 +1433,14 @@ def test_reembolso_sem_comprovante_texto_adaptado(client, reembolso_fakes):
     assert "comprovante" not in body["text"]
     assert "foi realizado" in body["text"]
     assert body["media"] is None
+
+
+def test_reembolso_baixa_repetida_nao_reenvia_mensagem(client, reembolso_fakes):
+    reembolso_fakes["mark_result"] = False
+    r = _reembolso(client, enviar=True, with_file=True)
+    assert r.status_code == 200
+    assert r.json() == {"ok": True, "confirmacao": ""}
+    assert reembolso_fakes["sent"] == []
 
 
 def test_reembolso_fora_da_janela(client, reembolso_fakes, monkeypatch):

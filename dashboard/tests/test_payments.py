@@ -483,16 +483,18 @@ async def test_mark_refund_carimba_e_lanca_saida(fake_client, monkeypatch):
 
     monkeypatch.setattr(payments, "_append_payment_sheet", fake_append)
     monkeypatch.setattr(attendant_db, "log_event", fake_log)
-    await payments.mark_refund_completed(
+    result = await payments.mark_refund_completed(
         fake_client, "a1", "Tarso", "Dra. Bruna", "28/10/2026 15:00", "5581999990000",
         drive_link="https://drive.google.com/file/d/abc/view", receipt_filename="f.pdf",
         file_md5="m5",
     )
+    assert result is True
     row = fake_client.store["appointments"][0]
     assert row["refund_completed_at"] is not None
     assert row["updated_at"] is not None
     assert appends[0]["payment_type"] == "Reembolso - Taxa de Reserva"
-    assert appends[0]["amount"] == "-100"
+    assert appends[0]["amount"] == "-100,00"
+    assert appends[0]["payment_method"] == "—"
     assert appends[0]["drive_link"] == "https://drive.google.com/file/d/abc/view"
     assert appends[0]["receipt_filename"] == "f.pdf"
     ev = next(e for e in events if e["event_type"] == "refund_completed")
@@ -531,10 +533,11 @@ async def test_mark_refund_idempotente(fake_client, monkeypatch):
     fake_log = AsyncMock()
     monkeypatch.setattr(payments, "_append_payment_sheet", fake_append)
     monkeypatch.setattr(attendant_db, "log_event", fake_log)
-    await payments.mark_refund_completed(
+    result = await payments.mark_refund_completed(
         fake_client, "a1", "Tarso", "Dra. Bruna", "28/10/2026 15:00", "5581999990000",
         drive_link="d",
     )
+    assert result is False
     fake_append.assert_not_awaited()
     fake_log.assert_not_awaited()
     assert fake_client.store["appointments"][0]["refund_completed_at"] == "2026-10-29T10:00:00+00:00"

@@ -642,7 +642,7 @@ async def reembolso(
 
     client = await get_client()
     try:
-        await payments.mark_refund_completed(
+        baixou = await payments.mark_refund_completed(
             client, appointment_id, paciente, medico, data_hora, phone,
             drive_link=drive_link, receipt_filename=receipt_filename, file_md5=md5,
         )
@@ -657,7 +657,7 @@ async def reembolso(
         await payments.log_duplicate_confirmed(phone, appointment_id, md5, previous)
 
     confirmacao = ""
-    if enviar_mensagem:
+    if baixou and enviar_mensagem:
         try:
             contact_first, _patient_first = await _confirmation_names(phone, paciente)
             media = None
