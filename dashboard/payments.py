@@ -904,6 +904,81 @@ async def mark_paid(
             logger.exception("RECEIPT_MSG_INSERT_FAILED patient=%s drive_link=%s", paciente, drive_link)
 
 
+async def mark_refund_completed(
+    client,
+    appointment_id: str,
+    paciente: str,
+    medico: str,
+    data_hora: str,
+    phone: str,
+    drive_link: str = "",
+    receipt_filename: str = "",
+    file_md5: str = "",
+) -> None:
+    """Dá baixa no reembolso da taxa de reserva (R$ 100,00 devolvidos ao paciente).
+
+    Carimba refund_completed_at, lança a linha de saída (-100) na planilha
+    Pagamentos, loga o evento e, havendo comprovante, espelha em `messages`.
+    Planilha, evento e espelho são best-effort. Idempotente: se a baixa já foi
+    dada, não faz nada.
+    """
+    current = await (
+        client.from_("appointments")
+        .select("refund_completed_at")
+        .eq("appointment_id", appointment_id)
+        .execute()
+    )
+    if any(r.get("refund_completed_at") for r in (current.data or [])):
+        return
+
+    now = datetime.now(timezone.utc).isoformat()
+    await (
+        client.from_("appointments")
+        .update({"refund_completed_at": now, "updated_at": now})
+        .eq("appointment_id", appointment_id)
+        .execute()
+    )
+
+    try:
+        await _append_payment_sheet(
+            patient_name=paciente,
+            phone=phone,
+            doctor_name=medico,
+            appointment_dt=data_hora,
+            amount="-100",
+            payment_type="Reembolso - Taxa de Reserva",
+            payment_method="",
+            drive_link=drive_link,
+            receipt_filename=receipt_filename,
+        )
+    except Exception:
+        logger.exception("SHEETS_APPEND FAILED (reembolso) patient=%s appointment_id=%s", paciente, appointment_id)
+
+    try:
+        await attendant_db.log_event("refund_completed", phone, {
+            "appointment_id": appointment_id,
+            "amount": "100,00",
+            "registered_via": "dashboard",
+            **({"file_md5": file_md5} if file_md5 else {}),
+        })
+    except Exception:
+        logger.exception("LOG_EVENT_FAILED (reembolso) patient=%s", paciente)
+
+    if drive_link:
+        try:
+            phone_clean = phone.replace("@s.whatsapp.net", "")
+            await client.from_("messages").insert({
+                "phone": phone_clean,
+                "role": "user",
+                "content": (
+                    "[imagem]: COMPROVANTE DE REEMBOLSO: R$ 100,00 "
+                    f"— registrado pela atendente [drive_link:{drive_link}]"
+                ),
+            }).execute()
+        except Exception:
+            logger.exception("RECEIPT_MSG_INSERT_FAILED (reembolso) patient=%s", paciente)
+
+
 async def mark_fee_waived(
     client,
     appointment_id: str,
