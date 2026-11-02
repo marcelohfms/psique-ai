@@ -807,3 +807,67 @@ def test_describe_previous_receipt_em_horario_de_recife():
     })
     assert msg == ("Este comprovante já foi usado para Miguel Costa Loureiro, consulta de "
                    "03/09/2026 18:00 (registrado em 03/09/2026). Registrar mesmo assim?")
+
+
+# ── compute_reembolsos_pendentes ──────────────────────────────────────────────
+
+BOOKER_PHONE = "5581988887777"
+
+
+def _reembolso_appt(appointment_id, **overrides):
+    row = _appt(
+        appointment_id, "p1", "Pedro", "5581999990000",
+        status="canceled",
+        contact_id="c-mae",
+        refund_requested_at="2026-10-30T12:00:00+00:00",
+        refund_completed_at=None,
+    )
+    row["patients"]["patient_contacts"] = [
+        {"is_self": False, "contacts": {"id": "c-pai", "phone": "5581911112222", "name": "Pai"}},
+        {"is_self": False, "contacts": {"id": "c-mae", "phone": BOOKER_PHONE, "name": "Mae"}},
+    ]
+    row.update(overrides)
+    return row
+
+
+async def test_reembolso_pendente_vira_caixa_negativa(fake_client):
+    fake_client.store["appointments"] = [_reembolso_appt("a1")]
+    caixas = await payments.compute_reembolsos_pendentes(fake_client, ["p1"])
+    assert len(caixas) == 1
+    assert caixas[0]["tipo"] == "reembolso"
+    assert caixas[0]["tipo_label"] == "Reembolso - Taxa de reserva"
+    assert caixas[0]["valor"] == -100
+    assert caixas[0]["appointment_id"] == "a1"
+    assert caixas[0]["phone"] == BOOKER_PHONE  # contact_id, não o paciente
+
+
+async def test_reembolso_ja_concluido_nao_aparece(fake_client):
+    fake_client.store["appointments"] = [
+        _reembolso_appt("a1", refund_completed_at="2026-10-31T12:00:00+00:00"),
+    ]
+    assert await payments.compute_reembolsos_pendentes(fake_client, ["p1"]) == []
+
+
+async def test_primeira_consulta_menor_uma_caixa_so(fake_client):
+    fake_client.store["appointments"] = [
+        _reembolso_appt("a1", consultation_type="primeira_consulta"),
+        _reembolso_appt(
+            "a2", consultation_type="primeira_consulta", refund_requested_at=None,
+            start_time="2026-07-10T15:00:00+00:00",
+        ),
+    ]
+    assert len(await payments.compute_reembolsos_pendentes(fake_client, ["p1"])) == 1
+
+
+async def test_reembolso_ignora_cancelada_sem_pedido_e_outros_status(fake_client):
+    fake_client.store["appointments"] = [
+        _reembolso_appt("a1", refund_requested_at=None),
+        _reembolso_appt("a2", status="scheduled"),
+        _reembolso_appt("a3", patient_id="outro"),
+    ]
+    assert await payments.compute_reembolsos_pendentes(fake_client, ["p1"]) == []
+
+
+async def test_reembolso_patient_ids_vazio_nao_consulta(fake_client):
+    fake_client.from_ = lambda *_a, **_k: (_ for _ in ()).throw(AssertionError("consultou"))
+    assert await payments.compute_reembolsos_pendentes(fake_client, []) == []

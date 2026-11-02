@@ -560,6 +560,34 @@ async def find_receipts_for_patient(client, patient_id: str, limit: int = 5) -> 
     return out[:limit]
 
 
+def _booker_phone(patient: dict, booker_id) -> str:
+    """Telefone de destino: SEMPRE quem agendou (appointments.contact_id).
+
+    Caso Bento (05/10/2026): a baixa foi na Daniella (mãe, agendou e pagou) mas
+    a confirmação caiu no Sandro (pai) porque pegávamos patient_contacts[0], que
+    não tem ordem garantida. Menor de idade não tem contato is_self, então o
+    fallback [0] era um responsável qualquer. O booker resolve isso de forma
+    determinística.
+    """
+    phone = ""
+    patient_contacts = patient.get("patient_contacts") or []
+    if booker_id:
+        for pc in patient_contacts:
+            contact = pc.get("contacts") or {}
+            if contact.get("id") == booker_id and contact.get("phone"):
+                phone = contact["phone"]
+                break
+    if not phone:
+        # Fallback (booker ausente ou não vinculado): próprio paciente, senão
+        # o primeiro contato vinculado.
+        self_contact = next((pc for pc in patient_contacts if pc.get("is_self")), None)
+        pc_row = self_contact or (patient_contacts[0] if patient_contacts else None)
+        if pc_row:
+            contact = pc_row.get("contacts") or {}
+            phone = contact.get("phone") or ""
+    return phone
+
+
 async def compute_pendencias(client, patient_ids: list[str] | None = None) -> list[dict]:
     """Retorna a lista de pendências (taxa/consulta) em aberto.
 
@@ -614,29 +642,7 @@ async def compute_pendencias(client, patient_ids: list[str] | None = None) -> li
         birth_date = patient.get("birth_date")
         custom_price = patient.get("custom_price")
 
-        # Telefone de destino da confirmação: SEMPRE quem agendou
-        # (appointments.contact_id). Caso Bento (05/10/2026): a baixa foi na
-        # Daniella (mãe, agendou e pagou) mas a confirmação caiu no Sandro (pai)
-        # porque pegávamos patient_contacts[0], que não tem ordem garantida.
-        # Menor de idade não tem contato is_self, então o fallback [0] era um
-        # responsável qualquer. O booker resolve isso de forma determinística.
-        phone = ""
-        patient_contacts = patient.get("patient_contacts") or []
-        booker_id = first.get("contact_id")
-        if booker_id:
-            for pc in patient_contacts:
-                contact = pc.get("contacts") or {}
-                if contact.get("id") == booker_id and contact.get("phone"):
-                    phone = contact["phone"]
-                    break
-        if not phone:
-            # Fallback (booker ausente ou não vinculado): próprio paciente, senão
-            # o primeiro contato vinculado.
-            self_contact = next((pc for pc in patient_contacts if pc.get("is_self")), None)
-            pc_row = self_contact or (patient_contacts[0] if patient_contacts else None)
-            if pc_row:
-                contact = pc_row.get("contacts") or {}
-                phone = contact.get("phone") or ""
+        phone = _booker_phone(patient, first.get("contact_id"))
 
         doctor_display = DOCTOR_DISPLAY.get(first.get("doctor_id", ""), "Médico")
 
@@ -694,6 +700,54 @@ async def compute_pendencias(client, patient_ids: list[str] | None = None) -> li
 
     pendencias.sort(key=lambda x: x["start_time"])
     return pendencias
+
+
+async def compute_reembolsos_pendentes(client, patient_ids: list[str]) -> list[dict]:
+    """Caixas negativas de reembolso da taxa de reserva ainda não devolvido.
+
+    Consulta cancelada com refund_requested_at preenchido e refund_completed_at
+    nulo. Lista vazia em `patient_ids` retorna `[]` sem consultar o banco.
+    """
+    if not patient_ids:
+        return []
+
+    result = await (
+        client.from_("appointments")
+        .select(
+            "appointment_id, patient_id, contact_id, start_time, doctor_id, status, "
+            "refund_requested_at, refund_completed_at, "
+            "patients(name, patient_contacts(is_self, contacts(id, phone, name)))"
+        )
+        .eq("status", "canceled")
+        .in_("patient_id", patient_ids)
+        .execute()
+    )
+
+    caixas = []
+    for row in result.data or []:
+        if not row.get("refund_requested_at") or row.get("refund_completed_at"):
+            continue
+        patient = row.get("patients") or {}
+        start_time = row.get("start_time") or ""
+        try:
+            dt = datetime.fromisoformat(start_time.replace("Z", "+00:00"))
+            data_hora = dt.astimezone(timezone(timedelta(hours=-3))).strftime("%d/%m/%Y %H:%M")
+        except Exception:
+            data_hora = start_time[:16]
+        caixas.append({
+            "appointment_id": row["appointment_id"],
+            "patient_id": row.get("patient_id", ""),
+            "paciente": patient.get("name") or "Paciente",
+            "phone": _booker_phone(patient, row.get("contact_id")),
+            "medico": DOCTOR_DISPLAY.get(row.get("doctor_id", ""), "Médico"),
+            "data_hora": data_hora,
+            "start_time": start_time,
+            "tipo": "reembolso",
+            "tipo_label": "Reembolso - Taxa de reserva",
+            "valor": -100,
+        })
+    caixas.sort(key=lambda x: x["start_time"])
+    return caixas
 
 
 async def mark_paid(
