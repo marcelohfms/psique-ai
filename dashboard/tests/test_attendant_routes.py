@@ -1439,3 +1439,16 @@ def test_prazo_valueerror_vira_400(client, monkeypatch):
                     json={"phone": "5581999998888", "data_limite": "2026-11-20"})
     assert r.status_code == 400
     assert "A data já passou." in r.json()["detail"]
+
+
+def test_prazo_falha_no_log_nao_vira_500(client, monkeypatch):
+    calls = []
+    _prazo_patches(monkeypatch, calls)
+
+    async def boom(*a, **k):
+        raise RuntimeError("db fora")
+    monkeypatch.setattr(attendant_db, "log_event", boom)
+    r = client.post("/api/atendente/pagamentos/a1/prazo", params={"token": "test-token"},
+                    json={"phone": "5581999998888", "data_limite": "2026-11-20"})
+    assert r.status_code == 200
+    assert r.json()["ok"] is True

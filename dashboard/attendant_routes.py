@@ -641,10 +641,13 @@ async def ajustar_prazo(appointment_id: str, body: AtendentePrazoBody, _: None =
         deadline = await payments.set_payment_deadline(client, appointment_id, parsed)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
-    await attendant_db.log_event("attendant_payment_deadline_set", body.phone, {
-        "appointment_id": appointment_id,
-        "data_limite": body.data_limite,
-    })
+    try:
+        await attendant_db.log_event("attendant_payment_deadline_set", body.phone, {
+            "appointment_id": appointment_id,
+            "data_limite": body.data_limite,
+        })
+    except Exception:
+        logger.exception("LOG_EVENT_FAILED appt=%s", appointment_id)
     return {"ok": True, "deadline": deadline}
 
 
