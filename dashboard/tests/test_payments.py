@@ -871,3 +871,13 @@ async def test_reembolso_ignora_cancelada_sem_pedido_e_outros_status(fake_client
 async def test_reembolso_patient_ids_vazio_nao_consulta(fake_client):
     fake_client.from_ = lambda *_a, **_k: (_ for _ in ()).throw(AssertionError("consultou"))
     assert await payments.compute_reembolsos_pendentes(fake_client, []) == []
+
+
+def test_filename_reembolso_tem_sufixo():
+    name = payments.build_receipt_filename("Tarso de Paula", "28/10/2026 15:00", "100", is_refund=True)
+    assert name == "Tarso_de_Paula_28-10-2026_R$100_Reembolso"
+
+
+def test_filename_sem_flag_nao_tem_sufixo():
+    name = payments.build_receipt_filename("Tarso de Paula", "28/10/2026 15:00", "100")
+    assert name == "Tarso_de_Paula_28-10-2026_R$100"

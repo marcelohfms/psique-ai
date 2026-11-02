@@ -135,7 +135,9 @@ async def _send_clinic_email(subject: str, body: str, phone: str = "") -> None:
         raise
 
 
-def build_receipt_filename(patient_name: str, appointment_dt: str, amount: str) -> str:
+def build_receipt_filename(
+    patient_name: str, appointment_dt: str, amount: str, is_refund: bool = False
+) -> str:
     """Nome canônico do comprovante de pagamento, SEM extensão.
 
     Fonte única desse nome dentro do dashboard: é o que o arquivo recebe no Drive
@@ -151,6 +153,7 @@ def build_receipt_filename(patient_name: str, appointment_dt: str, amount: str) 
         emitir um "_R$" solto no fim.
       - appointment_dt é a consulta vinculada ("DD/MM/AAAA HH:MM"); sem consulta
         vinculada ("—" ou vazio) usa a data de hoje.
+      - is_refund acrescenta o sufixo "_Reembolso" (comprovante da devolução da taxa).
 
     Espelha app/google_drive.py::build_receipt_filename — o dashboard é um
     deployable separado e não importa nada de app/, então a duplicação é
@@ -169,7 +172,8 @@ def build_receipt_filename(patient_name: str, appointment_dt: str, amount: str) 
         else datetime.now(_TZ).strftime("%d-%m-%Y")
     )
     safe_name = (patient_name or "paciente").replace(" ", "_")
-    return f"{safe_name}_{date_clean}_R${amount_clean}"
+    suffix = "_Reembolso" if is_refund else ""
+    return f"{safe_name}_{date_clean}_R${amount_clean}{suffix}"
 
 
 def _set_hyperlink_cell(service, spreadsheet_id: str, updated_range: str, drive_link: str, filename: str) -> None:
@@ -404,7 +408,12 @@ _MIME_EXT = {
 
 
 async def upload_comprovante(
-    patient_name: str, appointment_dt: str, amount: str, file_bytes: bytes, mimetype: str
+    patient_name: str,
+    appointment_dt: str,
+    amount: str,
+    file_bytes: bytes,
+    mimetype: str,
+    is_refund: bool = False,
 ) -> tuple[str, str]:
     """Envia o comprovante (imagem ou PDF) à pasta de pagamentos do Drive.
 
@@ -417,7 +426,7 @@ async def upload_comprovante(
     payment-receipt-drive-format): {Nome_Do_Paciente}_{DD-MM-AAAA}_R${valor}.{ext}.
     """
     ext = _MIME_EXT.get(mimetype.lower(), "jpg")
-    filename = f"{build_receipt_filename(patient_name, appointment_dt, amount)}.{ext}"
+    filename = f"{build_receipt_filename(patient_name, appointment_dt, amount, is_refund)}.{ext}"
     loop = asyncio.get_running_loop()
     drive_link = await loop.run_in_executor(None, _upload_comprovante_sync, filename, file_bytes, mimetype)
     return drive_link, filename
