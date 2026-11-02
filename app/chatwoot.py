@@ -155,6 +155,23 @@ async def send_message(conversation_id: int, text: str) -> None:
         await _request(client, "POST", url, json=payload, headers=_bot_headers())
 
 
+async def send_message_with_attachment(
+    conversation_id: int,
+    text: str,
+    file_bytes: bytes,
+    filename: str,
+    content_type: str,
+) -> None:
+    """Send an outgoing message with one file attached (multipart upload)."""
+    url = f"{_base_url()}/api/v1/accounts/{_account_id()}/conversations/{conversation_id}/messages"
+    data = {"content": text, "message_type": "outgoing", "private": "false"}
+    files = [("attachments[]", (filename, file_bytes, content_type))]
+    # Multipart needs httpx to set its own Content-Type (with the boundary).
+    headers = {k: v for k, v in _bot_headers().items() if k.lower() != "content-type"}
+    async with httpx.AsyncClient(timeout=30) as client:
+        await _request(client, "POST", url, data=data, files=files, headers=headers)
+
+
 async def unassign_agent_bot(conversation_id: int) -> None:
     """Remove human agent assignment so agents can take over in Chatwoot. 404 = no agent assigned, safe to ignore."""
     url = f"{_base_url()}/api/v1/accounts/{_account_id()}/conversations/{conversation_id}/assignments"
