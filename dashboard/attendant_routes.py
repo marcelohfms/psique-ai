@@ -4,6 +4,7 @@ Auth por token na query string (`?token=...`), validado contra
 ATTENDANT_PANEL_TOKEN. As rotas existentes do dashboard mantêm o HTTP Basic;
 estas usam o token (mais limpo dentro de um iframe do Chatwoot).
 """
+import base64
 import logging
 import os
 from datetime import date as _date
@@ -433,7 +434,10 @@ async def pagamentos(phone: str, _: None = Depends(verify_token)):
     resolved = await attendant_db.resolve_contact_and_patients(phone)
     patient_ids = [p["id"] for p in resolved["patients"]]
     client = await get_client()
-    return await payments.compute_pendencias(client, patient_ids=patient_ids)
+    return (
+        await payments.compute_pendencias(client, patient_ids=patient_ids)
+        + await payments.compute_reembolsos_pendentes(client, patient_ids=patient_ids)
+    )
 
 
 @router.post("/pagamentos/{appointment_id}/comprovante")
@@ -570,6 +574,104 @@ async def pagar_com_comprovante(
         raise HTTPException(status_code=500, detail=detail)
     if previous:
         await payments.log_duplicate_confirmed(phone, appointment_id, md5, previous)
+    return {"ok": True, "confirmacao": confirmacao}
+
+
+def refund_message(contact_first: str, has_comprovante: bool) -> str:
+    """Texto livre do aviso de reembolso da taxa de reserva. Cita o comprovante
+    só quando ele vai junto na mensagem."""
+    if has_comprovante:
+        corpo = "Segue o comprovante do seu reembolso da taxa de reserva."
+    else:
+        corpo = "Seu reembolso da taxa de reserva foi realizado."
+    return (
+        f"Olá, {contact_first}! 💜 {corpo} "
+        "Quando quiser agendar a próxima consulta, estamos à disposição!"
+    )
+
+
+async def _send_refund_message(phone: str, text: str, media: dict | None) -> str:
+    """Manda o aviso de reembolso pela Eva. Devolve "enviada", "fora_da_janela" ou "falhou"."""
+    try:
+        status_code, payload = await eva_client.post("/admin/panel/refund-message", {
+            "phone": phone, "text": text, "media": media,
+        })
+    except Exception:
+        logger.exception("REFUND_MSG_FAILED phone=%s", phone)
+        return "falhou"
+    if status_code != 200:
+        logger.error("REFUND_MSG_FAILED phone=%s status=%s payload=%s", phone, status_code, payload)
+        return "falhou"
+    return "enviada" if payload.get("sent") else "fora_da_janela"
+
+
+@router.post("/pagamentos/{appointment_id}/reembolso")
+async def reembolso(
+    appointment_id: str,
+    paciente: str = Form(...),
+    medico: str = Form(...),
+    data_hora: str = Form(...),
+    phone: str = Form(...),
+    enviar_mensagem: bool = Form(default=False),
+    conversation_id: int | None = Form(default=None),
+    file: UploadFile | None = File(default=None),
+    confirmar_duplicado: bool = Form(default=False),
+    _: None = Depends(verify_token),
+):
+    """Dá baixa no reembolso da taxa de reserva: sobe o comprovante (se houver),
+    grava banco, planilha e evento e, se pedido, avisa o paciente pela Eva."""
+    await _assert_appointment_scope(phone, appointment_id)
+
+    drive_link, receipt_filename, md5, previous = "", "", "", None
+    content, mimetype = None, ""
+    if file is not None and file.filename:
+        content = await file.read()
+        mimetype = file.content_type or "image/jpeg"
+        md5 = payments.file_md5(content)
+        previous = await _check_duplicate_receipt(md5, confirmar_duplicado)
+        try:
+            drive_link, receipt_filename = await payments.upload_comprovante(
+                paciente, data_hora, "100", content, mimetype, is_refund=True,
+            )
+        except Exception:
+            logger.exception("UPLOAD_REEMBOLSO_FAILED appt=%s paciente=%s", appointment_id, paciente)
+            raise HTTPException(
+                status_code=502,
+                detail="Falha ao enviar o comprovante ao Drive. Nada foi registrado; tente de novo.",
+            )
+
+    client = await get_client()
+    try:
+        await payments.mark_refund_completed(
+            client, appointment_id, paciente, medico, data_hora, phone,
+            drive_link=drive_link, receipt_filename=receipt_filename, file_md5=md5,
+        )
+    except Exception:
+        logger.exception("REEMBOLSO_FAILED appt=%s drive_link=%s", appointment_id, drive_link)
+        detail = (
+            "O comprovante foi salvo no Drive, mas o reembolso NÃO foi registrado. Tente de novo."
+            if drive_link else "O reembolso NÃO foi registrado. Tente de novo."
+        )
+        raise HTTPException(status_code=500, detail=detail)
+    if previous:
+        await payments.log_duplicate_confirmed(phone, appointment_id, md5, previous)
+
+    confirmacao = ""
+    if enviar_mensagem:
+        try:
+            contact_first, _patient_first = await _confirmation_names(phone, paciente)
+            media = None
+            if content is not None:
+                media = {
+                    "b64": base64.b64encode(content).decode(),
+                    "filename": receipt_filename or file.filename,
+                    "content_type": mimetype,
+                }
+            text = refund_message(contact_first, has_comprovante=media is not None)
+            confirmacao = await _send_refund_message(phone, text, media)
+        except Exception:
+            confirmacao = "falhou"
+            logger.exception("REFUND_MSG_FAILED appt=%s phone=%s", appointment_id, phone)
     return {"ok": True, "confirmacao": confirmacao}
 
 
