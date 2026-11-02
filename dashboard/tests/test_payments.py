@@ -1,5 +1,7 @@
-from datetime import datetime
+from datetime import datetime, timedelta
 from unittest.mock import AsyncMock
+
+import pytest
 
 import attendant_db
 import payments
@@ -493,6 +495,64 @@ async def test_mark_fee_waived_email_failure_nao_propaga(fake_client, monkeypatc
     await payments.mark_fee_waived(fake_client, "a1", "João", "Dr. Júlio", "10/07/2026 14:00")
     row = fake_client.store["appointments"][0]
     assert row["booking_fee_waived"] is True
+
+
+# ── set_payment_deadline ──────────────────────────────────────────────────────
+
+
+def _start_in(days, hour=10):
+    d = datetime.now(payments._TZ) + timedelta(days=days)
+    return d.replace(hour=hour, minute=0, second=0, microsecond=0).isoformat()
+
+
+async def test_set_payment_deadline_grava_fim_do_dia_e_zera_lembrete(fake_client):
+    fake_client.store["appointments"] = [
+        {"appointment_id": "a1", "start_time": _start_in(10), "payment_reminder_sent_at": "2026-01-01T00:00:00+00:00"}
+    ]
+    alvo = (datetime.now(payments._TZ) + timedelta(days=3)).date()
+    result = await payments.set_payment_deadline(fake_client, "a1", alvo)
+    row = fake_client.store["appointments"][0]
+    esperado = datetime(alvo.year, alvo.month, alvo.day, 23, 59, 59, tzinfo=payments._TZ).isoformat()
+    assert row["payment_deadline_at"] == esperado
+    assert row["payment_reminder_sent_at"] is None
+    assert result == esperado
+
+
+async def test_set_payment_deadline_permite_hoje_para_consulta_futura(fake_client):
+    fake_client.store["appointments"] = [{"appointment_id": "a1", "start_time": _start_in(5)}]
+    hoje = datetime.now(payments._TZ).date()
+    await payments.set_payment_deadline(fake_client, "a1", hoje)
+    assert fake_client.store["appointments"][0]["payment_deadline_at"].startswith(hoje.isoformat())
+
+
+async def test_set_payment_deadline_recusa_data_passada(fake_client):
+    fake_client.store["appointments"] = [{"appointment_id": "a1", "start_time": _start_in(5)}]
+    ontem = (datetime.now(payments._TZ) - timedelta(days=1)).date()
+    with pytest.raises(ValueError, match="futura"):
+        await payments.set_payment_deadline(fake_client, "a1", ontem)
+    assert "payment_deadline_at" not in fake_client.store["appointments"][0]
+
+
+async def test_set_payment_deadline_recusa_data_depois_da_consulta(fake_client):
+    fake_client.store["appointments"] = [{"appointment_id": "a1", "start_time": _start_in(1)}]
+    amanha = (datetime.now(payments._TZ) + timedelta(days=1)).date()
+    with pytest.raises(ValueError, match="anterior"):
+        await payments.set_payment_deadline(fake_client, "a1", amanha)
+    assert "payment_deadline_at" not in fake_client.store["appointments"][0]
+
+
+async def test_set_payment_deadline_agrupado_usa_start_time_mais_cedo(fake_client):
+    fake_client.store["appointments"] = [
+        {"appointment_id": "a1", "start_time": _start_in(2)},
+        {"appointment_id": "a2", "start_time": _start_in(10)},
+    ]
+    dia3 = (datetime.now(payments._TZ) + timedelta(days=3)).date()
+    # dia 3 é depois da consulta mais cedo (dia 2), mesmo que a outra seja dia 10
+    with pytest.raises(ValueError):
+        await payments.set_payment_deadline(fake_client, "a1,a2", dia3)
+    amanha = (datetime.now(payments._TZ) + timedelta(days=1)).date()
+    await payments.set_payment_deadline(fake_client, "a1,a2", amanha)
+    assert all(r["payment_deadline_at"].startswith(amanha.isoformat()) for r in fake_client.store["appointments"])
 
 
 # ── find_receipts ─────────────────────────────────────────────────────────────

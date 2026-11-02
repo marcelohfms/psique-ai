@@ -53,9 +53,11 @@ async def _assert_link_scope(phone: str, pc_id: str) -> None:
 
 async def _assert_appointment_scope(phone: str, appointment_id: str) -> None:
     _, patient_ids = await attendant_db.scope_for_phone(phone)
-    pid = await attendant_db.get_appointment_patient_id(appointment_id)
-    if pid is None or pid not in patient_ids:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=_FORA_DO_ESCOPO)
+    # 1ª consulta dividida chega agrupada ("id1,id2"): cada id precisa estar no escopo.
+    for appt_id in appointment_id.split(","):
+        pid = await attendant_db.get_appointment_patient_id(appt_id)
+        if pid is None or pid not in patient_ids:
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=_FORA_DO_ESCOPO)
 
 
 class UpdateBody(BaseModel):
@@ -619,6 +621,34 @@ async def isentar(appointment_id: str, body: AtendenteIsentarBody, _: None = Dep
     except Exception:
         logger.exception("LOG_EVENT_FAILED appt=%s", appointment_id)
     return {"ok": True, "confirmacao": confirmacao}
+
+
+class AtendentePrazoBody(BaseModel):
+    phone: str
+    data_limite: str  # YYYY-MM-DD
+
+
+@router.post("/pagamentos/{appointment_id}/prazo")
+async def ajustar_prazo(appointment_id: str, body: AtendentePrazoBody, _: None = Depends(verify_token)):
+    """Adia o prazo de pagamento da taxa de reserva (fim do dia da data informada)."""
+    await _assert_appointment_scope(body.phone, appointment_id)
+    try:
+        parsed = _date.fromisoformat(body.data_limite)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="data_limite deve ser YYYY-MM-DD")
+    client = await get_client()
+    try:
+        deadline = await payments.set_payment_deadline(client, appointment_id, parsed)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    try:
+        await attendant_db.log_event("attendant_payment_deadline_set", body.phone, {
+            "appointment_id": appointment_id,
+            "data_limite": body.data_limite,
+        })
+    except Exception:
+        logger.exception("LOG_EVENT_FAILED appt=%s", appointment_id)
+    return {"ok": True, "deadline": deadline}
 
 
 # ── Consultas ─────────────────────────────────────────────────────────────────
