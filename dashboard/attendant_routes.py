@@ -623,6 +623,31 @@ async def isentar(appointment_id: str, body: AtendenteIsentarBody, _: None = Dep
     return {"ok": True, "confirmacao": confirmacao}
 
 
+class AtendentePrazoBody(BaseModel):
+    phone: str
+    data_limite: str  # YYYY-MM-DD
+
+
+@router.post("/pagamentos/{appointment_id}/prazo")
+async def ajustar_prazo(appointment_id: str, body: AtendentePrazoBody, _: None = Depends(verify_token)):
+    """Adia o prazo de pagamento da taxa de reserva (fim do dia da data informada)."""
+    await _assert_appointment_scope(body.phone, appointment_id)
+    try:
+        parsed = _date.fromisoformat(body.data_limite)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="data_limite deve ser YYYY-MM-DD")
+    client = await get_client()
+    try:
+        deadline = await payments.set_payment_deadline(client, appointment_id, parsed)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    await attendant_db.log_event("attendant_payment_deadline_set", body.phone, {
+        "appointment_id": appointment_id,
+        "data_limite": body.data_limite,
+    })
+    return {"ok": True, "deadline": deadline}
+
+
 # ── Consultas ─────────────────────────────────────────────────────────────────
 
 

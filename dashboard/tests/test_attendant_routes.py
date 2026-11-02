@@ -1386,3 +1386,56 @@ def test_upload_comprovante_repetido_retorna_409(client, monkeypatch, repetido):
         files={"file": ("comprovante.jpg", b"fake-image-bytes", "image/jpeg")},
     )
     assert r.status_code == 409
+
+
+# ── Prazo da taxa de reserva ──────────────────────────────────────────────────
+
+
+def _prazo_patches(monkeypatch, calls, *, raises=None):
+    import payments
+
+    async def fake_get_client():
+        return object()
+
+    async def fake_set(client, appointment_id, deadline_date):
+        calls.append((appointment_id, deadline_date))
+        if raises:
+            raise raises
+        return "2026-11-20T23:59:59-03:00"
+
+    async def noop(*a, **k):
+        return None
+
+    monkeypatch.setattr(attendant_routes, "get_client", fake_get_client)
+    monkeypatch.setattr(payments, "set_payment_deadline", fake_set)
+    monkeypatch.setattr(attendant_db, "log_event", noop)
+
+
+def test_prazo_ok(client, monkeypatch):
+    import datetime
+    calls = []
+    _prazo_patches(monkeypatch, calls)
+    r = client.post("/api/atendente/pagamentos/a1/prazo", params={"token": "test-token"},
+                    json={"phone": "5581999998888", "data_limite": "2026-11-20"})
+    assert r.status_code == 200
+    assert r.json()["ok"] is True
+    assert r.json()["deadline"] == "2026-11-20T23:59:59-03:00"
+    assert calls == [("a1", datetime.date(2026, 11, 20))]
+
+
+def test_prazo_data_invalida_400(client, monkeypatch):
+    calls = []
+    _prazo_patches(monkeypatch, calls)
+    r = client.post("/api/atendente/pagamentos/a1/prazo", params={"token": "test-token"},
+                    json={"phone": "5581999998888", "data_limite": "20/11"})
+    assert r.status_code == 400
+    assert calls == []
+
+
+def test_prazo_valueerror_vira_400(client, monkeypatch):
+    calls = []
+    _prazo_patches(monkeypatch, calls, raises=ValueError("A data já passou."))
+    r = client.post("/api/atendente/pagamentos/a1/prazo", params={"token": "test-token"},
+                    json={"phone": "5581999998888", "data_limite": "2026-11-20"})
+    assert r.status_code == 400
+    assert "A data já passou." in r.json()["detail"]
