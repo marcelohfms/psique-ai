@@ -53,9 +53,11 @@ async def _assert_link_scope(phone: str, pc_id: str) -> None:
 
 async def _assert_appointment_scope(phone: str, appointment_id: str) -> None:
     _, patient_ids = await attendant_db.scope_for_phone(phone)
-    pid = await attendant_db.get_appointment_patient_id(appointment_id)
-    if pid is None or pid not in patient_ids:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=_FORA_DO_ESCOPO)
+    # 1ª consulta dividida chega agrupada ("id1,id2"): cada id precisa estar no escopo.
+    for appt_id in appointment_id.split(","):
+        pid = await attendant_db.get_appointment_patient_id(appt_id)
+        if pid is None or pid not in patient_ids:
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=_FORA_DO_ESCOPO)
 
 
 class UpdateBody(BaseModel):

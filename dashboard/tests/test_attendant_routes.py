@@ -7,6 +7,9 @@ import eva_client
 import attendant_db
 
 
+_REAL_APPOINTMENT_SCOPE = attendant_routes._assert_appointment_scope
+
+
 @pytest.fixture(autouse=True)
 def _bypass_scope(monkeypatch):
     """Neutraliza os guards de escopo por contato/paciente nestes testes.
@@ -564,6 +567,43 @@ def _isentar(client, paciente="João", conversation_id=42):
         body["conversation_id"] = conversation_id
     return client.post("/api/atendente/pagamentos/a1/isentar",
                        params={"token": "test-token"}, json=body)
+
+
+def test_isentar_aceita_appointment_agrupado(client, monkeypatch):
+    """1ª consulta dividida: o painel manda 'a1,a2'. Cada id precisa estar no escopo."""
+    monkeypatch.setattr(attendant_routes, "_assert_appointment_scope", _REAL_APPOINTMENT_SCOPE)
+
+    async def fake_scope(phone):
+        return "c1", {"p1"}
+    async def fake_appt_patient(appointment_id):
+        return {"a1": "p1", "a2": "p1"}.get(appointment_id)
+    async def fake_get_client():
+        return object()
+    async def noop(*a, **k):
+        return None
+    async def fake_names(phone, paciente):
+        return "Ana", None
+    async def fake_send(phone, text, template="", params=None):
+        return "enviada"
+
+    monkeypatch.setattr(attendant_db, "scope_for_phone", fake_scope)
+    monkeypatch.setattr(attendant_db, "get_appointment_patient_id", fake_appt_patient)
+    monkeypatch.setattr(attendant_routes, "get_client", fake_get_client)
+    monkeypatch.setattr(payments, "mark_fee_waived", noop)
+    monkeypatch.setattr(attendant_routes, "_confirmation_names", fake_names)
+    monkeypatch.setattr(attendant_routes, "_send_via_eva", fake_send)
+    monkeypatch.setattr(attendant_db, "log_event", noop)
+
+    body = {"paciente": "João", "medico": "Dr. Júlio", "data_hora": "10/07/2026 14:00",
+            "phone": "5581999998888"}
+    r = client.post("/api/atendente/pagamentos/a1,a2/isentar",
+                    params={"token": "test-token"}, json=body)
+    assert r.status_code == 200
+
+    # um id fora do escopo derruba o conjunto todo
+    r = client.post("/api/atendente/pagamentos/a1,zz/isentar",
+                    params={"token": "test-token"}, json=body)
+    assert r.status_code == 403
 
 
 def test_isentar_registra_e_envia_confirmacao_pela_eva(client, monkeypatch):
