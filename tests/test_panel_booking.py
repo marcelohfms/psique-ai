@@ -1029,3 +1029,47 @@ async def test_isencao_sem_template_fora_da_janela_nao_envia():
 async def test_payment_confirmation_entrada_invalida(override):
     with pytest.raises(pb.PanelInputError):
         await pb.send_payment_confirmation({**_PAY_BODY, **override})
+
+
+_REFUND_BODY = {"phone": "5581999713131", "text": "Reembolso feito.", "media": None}
+_REFUND_MEDIA = {"b64": "aGVsbG8=", "filename": "comprovante.pdf", "content_type": "application/pdf"}
+
+
+def _refund_patches(window: bool):
+    stack, m = _pay_patches(window)
+    m["attach"] = stack.enter_context(patch("app.chatwoot.send_message_with_attachment", AsyncMock()))
+    return stack, m
+
+
+@pytest.mark.asyncio
+async def test_refund_message_dentro_janela_com_anexo():
+    stack, m = _refund_patches(window=True)
+    with stack:
+        status, payload = await pb.send_refund_message({**_REFUND_BODY, "media": _REFUND_MEDIA})
+    assert (status, payload) == (200, {"sent": True, "via": "anexo"})
+    m["attach"].assert_awaited_once_with(107, "Reembolso feito.", b"hello", "comprovante.pdf", "application/pdf")
+    m["send_text"].assert_not_awaited()
+    m["save"].assert_awaited_once_with("5581999713131@s.whatsapp.net", "assistant", "Reembolso feito.")
+    m["graph"].chatbot.aupdate_state.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_refund_message_dentro_janela_sem_anexo():
+    stack, m = _refund_patches(window=True)
+    with stack:
+        status, payload = await pb.send_refund_message(dict(_REFUND_BODY))
+    assert (status, payload) == (200, {"sent": True, "via": "texto"})
+    m["send_text"].assert_awaited_once_with("5581999713131@s.whatsapp.net", "Reembolso feito.")
+    m["attach"].assert_not_awaited()
+    m["save"].assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_refund_message_fora_janela_nao_envia():
+    stack, m = _refund_patches(window=False)
+    with stack:
+        status, payload = await pb.send_refund_message({**_REFUND_BODY, "media": _REFUND_MEDIA})
+    assert (status, payload) == (200, {"sent": False, "motivo": "janela_fechada"})
+    m["send_text"].assert_not_awaited()
+    m["attach"].assert_not_awaited()
+    m["save"].assert_not_awaited()

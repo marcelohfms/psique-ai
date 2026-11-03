@@ -135,7 +135,9 @@ async def _send_clinic_email(subject: str, body: str, phone: str = "") -> None:
         raise
 
 
-def build_receipt_filename(patient_name: str, appointment_dt: str, amount: str) -> str:
+def build_receipt_filename(
+    patient_name: str, appointment_dt: str, amount: str, is_refund: bool = False
+) -> str:
     """Nome canônico do comprovante de pagamento, SEM extensão.
 
     Fonte única desse nome dentro do dashboard: é o que o arquivo recebe no Drive
@@ -151,6 +153,7 @@ def build_receipt_filename(patient_name: str, appointment_dt: str, amount: str) 
         emitir um "_R$" solto no fim.
       - appointment_dt é a consulta vinculada ("DD/MM/AAAA HH:MM"); sem consulta
         vinculada ("—" ou vazio) usa a data de hoje.
+      - is_refund acrescenta o sufixo "_Reembolso" (comprovante da devolução da taxa).
 
     Espelha app/google_drive.py::build_receipt_filename — o dashboard é um
     deployable separado e não importa nada de app/, então a duplicação é
@@ -169,7 +172,8 @@ def build_receipt_filename(patient_name: str, appointment_dt: str, amount: str) 
         else datetime.now(_TZ).strftime("%d-%m-%Y")
     )
     safe_name = (patient_name or "paciente").replace(" ", "_")
-    return f"{safe_name}_{date_clean}_R${amount_clean}"
+    suffix = "_Reembolso" if is_refund else ""
+    return f"{safe_name}_{date_clean}_R${amount_clean}{suffix}"
 
 
 def _set_hyperlink_cell(service, spreadsheet_id: str, updated_range: str, drive_link: str, filename: str) -> None:
@@ -404,7 +408,12 @@ _MIME_EXT = {
 
 
 async def upload_comprovante(
-    patient_name: str, appointment_dt: str, amount: str, file_bytes: bytes, mimetype: str
+    patient_name: str,
+    appointment_dt: str,
+    amount: str,
+    file_bytes: bytes,
+    mimetype: str,
+    is_refund: bool = False,
 ) -> tuple[str, str]:
     """Envia o comprovante (imagem ou PDF) à pasta de pagamentos do Drive.
 
@@ -417,7 +426,7 @@ async def upload_comprovante(
     payment-receipt-drive-format): {Nome_Do_Paciente}_{DD-MM-AAAA}_R${valor}.{ext}.
     """
     ext = _MIME_EXT.get(mimetype.lower(), "jpg")
-    filename = f"{build_receipt_filename(patient_name, appointment_dt, amount)}.{ext}"
+    filename = f"{build_receipt_filename(patient_name, appointment_dt, amount, is_refund)}.{ext}"
     loop = asyncio.get_running_loop()
     drive_link = await loop.run_in_executor(None, _upload_comprovante_sync, filename, file_bytes, mimetype)
     return drive_link, filename
@@ -560,6 +569,34 @@ async def find_receipts_for_patient(client, patient_id: str, limit: int = 5) -> 
     return out[:limit]
 
 
+def _booker_phone(patient: dict, booker_id) -> str:
+    """Telefone de destino: SEMPRE quem agendou (appointments.contact_id).
+
+    Caso Bento (05/10/2026): a baixa foi na Daniella (mãe, agendou e pagou) mas
+    a confirmação caiu no Sandro (pai) porque pegávamos patient_contacts[0], que
+    não tem ordem garantida. Menor de idade não tem contato is_self, então o
+    fallback [0] era um responsável qualquer. O booker resolve isso de forma
+    determinística.
+    """
+    phone = ""
+    patient_contacts = patient.get("patient_contacts") or []
+    if booker_id:
+        for pc in patient_contacts:
+            contact = pc.get("contacts") or {}
+            if contact.get("id") == booker_id and contact.get("phone"):
+                phone = contact["phone"]
+                break
+    if not phone:
+        # Fallback (booker ausente ou não vinculado): próprio paciente, senão
+        # o primeiro contato vinculado.
+        self_contact = next((pc for pc in patient_contacts if pc.get("is_self")), None)
+        pc_row = self_contact or (patient_contacts[0] if patient_contacts else None)
+        if pc_row:
+            contact = pc_row.get("contacts") or {}
+            phone = contact.get("phone") or ""
+    return phone
+
+
 async def compute_pendencias(client, patient_ids: list[str] | None = None) -> list[dict]:
     """Retorna a lista de pendências (taxa/consulta) em aberto.
 
@@ -614,29 +651,7 @@ async def compute_pendencias(client, patient_ids: list[str] | None = None) -> li
         birth_date = patient.get("birth_date")
         custom_price = patient.get("custom_price")
 
-        # Telefone de destino da confirmação: SEMPRE quem agendou
-        # (appointments.contact_id). Caso Bento (05/10/2026): a baixa foi na
-        # Daniella (mãe, agendou e pagou) mas a confirmação caiu no Sandro (pai)
-        # porque pegávamos patient_contacts[0], que não tem ordem garantida.
-        # Menor de idade não tem contato is_self, então o fallback [0] era um
-        # responsável qualquer. O booker resolve isso de forma determinística.
-        phone = ""
-        patient_contacts = patient.get("patient_contacts") or []
-        booker_id = first.get("contact_id")
-        if booker_id:
-            for pc in patient_contacts:
-                contact = pc.get("contacts") or {}
-                if contact.get("id") == booker_id and contact.get("phone"):
-                    phone = contact["phone"]
-                    break
-        if not phone:
-            # Fallback (booker ausente ou não vinculado): próprio paciente, senão
-            # o primeiro contato vinculado.
-            self_contact = next((pc for pc in patient_contacts if pc.get("is_self")), None)
-            pc_row = self_contact or (patient_contacts[0] if patient_contacts else None)
-            if pc_row:
-                contact = pc_row.get("contacts") or {}
-                phone = contact.get("phone") or ""
+        phone = _booker_phone(patient, first.get("contact_id"))
 
         doctor_display = DOCTOR_DISPLAY.get(first.get("doctor_id", ""), "Médico")
 
@@ -694,6 +709,54 @@ async def compute_pendencias(client, patient_ids: list[str] | None = None) -> li
 
     pendencias.sort(key=lambda x: x["start_time"])
     return pendencias
+
+
+async def compute_reembolsos_pendentes(client, patient_ids: list[str]) -> list[dict]:
+    """Caixas negativas de reembolso da taxa de reserva ainda não devolvido.
+
+    Consulta cancelada com refund_requested_at preenchido e refund_completed_at
+    nulo. Lista vazia em `patient_ids` retorna `[]` sem consultar o banco.
+    """
+    if not patient_ids:
+        return []
+
+    result = await (
+        client.from_("appointments")
+        .select(
+            "appointment_id, patient_id, contact_id, start_time, doctor_id, status, "
+            "refund_requested_at, refund_completed_at, "
+            "patients(name, patient_contacts(is_self, contacts(id, phone, name)))"
+        )
+        .eq("status", "canceled")
+        .in_("patient_id", patient_ids)
+        .execute()
+    )
+
+    caixas = []
+    for row in result.data or []:
+        if not row.get("refund_requested_at") or row.get("refund_completed_at"):
+            continue
+        patient = row.get("patients") or {}
+        start_time = row.get("start_time") or ""
+        try:
+            dt = datetime.fromisoformat(start_time.replace("Z", "+00:00"))
+            data_hora = dt.astimezone(timezone(timedelta(hours=-3))).strftime("%d/%m/%Y %H:%M")
+        except Exception:
+            data_hora = start_time[:16]
+        caixas.append({
+            "appointment_id": row["appointment_id"],
+            "patient_id": row.get("patient_id", ""),
+            "paciente": patient.get("name") or "Paciente",
+            "phone": _booker_phone(patient, row.get("contact_id")),
+            "medico": DOCTOR_DISPLAY.get(row.get("doctor_id", ""), "Médico"),
+            "data_hora": data_hora,
+            "start_time": start_time,
+            "tipo": "reembolso",
+            "tipo_label": "Reembolso - Taxa de reserva",
+            "valor": -100,
+        })
+    caixas.sort(key=lambda x: x["start_time"])
+    return caixas
 
 
 async def mark_paid(
@@ -839,6 +902,82 @@ async def mark_paid(
             }).execute()
         except Exception:
             logger.exception("RECEIPT_MSG_INSERT_FAILED patient=%s drive_link=%s", paciente, drive_link)
+
+
+async def mark_refund_completed(
+    client,
+    appointment_id: str,
+    paciente: str,
+    medico: str,
+    data_hora: str,
+    phone: str,
+    drive_link: str = "",
+    receipt_filename: str = "",
+    file_md5: str = "",
+) -> bool:
+    """Dá baixa no reembolso da taxa de reserva (R$ 100,00 devolvidos ao paciente).
+
+    Carimba refund_completed_at, lança a linha de saída (-100) na planilha
+    Pagamentos, loga o evento e, havendo comprovante, espelha em `messages`.
+    Planilha, evento e espelho são best-effort. Idempotente: se a baixa já foi
+    dada, não faz nada. Devolve True se deu a baixa agora, False se já estava dada.
+    """
+    current = await (
+        client.from_("appointments")
+        .select("refund_completed_at")
+        .eq("appointment_id", appointment_id)
+        .execute()
+    )
+    if any(r.get("refund_completed_at") for r in (current.data or [])):
+        return False
+
+    now = datetime.now(timezone.utc).isoformat()
+    await (
+        client.from_("appointments")
+        .update({"refund_completed_at": now, "updated_at": now})
+        .eq("appointment_id", appointment_id)
+        .execute()
+    )
+
+    try:
+        await _append_payment_sheet(
+            patient_name=paciente,
+            phone=phone,
+            doctor_name=medico,
+            appointment_dt=data_hora,
+            amount="-100,00",
+            payment_type="Reembolso - Taxa de Reserva",
+            payment_method="—",
+            drive_link=drive_link,
+            receipt_filename=receipt_filename,
+        )
+    except Exception:
+        logger.exception("SHEETS_APPEND FAILED (reembolso) patient=%s appointment_id=%s", paciente, appointment_id)
+
+    try:
+        await attendant_db.log_event("refund_completed", phone, {
+            "appointment_id": appointment_id,
+            "amount": "100,00",
+            "registered_via": "dashboard",
+            **({"file_md5": file_md5} if file_md5 else {}),
+        })
+    except Exception:
+        logger.exception("LOG_EVENT_FAILED (reembolso) patient=%s", paciente)
+
+    if drive_link:
+        try:
+            phone_clean = phone.replace("@s.whatsapp.net", "")
+            await client.from_("messages").insert({
+                "phone": phone_clean,
+                "role": "user",
+                "content": (
+                    "[imagem]: COMPROVANTE DE REEMBOLSO: R$ 100,00 "
+                    f"— registrado pela atendente [drive_link:{drive_link}]"
+                ),
+            }).execute()
+        except Exception:
+            logger.exception("RECEIPT_MSG_INSERT_FAILED (reembolso) patient=%s", paciente)
+    return True
 
 
 async def set_payment_deadline(client, appointment_id: str, deadline_date: date) -> str:

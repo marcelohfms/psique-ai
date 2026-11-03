@@ -310,6 +310,9 @@ def test_pagamentos_lista_filtrada_por_paciente(client, monkeypatch):
     monkeypatch.setattr(attendant_db, "resolve_contact_and_patients", fake_resolve)
     monkeypatch.setattr(attendant_routes, "get_client", fake_get_client)
     monkeypatch.setattr(payments, "compute_pendencias", fake_compute)
+    async def fake_reemb0(_c, patient_ids=None):
+        return []
+    monkeypatch.setattr(payments, "compute_reembolsos_pendentes", fake_reemb0)
 
     r = client.get("/api/atendente/pagamentos",
                     params={"phone": "5581999998888", "token": "test-token"})
@@ -329,6 +332,9 @@ def test_pagamentos_sem_contato_retorna_lista_vazia(client, monkeypatch):
     monkeypatch.setattr(attendant_db, "resolve_contact_and_patients", fake_resolve)
     monkeypatch.setattr(attendant_routes, "get_client", fake_get_client)
     monkeypatch.setattr(payments, "compute_pendencias", fake_compute)
+    async def fake_reemb0(_c, patient_ids=None):
+        return []
+    monkeypatch.setattr(payments, "compute_reembolsos_pendentes", fake_reemb0)
 
     r = client.get("/api/atendente/pagamentos",
                     params={"phone": "5581999998888", "token": "test-token"})
@@ -1386,6 +1392,130 @@ def test_upload_comprovante_repetido_retorna_409(client, monkeypatch, repetido):
         files={"file": ("comprovante.jpg", b"fake-image-bytes", "image/jpeg")},
     )
     assert r.status_code == 409
+
+
+# ── Baixa de reembolso da taxa de reserva ────────────────────────────────────
+
+_FORM_REEMBOLSO = {"paciente": "Bento", "medico": "Dr. Júlio",
+                   "data_hora": "05/11/2026 14:00", "phone": "5581999713131",
+                   "conversation_id": "107"}
+
+
+def _reembolso(client, enviar=False, with_file=False, extra=None):
+    data = {**_FORM_REEMBOLSO, "enviar_mensagem": "true" if enviar else "false", **(extra or {})}
+    files = {"file": ("reembolso.pdf", b"pdf", "application/pdf")} if with_file else None
+    return client.post("/api/atendente/pagamentos/a1/reembolso",
+                       params={"token": "test-token"}, data=data, files=files)
+
+
+@pytest.fixture
+def reembolso_fakes(monkeypatch):
+    calls = {}
+    async def fake_get_client():
+        return object()
+    async def fake_upload(patient_name, appointment_dt, amount, file_bytes, mimetype, is_refund=False):
+        calls["upload"] = (patient_name, file_bytes, is_refund)
+        return "https://drive.google.com/file/d/r1/view", "Reembolso_Bento.pdf"
+    async def fake_mark(_client, appointment_id, paciente, medico, data_hora, phone,
+                        drive_link="", receipt_filename="", file_md5=""):
+        calls["mark"] = (appointment_id, drive_link, receipt_filename, file_md5)
+        return calls.get("mark_result", True)
+    async def fake_find(_client, md5):
+        return calls.get("previous")
+    async def fake_names(phone, paciente):
+        return "Maria", "Bento"
+    async def fake_log_dup(*a, **k):
+        calls["dup_logged"] = True
+
+    monkeypatch.setattr(attendant_routes, "get_client", fake_get_client)
+    monkeypatch.setattr(payments, "upload_comprovante", fake_upload)
+    monkeypatch.setattr(payments, "mark_refund_completed", fake_mark)
+    monkeypatch.setattr(payments, "find_previous_receipt", fake_find)
+    monkeypatch.setattr(payments, "log_duplicate_confirmed", fake_log_dup)
+    monkeypatch.setattr(attendant_routes, "_confirmation_names", fake_names)
+    calls["sent"] = []
+    async def fake_post(path, body, timeout=30.0):
+        calls["sent"].append((path, body))
+        return 200, {"sent": True}
+    monkeypatch.setattr(eva_client, "post", fake_post)
+    return calls
+
+
+def test_reembolso_sem_mensagem_so_registra(client, reembolso_fakes):
+    r = _reembolso(client)
+    assert r.status_code == 200
+    assert r.json() == {"ok": True, "confirmacao": ""}
+    assert reembolso_fakes["mark"] == ("a1", "", "", "")
+    assert reembolso_fakes["sent"] == []
+
+
+def test_reembolso_com_comprovante_e_mensagem(client, reembolso_fakes):
+    r = _reembolso(client, enviar=True, with_file=True)
+    assert r.status_code == 200
+    assert r.json() == {"ok": True, "confirmacao": "enviada"}
+    assert reembolso_fakes["upload"] == ("Bento", b"pdf", True)
+    assert reembolso_fakes["mark"][1:3] == ("https://drive.google.com/file/d/r1/view", "Reembolso_Bento.pdf")
+    path, body = reembolso_fakes["sent"][0]
+    assert path == "/admin/panel/refund-message"
+    assert body["phone"] == "5581999713131"
+    assert "Segue o comprovante do seu reembolso" in body["text"]
+    assert body["text"].startswith("Olá, Maria!")
+    assert body["media"]["filename"] == "Reembolso_Bento.pdf"
+    assert body["media"]["content_type"] == "application/pdf"
+    import base64
+    assert base64.b64decode(body["media"]["b64"]) == b"pdf"
+
+
+def test_reembolso_sem_comprovante_texto_adaptado(client, reembolso_fakes):
+    r = _reembolso(client, enviar=True)
+    assert r.status_code == 200
+    _, body = reembolso_fakes["sent"][0]
+    assert "comprovante" not in body["text"]
+    assert "foi realizado" in body["text"]
+    assert body["media"] is None
+
+
+def test_reembolso_baixa_repetida_nao_reenvia_mensagem(client, reembolso_fakes):
+    reembolso_fakes["mark_result"] = False
+    r = _reembolso(client, enviar=True, with_file=True)
+    assert r.status_code == 200
+    assert r.json() == {"ok": True, "confirmacao": ""}
+    assert reembolso_fakes["sent"] == []
+
+
+def test_reembolso_fora_da_janela(client, reembolso_fakes, monkeypatch):
+    async def fake_post(path, body, timeout=30.0):
+        return 200, {"sent": False, "motivo": "fora_da_janela"}
+    monkeypatch.setattr(eva_client, "post", fake_post)
+    assert _reembolso(client, enviar=True).json()["confirmacao"] == "fora_da_janela"
+
+
+def test_reembolso_comprovante_repetido_bloqueia(client, reembolso_fakes, monkeypatch):
+    reembolso_fakes["previous"] = {"id": "x"}
+    monkeypatch.setattr(payments, "describe_previous_receipt", lambda p: "já usado")
+    r = _reembolso(client, enviar=True, with_file=True)
+    assert r.status_code == 409
+    assert "upload" not in reembolso_fakes
+    assert "mark" not in reembolso_fakes
+    assert reembolso_fakes["sent"] == []
+
+
+def test_pagamentos_inclui_caixas_de_reembolso(client, monkeypatch):
+    async def fake_resolve(phone):
+        return {"contact": {"id": "c1"}, "patients": [{"id": "p1"}]}
+    async def fake_get_client():
+        return object()
+    async def fake_pend(_c, patient_ids=None):
+        return [{"appointment_id": "a1", "tipo": "taxa"}]
+    async def fake_reemb(_c, patient_ids=None):
+        assert patient_ids == ["p1"]
+        return [{"appointment_id": "a2", "tipo": "reembolso"}]
+    monkeypatch.setattr(attendant_db, "resolve_contact_and_patients", fake_resolve)
+    monkeypatch.setattr(attendant_routes, "get_client", fake_get_client)
+    monkeypatch.setattr(payments, "compute_pendencias", fake_pend)
+    monkeypatch.setattr(payments, "compute_reembolsos_pendentes", fake_reemb)
+    r = client.get("/api/atendente/pagamentos", params={"phone": "5581999998888", "token": "test-token"})
+    assert [x["appointment_id"] for x in r.json()] == ["a1", "a2"]
 
 
 # ── Prazo da taxa de reserva ──────────────────────────────────────────────────

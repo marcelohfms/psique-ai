@@ -783,3 +783,46 @@ async def test_list_recent_incoming_attachments_fetches_messages_per_conversatio
     # buscou as mensagens da conversa na janela, mas NÃO as da conversa antiga
     assert any(u.endswith("/conversations/505/messages") for u in fetched_urls)
     assert not any(u.endswith("/conversations/400/messages") for u in fetched_urls)
+
+
+async def test_send_message_with_attachment_posts_multipart():
+    from app.chatwoot import send_message_with_attachment
+    mock_response = MagicMock()
+    mock_response.status_code = 200
+    mock_response.raise_for_status = MagicMock()
+
+    with patch("httpx.AsyncClient") as mock_client_cls:
+        mock_client = AsyncMock()
+        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_client.__aexit__ = AsyncMock(return_value=False)
+        mock_client.post = AsyncMock(return_value=mock_response)
+        mock_client_cls.return_value = mock_client
+
+        with patch.dict("os.environ", {
+            "CHATWOOT_BASE_URL": "https://chat.example.com",
+            "CHATWOOT_ACCOUNT_ID": "1",
+            "CHATWOOT_AGENT_BOT_TOKEN": "test-token",
+        }):
+            await send_message_with_attachment(
+                conversation_id=42,
+                text="Segue o comprovante",
+                file_bytes=b"%PDF-1.4 fake",
+                filename="comprovante.pdf",
+                content_type="application/pdf",
+            )
+
+    mock_client.post.assert_called_once()
+    args, kwargs = mock_client.post.call_args
+    assert args[0] == "https://chat.example.com/api/v1/accounts/1/conversations/42/messages"
+    assert "json" not in kwargs
+    assert kwargs["data"] == {
+        "content": "Segue o comprovante",
+        "message_type": "outgoing",
+        "private": "false",
+    }
+    assert kwargs["files"] == [
+        ("attachments[]", ("comprovante.pdf", b"%PDF-1.4 fake", "application/pdf"))
+    ]
+    headers = {k.lower(): v for k, v in kwargs["headers"].items()}
+    assert headers["api_access_token"] == "test-token"
+    assert "content-type" not in headers

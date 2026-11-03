@@ -465,6 +465,99 @@ async def test_mark_paid_sem_drive_link_nao_grava_mensagem(fake_client, monkeypa
     assert fake_client.store.get("messages", []) == []
 
 
+# ── mark_refund_completed ─────────────────────────────────────────────────────
+
+
+async def test_mark_refund_carimba_e_lanca_saida(fake_client, monkeypatch):
+    fake_client.store["appointments"] = [{
+        "appointment_id": "a1", "refund_requested_at": "2026-10-28T10:00:00+00:00",
+        "refund_completed_at": None,
+    }]
+    appends = []
+
+    async def fake_append(**kwargs):
+        appends.append(kwargs)
+
+    events = []
+
+    async def fake_log(event_type, phone, data=None):
+        events.append({"event_type": event_type, "phone": phone, "data": data})
+
+    monkeypatch.setattr(payments, "_append_payment_sheet", fake_append)
+    monkeypatch.setattr(attendant_db, "log_event", fake_log)
+    result = await payments.mark_refund_completed(
+        fake_client, "a1", "Tarso", "Dra. Bruna", "28/10/2026 15:00", "5581999990000",
+        drive_link="https://drive.google.com/file/d/abc/view", receipt_filename="f.pdf",
+        file_md5="m5",
+    )
+    assert result is True
+    row = fake_client.store["appointments"][0]
+    assert row["refund_completed_at"] is not None
+    assert row["updated_at"] is not None
+    assert appends[0]["payment_type"] == "Reembolso - Taxa de Reserva"
+    assert appends[0]["amount"] == "-100,00"
+    assert appends[0]["payment_method"] == "—"
+    assert appends[0]["drive_link"] == "https://drive.google.com/file/d/abc/view"
+    assert appends[0]["receipt_filename"] == "f.pdf"
+    ev = next(e for e in events if e["event_type"] == "refund_completed")
+    assert ev["data"]["appointment_id"] == "a1"
+    assert ev["data"]["amount"] == "100,00"
+    assert ev["data"]["registered_via"] == "dashboard"
+    assert ev["data"]["file_md5"] == "m5"
+    msgs = fake_client.store["messages"]
+    assert len(msgs) == 1
+    assert msgs[0]["content"] == (
+        "[imagem]: COMPROVANTE DE REEMBOLSO: R$ 100,00 — registrado pela atendente "
+        "[drive_link:https://drive.google.com/file/d/abc/view]"
+    )
+
+
+async def test_mark_refund_sem_comprovante_nao_grava_mensagem(fake_client, monkeypatch):
+    fake_client.store["appointments"] = [{
+        "appointment_id": "a1", "refund_requested_at": "2026-10-28T10:00:00+00:00",
+        "refund_completed_at": None,
+    }]
+    monkeypatch.setattr(payments, "_append_payment_sheet", AsyncMock())
+    monkeypatch.setattr(attendant_db, "log_event", AsyncMock())
+    await payments.mark_refund_completed(
+        fake_client, "a1", "Tarso", "Dra. Bruna", "28/10/2026 15:00", "5581999990000",
+    )
+    assert fake_client.store["appointments"][0]["refund_completed_at"] is not None
+    assert fake_client.store.get("messages", []) == []
+
+
+async def test_mark_refund_idempotente(fake_client, monkeypatch):
+    fake_client.store["appointments"] = [{
+        "appointment_id": "a1", "refund_requested_at": "2026-10-28T10:00:00+00:00",
+        "refund_completed_at": "2026-10-29T10:00:00+00:00",
+    }]
+    fake_append = AsyncMock()
+    fake_log = AsyncMock()
+    monkeypatch.setattr(payments, "_append_payment_sheet", fake_append)
+    monkeypatch.setattr(attendant_db, "log_event", fake_log)
+    result = await payments.mark_refund_completed(
+        fake_client, "a1", "Tarso", "Dra. Bruna", "28/10/2026 15:00", "5581999990000",
+        drive_link="d",
+    )
+    assert result is False
+    fake_append.assert_not_awaited()
+    fake_log.assert_not_awaited()
+    assert fake_client.store["appointments"][0]["refund_completed_at"] == "2026-10-29T10:00:00+00:00"
+
+
+async def test_mark_refund_falha_de_planilha_nao_propaga(fake_client, monkeypatch):
+    fake_client.store["appointments"] = [{
+        "appointment_id": "a1", "refund_requested_at": "2026-10-28T10:00:00+00:00",
+        "refund_completed_at": None,
+    }]
+    monkeypatch.setattr(payments, "_append_payment_sheet", AsyncMock(side_effect=RuntimeError("x")))
+    monkeypatch.setattr(attendant_db, "log_event", AsyncMock())
+    await payments.mark_refund_completed(
+        fake_client, "a1", "Tarso", "Dra. Bruna", "28/10/2026 15:00", "5581999990000",
+    )
+    assert fake_client.store["appointments"][0]["refund_completed_at"] is not None
+
+
 # ── mark_fee_waived ───────────────────────────────────────────────────────────
 
 
@@ -867,3 +960,77 @@ def test_describe_previous_receipt_em_horario_de_recife():
     })
     assert msg == ("Este comprovante já foi usado para Miguel Costa Loureiro, consulta de "
                    "03/09/2026 18:00 (registrado em 03/09/2026). Registrar mesmo assim?")
+
+
+# ── compute_reembolsos_pendentes ──────────────────────────────────────────────
+
+BOOKER_PHONE = "5581988887777"
+
+
+def _reembolso_appt(appointment_id, **overrides):
+    row = _appt(
+        appointment_id, "p1", "Pedro", "5581999990000",
+        status="canceled",
+        contact_id="c-mae",
+        refund_requested_at="2026-10-30T12:00:00+00:00",
+        refund_completed_at=None,
+    )
+    row["patients"]["patient_contacts"] = [
+        {"is_self": False, "contacts": {"id": "c-pai", "phone": "5581911112222", "name": "Pai"}},
+        {"is_self": False, "contacts": {"id": "c-mae", "phone": BOOKER_PHONE, "name": "Mae"}},
+    ]
+    row.update(overrides)
+    return row
+
+
+async def test_reembolso_pendente_vira_caixa_negativa(fake_client):
+    fake_client.store["appointments"] = [_reembolso_appt("a1")]
+    caixas = await payments.compute_reembolsos_pendentes(fake_client, ["p1"])
+    assert len(caixas) == 1
+    assert caixas[0]["tipo"] == "reembolso"
+    assert caixas[0]["tipo_label"] == "Reembolso - Taxa de reserva"
+    assert caixas[0]["valor"] == -100
+    assert caixas[0]["appointment_id"] == "a1"
+    assert caixas[0]["phone"] == BOOKER_PHONE  # contact_id, não o paciente
+
+
+async def test_reembolso_ja_concluido_nao_aparece(fake_client):
+    fake_client.store["appointments"] = [
+        _reembolso_appt("a1", refund_completed_at="2026-10-31T12:00:00+00:00"),
+    ]
+    assert await payments.compute_reembolsos_pendentes(fake_client, ["p1"]) == []
+
+
+async def test_primeira_consulta_menor_uma_caixa_so(fake_client):
+    fake_client.store["appointments"] = [
+        _reembolso_appt("a1", consultation_type="primeira_consulta"),
+        _reembolso_appt(
+            "a2", consultation_type="primeira_consulta", refund_requested_at=None,
+            start_time="2026-07-10T15:00:00+00:00",
+        ),
+    ]
+    assert len(await payments.compute_reembolsos_pendentes(fake_client, ["p1"])) == 1
+
+
+async def test_reembolso_ignora_cancelada_sem_pedido_e_outros_status(fake_client):
+    fake_client.store["appointments"] = [
+        _reembolso_appt("a1", refund_requested_at=None),
+        _reembolso_appt("a2", status="scheduled"),
+        _reembolso_appt("a3", patient_id="outro"),
+    ]
+    assert await payments.compute_reembolsos_pendentes(fake_client, ["p1"]) == []
+
+
+async def test_reembolso_patient_ids_vazio_nao_consulta(fake_client):
+    fake_client.from_ = lambda *_a, **_k: (_ for _ in ()).throw(AssertionError("consultou"))
+    assert await payments.compute_reembolsos_pendentes(fake_client, []) == []
+
+
+def test_filename_reembolso_tem_sufixo():
+    name = payments.build_receipt_filename("Tarso de Paula", "28/10/2026 15:00", "100", is_refund=True)
+    assert name == "Tarso_de_Paula_28-10-2026_R$100_Reembolso"
+
+
+def test_filename_sem_flag_nao_tem_sufixo():
+    name = payments.build_receipt_filename("Tarso de Paula", "28/10/2026 15:00", "100")
+    assert name == "Tarso_de_Paula_28-10-2026_R$100"
