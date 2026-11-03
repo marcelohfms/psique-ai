@@ -32,6 +32,8 @@ _AWAY_SIGNATURES = {
     "nao estou disponivel nesse momento retornarei o contato assim que possivel",
     "nao estou disponivel no momento retorno assim que puder",
     "nao estou disponivel agora assim que possivel retornarei",
+    # Saudação automática do WhatsApp Business da nutri (5581996001122, 03/11/2026).
+    "nutrianapaulacirilo agradece seu contato como podemos ajudar",
 }
 
 
