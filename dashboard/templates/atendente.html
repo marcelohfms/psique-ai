@@ -1071,6 +1071,9 @@ function pagamentoCard(p) {
   const isentarBtn = p.tipo === "taxa"
     ? `<button type="button" onclick="isentarTaxa(this)" class="btn">Isentar taxa</button>`
     : "";
+  const prazoBtn = p.tipo === "taxa"
+    ? `<button type="button" onclick="ajustarPrazoTaxa(this)" class="btn">Ajustar prazo</button>`
+    : "";
   const aviso = p.realizada === false
     ? `<p class="notice notice-warn" style="padding: 8px 12px; font-size: 12px">Consulta ainda não realizada. Pagamento antecipado, opcional.</p>`
     : "";
@@ -1107,6 +1110,7 @@ function pagamentoCard(p) {
     <div class="flex items-center gap-2 flex-wrap pt-3" style="border-top: 1px solid var(--soft)">
       <button type="button" onclick="marcarPago(this)" class="btn btn-primary">Marcar pago</button>
       ${isentarBtn}
+      ${prazoBtn}
       <button type="button" onclick="marcarNoShowPag(this)" class="btn btn-ghost-danger" style="margin-left: auto">Não compareceu</button>
     </div>
   </div>`;
@@ -1257,6 +1261,48 @@ async function isentarTaxa(btn) {
   try { res = await r.json(); } catch (_) {}
   alert(confirmacaoAviso("Taxa isentada ✅", res.confirmacao));
   card.remove();
+}
+
+// Ajusta o prazo da taxa de reserva: o paciente tem até o fim do dia escolhido.
+async function ajustarPrazoTaxa(btn) {
+  const card = btn.closest("[data-appt]");
+  const aberto = card.querySelector(".prazo-box");
+  if (aberto) { aberto.remove(); return; }
+  const d = new Date();
+  const hoje = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+  const box = document.createElement("div");
+  box.className = "prazo-box flex flex-col gap-2";
+  box.innerHTML = `<div class="flex items-center gap-2 flex-wrap">
+      <input type="date" min="${hoje}" class="prazo-input inp">
+      <button type="button" class="btn btn-primary prazo-salvar">Salvar</button>
+    </div>
+    <p class="text-xs" style="color: var(--muted)">O paciente tem até o fim deste dia para pagar a taxa. Antes disso, a consulta não é cancelada por falta de pagamento.</p>`;
+  card.appendChild(box);
+  const salvar = box.querySelector(".prazo-salvar");
+  salvar.onclick = async () => {
+    const data_limite = box.querySelector(".prazo-input").value;
+    if (!data_limite) { alert("Escolha a data."); return; }
+    salvar.disabled = true;
+    try {
+      const r = await fetch(`/api/atendente/pagamentos/${encodeURIComponent(card.dataset.appt)}/prazo?token=${encodeURIComponent(TOKEN)}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ phone: card.dataset.phone, data_limite }),
+      });
+      if (!r.ok) {
+        let detail = "Erro ao ajustar prazo.";
+        try { detail = (await r.json()).detail || detail; } catch (_) {}
+        alert(detail);
+        salvar.disabled = false;
+        return;
+      }
+      alert("Prazo ajustado ✅");
+      box.remove();
+    } catch (_) {
+      alert("Erro ao ajustar prazo.");
+      salvar.disabled = false;
+    }
+  };
 }
 
 // A mensagem ao paciente sai pela Eva; quando não sai, a atendente precisa saber.

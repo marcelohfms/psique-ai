@@ -980,6 +980,39 @@ async def mark_refund_completed(
     return True
 
 
+async def set_payment_deadline(client, appointment_id: str, deadline_date: date) -> str:
+    """Define o prazo da taxa de reserva (fim do dia escolhido, fuso de Recife).
+
+    `appointment_id`: um id, ou vários separados por vírgula (1ª consulta dividida).
+    O prazo precisa ser futuro e anterior à consulta mais cedo do grupo, senão
+    levanta ValueError. Zera `payment_reminder_sent_at` para o lembrete sair de novo.
+    """
+    ids = appointment_id.split(",")
+    starts: list[datetime] = []
+    for aid in ids:
+        res = await client.from_("appointments").select("start_time").eq(
+            "appointment_id", aid
+        ).execute()
+        for row in res.data or []:
+            raw = row.get("start_time")
+            if raw:
+                starts.append(datetime.fromisoformat(raw.replace("Z", "+00:00")))
+    if not starts:
+        raise ValueError("Consulta não encontrada.")
+
+    deadline = datetime(
+        deadline_date.year, deadline_date.month, deadline_date.day, 23, 59, 59, tzinfo=_TZ
+    )
+    if deadline <= datetime.now(_TZ) or deadline >= min(starts):
+        raise ValueError("A data precisa ser futura e anterior ao dia da consulta.")
+
+    for aid in ids:
+        await client.from_("appointments").update(
+            {"payment_deadline_at": deadline.isoformat(), "payment_reminder_sent_at": None}
+        ).eq("appointment_id", aid).execute()
+    return deadline.isoformat()
+
+
 async def mark_fee_waived(
     client,
     appointment_id: str,

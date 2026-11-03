@@ -7,6 +7,9 @@ import eva_client
 import attendant_db
 
 
+_REAL_APPOINTMENT_SCOPE = attendant_routes._assert_appointment_scope
+
+
 @pytest.fixture(autouse=True)
 def _bypass_scope(monkeypatch):
     """Neutraliza os guards de escopo por contato/paciente nestes testes.
@@ -570,6 +573,43 @@ def _isentar(client, paciente="João", conversation_id=42):
         body["conversation_id"] = conversation_id
     return client.post("/api/atendente/pagamentos/a1/isentar",
                        params={"token": "test-token"}, json=body)
+
+
+def test_isentar_aceita_appointment_agrupado(client, monkeypatch):
+    """1ª consulta dividida: o painel manda 'a1,a2'. Cada id precisa estar no escopo."""
+    monkeypatch.setattr(attendant_routes, "_assert_appointment_scope", _REAL_APPOINTMENT_SCOPE)
+
+    async def fake_scope(phone):
+        return "c1", {"p1"}
+    async def fake_appt_patient(appointment_id):
+        return {"a1": "p1", "a2": "p1"}.get(appointment_id)
+    async def fake_get_client():
+        return object()
+    async def noop(*a, **k):
+        return None
+    async def fake_names(phone, paciente):
+        return "Ana", None
+    async def fake_send(phone, text, template="", params=None):
+        return "enviada"
+
+    monkeypatch.setattr(attendant_db, "scope_for_phone", fake_scope)
+    monkeypatch.setattr(attendant_db, "get_appointment_patient_id", fake_appt_patient)
+    monkeypatch.setattr(attendant_routes, "get_client", fake_get_client)
+    monkeypatch.setattr(payments, "mark_fee_waived", noop)
+    monkeypatch.setattr(attendant_routes, "_confirmation_names", fake_names)
+    monkeypatch.setattr(attendant_routes, "_send_via_eva", fake_send)
+    monkeypatch.setattr(attendant_db, "log_event", noop)
+
+    body = {"paciente": "João", "medico": "Dr. Júlio", "data_hora": "10/07/2026 14:00",
+            "phone": "5581999998888"}
+    r = client.post("/api/atendente/pagamentos/a1,a2/isentar",
+                    params={"token": "test-token"}, json=body)
+    assert r.status_code == 200
+
+    # um id fora do escopo derruba o conjunto todo
+    r = client.post("/api/atendente/pagamentos/a1,zz/isentar",
+                    params={"token": "test-token"}, json=body)
+    assert r.status_code == 403
 
 
 def test_isentar_registra_e_envia_confirmacao_pela_eva(client, monkeypatch):
@@ -1476,3 +1516,69 @@ def test_pagamentos_inclui_caixas_de_reembolso(client, monkeypatch):
     monkeypatch.setattr(payments, "compute_reembolsos_pendentes", fake_reemb)
     r = client.get("/api/atendente/pagamentos", params={"phone": "5581999998888", "token": "test-token"})
     assert [x["appointment_id"] for x in r.json()] == ["a1", "a2"]
+
+
+# ── Prazo da taxa de reserva ──────────────────────────────────────────────────
+
+
+def _prazo_patches(monkeypatch, calls, *, raises=None):
+    import payments
+
+    async def fake_get_client():
+        return object()
+
+    async def fake_set(client, appointment_id, deadline_date):
+        calls.append((appointment_id, deadline_date))
+        if raises:
+            raise raises
+        return "2026-11-20T23:59:59-03:00"
+
+    async def noop(*a, **k):
+        return None
+
+    monkeypatch.setattr(attendant_routes, "get_client", fake_get_client)
+    monkeypatch.setattr(payments, "set_payment_deadline", fake_set)
+    monkeypatch.setattr(attendant_db, "log_event", noop)
+
+
+def test_prazo_ok(client, monkeypatch):
+    import datetime
+    calls = []
+    _prazo_patches(monkeypatch, calls)
+    r = client.post("/api/atendente/pagamentos/a1/prazo", params={"token": "test-token"},
+                    json={"phone": "5581999998888", "data_limite": "2026-11-20"})
+    assert r.status_code == 200
+    assert r.json()["ok"] is True
+    assert r.json()["deadline"] == "2026-11-20T23:59:59-03:00"
+    assert calls == [("a1", datetime.date(2026, 11, 20))]
+
+
+def test_prazo_data_invalida_400(client, monkeypatch):
+    calls = []
+    _prazo_patches(monkeypatch, calls)
+    r = client.post("/api/atendente/pagamentos/a1/prazo", params={"token": "test-token"},
+                    json={"phone": "5581999998888", "data_limite": "20/11"})
+    assert r.status_code == 400
+    assert calls == []
+
+
+def test_prazo_valueerror_vira_400(client, monkeypatch):
+    calls = []
+    _prazo_patches(monkeypatch, calls, raises=ValueError("A data já passou."))
+    r = client.post("/api/atendente/pagamentos/a1/prazo", params={"token": "test-token"},
+                    json={"phone": "5581999998888", "data_limite": "2026-11-20"})
+    assert r.status_code == 400
+    assert "A data já passou." in r.json()["detail"]
+
+
+def test_prazo_falha_no_log_nao_vira_500(client, monkeypatch):
+    calls = []
+    _prazo_patches(monkeypatch, calls)
+
+    async def boom(*a, **k):
+        raise RuntimeError("db fora")
+    monkeypatch.setattr(attendant_db, "log_event", boom)
+    r = client.post("/api/atendente/pagamentos/a1/prazo", params={"token": "test-token"},
+                    json={"phone": "5581999998888", "data_limite": "2026-11-20"})
+    assert r.status_code == 200
+    assert r.json()["ok"] is True
