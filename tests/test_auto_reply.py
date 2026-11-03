@@ -14,6 +14,9 @@ from app.auto_reply import is_auto_reply
     "  não estou disponível nesse momento.   retornarei o contato assim que possível  ",
     "Não estou disponível no momento, retorno assim que puder.",
     "Não estou disponível agora. Assim que possível retornarei.",
+    # Saudação automática do WhatsApp Business da nutri (03/11/2026).
+    "@nutrianapaulacirilo agradece seu contato. Como podemos ajudar?",
+    "nutrianapaulacirilo agradece seu contato como podemos ajudar",
 ])
 def test_recognises_known_away_messages(text):
     assert is_auto_reply(text) is True
