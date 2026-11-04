@@ -169,6 +169,12 @@ JOBS: tuple[Job, ...] = (
     # app/receipt_reconciliation.py.
     Job("reconcile_dropped_receipts", "reconcile_dropped_receipts", Every(15),
         _SUPABASE + _CHATWOOT + _OPENAI + _SMTP + ("CLINIC_NOTIFY_EMAIL",)),
+    # TEMPORÁRIO (remover após 16/11/2026): avisa o contato de uma consulta que
+    # foi agendada por engano com 2h (já corrigida para 1h) que o acompanhamento
+    # dura só 1h, mas só depois da confirmação de presença. Guardado e com janela
+    # de datas própria — fora dela é noop. Ver scripts/notify_guilherme_duracao_16nov.py.
+    Job("notify_guilherme_duracao", "notify_guilherme_duracao_16nov", Every(30),
+        _SUPABASE + _CHATWOOT),
 )
 
 
