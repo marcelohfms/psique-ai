@@ -7785,6 +7785,19 @@ def test_masked_key_without_foreign_key_passes():
     assert _receipt_destination_is_foreign(desc) is False
 
 
+def test_masked_cnpj_with_surrounding_digits_passes():
+    # Caso real Martin/Felipe (04/11/2026): o Santander mascarou o CNPJ da
+    # clínica como "42.***.***/0001-7*" e os dígitos de data/ID ao redor
+    # empurravam o token além de 11 dígitos, barrando um PIX que era da própria
+    # clínica. Chave mascarada (asterisco) → fail-open.
+    desc = ("COMPROVANTE DE PAGAMENTO: Valor transferido: R$ 600,00. "
+            "Destinatário: Psique Servicos Em Atendimentos Medicos Ltda. "
+            "Chave PIX/CNPJ do destinatário: 42.***.***/0001-7*. "
+            "Data/hora da transação: 04/11/2026 - 09:36:20. Instituição: "
+            "033 - BANCO SANTANDER S.A., ID E9040088820261104123673275142112.")
+    assert _receipt_destination_is_foreign(desc) is False
+
+
 def test_empty_description_passes():
     assert _receipt_destination_is_foreign("") is False
 

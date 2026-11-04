@@ -3832,9 +3832,9 @@ def _receipt_destination_is_foreign(image_description: str) -> bool:
     destino diferente da chave PIX da clínica (CORRECT_PIX_KEY).
 
     Fail-open: retorna False em qualquer caso ambíguo — texto vazio, sem token de
-    chave legível, ou chave mascarada/curta (< 11 dígitos). Só barra quando há um
-    token de chave/CPF/CNPJ com >= 11 dígitos que não casa (nem por substring) com
-    o CNPJ da clínica.
+    chave legível, chave mascarada (asterisco/bullet) ou curta (< 11 dígitos). Só
+    barra quando há um token de chave/CPF/CNPJ com >= 11 dígitos, sem máscara, que
+    não casa (nem por substring) com o CNPJ da clínica.
     """
     if not image_description:
         return False
@@ -3854,7 +3854,16 @@ def _receipt_destination_is_foreign(image_description: str) -> bool:
     if not m:
         return False
 
-    dest_digits = re.sub(r"\D", "", m.group(1))
+    dest_token = m.group(1)
+    # Chave mascarada por segurança (bancos escondem o miolo do CNPJ/CPF com
+    # asterisco ou bullet, ex.: Santander "42.***.***/0001-7*") nunca é
+    # inequívoca → fail-open. Sem isto, os dígitos visíveis não casam com o
+    # CNPJ e os dígitos vizinhos (data/ID) empurram o token além de 11 dígitos,
+    # barrando um PIX que era da própria clínica (caso Martin/Felipe, 04/11/2026).
+    if any(ch in dest_token for ch in "*•●✱✦"):
+        return False  # chave mascarada → fail-open
+
+    dest_digits = re.sub(r"\D", "", dest_token)
     if len(dest_digits) < 11:
         return False  # mascarada/curta → fail-open
 
