@@ -7954,6 +7954,20 @@ def test_third_party_cpf_is_flagged():
     assert _receipt_destination_is_foreign(desc) is True
 
 
+def test_mercado_pago_misread_direction_not_flagged():
+    """Leitura trocada do Mercado Pago (caso Luanna 03/11/2026): o modelo rotulou a
+    conta de ORIGEM como 'destinatário', mas o CNPJ da clínica aparece no texto (como
+    remetente). O guard faz fail-open e NÃO barra — register_payment registra normal.
+    A recusa indevida vinha só da Eva, não do guard."""
+    desc = (
+        "COMPROVANTE DE PAGAMENTO: Valor transferido R$ 100. "
+        "Destinatário: TUR ALEGRIA E SUCESSO AGENCIA DE TURISMO LTDA. "
+        "(CNPJ 48.283.807/0001-05). Remetente: Psique (BANCO C6 S.A., "
+        "CNPJ 42.006.848/0001-78). Data/hora 3/novembro/2026 às 11:55:47."
+    )
+    assert _receipt_destination_is_foreign(desc) is False
+
+
 @pytest.mark.asyncio
 async def test_register_payment_blocks_foreign_key_no_side_effects():
     from app.graph.tools import register_payment

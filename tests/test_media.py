@@ -548,3 +548,28 @@ async def test_classify_image_raw_ignore():
         kind, _canonical = await classify_image_raw(b"fake-bytes")
 
     assert kind == "ignore"
+
+
+async def test_classifier_prompt_explains_origem_e_destino_direction():
+    """Comprovantes do Mercado Pago/carteiras digitais mostram um bloco 'Origem e
+    destino' SEM rotular 'Destinatário'. Sem instrução de direção o modelo troca
+    pagador e recebedor (caso Luanna 03/11/2026: apontou a conta de ORIGEM como
+    destinatário e a Eva recusou um PIX correto). O prompt do classificador precisa
+    ensinar a direção e sempre separar remetente/destinatário."""
+    from app.media import classify_image_raw
+    fake_openai = AsyncMock()
+    fake_openai.chat.completions.create = AsyncMock(
+        return_value=_mock_openai_response("COMPROVANTE DE PAGAMENTO: R$ 100")
+    )
+    with patch("app.media._get_openai", return_value=fake_openai):
+        await classify_image_raw(b"fake-bytes", phone="5581991890807")
+
+    messages = fake_openai.chat.completions.create.call_args.kwargs["messages"]
+    prompt_text = "".join(
+        part.get("text", "")
+        for part in messages[0]["content"]
+        if isinstance(part, dict)
+    ).lower()
+    assert "origem e destino" in prompt_text
+    assert "remetente" in prompt_text
+    assert "destinatário" in prompt_text
