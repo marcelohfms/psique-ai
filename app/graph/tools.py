@@ -2755,6 +2755,42 @@ async def reschedule_appointment(
                 + (_CLINIC_SWAP_HINT if _has_recent_attendant_note(state) else "")
             )
 
+    # ── Backstop determinístico da política de 1 remarcação ──────────────────
+    # Espelha a trava das 24h acima. A regra "a taxa de reserva é aproveitada só
+    # uma vez; a partir da 2ª remarcação do paciente, a antiga é recolhida e uma
+    # nova é cobrada" vivia só como aviso ao LLM em mark_reschedule_in_progress e
+    # como a trava de mesmo lote (_mark_key). Quando a Eva chamava
+    # reschedule_appointment num turno à parte, com a consulta ainda "scheduled",
+    # a linha era atualizada carregando o booking_fee_paid_at antigo e o R$100 novo
+    # caía como "Pagamento Parcial" em vez de "Taxa de Reserva" (caso Diego Pita,
+    # 03/11/2026). Mesmo escopo da trava das 24h: só paciente (silent_mode/clínica
+    # isentos), só movimento real de horário e só com a consulta ainda scheduled
+    # (em pending_reschedule o mark já validou a política). A contagem usa o mesmo
+    # filtro do mark (linha ~2180): remarcações do paciente com a taxa paga.
+    if (
+        not state.get("silent_mode")
+        and not clinic_swap
+        and not is_pending_reschedule
+        and old_dt is not None
+        and old_dt != new_start
+        and appt_result.data
+        and bool(appt_result.data.get("booking_fee_paid_at") or appt_result.data.get("booking_fee_waived"))
+    ):
+        _prev_resched = await client.from_("events").select("id", count="exact") \
+            .eq("phone", _phone_clean).eq("event_type", "appointment_rescheduled") \
+            .or_("metadata->>initiated_by.is.null,metadata->>initiated_by.eq.patient") \
+            .or_("metadata->>fee_paid.is.null,metadata->>fee_paid.eq.true").execute()
+        if (_prev_resched.count or 0) >= 1:
+            return (
+                "[INSTRUÇÃO INTERNA — NÃO ENVIE AO PACIENTE] Este paciente já utilizou o "
+                "reagendamento que aproveita a taxa de reserva. Pela política, a taxa anterior "
+                "é recolhida e NÃO é reaproveitada — é necessária uma NOVA taxa de reserva de "
+                "R$ 100,00 para garantir a nova data. NÃO remarque por aqui: avise o paciente e, "
+                "ao confirmar o novo horário, chame cancel_appointment (para esta consulta) e "
+                "confirm_appointment (para a nova data)."
+                + (_CLINIC_SWAP_HINT if _has_recent_attendant_note(state) else "")
+            )
+
     # Guard: check Google Calendar for conflicts on the NEW slot before writing it.
     # confirm_appointment already had this check, but reschedule_appointment didn't —
     # a stale slot offer confirmed after someone else took that time slipped through
