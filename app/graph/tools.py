@@ -22,6 +22,22 @@ logger = logging.getLogger(__name__)
 
 TZ = ZoneInfo("America/Recife")
 
+# Nome do índice único parcial que impede duas consultas scheduled no mesmo
+# (patient_id, start_time) — ver supabase/migrations/20261105_appointments_unique_scheduled_slot.sql.
+UNIQUE_SCHEDULED_SLOT_INDEX = "uniq_appointments_patient_slot_scheduled"
+
+
+def _is_unique_violation(exc: Exception) -> bool:
+    """True quando a exceção do Supabase/PostgREST é uma violação de unicidade
+    (Postgres SQLSTATE 23505). A violação chega como postgrest.exceptions.APIError
+    com .code == '23505'; caímos para o texto quando o atributo não existe."""
+    code = getattr(exc, "code", None)
+    if code == "23505":
+        return True
+    text = str(exc)
+    return "23505" in text or "duplicate key value" in text or UNIQUE_SCHEDULED_SLOT_INDEX in text
+
+
 async def _notify_clinic(message: str, phone: str = "", subject: str = "Notificação Eva") -> None:
     """Envia notificação para a clínica por e-mail.
 
@@ -1610,6 +1626,21 @@ async def confirm_appointment(
             await cancel_event(calendar_id, event_id)
         except Exception:
             _logger.exception("CONFIRM_DEBUG cancel_event rollback ALSO FAILED event_id=%s", event_id)
+        # Índice único parcial (patient_id, start_time) WHERE status='scheduled': se outra
+        # rota já deixou a consulta scheduled no mesmo horário um instante antes — a corrida
+        # entre confirm_appointment e a reativação do comprovante que duplicou o caso Dario
+        # Gleison (5581998196655, 09/11/2026) — o banco recusa o INSERT (Postgres 23505). Não
+        # é erro a pedir retry: a vaga JÁ está registrada. Trata igual à Guard 1 lá em cima,
+        # sem alarmar nem mandar o paciente tentar de novo (o retry recriaria o laço).
+        if _is_unique_violation(e):
+            _logger.warning(
+                "confirm_appointment: índice único barrou duplicata patient_slot=%s",
+                start.isoformat(),
+            )
+            return (
+                f"A consulta das {start.strftime('%H:%M')} do dia {start.strftime('%d/%m/%Y')} "
+                "já está registrada. Não é necessário confirmar novamente."
+            )
         return "Houve um erro ao salvar o agendamento. Por favor, tente novamente."
 
     await log_event("appointment_booked", phone, {
@@ -4582,11 +4613,42 @@ async def register_payment(
                     if _born_confirmed:
                         # Horário reativado na véspera/mesmo dia: nasce confirmada.
                         _react_update["confirmed_at"] = _now.isoformat()
-                    await client.from_("appointments").update(_react_update).eq("appointment_id", canceled_appt["appointment_id"]).execute()
-                    if _born_confirmed:
+                    appointment_dt = slot_start.strftime("%d/%m/%Y %H:%M")
+                    try:
+                        await client.from_("appointments").update(_react_update).eq("appointment_id", canceled_appt["appointment_id"]).execute()
+                        _reactivated = True
+                    except Exception as _react_exc:
+                        if not _is_unique_violation(_react_exc):
+                            raise
+                        # Outro caminho (o INSERT do confirm_appointment) venceu a corrida e
+                        # já deixou uma linha scheduled neste (patient_id, start_time); o índice
+                        # único recusou a reativação. Em vez de pagar a linha cancelada (que
+                        # auto-cancelaria a consulta ativa), roteamos o pagamento para a linha
+                        # que venceu e descartamos o evento órfão que acabamos de criar.
+                        _reactivated = False
+                        _logger.warning(
+                            "REACTIVATE_CANCELED_APPT: índice único barrou reativação, "
+                            "roteando pagamento para a linha scheduled vencedora slot=%s",
+                            slot_start.isoformat(),
+                        )
+                        from app.google_calendar import cancel_event as _cancel_orphan
+                        try:
+                            await _cancel_orphan(calendar_id, new_event_id)
+                        except Exception:
+                            _logger.exception("REACTIVATE orphan cancel falhou event_id=%s", new_event_id)
+                        _winner = await client.from_("appointments").select(
+                            "appointment_id"
+                        ).eq("patient_id", user_id).eq("status", "scheduled").eq(
+                            "start_time", canceled_appt["start_time"]
+                        ).limit(1).execute()
+                        if _winner.data:
+                            appt_id_to_pay = _winner.data[0]["appointment_id"]
+                        else:
+                            appt_id_to_pay = canceled_appt["appointment_id"]
+                    if _reactivated and _born_confirmed:
                         await _apply_confirmation(client, calendar_id, new_event_id, patient_phone, auto=True)
-                    appointment_dt   = slot_start.strftime("%d/%m/%Y %H:%M")
-                    appt_id_to_pay   = None  # already paid above
+                    if _reactivated:
+                        appt_id_to_pay = None  # already paid above via _react_update
                     confirmation_msg = (
                         f"Comprovante recebido e registrado com sucesso! ✅\n"
                         f"Sua consulta com *{canceled_doctor_label}* no dia *{appointment_dt}* "
