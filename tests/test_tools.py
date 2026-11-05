@@ -8536,3 +8536,150 @@ async def test_register_payment_reactivation_born_confirmed_when_tomorrow():
     update_payloads = [c.args[0] for c in table.update.call_args_list]
     assert any(p.get("confirmed_at") for p in update_payloads), update_payloads
     mock_mark.assert_awaited_once_with("cal-julio", "evt-react")
+
+
+# ── confirm_appointment: trava anti-duplicata no banco (índice único) ──────────
+
+async def test_confirm_appointment_unique_violation_returns_already_registered():
+    """Corrida replay: outra rota (reativação do comprovante) deixou a consulta
+    scheduled no mesmo (paciente, horário) um instante antes, e o índice único parcial
+    do banco recusa o INSERT (Postgres 23505). A tool NÃO pode persistir uma 2ª linha
+    nem dizer que agendou: desfaz o evento órfão no Calendar e responde que a consulta
+    já está registrada. Caso Dario Gleison (5581998196655, 09/11/2026 14:00)."""
+    from app.graph.tools import confirm_appointment
+    from postgrest.exceptions import APIError
+    client, table, execute = _make_supabase_client()
+    # Só o INSERT de appointments falha; os selects das guardas seguem vazios.
+    insert_chain = MagicMock()
+    insert_chain.execute = AsyncMock(side_effect=APIError({
+        "code": "23505",
+        "message": 'duplicate key value violates unique constraint '
+                   '"uniq_appointments_patient_slot_scheduled"',
+    }))
+    table.insert.return_value = insert_chain
+    cancel_event = AsyncMock()
+    log_event = AsyncMock()
+    with patch("app.graph.tools._get_doctor_calendar_id", new_callable=AsyncMock, return_value="cal123"), \
+         patch("app.google_calendar.create_event", new_callable=AsyncMock, return_value="evt-dup"), \
+         patch("app.google_calendar.cancel_event", cancel_event), \
+         patch("app.graph.tools.get_supabase", new_callable=AsyncMock, return_value=client), \
+         patch("app.graph.tools.get_users_by_phone", new_callable=AsyncMock, return_value=[{"id": "user-1"}]), \
+         patch("app.graph.tools.get_user_by_phone", new_callable=AsyncMock, return_value={"id": "user-1"}), \
+         patch("app.graph.tools.log_event", log_event), \
+         patch("app.graph.tools._notify_clinic", new_callable=AsyncMock) as mock_notify:
+        result = await confirm_appointment.coroutine(
+            slot_datetime="2026-03-23T09:00:00",
+            slot_duration_minutes=60,
+            state=_make_state(),
+            config=CONFIG,
+        )
+    # Mensagem amigável de duplicata, não erro genérico nem confirmação de agendamento.
+    assert "já está registrada" in result
+    assert "evt-dup" not in result
+    # Evento órfão no Calendar desfeito.
+    cancel_event.assert_awaited_once()
+    # Nada de appointment_booked e nada de notificar a clínica — não houve booking novo.
+    assert not any(c.args and c.args[0] == "appointment_booked" for c in log_event.call_args_list)
+    mock_notify.assert_not_called()
+
+
+async def test_register_payment_reactivation_unique_violation_routes_to_winner():
+    """Espelho da corrida: o INSERT do confirm_appointment venceu e já deixou a consulta
+    scheduled neste (paciente, horário); o índice único recusa a reativação (23505). Em vez
+    de pagar a linha CANCELADA (que auto-cancelaria a ativa), o pagamento é roteado para a
+    linha scheduled vencedora e o evento órfão recém-criado é desfeito no Calendar."""
+    from app.graph.tools import register_payment
+    from postgrest.exceptions import APIError
+
+    julio_id = "d5baa58b-a788-4f40-b8c0-512c189150be"
+    slot_start = (datetime.now(TZ) + timedelta(days=5)).replace(hour=14, minute=0, second=0, microsecond=0)
+    slot_end = slot_start + timedelta(hours=1)
+
+    _results = [
+        MagicMock(data=[{"id": "user-123", "name": "Ricardo", "doctor_id": julio_id}]),  # resolve override
+        MagicMock(data=[]),                                           # scheduled → nenhum
+        MagicMock(data=[{"appointment_id": "apt-ricardo-cancel"}]),   # canceled futuro c/ taxa pendente
+        MagicMock(data=[{                                             # canceled_result da reativação
+            "appointment_id": "apt-ricardo-cancel",
+            "start_time": slot_start.isoformat(),
+            "end_time": slot_end.isoformat(),
+            "doctor_id": julio_id,
+            "modality": "online",
+        }]),
+        MagicMock(data={"agenda_id": "cal-julio"}),                   # doctors.agenda_id (.single())
+        APIError({"code": "23505", "message": 'duplicate key value violates unique constraint '
+                  '"uniq_appointments_patient_slot_scheduled"'}),     # reativação UPDATE recusada
+        MagicMock(data=[{"appointment_id": "apt-winner-sched"}]),     # _winner: linha scheduled vencedora
+        MagicMock(data={}),                                           # patients.custom_price (maybe_single)
+    ]
+    _calls = {"i": 0}
+    def _exec(*_a, **_k):
+        i = _calls["i"]; _calls["i"] += 1
+        if i < len(_results):
+            r = _results[i]
+            if isinstance(r, Exception):
+                raise r
+            return r
+        return MagicMock(data=[])
+    execute = AsyncMock(side_effect=_exec)
+    table = MagicMock()
+    for m in ("select", "eq", "in_", "limit", "single", "maybe_single", "ilike",
+              "gte", "gt", "lt", "neq", "order", "insert", "update", "upsert", "is_"):
+        getattr(table, m).return_value = table
+    table.execute = execute
+
+    events_table = MagicMock()
+    for m in ("select", "eq", "in_", "limit", "gte", "order"):
+        getattr(events_table, m).return_value = events_table
+    events_table.execute = AsyncMock(return_value=MagicMock(data=[]))
+
+    client = MagicMock()
+    def _from(name):
+        return events_table if name == "events" else table
+    client.from_.side_effect = _from
+
+    cancel_event = AsyncMock()
+    with patch("app.graph.tools.get_supabase", new_callable=AsyncMock, return_value=client), \
+         patch("app.patients.get_contact_by_phone", new_callable=AsyncMock, return_value={"id": "contact-1"}), \
+         patch("app.patients.get_patients_by_contact", new_callable=AsyncMock, return_value=[{"id": "user-123"}]), \
+         patch("app.patients.get_contacts_for_patient", new_callable=AsyncMock, return_value=[{"phone": "5581988912861"}]), \
+         patch("app.google_calendar._credentials", return_value=MagicMock()), \
+         patch("googleapiclient.discovery.build", return_value=MagicMock()), \
+         patch("app.google_calendar._get_busy", return_value=[]), \
+         patch("app.google_calendar.create_event", new_callable=AsyncMock, return_value="evt-orphan"), \
+         patch("app.google_calendar.cancel_event", cancel_event), \
+         patch("app.google_calendar.mark_event_confirmed", new_callable=AsyncMock), \
+         patch("app.graph.tools.log_event", new_callable=AsyncMock), \
+         patch("app.graph.tools._notify_clinic", new_callable=AsyncMock), \
+         patch("app.google_drive.rename_file", new_callable=AsyncMock), \
+         patch("app.google_sheets.append_payment_receipt", new_callable=AsyncMock), \
+         patch("app.graph.tools.send_text", new_callable=AsyncMock):
+        result = await register_payment.coroutine(
+            amount="100,00",
+            drive_link="https://drive.google.com/file/d/abc/view",
+            state=_make_state(),
+            config=CONFIG,
+            patient_name_override="Ricardo",
+        )
+
+    # Evento órfão recém-criado foi desfeito.
+    cancel_event.assert_awaited_once_with("cal-julio", "evt-orphan")
+    # Pagamento roteado para a linha vencedora, nunca para a cancelada.
+    eq_targets = [c.args for c in table.eq.call_args_list if c.args and c.args[0] == "appointment_id"]
+    assert ("appointment_id", "apt-winner-sched") in eq_targets, eq_targets
+    assert ("appointment_id", "apt-ricardo-cancel") not in [
+        c.args for c in table.update.call_args_list
+    ]
+    assert "sucesso" in result.lower() or "registrado" in result.lower()
+
+
+def test_is_unique_violation_detects_code_and_text():
+    """_is_unique_violation reconhece 23505 pelo atributo .code (APIError) e, como
+    rede, pelo texto; e não dispara em erro qualquer."""
+    from app.graph.tools import _is_unique_violation
+    from postgrest.exceptions import APIError
+    assert _is_unique_violation(APIError({"code": "23505", "message": "dup"}))
+    assert _is_unique_violation(Exception('duplicate key value violates unique constraint "uniq_appointments_patient_slot_scheduled"'))
+    assert _is_unique_violation(Exception("algo com 23505 no meio"))
+    assert not _is_unique_violation(Exception("timeout na rede"))
+    assert not _is_unique_violation(APIError({"code": "23503", "message": "fk"}))
