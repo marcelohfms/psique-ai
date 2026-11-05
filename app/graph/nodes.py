@@ -3549,6 +3549,36 @@ async def patient_agent_node(state: ConversationState, config: RunnableConfig) -
             tool_calls=_kept_tcs + [_forced_rp],
         )
 
+    # ── Guard: comprovante no turno NÃO dispara remarcação ─────────────────────
+    # A Eva chamou mark_reschedule_in_progress no MESMO turno em que o paciente só
+    # enviou o comprovante da taxa, sem ninguém pedir remarcação. A ferramenta
+    # cancela o evento no Calendar e põe a consulta em pending_reschedule, o que
+    # libera o slot: outro paciente marca por cima e quem pagou some da agenda
+    # (caso Maria Alice Cavalcanti x Bento Ramos, 05/11/2026; mesmo misfire em
+    # Gabriela Xavier 04/11, que só não vazou por sorte de tempo). Enviar um
+    # comprovante nunca é um pedido de remarcação, então a chamada é sempre
+    # espúria neste turno e é removida. Um pedido real de remarcação chega como
+    # texto, em outro turno (não é comprovante), e passa intacto. Pula em
+    # silent_mode (fluxo guiado pela atendente), como os demais guards.
+    if (
+        _last_h_idx is not None
+        and not state.get("silent_mode")
+        and _is_receipt(_receipt_content)
+        and response.tool_calls
+        and any(tc.get("name") == "mark_reschedule_in_progress" for tc in response.tool_calls)
+    ):
+        _kept_no_resched = [
+            tc for tc in response.tool_calls
+            if tc.get("name") != "mark_reschedule_in_progress"
+        ]
+        _logger.warning(
+            "GUARD_RECEIPT_NO_RESCHEDULE: comprovante no turno com "
+            "mark_reschedule_in_progress espúria — removendo. phone=%s tool_calls=%s",
+            state.get("phone"),
+            [tc.get("name") for tc in response.tool_calls],
+        )
+        response = AIMessage(content=response.content, tool_calls=_kept_no_resched)
+
     # ── Guard: promessa de documento no turno exige request_document ───────────
     # A Eva entende o pedido, diz "vou solicitar a emissão da nota fiscal... tudo
     # bem?" e NÃO chama request_document — o pedido não é registrado em lugar

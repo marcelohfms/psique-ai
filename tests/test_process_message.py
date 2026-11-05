@@ -5197,6 +5197,70 @@ async def test_receipt_guard_skips_silent_mode():
     assert not _register_payment_calls(result)
 
 
+def _tool_names(result: dict) -> list[str]:
+    last = result["messages"][-1]
+    return [tc["name"] for tc in (getattr(last, "tool_calls", None) or [])]
+
+
+async def test_receipt_turn_strips_spurious_mark_reschedule():
+    """Caso Maria Alice x Bento (05/11/2026): o paciente só mandou o comprovante e
+    a LLM chamou register_payment E mark_reschedule_in_progress no mesmo turno,
+    sem ninguém pedir remarcação. Isso cancela o evento no Calendar, põe a consulta
+    em pending_reschedule e libera o slot para outro paciente. Enviar comprovante
+    nunca é pedido de remarcação: o guard remove a chamada espúria e preserva o
+    register_payment."""
+    state = _make_patient_agent_state(messages=[HumanMessage(content=_RECEIPT_MSG)])
+    ai_response = AIMessage(content="", tool_calls=[
+        {"name": "register_payment",
+         "args": {"amount": "100,00", "drive_link": "", "image_description": "x"},
+         "id": "call_rp", "type": "tool_call"},
+        {"name": "mark_reschedule_in_progress",
+         "args": {"appointment_id": "b6su1a1p"},
+         "id": "call_mr", "type": "tool_call"},
+    ])
+
+    result, _ = await _run_agent_with_response(state, ai_response)
+
+    names = _tool_names(result)
+    assert "mark_reschedule_in_progress" not in names, names
+    assert "register_payment" in names, names
+
+
+async def test_receipt_turn_reschedule_strip_skips_silent_mode():
+    """Em modo atendente a remarcação pode ser legítima (a atendente guia o fluxo
+    por nota); o guard não mexe nas tool calls, como os demais guards."""
+    state = _make_patient_agent_state(
+        silent_mode=True,
+        messages=[HumanMessage(content=f"[Instrução da atendente]: remarque\n{_RECEIPT_MSG}")],
+    )
+    ai_response = AIMessage(content="", tool_calls=[
+        {"name": "mark_reschedule_in_progress",
+         "args": {"appointment_id": "b6su1a1p"},
+         "id": "call_mr", "type": "tool_call"},
+    ])
+
+    result, _ = await _run_agent_with_response(state, ai_response)
+
+    assert "mark_reschedule_in_progress" in _tool_names(result)
+
+
+async def test_genuine_reschedule_request_keeps_mark_reschedule():
+    """Regressão: quando a mensagem do turno é um pedido de remarcação (texto, não
+    comprovante), a remarcação é legítima e o guard NÃO pode removê-la."""
+    state = _make_patient_agent_state(
+        messages=[HumanMessage(content="preciso remarcar a consulta para outro dia")],
+    )
+    ai_response = AIMessage(content="", tool_calls=[
+        {"name": "mark_reschedule_in_progress",
+         "args": {"appointment_id": "b6su1a1p"},
+         "id": "call_mr", "type": "tool_call"},
+    ])
+
+    result, _ = await _run_agent_with_response(state, ai_response)
+
+    assert "mark_reschedule_in_progress" in _tool_names(result)
+
+
 # ── Guard: promessa de documento no turno exige request_document ──────────────
 # Caso Carlos Henrique de Almeida (5581995163026, 24/08/2026): após quitar a
 # consulta, o paciente pediu o documento para deduzir no imposto de renda. A Eva
