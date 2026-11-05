@@ -33,7 +33,7 @@ def _make_supabase_client():
     execute = AsyncMock(return_value=MagicMock(data=[]))
     table = MagicMock()
     for m in ("select", "eq", "in_", "limit", "single", "maybe_single",
-              "gte", "order", "insert", "update", "upsert", "or_", "filter", "is_"):
+              "gte", "gt", "lt", "neq", "order", "insert", "update", "upsert", "or_", "filter", "is_"):
         getattr(table, m).return_value = table
     table.execute = execute
     client = MagicMock()
@@ -71,6 +71,40 @@ def test_sanitize_social_name_empty_after_stripping_returns_empty():
 def test_sanitize_social_name_handles_none():
     from app.graph.tools import _sanitize_social_name
     assert _sanitize_social_name(None) == ""
+
+
+# ── _mask_patient_name ────────────────────────────────────────────────────────
+
+def test_mask_patient_name_keeps_first_name_masks_rest():
+    from app.graph.tools import _mask_patient_name
+    assert _mask_patient_name("Maria Júlia Fernandes Lucena") == "Maria J**** F******** L*****"
+
+
+def test_mask_patient_name_keeps_connectors_whole():
+    from app.graph.tools import _mask_patient_name
+    # "de" é conectivo: fica inteiro, nunca vira "d*".
+    assert _mask_patient_name("Juliana Feitosa de Souza") == "Juliana F****** de S****"
+
+
+def test_mask_patient_name_single_name_unchanged():
+    from app.graph.tools import _mask_patient_name
+    assert _mask_patient_name("Maria") == "Maria"
+
+
+def test_mask_patient_name_empty_and_none():
+    from app.graph.tools import _mask_patient_name
+    assert _mask_patient_name("") == ""
+    assert _mask_patient_name(None) == ""
+
+
+def test_mask_patient_name_never_exposes_full_surname():
+    from app.graph.tools import _mask_patient_name
+    masked = _mask_patient_name("Maria Júlia Fernandes Feitosa Lucena")
+    # O nome completo original nunca aparece mascarado.
+    assert "Fernandes" not in masked
+    assert "Feitosa" not in masked
+    assert "Lucena" not in masked
+    assert masked.startswith("Maria J****")
 
 
 def test_sanitize_social_name_handles_empty_string():
@@ -6021,7 +6055,12 @@ async def test_register_payment_multiple_patients_on_phone_demands_new_tool_call
     O retorno da desambiguação precisa dizer explicitamente que NADA foi
     registrado e que a tool tem de ser chamada de novo com
     patient_name_override — inclusive quando a resposta do paciente for um
-    'sim' a uma pergunta fechada."""
+    'sim' a uma pergunta fechada.
+
+    PRIVACIDADE (05/11/2026): aqui as duas pacientes têm o MESMO telefone mas
+    NENHUMA com consulta em aberto (mock genérico sem agendamentos), então a Eva
+    ainda precisa perguntar — porém o nome completo NÃO pode aparecer; sai
+    mascarado (primeiro nome inteiro, resto com inicial + asteriscos)."""
     from app.graph.tools import register_payment
     _mae = {"id": "mae-id", "patient_name": "Juliana Fernandes Feitosa de Souza"}
     _filha = {"id": "filha-id", "patient_name": "Maria Júlia Fernandes Feitosa Lucena"}
@@ -6038,14 +6077,120 @@ async def test_register_payment_multiple_patients_on_phone_demands_new_tool_call
             config=CONFIG,
         )
 
-    assert "Juliana Fernandes Feitosa de Souza" in result
-    assert "Maria Júlia Fernandes Feitosa Lucena" in result
+    # O nome COMPLETO nunca pode vazar na pergunta.
+    assert "Juliana Fernandes Feitosa de Souza" not in result
+    assert "Maria Júlia Fernandes Feitosa Lucena" not in result
+    assert "Fernandes" not in result and "Feitosa" not in result and "Lucena" not in result
+    # Mas o nome mascarado sim, pra pessoa reconhecer de quem se trata.
+    assert "Juliana F******** F****** de S****" in result
+    assert "Maria J**** F******** F****** L*****" in result
     mock_sheets.assert_not_awaited()
     # o retorno é instrução interna, não texto pronto pro paciente
     assert "INSTRUÇÃO INTERNA" in result
     # e precisa exigir a nova chamada da tool, não só a pergunta
     assert "register_payment" in result
     assert "patient_name_override" in result
+
+
+async def test_register_payment_multi_patient_single_open_appt_resolves_without_asking():
+    """Fix 05/11/2026 (caso Juliana, 5581981845995): o telefone tem duas pacientes
+    (mãe e filha), mas só UMA tem consulta em aberto. Antes a Eva perguntava de
+    quem era o comprovante e ainda expunha o nome completo das duas. Agora ela
+    ancora na consulta em aberto: só a filha tem agendamento, então o comprovante
+    é dela e o pagamento é registrado SEM perguntar nada."""
+    from app.graph.tools import register_payment
+    # A query de agendamentos (call 1 do mock) devolve só a Maria (user-123).
+    client, _table, _execute = _make_supabase_client_with_appointment()
+    _mae = {"id": "mae-id", "patient_name": "Juliana Fernandes Feitosa de Souza"}
+    _filha = {"id": "user-123", "patient_name": "Maria"}
+    with patch("app.graph.tools.get_supabase", new_callable=AsyncMock, return_value=client), \
+         patch("app.graph.tools.get_users_by_phone", new_callable=AsyncMock, return_value=[_mae, _filha]), \
+         patch("app.graph.tools.log_event", new_callable=AsyncMock), \
+         patch("app.google_drive.rename_file", new_callable=AsyncMock), \
+         patch("app.google_sheets.append_payment_receipt", new_callable=AsyncMock) as mock_sheets, \
+         patch("app.graph.tools.send_text", new_callable=AsyncMock), \
+         patch("app.graph.tools._notify_clinic", new_callable=AsyncMock):
+        result = await register_payment.coroutine(
+            amount="100,00",
+            drive_link="https://drive.google.com/file/d/abc/view",
+            state=_make_state(),
+            config=CONFIG,
+        )
+
+    # Não perguntou de quem é, não pediu nome, não listou ninguém.
+    assert "INSTRUÇÃO INTERNA" not in result
+    assert "Para qual paciente" not in result
+    assert "Juliana" not in result
+    # Registrou normalmente a favor da única paciente com consulta aberta.
+    assert "✅" in result
+    mock_sheets.assert_awaited_once()
+
+
+def _make_supabase_client_two_open_appts():
+    """Dois pacientes DIFERENTES com consulta agendada no mesmo telefone: a query
+    de resolução (call 1) devolve dois agendamentos, um por paciente."""
+    appts_with_users = MagicMock(data=[
+        {"appointment_id": "apt-mae", "start_time": "2027-01-10T09:00:00+00:00",
+         "doctor_id": "d5baa58b-a788-4f40-b8c0-512c189150be", "status": "scheduled",
+         "patients": {"id": "mae-id", "name": "Juliana Fernandes Feitosa de Souza"}},
+        {"appointment_id": "apt-filha", "start_time": "2027-01-11T09:00:00+00:00",
+         "doctor_id": "d5baa58b-a788-4f40-b8c0-512c189150be", "status": "scheduled",
+         "patients": {"id": "filha-id", "name": "Maria Júlia Fernandes Feitosa Lucena"}},
+    ])
+    empty = MagicMock(data=[])
+
+    def _side_effect(*_a, **_kw):
+        _side_effect.call_count += 1
+        return appts_with_users if _side_effect.call_count == 1 else empty
+    _side_effect.call_count = 0
+
+    execute = AsyncMock(side_effect=_side_effect)
+    table = MagicMock()
+    for m in ("select", "eq", "in_", "limit", "single", "maybe_single",
+              "gte", "gt", "lt", "neq", "order", "insert", "update", "upsert", "is_"):
+        getattr(table, m).return_value = table
+    table.execute = execute
+
+    events_table = MagicMock()
+    for m in ("select", "eq", "in_", "limit", "gte", "order"):
+        getattr(events_table, m).return_value = events_table
+    events_table.execute = AsyncMock(return_value=MagicMock(data=[]))
+
+    client = MagicMock()
+
+    def _from(name):
+        return events_table if name == "events" else table
+    client.from_.side_effect = _from
+    return client, table, execute
+
+
+async def test_register_payment_multi_patient_two_open_appts_asks_with_masked_names():
+    """Quando duas pacientes do mesmo telefone têm consulta em aberto, a dúvida é
+    real e a Eva pergunta de quem é o comprovante — mas o nome completo NÃO pode
+    aparecer; sai mascarado, e nada é registrado até a nova chamada da tool."""
+    from app.graph.tools import register_payment
+    client, _table, _execute = _make_supabase_client_two_open_appts()
+    _mae = {"id": "mae-id", "patient_name": "Juliana Fernandes Feitosa de Souza"}
+    _filha = {"id": "filha-id", "patient_name": "Maria Júlia Fernandes Feitosa Lucena"}
+    with patch("app.graph.tools.get_supabase", new_callable=AsyncMock, return_value=client), \
+         patch("app.graph.tools.get_users_by_phone", new_callable=AsyncMock, return_value=[_mae, _filha]), \
+         patch("app.graph.tools.log_event", new_callable=AsyncMock), \
+         patch("app.google_sheets.append_payment_receipt", new_callable=AsyncMock) as mock_sheets, \
+         patch("app.graph.tools._notify_clinic", new_callable=AsyncMock):
+        result = await register_payment.coroutine(
+            amount="100,00",
+            drive_link="https://drive.google.com/file/d/abc/view",
+            state=_make_state(),
+            config=CONFIG,
+        )
+
+    assert "INSTRUÇÃO INTERNA" in result
+    assert "patient_name_override" in result
+    mock_sheets.assert_not_awaited()
+    # Nome completo nunca; mascarado sim.
+    assert "Fernandes" not in result and "Lucena" not in result
+    assert "Juliana F******** F****** de S****" in result
+    assert "Maria J**** F******** F****** L*****" in result
 
 
 def _make_supabase_client_self_path_old_completed():
