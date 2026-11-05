@@ -50,7 +50,10 @@ SCHEDULE_EXCEPTIONS: dict[str, dict[str, list[tuple[int, int, int, int, str]]]] 
         "2026-10-28": [],                                                       # Quarta: sem atendimento (bloqueado)
         "2026-10-29": [],                                                       # Quinta: sem atendimento (bloqueado)
         "2026-11-02": [],                                                       # Segunda: feriado Finados
+        "2026-12-23": [],                                                       # Quarta: recesso de fim de ano
         "2026-12-24": [],                                                       # Quinta: ponto facultativo Véspera de Natal
+        "2026-12-28": [],                                                       # Segunda: recesso de fim de ano
+        "2026-12-30": [],                                                       # Quarta: recesso de fim de ano
         "2026-12-31": [],                                                       # Quinta: ponto facultativo Véspera de Ano Novo
     },
     "bruna": {
@@ -73,7 +76,10 @@ SCHEDULE_EXCEPTIONS: dict[str, dict[str, list[tuple[int, int, int, int, str]]]] 
         "2026-11-02": [],  # Segunda: feriado Finados
         "2026-11-13": [],  # Sexta: sem atendimento (bloqueado)
         "2026-11-20": [],  # Sexta: feriado Consciência Negra
+        "2026-12-23": [],  # Quarta: recesso de fim de ano
         "2026-12-25": [],  # Sexta: feriado Natal
+        "2026-12-28": [],  # Segunda: recesso de fim de ano
+        "2026-12-30": [],  # Quarta: recesso de fim de ano
     },
 }
 
