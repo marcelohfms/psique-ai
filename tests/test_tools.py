@@ -4827,6 +4827,7 @@ async def test_request_document_receita_nuit_flash_orienta_retirada():
         "Urbanil 20mg",
         "Patz SL",
         "Lioram",
+        "Lidexor 70mg",
     ],
 )
 async def test_request_document_receita_nomes_comerciais_orienta_retirada(medication_note):
