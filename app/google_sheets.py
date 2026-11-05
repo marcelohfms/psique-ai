@@ -28,7 +28,7 @@ CONTROLLED_MEDICATIONS: list[str] = [
     "zolpidem", "stilnox", "nuit flash", "patz", "lioram",
     # Estimulantes (TDAH)
     "metilfenidato", "ritalina", "ritalin", "concerta", "rubifen",
-    "lisdexanfetamina", "venvanse", "vyvanse",
+    "lisdexanfetamina", "venvanse", "vyvanse", "lidexor",
     "atomoxetina", "strattera",
     "dexanfetamina", "dextroamphetamine",
 ]
