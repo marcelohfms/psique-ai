@@ -3604,7 +3604,7 @@ async def test_reschedule_appointment_event_records_fee_paid_true_when_fee_paid(
         "booking_fee_paid_at": "2026-01-01T10:00:00-03:00",
         "booking_fee_waived": False,
         "status": "scheduled",
-    })
+    }, count=0)  # count=0: primeira remarcação — o backstop da 2ª não dispara
     # Datas relativas a "agora": zera as exceções de agenda (feriado/bloqueio)
     # para o teste não depender do calendário real do médico. Em 30/09/2026,
     # hoje+12 caía no feriado de 12/10 e a tool recusava antes do evento.
@@ -3627,6 +3627,48 @@ async def test_reschedule_appointment_event_records_fee_paid_true_when_fee_paid(
         if c.args and c.args[0] == "appointment_rescheduled"
     )
     assert resched.args[2]["fee_paid"] is True
+
+
+async def test_reschedule_appointment_second_reschedule_blocks_and_requires_new_fee():
+    """Backstop determinístico da política de 1 remarcação: se o paciente já usou o
+    reagendamento que aproveita a taxa (count>=1 de appointment_rescheduled pago),
+    reschedule_appointment NÃO remarca carregando a taxa antiga — devolve instrução
+    para cobrar uma nova taxa via cancelar + confirmar. Sem este backstop a taxa antiga
+    era carregada e o R$100 novo caía como 'Pagamento Parcial' (caso Diego Pita,
+    03/11/2026). Espelha a trava das 24h que já existe logo acima."""
+    from app.graph.tools import reschedule_appointment
+    client, table, execute = _make_supabase_client()
+    old_start = (datetime.now(TZ) + timedelta(days=10)).replace(microsecond=0)
+    new_slot = (datetime.now(TZ) + timedelta(days=12)).replace(minute=0, second=0, microsecond=0)
+    # count=1: já houve uma remarcação paga antes → esta é a SEGUNDA.
+    execute.return_value = MagicMock(data={
+        "start_time": old_start.isoformat(),
+        "patient_id": "user-1",
+        "patients": {"name": "Maria"},
+        "booking_fee_paid_at": "2026-01-01T10:00:00-03:00",
+        "booking_fee_waived": False,
+        "reschedule_initiated_by": "patient",
+        "status": "scheduled",
+    }, count=1)
+    with patch.dict("app.google_calendar.SCHEDULE_EXCEPTIONS", {}, clear=True), \
+         patch("app.graph.tools._get_doctor_calendar_id", new_callable=AsyncMock, return_value="cal123"), \
+         patch("app.google_calendar.update_event", new_callable=AsyncMock) as mock_update, \
+         patch("app.graph.tools.get_supabase", new_callable=AsyncMock, return_value=client), \
+         patch("app.graph.tools.get_users_by_phone", new_callable=AsyncMock, return_value=[{"id": "user-1"}]), \
+         patch("app.graph.tools.log_event", new_callable=AsyncMock) as mock_log, \
+         patch("app.graph.tools._notify_clinic", new_callable=AsyncMock):
+        result = await reschedule_appointment.coroutine(
+            appointment_id="evt-abc",
+            new_slot_datetime=new_slot.strftime("%Y-%m-%dT%H:%M:%S"),
+            slot_duration_minutes=60,
+            state=_make_state(),
+            config=CONFIG,
+        )
+    assert "nova taxa de reserva" in result.lower()
+    mock_update.assert_not_awaited()  # não remarcou por cima
+    assert not any(
+        c.args and c.args[0] == "appointment_rescheduled" for c in mock_log.call_args_list
+    ), "não deve registrar appointment_rescheduled na segunda remarcação bloqueada"
 
 
 async def test_reschedule_appointment_event_records_fee_paid_false_when_unpaid():
@@ -3717,7 +3759,7 @@ async def test_reschedule_appointment_more_than_24h_paid_fee_proceeds():
         "booking_fee_paid_at": "2026-09-02T00:01:08-03:00",
         "booking_fee_waived": False,
         "status": "scheduled",
-    })
+    }, count=0)  # count=0: primeira remarcação — o backstop da 2ª não dispara
     with patch("app.graph.tools.datetime", _FrozenDTWedBefore19), \
          patch("app.graph.tools._get_doctor_calendar_id", new_callable=AsyncMock, return_value="cal123"), \
          patch("app.google_calendar.update_event", new_callable=AsyncMock) as mock_update, \
