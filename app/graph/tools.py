@@ -3787,6 +3787,40 @@ def _parse_brl_amount(raw: str) -> float:
 REACTIVATION_SLOT_TAKEN_MARKER = "não está mais disponível"
 
 
+# Conectivos de nome (preposições/artigos) que não identificam ninguém e ficam
+# estranhos mascarados ("de" viraria "d*"). Mantidos inteiros no nome mascarado.
+_NAME_CONNECTORS = {"de", "da", "do", "das", "dos", "e", "di", "del", "van", "von"}
+
+
+def _mask_patient_name(name: str) -> str:
+    """Mascara um nome de paciente para exibição numa pergunta de confirmação.
+
+    O primeiro nome fica inteiro; cada nome seguinte vira a inicial + asteriscos
+    preservando o tamanho (ex.: "Maria Júlia Fernandes Lucena" → "Maria J****
+    F******** L*****"). Conectivos ("de", "da"...) ficam inteiros. Isso protege
+    o dado na tela quando a Eva precisa perguntar de quem é o comprovante, sem
+    expor o nome completo da paciente a quem estiver olhando a conversa.
+
+    Atenção: é proteção de exibição, NÃO criptografia — o nome completo continua
+    no banco e nos registros.
+    """
+    tokens = (name or "").split()
+    if not tokens:
+        return name or ""
+    out = [tokens[0]]
+    for tok in tokens[1:]:
+        if tok.lower() in _NAME_CONNECTORS:
+            out.append(tok)
+        else:
+            out.append(tok[0] + "*" * (len(tok) - 1))
+    return " ".join(out)
+
+
+def _mask_names_list(names: list[str]) -> str:
+    """Junta vários nomes já mascarados numa string legível, separados por vírgula."""
+    return ", ".join(_mask_patient_name(n or "Paciente") for n in names)
+
+
 def _payment_disambiguation_prompt(context: str, names: str) -> str:
     """Retorno de register_payment quando o paciente do comprovante é ambíguo.
 
@@ -3796,13 +3830,20 @@ def _payment_disambiguation_prompt(context: str, names: str) -> str:
     sem registro e o cron de cobrança disparava horas depois (caso Juliana,
     5581981845995, 04/08/2026). Por isso o retorno é instrução interna e diz,
     em vez de perguntar, o que precisa acontecer na próxima chamada.
+
+    PRIVACIDADE: `names` deve chegar já MASCARADO (via _mask_patient_name). A Eva
+    é instruída a citar só esse nome mascarado e a nunca completar o nome inteiro,
+    e a tratar quem enviou a mensagem como "você/sua consulta" quando couber.
     """
     return (
         f"[INSTRUÇÃO INTERNA — NÃO ENVIE AO PACIENTE] {context} "
         "NADA foi registrado: nenhum pagamento foi salvo e nenhuma vaga foi garantida. "
-        f"Pergunte ao paciente para qual deles é o comprovante (cite os nomes: {names}) e, "
-        "assim que ele responder, chame register_payment DE NOVO com "
-        "patient_name_override=[nome completo do paciente escolhido], mantendo amount, "
+        "Pergunte de quem é o comprovante. Se quem enviou a mensagem puder ser o próprio "
+        "paciente, ofereça 'a sua consulta' como uma das opções. "
+        f"Ao citar outro paciente, use EXATAMENTE este nome mascarado e NUNCA complete nem "
+        f"revele o nome inteiro: {names}. "
+        "Assim que o paciente responder, chame register_payment DE NOVO com "
+        "patient_name_override=[o nome que o paciente indicar na resposta], mantendo amount, "
         "drive_link e image_description da mensagem original. "
         "Vale como resposta qualquer forma de identificar o paciente — o nome, o número da "
         "opção, ou um 'sim' confirmando o nome que você citou numa pergunta fechada. "
@@ -4276,9 +4317,9 @@ async def register_payment(
             if len(_lex) == 1:
                 matched = _lex[0]
             else:
-                names = ", ".join(c.get("name", "Paciente") for c in linked_cands)
+                names = _mask_names_list([c.get("name", "Paciente") for c in linked_cands])
                 return _payment_disambiguation_prompt(
-                    f"Neste contato há mais de um paciente com nome parecido a '{search_name}': {names}.",
+                    f"Neste contato há mais de um paciente com nome parecido a '{search_name}'.",
                     names,
                 )
         elif len(exact) == 1:
@@ -4327,16 +4368,13 @@ async def register_payment(
         if not all_users:
             return "Para qual paciente é este comprovante? Por favor, informe o nome completo."
 
-        # If the contact has multiple patients, always ask — even if only one has a
-        # recent appointment. The payment could be for any of them.
-        if len(all_users) > 1:
-            names = ", ".join(
-                u.get("patient_name") or u.get("name", "Paciente") for u in all_users
-            )
-            return _payment_disambiguation_prompt(
-                f"Encontrei mais de um paciente neste número: {names}.", names
-            )
-
+        # Vários pacientes no telefone NÃO é motivo para perguntar de cara. A âncora
+        # é a consulta em aberto: a query de agendamentos abaixo diz quais pacientes
+        # têm consulta (scheduled/completed). Se só um tiver, o comprovante é dele e
+        # a Eva registra sem perguntar nada (caso Juliana, 5581981845995: só a filha
+        # tinha consulta e a Eva ainda perguntou, expondo o nome completo das duas).
+        # Só quando dois ou mais têm consulta — ou nenhum — é que a dúvida é real, e
+        # aí a pergunta sai com o nome MASCARADO.
         user_ids = [u["id"] for u in all_users]
 
         # No date window: the patient may settle the saldo of a consultation that
@@ -4405,15 +4443,24 @@ async def register_payment(
                         f"Se confirmar, mude o status para pending_reschedule."
                     )
 
+            # Multi-paciente sem nenhuma consulta em aberto: não dá pra adivinhar de
+            # quem é. Pergunta, mas com o nome MASCARADO (nunca o nome completo).
+            if len(all_users) > 1:
+                names = _mask_names_list(
+                    [u.get("patient_name") or u.get("name", "Paciente") for u in all_users]
+                )
+                return _payment_disambiguation_prompt(
+                    "Este número tem mais de um paciente e nenhum com consulta em aberto agora.",
+                    names,
+                )
             return "Para qual paciente é este comprovante? Por favor, informe o nome completo."
 
         if len(seen_users) > 1:
-            names = ", ".join(
-                (a.get("patients") or {}).get("name", "Paciente")
-                for a in seen_users.values()
+            names = _mask_names_list(
+                [(a.get("patients") or {}).get("name", "Paciente") for a in seen_users.values()]
             )
             return _payment_disambiguation_prompt(
-                f"Encontrei mais de um paciente com consulta agendada neste número: {names}.",
+                "Encontrei mais de um paciente com consulta agendada neste número.",
                 names,
             )
 
