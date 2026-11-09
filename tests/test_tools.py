@@ -33,7 +33,7 @@ def _make_supabase_client():
     execute = AsyncMock(return_value=MagicMock(data=[]))
     table = MagicMock()
     for m in ("select", "eq", "in_", "limit", "single", "maybe_single",
-              "gte", "order", "insert", "update", "upsert", "or_", "filter", "is_"):
+              "gte", "gt", "lt", "neq", "order", "insert", "update", "upsert", "or_", "filter", "is_"):
         getattr(table, m).return_value = table
     table.execute = execute
     client = MagicMock()
@@ -71,6 +71,40 @@ def test_sanitize_social_name_empty_after_stripping_returns_empty():
 def test_sanitize_social_name_handles_none():
     from app.graph.tools import _sanitize_social_name
     assert _sanitize_social_name(None) == ""
+
+
+# ── _mask_patient_name ────────────────────────────────────────────────────────
+
+def test_mask_patient_name_keeps_first_name_masks_rest():
+    from app.graph.tools import _mask_patient_name
+    assert _mask_patient_name("Maria Júlia Fernandes Lucena") == "Maria J**** F******** L*****"
+
+
+def test_mask_patient_name_keeps_connectors_whole():
+    from app.graph.tools import _mask_patient_name
+    # "de" é conectivo: fica inteiro, nunca vira "d*".
+    assert _mask_patient_name("Juliana Feitosa de Souza") == "Juliana F****** de S****"
+
+
+def test_mask_patient_name_single_name_unchanged():
+    from app.graph.tools import _mask_patient_name
+    assert _mask_patient_name("Maria") == "Maria"
+
+
+def test_mask_patient_name_empty_and_none():
+    from app.graph.tools import _mask_patient_name
+    assert _mask_patient_name("") == ""
+    assert _mask_patient_name(None) == ""
+
+
+def test_mask_patient_name_never_exposes_full_surname():
+    from app.graph.tools import _mask_patient_name
+    masked = _mask_patient_name("Maria Júlia Fernandes Feitosa Lucena")
+    # O nome completo original nunca aparece mascarado.
+    assert "Fernandes" not in masked
+    assert "Feitosa" not in masked
+    assert "Lucena" not in masked
+    assert masked.startswith("Maria J****")
 
 
 def test_sanitize_social_name_handles_empty_string():
@@ -3570,7 +3604,7 @@ async def test_reschedule_appointment_event_records_fee_paid_true_when_fee_paid(
         "booking_fee_paid_at": "2026-01-01T10:00:00-03:00",
         "booking_fee_waived": False,
         "status": "scheduled",
-    })
+    }, count=0)  # count=0: primeira remarcação — o backstop da 2ª não dispara
     # Datas relativas a "agora": zera as exceções de agenda (feriado/bloqueio)
     # para o teste não depender do calendário real do médico. Em 30/09/2026,
     # hoje+12 caía no feriado de 12/10 e a tool recusava antes do evento.
@@ -3593,6 +3627,48 @@ async def test_reschedule_appointment_event_records_fee_paid_true_when_fee_paid(
         if c.args and c.args[0] == "appointment_rescheduled"
     )
     assert resched.args[2]["fee_paid"] is True
+
+
+async def test_reschedule_appointment_second_reschedule_blocks_and_requires_new_fee():
+    """Backstop determinístico da política de 1 remarcação: se o paciente já usou o
+    reagendamento que aproveita a taxa (count>=1 de appointment_rescheduled pago),
+    reschedule_appointment NÃO remarca carregando a taxa antiga — devolve instrução
+    para cobrar uma nova taxa via cancelar + confirmar. Sem este backstop a taxa antiga
+    era carregada e o R$100 novo caía como 'Pagamento Parcial' (caso Diego Pita,
+    03/11/2026). Espelha a trava das 24h que já existe logo acima."""
+    from app.graph.tools import reschedule_appointment
+    client, table, execute = _make_supabase_client()
+    old_start = (datetime.now(TZ) + timedelta(days=10)).replace(microsecond=0)
+    new_slot = (datetime.now(TZ) + timedelta(days=12)).replace(minute=0, second=0, microsecond=0)
+    # count=1: já houve uma remarcação paga antes → esta é a SEGUNDA.
+    execute.return_value = MagicMock(data={
+        "start_time": old_start.isoformat(),
+        "patient_id": "user-1",
+        "patients": {"name": "Maria"},
+        "booking_fee_paid_at": "2026-01-01T10:00:00-03:00",
+        "booking_fee_waived": False,
+        "reschedule_initiated_by": "patient",
+        "status": "scheduled",
+    }, count=1)
+    with patch.dict("app.google_calendar.SCHEDULE_EXCEPTIONS", {}, clear=True), \
+         patch("app.graph.tools._get_doctor_calendar_id", new_callable=AsyncMock, return_value="cal123"), \
+         patch("app.google_calendar.update_event", new_callable=AsyncMock) as mock_update, \
+         patch("app.graph.tools.get_supabase", new_callable=AsyncMock, return_value=client), \
+         patch("app.graph.tools.get_users_by_phone", new_callable=AsyncMock, return_value=[{"id": "user-1"}]), \
+         patch("app.graph.tools.log_event", new_callable=AsyncMock) as mock_log, \
+         patch("app.graph.tools._notify_clinic", new_callable=AsyncMock):
+        result = await reschedule_appointment.coroutine(
+            appointment_id="evt-abc",
+            new_slot_datetime=new_slot.strftime("%Y-%m-%dT%H:%M:%S"),
+            slot_duration_minutes=60,
+            state=_make_state(),
+            config=CONFIG,
+        )
+    assert "nova taxa de reserva" in result.lower()
+    mock_update.assert_not_awaited()  # não remarcou por cima
+    assert not any(
+        c.args and c.args[0] == "appointment_rescheduled" for c in mock_log.call_args_list
+    ), "não deve registrar appointment_rescheduled na segunda remarcação bloqueada"
 
 
 async def test_reschedule_appointment_event_records_fee_paid_false_when_unpaid():
@@ -3683,7 +3759,7 @@ async def test_reschedule_appointment_more_than_24h_paid_fee_proceeds():
         "booking_fee_paid_at": "2026-09-02T00:01:08-03:00",
         "booking_fee_waived": False,
         "status": "scheduled",
-    })
+    }, count=0)  # count=0: primeira remarcação — o backstop da 2ª não dispara
     with patch("app.graph.tools.datetime", _FrozenDTWedBefore19), \
          patch("app.graph.tools._get_doctor_calendar_id", new_callable=AsyncMock, return_value="cal123"), \
          patch("app.google_calendar.update_event", new_callable=AsyncMock) as mock_update, \
@@ -6022,7 +6098,12 @@ async def test_register_payment_multiple_patients_on_phone_demands_new_tool_call
     O retorno da desambiguação precisa dizer explicitamente que NADA foi
     registrado e que a tool tem de ser chamada de novo com
     patient_name_override — inclusive quando a resposta do paciente for um
-    'sim' a uma pergunta fechada."""
+    'sim' a uma pergunta fechada.
+
+    PRIVACIDADE (05/11/2026): aqui as duas pacientes têm o MESMO telefone mas
+    NENHUMA com consulta em aberto (mock genérico sem agendamentos), então a Eva
+    ainda precisa perguntar — porém o nome completo NÃO pode aparecer; sai
+    mascarado (primeiro nome inteiro, resto com inicial + asteriscos)."""
     from app.graph.tools import register_payment
     _mae = {"id": "mae-id", "patient_name": "Juliana Fernandes Feitosa de Souza"}
     _filha = {"id": "filha-id", "patient_name": "Maria Júlia Fernandes Feitosa Lucena"}
@@ -6039,14 +6120,120 @@ async def test_register_payment_multiple_patients_on_phone_demands_new_tool_call
             config=CONFIG,
         )
 
-    assert "Juliana Fernandes Feitosa de Souza" in result
-    assert "Maria Júlia Fernandes Feitosa Lucena" in result
+    # O nome COMPLETO nunca pode vazar na pergunta.
+    assert "Juliana Fernandes Feitosa de Souza" not in result
+    assert "Maria Júlia Fernandes Feitosa Lucena" not in result
+    assert "Fernandes" not in result and "Feitosa" not in result and "Lucena" not in result
+    # Mas o nome mascarado sim, pra pessoa reconhecer de quem se trata.
+    assert "Juliana F******** F****** de S****" in result
+    assert "Maria J**** F******** F****** L*****" in result
     mock_sheets.assert_not_awaited()
     # o retorno é instrução interna, não texto pronto pro paciente
     assert "INSTRUÇÃO INTERNA" in result
     # e precisa exigir a nova chamada da tool, não só a pergunta
     assert "register_payment" in result
     assert "patient_name_override" in result
+
+
+async def test_register_payment_multi_patient_single_open_appt_resolves_without_asking():
+    """Fix 05/11/2026 (caso Juliana, 5581981845995): o telefone tem duas pacientes
+    (mãe e filha), mas só UMA tem consulta em aberto. Antes a Eva perguntava de
+    quem era o comprovante e ainda expunha o nome completo das duas. Agora ela
+    ancora na consulta em aberto: só a filha tem agendamento, então o comprovante
+    é dela e o pagamento é registrado SEM perguntar nada."""
+    from app.graph.tools import register_payment
+    # A query de agendamentos (call 1 do mock) devolve só a Maria (user-123).
+    client, _table, _execute = _make_supabase_client_with_appointment()
+    _mae = {"id": "mae-id", "patient_name": "Juliana Fernandes Feitosa de Souza"}
+    _filha = {"id": "user-123", "patient_name": "Maria"}
+    with patch("app.graph.tools.get_supabase", new_callable=AsyncMock, return_value=client), \
+         patch("app.graph.tools.get_users_by_phone", new_callable=AsyncMock, return_value=[_mae, _filha]), \
+         patch("app.graph.tools.log_event", new_callable=AsyncMock), \
+         patch("app.google_drive.rename_file", new_callable=AsyncMock), \
+         patch("app.google_sheets.append_payment_receipt", new_callable=AsyncMock) as mock_sheets, \
+         patch("app.graph.tools.send_text", new_callable=AsyncMock), \
+         patch("app.graph.tools._notify_clinic", new_callable=AsyncMock):
+        result = await register_payment.coroutine(
+            amount="100,00",
+            drive_link="https://drive.google.com/file/d/abc/view",
+            state=_make_state(),
+            config=CONFIG,
+        )
+
+    # Não perguntou de quem é, não pediu nome, não listou ninguém.
+    assert "INSTRUÇÃO INTERNA" not in result
+    assert "Para qual paciente" not in result
+    assert "Juliana" not in result
+    # Registrou normalmente a favor da única paciente com consulta aberta.
+    assert "✅" in result
+    mock_sheets.assert_awaited_once()
+
+
+def _make_supabase_client_two_open_appts():
+    """Dois pacientes DIFERENTES com consulta agendada no mesmo telefone: a query
+    de resolução (call 1) devolve dois agendamentos, um por paciente."""
+    appts_with_users = MagicMock(data=[
+        {"appointment_id": "apt-mae", "start_time": "2027-01-10T09:00:00+00:00",
+         "doctor_id": "d5baa58b-a788-4f40-b8c0-512c189150be", "status": "scheduled",
+         "patients": {"id": "mae-id", "name": "Juliana Fernandes Feitosa de Souza"}},
+        {"appointment_id": "apt-filha", "start_time": "2027-01-11T09:00:00+00:00",
+         "doctor_id": "d5baa58b-a788-4f40-b8c0-512c189150be", "status": "scheduled",
+         "patients": {"id": "filha-id", "name": "Maria Júlia Fernandes Feitosa Lucena"}},
+    ])
+    empty = MagicMock(data=[])
+
+    def _side_effect(*_a, **_kw):
+        _side_effect.call_count += 1
+        return appts_with_users if _side_effect.call_count == 1 else empty
+    _side_effect.call_count = 0
+
+    execute = AsyncMock(side_effect=_side_effect)
+    table = MagicMock()
+    for m in ("select", "eq", "in_", "limit", "single", "maybe_single",
+              "gte", "gt", "lt", "neq", "order", "insert", "update", "upsert", "is_"):
+        getattr(table, m).return_value = table
+    table.execute = execute
+
+    events_table = MagicMock()
+    for m in ("select", "eq", "in_", "limit", "gte", "order"):
+        getattr(events_table, m).return_value = events_table
+    events_table.execute = AsyncMock(return_value=MagicMock(data=[]))
+
+    client = MagicMock()
+
+    def _from(name):
+        return events_table if name == "events" else table
+    client.from_.side_effect = _from
+    return client, table, execute
+
+
+async def test_register_payment_multi_patient_two_open_appts_asks_with_masked_names():
+    """Quando duas pacientes do mesmo telefone têm consulta em aberto, a dúvida é
+    real e a Eva pergunta de quem é o comprovante — mas o nome completo NÃO pode
+    aparecer; sai mascarado, e nada é registrado até a nova chamada da tool."""
+    from app.graph.tools import register_payment
+    client, _table, _execute = _make_supabase_client_two_open_appts()
+    _mae = {"id": "mae-id", "patient_name": "Juliana Fernandes Feitosa de Souza"}
+    _filha = {"id": "filha-id", "patient_name": "Maria Júlia Fernandes Feitosa Lucena"}
+    with patch("app.graph.tools.get_supabase", new_callable=AsyncMock, return_value=client), \
+         patch("app.graph.tools.get_users_by_phone", new_callable=AsyncMock, return_value=[_mae, _filha]), \
+         patch("app.graph.tools.log_event", new_callable=AsyncMock), \
+         patch("app.google_sheets.append_payment_receipt", new_callable=AsyncMock) as mock_sheets, \
+         patch("app.graph.tools._notify_clinic", new_callable=AsyncMock):
+        result = await register_payment.coroutine(
+            amount="100,00",
+            drive_link="https://drive.google.com/file/d/abc/view",
+            state=_make_state(),
+            config=CONFIG,
+        )
+
+    assert "INSTRUÇÃO INTERNA" in result
+    assert "patient_name_override" in result
+    mock_sheets.assert_not_awaited()
+    # Nome completo nunca; mascarado sim.
+    assert "Fernandes" not in result and "Lucena" not in result
+    assert "Juliana F******** F****** de S****" in result
+    assert "Maria J**** F******** F****** L*****" in result
 
 
 def _make_supabase_client_self_path_old_completed():
@@ -7809,6 +7996,20 @@ def test_third_party_cpf_is_flagged():
     assert _receipt_destination_is_foreign(desc) is True
 
 
+def test_mercado_pago_misread_direction_not_flagged():
+    """Leitura trocada do Mercado Pago (caso Luanna 03/11/2026): o modelo rotulou a
+    conta de ORIGEM como 'destinatário', mas o CNPJ da clínica aparece no texto (como
+    remetente). O guard faz fail-open e NÃO barra — register_payment registra normal.
+    A recusa indevida vinha só da Eva, não do guard."""
+    desc = (
+        "COMPROVANTE DE PAGAMENTO: Valor transferido R$ 100. "
+        "Destinatário: TUR ALEGRIA E SUCESSO AGENCIA DE TURISMO LTDA. "
+        "(CNPJ 48.283.807/0001-05). Remetente: Psique (BANCO C6 S.A., "
+        "CNPJ 42.006.848/0001-78). Data/hora 3/novembro/2026 às 11:55:47."
+    )
+    assert _receipt_destination_is_foreign(desc) is False
+
+
 @pytest.mark.asyncio
 async def test_register_payment_blocks_foreign_key_no_side_effects():
     from app.graph.tools import register_payment
@@ -8550,3 +8751,150 @@ async def test_register_payment_reactivation_born_confirmed_when_tomorrow():
     update_payloads = [c.args[0] for c in table.update.call_args_list]
     assert any(p.get("confirmed_at") for p in update_payloads), update_payloads
     mock_mark.assert_awaited_once_with("cal-julio", "evt-react")
+
+
+# ── confirm_appointment: trava anti-duplicata no banco (índice único) ──────────
+
+async def test_confirm_appointment_unique_violation_returns_already_registered():
+    """Corrida replay: outra rota (reativação do comprovante) deixou a consulta
+    scheduled no mesmo (paciente, horário) um instante antes, e o índice único parcial
+    do banco recusa o INSERT (Postgres 23505). A tool NÃO pode persistir uma 2ª linha
+    nem dizer que agendou: desfaz o evento órfão no Calendar e responde que a consulta
+    já está registrada. Caso Dario Gleison (5581998196655, 09/11/2026 14:00)."""
+    from app.graph.tools import confirm_appointment
+    from postgrest.exceptions import APIError
+    client, table, execute = _make_supabase_client()
+    # Só o INSERT de appointments falha; os selects das guardas seguem vazios.
+    insert_chain = MagicMock()
+    insert_chain.execute = AsyncMock(side_effect=APIError({
+        "code": "23505",
+        "message": 'duplicate key value violates unique constraint '
+                   '"uniq_appointments_patient_slot_scheduled"',
+    }))
+    table.insert.return_value = insert_chain
+    cancel_event = AsyncMock()
+    log_event = AsyncMock()
+    with patch("app.graph.tools._get_doctor_calendar_id", new_callable=AsyncMock, return_value="cal123"), \
+         patch("app.google_calendar.create_event", new_callable=AsyncMock, return_value="evt-dup"), \
+         patch("app.google_calendar.cancel_event", cancel_event), \
+         patch("app.graph.tools.get_supabase", new_callable=AsyncMock, return_value=client), \
+         patch("app.graph.tools.get_users_by_phone", new_callable=AsyncMock, return_value=[{"id": "user-1"}]), \
+         patch("app.graph.tools.get_user_by_phone", new_callable=AsyncMock, return_value={"id": "user-1"}), \
+         patch("app.graph.tools.log_event", log_event), \
+         patch("app.graph.tools._notify_clinic", new_callable=AsyncMock) as mock_notify:
+        result = await confirm_appointment.coroutine(
+            slot_datetime="2026-03-23T09:00:00",
+            slot_duration_minutes=60,
+            state=_make_state(),
+            config=CONFIG,
+        )
+    # Mensagem amigável de duplicata, não erro genérico nem confirmação de agendamento.
+    assert "já está registrada" in result
+    assert "evt-dup" not in result
+    # Evento órfão no Calendar desfeito.
+    cancel_event.assert_awaited_once()
+    # Nada de appointment_booked e nada de notificar a clínica — não houve booking novo.
+    assert not any(c.args and c.args[0] == "appointment_booked" for c in log_event.call_args_list)
+    mock_notify.assert_not_called()
+
+
+async def test_register_payment_reactivation_unique_violation_routes_to_winner():
+    """Espelho da corrida: o INSERT do confirm_appointment venceu e já deixou a consulta
+    scheduled neste (paciente, horário); o índice único recusa a reativação (23505). Em vez
+    de pagar a linha CANCELADA (que auto-cancelaria a ativa), o pagamento é roteado para a
+    linha scheduled vencedora e o evento órfão recém-criado é desfeito no Calendar."""
+    from app.graph.tools import register_payment
+    from postgrest.exceptions import APIError
+
+    julio_id = "d5baa58b-a788-4f40-b8c0-512c189150be"
+    slot_start = (datetime.now(TZ) + timedelta(days=5)).replace(hour=14, minute=0, second=0, microsecond=0)
+    slot_end = slot_start + timedelta(hours=1)
+
+    _results = [
+        MagicMock(data=[{"id": "user-123", "name": "Ricardo", "doctor_id": julio_id}]),  # resolve override
+        MagicMock(data=[]),                                           # scheduled → nenhum
+        MagicMock(data=[{"appointment_id": "apt-ricardo-cancel"}]),   # canceled futuro c/ taxa pendente
+        MagicMock(data=[{                                             # canceled_result da reativação
+            "appointment_id": "apt-ricardo-cancel",
+            "start_time": slot_start.isoformat(),
+            "end_time": slot_end.isoformat(),
+            "doctor_id": julio_id,
+            "modality": "online",
+        }]),
+        MagicMock(data={"agenda_id": "cal-julio"}),                   # doctors.agenda_id (.single())
+        APIError({"code": "23505", "message": 'duplicate key value violates unique constraint '
+                  '"uniq_appointments_patient_slot_scheduled"'}),     # reativação UPDATE recusada
+        MagicMock(data=[{"appointment_id": "apt-winner-sched"}]),     # _winner: linha scheduled vencedora
+        MagicMock(data={}),                                           # patients.custom_price (maybe_single)
+    ]
+    _calls = {"i": 0}
+    def _exec(*_a, **_k):
+        i = _calls["i"]; _calls["i"] += 1
+        if i < len(_results):
+            r = _results[i]
+            if isinstance(r, Exception):
+                raise r
+            return r
+        return MagicMock(data=[])
+    execute = AsyncMock(side_effect=_exec)
+    table = MagicMock()
+    for m in ("select", "eq", "in_", "limit", "single", "maybe_single", "ilike",
+              "gte", "gt", "lt", "neq", "order", "insert", "update", "upsert", "is_"):
+        getattr(table, m).return_value = table
+    table.execute = execute
+
+    events_table = MagicMock()
+    for m in ("select", "eq", "in_", "limit", "gte", "order"):
+        getattr(events_table, m).return_value = events_table
+    events_table.execute = AsyncMock(return_value=MagicMock(data=[]))
+
+    client = MagicMock()
+    def _from(name):
+        return events_table if name == "events" else table
+    client.from_.side_effect = _from
+
+    cancel_event = AsyncMock()
+    with patch("app.graph.tools.get_supabase", new_callable=AsyncMock, return_value=client), \
+         patch("app.patients.get_contact_by_phone", new_callable=AsyncMock, return_value={"id": "contact-1"}), \
+         patch("app.patients.get_patients_by_contact", new_callable=AsyncMock, return_value=[{"id": "user-123"}]), \
+         patch("app.patients.get_contacts_for_patient", new_callable=AsyncMock, return_value=[{"phone": "5581988912861"}]), \
+         patch("app.google_calendar._credentials", return_value=MagicMock()), \
+         patch("googleapiclient.discovery.build", return_value=MagicMock()), \
+         patch("app.google_calendar._get_busy", return_value=[]), \
+         patch("app.google_calendar.create_event", new_callable=AsyncMock, return_value="evt-orphan"), \
+         patch("app.google_calendar.cancel_event", cancel_event), \
+         patch("app.google_calendar.mark_event_confirmed", new_callable=AsyncMock), \
+         patch("app.graph.tools.log_event", new_callable=AsyncMock), \
+         patch("app.graph.tools._notify_clinic", new_callable=AsyncMock), \
+         patch("app.google_drive.rename_file", new_callable=AsyncMock), \
+         patch("app.google_sheets.append_payment_receipt", new_callable=AsyncMock), \
+         patch("app.graph.tools.send_text", new_callable=AsyncMock):
+        result = await register_payment.coroutine(
+            amount="100,00",
+            drive_link="https://drive.google.com/file/d/abc/view",
+            state=_make_state(),
+            config=CONFIG,
+            patient_name_override="Ricardo",
+        )
+
+    # Evento órfão recém-criado foi desfeito.
+    cancel_event.assert_awaited_once_with("cal-julio", "evt-orphan")
+    # Pagamento roteado para a linha vencedora, nunca para a cancelada.
+    eq_targets = [c.args for c in table.eq.call_args_list if c.args and c.args[0] == "appointment_id"]
+    assert ("appointment_id", "apt-winner-sched") in eq_targets, eq_targets
+    assert ("appointment_id", "apt-ricardo-cancel") not in [
+        c.args for c in table.update.call_args_list
+    ]
+    assert "sucesso" in result.lower() or "registrado" in result.lower()
+
+
+def test_is_unique_violation_detects_code_and_text():
+    """_is_unique_violation reconhece 23505 pelo atributo .code (APIError) e, como
+    rede, pelo texto; e não dispara em erro qualquer."""
+    from app.graph.tools import _is_unique_violation
+    from postgrest.exceptions import APIError
+    assert _is_unique_violation(APIError({"code": "23505", "message": "dup"}))
+    assert _is_unique_violation(Exception('duplicate key value violates unique constraint "uniq_appointments_patient_slot_scheduled"'))
+    assert _is_unique_violation(Exception("algo com 23505 no meio"))
+    assert not _is_unique_violation(Exception("timeout na rede"))
+    assert not _is_unique_violation(APIError({"code": "23503", "message": "fk"}))

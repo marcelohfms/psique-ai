@@ -22,6 +22,22 @@ logger = logging.getLogger(__name__)
 
 TZ = ZoneInfo("America/Recife")
 
+# Nome do índice único parcial que impede duas consultas scheduled no mesmo
+# (patient_id, start_time) — ver supabase/migrations/20261105_appointments_unique_scheduled_slot.sql.
+UNIQUE_SCHEDULED_SLOT_INDEX = "uniq_appointments_patient_slot_scheduled"
+
+
+def _is_unique_violation(exc: Exception) -> bool:
+    """True quando a exceção do Supabase/PostgREST é uma violação de unicidade
+    (Postgres SQLSTATE 23505). A violação chega como postgrest.exceptions.APIError
+    com .code == '23505'; caímos para o texto quando o atributo não existe."""
+    code = getattr(exc, "code", None)
+    if code == "23505":
+        return True
+    text = str(exc)
+    return "23505" in text or "duplicate key value" in text or UNIQUE_SCHEDULED_SLOT_INDEX in text
+
+
 async def _notify_clinic(message: str, phone: str = "", subject: str = "Notificação Eva") -> None:
     """Envia notificação para a clínica por e-mail.
 
@@ -1610,6 +1626,21 @@ async def confirm_appointment(
             await cancel_event(calendar_id, event_id)
         except Exception:
             _logger.exception("CONFIRM_DEBUG cancel_event rollback ALSO FAILED event_id=%s", event_id)
+        # Índice único parcial (patient_id, start_time) WHERE status='scheduled': se outra
+        # rota já deixou a consulta scheduled no mesmo horário um instante antes — a corrida
+        # entre confirm_appointment e a reativação do comprovante que duplicou o caso Dario
+        # Gleison (5581998196655, 09/11/2026) — o banco recusa o INSERT (Postgres 23505). Não
+        # é erro a pedir retry: a vaga JÁ está registrada. Trata igual à Guard 1 lá em cima,
+        # sem alarmar nem mandar o paciente tentar de novo (o retry recriaria o laço).
+        if _is_unique_violation(e):
+            _logger.warning(
+                "confirm_appointment: índice único barrou duplicata patient_slot=%s",
+                start.isoformat(),
+            )
+            return (
+                f"A consulta das {start.strftime('%H:%M')} do dia {start.strftime('%d/%m/%Y')} "
+                "já está registrada. Não é necessário confirmar novamente."
+            )
         return "Houve um erro ao salvar o agendamento. Por favor, tente novamente."
 
     await log_event("appointment_booked", phone, {
@@ -2724,6 +2755,42 @@ async def reschedule_appointment(
                 + (_CLINIC_SWAP_HINT if _has_recent_attendant_note(state) else "")
             )
 
+    # ── Backstop determinístico da política de 1 remarcação ──────────────────
+    # Espelha a trava das 24h acima. A regra "a taxa de reserva é aproveitada só
+    # uma vez; a partir da 2ª remarcação do paciente, a antiga é recolhida e uma
+    # nova é cobrada" vivia só como aviso ao LLM em mark_reschedule_in_progress e
+    # como a trava de mesmo lote (_mark_key). Quando a Eva chamava
+    # reschedule_appointment num turno à parte, com a consulta ainda "scheduled",
+    # a linha era atualizada carregando o booking_fee_paid_at antigo e o R$100 novo
+    # caía como "Pagamento Parcial" em vez de "Taxa de Reserva" (caso Diego Pita,
+    # 03/11/2026). Mesmo escopo da trava das 24h: só paciente (silent_mode/clínica
+    # isentos), só movimento real de horário e só com a consulta ainda scheduled
+    # (em pending_reschedule o mark já validou a política). A contagem usa o mesmo
+    # filtro do mark (linha ~2180): remarcações do paciente com a taxa paga.
+    if (
+        not state.get("silent_mode")
+        and not clinic_swap
+        and not is_pending_reschedule
+        and old_dt is not None
+        and old_dt != new_start
+        and appt_result.data
+        and bool(appt_result.data.get("booking_fee_paid_at") or appt_result.data.get("booking_fee_waived"))
+    ):
+        _prev_resched = await client.from_("events").select("id", count="exact") \
+            .eq("phone", _phone_clean).eq("event_type", "appointment_rescheduled") \
+            .or_("metadata->>initiated_by.is.null,metadata->>initiated_by.eq.patient") \
+            .or_("metadata->>fee_paid.is.null,metadata->>fee_paid.eq.true").execute()
+        if (_prev_resched.count or 0) >= 1:
+            return (
+                "[INSTRUÇÃO INTERNA — NÃO ENVIE AO PACIENTE] Este paciente já utilizou o "
+                "reagendamento que aproveita a taxa de reserva. Pela política, a taxa anterior "
+                "é recolhida e NÃO é reaproveitada — é necessária uma NOVA taxa de reserva de "
+                "R$ 100,00 para garantir a nova data. NÃO remarque por aqui: avise o paciente e, "
+                "ao confirmar o novo horário, chame cancel_appointment (para esta consulta) e "
+                "confirm_appointment (para a nova data)."
+                + (_CLINIC_SWAP_HINT if _has_recent_attendant_note(state) else "")
+            )
+
     # Guard: check Google Calendar for conflicts on the NEW slot before writing it.
     # confirm_appointment already had this check, but reschedule_appointment didn't —
     # a stale slot offer confirmed after someone else took that time slipped through
@@ -3756,6 +3823,40 @@ def _parse_brl_amount(raw: str) -> float:
 REACTIVATION_SLOT_TAKEN_MARKER = "não está mais disponível"
 
 
+# Conectivos de nome (preposições/artigos) que não identificam ninguém e ficam
+# estranhos mascarados ("de" viraria "d*"). Mantidos inteiros no nome mascarado.
+_NAME_CONNECTORS = {"de", "da", "do", "das", "dos", "e", "di", "del", "van", "von"}
+
+
+def _mask_patient_name(name: str) -> str:
+    """Mascara um nome de paciente para exibição numa pergunta de confirmação.
+
+    O primeiro nome fica inteiro; cada nome seguinte vira a inicial + asteriscos
+    preservando o tamanho (ex.: "Maria Júlia Fernandes Lucena" → "Maria J****
+    F******** L*****"). Conectivos ("de", "da"...) ficam inteiros. Isso protege
+    o dado na tela quando a Eva precisa perguntar de quem é o comprovante, sem
+    expor o nome completo da paciente a quem estiver olhando a conversa.
+
+    Atenção: é proteção de exibição, NÃO criptografia — o nome completo continua
+    no banco e nos registros.
+    """
+    tokens = (name or "").split()
+    if not tokens:
+        return name or ""
+    out = [tokens[0]]
+    for tok in tokens[1:]:
+        if tok.lower() in _NAME_CONNECTORS:
+            out.append(tok)
+        else:
+            out.append(tok[0] + "*" * (len(tok) - 1))
+    return " ".join(out)
+
+
+def _mask_names_list(names: list[str]) -> str:
+    """Junta vários nomes já mascarados numa string legível, separados por vírgula."""
+    return ", ".join(_mask_patient_name(n or "Paciente") for n in names)
+
+
 def _payment_disambiguation_prompt(context: str, names: str) -> str:
     """Retorno de register_payment quando o paciente do comprovante é ambíguo.
 
@@ -3765,13 +3866,20 @@ def _payment_disambiguation_prompt(context: str, names: str) -> str:
     sem registro e o cron de cobrança disparava horas depois (caso Juliana,
     5581981845995, 04/08/2026). Por isso o retorno é instrução interna e diz,
     em vez de perguntar, o que precisa acontecer na próxima chamada.
+
+    PRIVACIDADE: `names` deve chegar já MASCARADO (via _mask_patient_name). A Eva
+    é instruída a citar só esse nome mascarado e a nunca completar o nome inteiro,
+    e a tratar quem enviou a mensagem como "você/sua consulta" quando couber.
     """
     return (
         f"[INSTRUÇÃO INTERNA — NÃO ENVIE AO PACIENTE] {context} "
         "NADA foi registrado: nenhum pagamento foi salvo e nenhuma vaga foi garantida. "
-        f"Pergunte ao paciente para qual deles é o comprovante (cite os nomes: {names}) e, "
-        "assim que ele responder, chame register_payment DE NOVO com "
-        "patient_name_override=[nome completo do paciente escolhido], mantendo amount, "
+        "Pergunte de quem é o comprovante. Se quem enviou a mensagem puder ser o próprio "
+        "paciente, ofereça 'a sua consulta' como uma das opções. "
+        f"Ao citar outro paciente, use EXATAMENTE este nome mascarado e NUNCA complete nem "
+        f"revele o nome inteiro: {names}. "
+        "Assim que o paciente responder, chame register_payment DE NOVO com "
+        "patient_name_override=[o nome que o paciente indicar na resposta], mantendo amount, "
         "drive_link e image_description da mensagem original. "
         "Vale como resposta qualquer forma de identificar o paciente — o nome, o número da "
         "opção, ou um 'sim' confirmando o nome que você citou numa pergunta fechada. "
@@ -4245,9 +4353,9 @@ async def register_payment(
             if len(_lex) == 1:
                 matched = _lex[0]
             else:
-                names = ", ".join(c.get("name", "Paciente") for c in linked_cands)
+                names = _mask_names_list([c.get("name", "Paciente") for c in linked_cands])
                 return _payment_disambiguation_prompt(
-                    f"Neste contato há mais de um paciente com nome parecido a '{search_name}': {names}.",
+                    f"Neste contato há mais de um paciente com nome parecido a '{search_name}'.",
                     names,
                 )
         elif len(exact) == 1:
@@ -4296,16 +4404,13 @@ async def register_payment(
         if not all_users:
             return "Para qual paciente é este comprovante? Por favor, informe o nome completo."
 
-        # If the contact has multiple patients, always ask — even if only one has a
-        # recent appointment. The payment could be for any of them.
-        if len(all_users) > 1:
-            names = ", ".join(
-                u.get("patient_name") or u.get("name", "Paciente") for u in all_users
-            )
-            return _payment_disambiguation_prompt(
-                f"Encontrei mais de um paciente neste número: {names}.", names
-            )
-
+        # Vários pacientes no telefone NÃO é motivo para perguntar de cara. A âncora
+        # é a consulta em aberto: a query de agendamentos abaixo diz quais pacientes
+        # têm consulta (scheduled/completed). Se só um tiver, o comprovante é dele e
+        # a Eva registra sem perguntar nada (caso Juliana, 5581981845995: só a filha
+        # tinha consulta e a Eva ainda perguntou, expondo o nome completo das duas).
+        # Só quando dois ou mais têm consulta — ou nenhum — é que a dúvida é real, e
+        # aí a pergunta sai com o nome MASCARADO.
         user_ids = [u["id"] for u in all_users]
 
         # No date window: the patient may settle the saldo of a consultation that
@@ -4374,15 +4479,24 @@ async def register_payment(
                         f"Se confirmar, mude o status para pending_reschedule."
                     )
 
+            # Multi-paciente sem nenhuma consulta em aberto: não dá pra adivinhar de
+            # quem é. Pergunta, mas com o nome MASCARADO (nunca o nome completo).
+            if len(all_users) > 1:
+                names = _mask_names_list(
+                    [u.get("patient_name") or u.get("name", "Paciente") for u in all_users]
+                )
+                return _payment_disambiguation_prompt(
+                    "Este número tem mais de um paciente e nenhum com consulta em aberto agora.",
+                    names,
+                )
             return "Para qual paciente é este comprovante? Por favor, informe o nome completo."
 
         if len(seen_users) > 1:
-            names = ", ".join(
-                (a.get("patients") or {}).get("name", "Paciente")
-                for a in seen_users.values()
+            names = _mask_names_list(
+                [(a.get("patients") or {}).get("name", "Paciente") for a in seen_users.values()]
             )
             return _payment_disambiguation_prompt(
-                f"Encontrei mais de um paciente com consulta agendada neste número: {names}.",
+                "Encontrei mais de um paciente com consulta agendada neste número.",
                 names,
             )
 
@@ -4582,11 +4696,42 @@ async def register_payment(
                     if _born_confirmed:
                         # Horário reativado na véspera/mesmo dia: nasce confirmada.
                         _react_update["confirmed_at"] = _now.isoformat()
-                    await client.from_("appointments").update(_react_update).eq("appointment_id", canceled_appt["appointment_id"]).execute()
-                    if _born_confirmed:
+                    appointment_dt = slot_start.strftime("%d/%m/%Y %H:%M")
+                    try:
+                        await client.from_("appointments").update(_react_update).eq("appointment_id", canceled_appt["appointment_id"]).execute()
+                        _reactivated = True
+                    except Exception as _react_exc:
+                        if not _is_unique_violation(_react_exc):
+                            raise
+                        # Outro caminho (o INSERT do confirm_appointment) venceu a corrida e
+                        # já deixou uma linha scheduled neste (patient_id, start_time); o índice
+                        # único recusou a reativação. Em vez de pagar a linha cancelada (que
+                        # auto-cancelaria a consulta ativa), roteamos o pagamento para a linha
+                        # que venceu e descartamos o evento órfão que acabamos de criar.
+                        _reactivated = False
+                        _logger.warning(
+                            "REACTIVATE_CANCELED_APPT: índice único barrou reativação, "
+                            "roteando pagamento para a linha scheduled vencedora slot=%s",
+                            slot_start.isoformat(),
+                        )
+                        from app.google_calendar import cancel_event as _cancel_orphan
+                        try:
+                            await _cancel_orphan(calendar_id, new_event_id)
+                        except Exception:
+                            _logger.exception("REACTIVATE orphan cancel falhou event_id=%s", new_event_id)
+                        _winner = await client.from_("appointments").select(
+                            "appointment_id"
+                        ).eq("patient_id", user_id).eq("status", "scheduled").eq(
+                            "start_time", canceled_appt["start_time"]
+                        ).limit(1).execute()
+                        if _winner.data:
+                            appt_id_to_pay = _winner.data[0]["appointment_id"]
+                        else:
+                            appt_id_to_pay = canceled_appt["appointment_id"]
+                    if _reactivated and _born_confirmed:
                         await _apply_confirmation(client, calendar_id, new_event_id, patient_phone, auto=True)
-                    appointment_dt   = slot_start.strftime("%d/%m/%Y %H:%M")
-                    appt_id_to_pay   = None  # already paid above
+                    if _reactivated:
+                        appt_id_to_pay = None  # already paid above via _react_update
                     confirmation_msg = (
                         f"Comprovante recebido e registrado com sucesso! ✅\n"
                         f"Sua consulta com *{canceled_doctor_label}* no dia *{appointment_dt}* "

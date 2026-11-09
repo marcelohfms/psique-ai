@@ -7925,3 +7925,17 @@ async def test_process_message_paused_proceeds_with_bypass():
             chatbot.aget_state.assert_called()
     finally:
         gg.chatbot = original
+
+
+def test_booking_fee_rule_trusts_register_payment_for_key_check():
+    """A Eva NÃO deve julgar a chave do destinatário por conta própria a partir da
+    descrição da imagem: comprovantes de carteiras digitais (Mercado Pago, bloco
+    'Origem e destino') às vezes trazem remetente/destinatário trocados na leitura.
+    A verificação da chave é do register_payment; a Eva só recusa se a tool retornar
+    o aviso de chave errada, e confirma se a tool retornar sucesso (caso Luanna
+    03/11/2026: Eva recusou um PIX correto já registrado pela tool)."""
+    from app.graph.prompts import get_booking_fee_rule
+    rule = get_booking_fee_rule("42006848000178")
+    assert "register_payment" in rule
+    assert "Mercado Pago" in rule
+    assert "Se register_payment retornar sucesso" in rule
