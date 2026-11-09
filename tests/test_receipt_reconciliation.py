@@ -211,3 +211,50 @@ async def test_already_replayed_true_when_event_exists():
     with patch("app.receipt_reconciliation.get_supabase",
                new_callable=AsyncMock, return_value=client):
         assert await already_replayed(7) is False
+
+
+async def test_replay_registers_and_notifies():
+    """Comprovante lido: espelha em messages, grava o marcador e roda a Eva com bypass."""
+    from app.receipt_reconciliation import replay_dropped_receipt
+
+    texto = "COMPROVANTE DE PAGAMENTO: R$ 100 [drive_link:https://d/x]"
+    with patch("app.receipt_reconciliation.describe_image_bytes",
+               new_callable=AsyncMock, return_value=texto) as desc, \
+         patch("app.receipt_reconciliation.log_event", new_callable=AsyncMock) as logev, \
+         patch("app.receipt_reconciliation._alert_clinic", new_callable=AsyncMock) as alert, \
+         patch("app.main.save_message", new_callable=AsyncMock) as save, \
+         patch("app.main.process_message", new_callable=AsyncMock) as proc:
+        ok = await replay_dropped_receipt(_cand(), b"img")
+
+    assert ok is True
+    canon = "5581971052827@s.whatsapp.net"
+    assert desc.await_args.kwargs["phone"] == canon
+    logev.assert_awaited_once()
+    args = logev.await_args.args
+    assert args[0] == "receipt_drop_replayed"
+    assert args[1] == canon
+    assert args[2]["attachment_id"] == 999
+    assert args[2]["conversation_id"] == 505
+    save.assert_awaited_once_with(canon, "user", texto)
+    proc.assert_awaited_once_with(canon, texto, bypass_pause=True)
+    alert.assert_not_awaited()
+
+
+async def test_replay_falls_back_to_alert_when_not_a_receipt():
+    """Reclassificado como documento: alerta a clínica, sem marcador nem Eva."""
+    from app.receipt_reconciliation import replay_dropped_receipt
+
+    cand = _cand()
+    with patch("app.receipt_reconciliation.describe_image_bytes",
+               new_callable=AsyncMock, return_value=None), \
+         patch("app.receipt_reconciliation.log_event", new_callable=AsyncMock) as logev, \
+         patch("app.receipt_reconciliation._alert_clinic", new_callable=AsyncMock) as alert, \
+         patch("app.main.save_message", new_callable=AsyncMock) as save, \
+         patch("app.main.process_message", new_callable=AsyncMock) as proc:
+        ok = await replay_dropped_receipt(cand, b"img")
+
+    assert ok is False
+    alert.assert_awaited_once_with(cand, "payment")
+    logev.assert_not_awaited()
+    save.assert_not_awaited()
+    proc.assert_not_awaited()

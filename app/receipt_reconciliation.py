@@ -20,7 +20,7 @@ import httpx
 from app.chatwoot import list_recent_incoming_attachments
 from app.database import get_supabase, log_event
 from app.email_sender import send_clinic_notification_email
-from app.media import classify_image_raw
+from app.media import classify_image_raw, describe_image_bytes
 from app.phone import _phone_variants
 
 logger = logging.getLogger(__name__)
@@ -116,6 +116,40 @@ async def _alert_clinic(cand: dict, kind: str) -> None:
         "Por favor, abra a conversa no Chatwoot e trate manualmente (ex.: registre o "
         "comprovante pelo painel), em vez de pedir para o paciente reenviar.",
     )
+
+
+async def replay_dropped_receipt(cand: dict, img: bytes) -> bool:
+    """Reinjeta no caminho normal da Eva um comprovante que sumiu na ingestão.
+
+    Roda classificação + upload no Drive + releitura do valor (describe_image_bytes).
+    Se virou texto de comprovante, espelha em messages e roda a Eva com bypass da pausa,
+    para o register_payment registrar (com todas as travas) e a Eva avisar o paciente.
+    Se não for comprovante (virou documento/irrelevante), cai no alerta por e-mail.
+    Retorna True se reinjetou, False se caiu no alerta."""
+    # Import local: app.main importa este módulo indiretamente (evita ciclo).
+    from app.main import process_message, save_message
+
+    raw = cand.get("phone", "")
+    variants = _phone_variants(raw)
+    canonico = (variants[0] if variants else raw) + "@s.whatsapp.net"
+
+    texto = await describe_image_bytes(img, phone=canonico)
+    if not texto:
+        await _alert_clinic(cand, "payment")
+        return False
+
+    # O attachment_id no metadata é o que already_replayed consulta (idempotência).
+    await log_event(
+        REPLAY_EVENT,
+        canonico,
+        {
+            "attachment_id": cand.get("attachment_id"),
+            "conversation_id": cand.get("conversation_id"),
+        },
+    )
+    await save_message(canonico, "user", texto)
+    await process_message(canonico, texto, bypass_pause=True)
+    return True
 
 
 async def reconcile(now: datetime, *, floor_min: int = 10, window_min: int = 60) -> int:
