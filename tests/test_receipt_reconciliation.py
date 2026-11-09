@@ -339,3 +339,19 @@ async def test_reconcile_replay_crash_alerts_clinic_and_continues():
     assert n == 1
     assert logev.await_args.args[0] == "receipt_drop_alerted"
     assert logev.await_args.args[2]["attachment_id"] == 1
+
+
+async def test_reconcile_replay_false_marks_alerted_without_own_email():
+    """Replay retorna False (não era comprovante; ele mesmo já mandou o e-mail): o
+    reconcile só grava receipt_drop_alerted e conta 1, sem e-mail próprio."""
+    from contextlib import ExitStack
+    from app.receipt_reconciliation import reconcile
+    replay = AsyncMock(return_value=False)
+    with ExitStack() as st:
+        rep, mail, logev = _reconcile_ctx(st, [_cand()], replay=replay)
+        n = await reconcile(NOW)
+    assert n == 1
+    replay.assert_awaited_once()
+    mail.assert_not_awaited()
+    logev.assert_awaited_once()
+    assert logev.await_args.args[0] == "receipt_drop_alerted"

@@ -191,16 +191,8 @@ async def reconcile(now: datetime, *, floor_min: int = 10, window_min: int = 60)
                     logger.exception("RECONCILE_REPLAY_FAILED attachment_id=%s", aid)
                     replayed = False
                     await _alert_clinic(cand, "payment")
-                    # Marca como alertado para não repetir o e-mail a cada rodada.
-                    await log_event(RECEIPT_DROP_EVENT, phone, {
-                        "attachment_id": aid,
-                        "conversation_id": cand.get("conversation_id"),
-                        "kind": kind,
-                    })
-                    alerts += 1
-                    continue
                 if not replayed:
-                    # replay já mandou o e-mail (não era comprovante); marca p/ não repetir.
+                    # Já alertou (e-mail do replay ou do crash acima); marca p/ não repetir.
                     await log_event(RECEIPT_DROP_EVENT, phone, {
                         "attachment_id": aid,
                         "conversation_id": cand.get("conversation_id"),
