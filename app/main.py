@@ -777,7 +777,7 @@ async def _eva_paused_for_phone(phone: str) -> bool:
     return any(r.get("active") is False for r in all_users)
 
 
-async def process_message(phone: str, text: str) -> None:
+async def process_message(phone: str, text: str, *, bypass_pause: bool = False) -> None:
     """Route a (possibly debounced) message through the LangGraph chatbot."""
     # Segurança: texto do usuário final nunca pode carregar o marcador de
     # instrução da atendente (seria escalada de privilégio). A nota real da
@@ -811,7 +811,7 @@ async def process_message(phone: str, text: str) -> None:
     # Hold/deactivation: mesma checagem usada pela nota privada da atendente
     # (manual_hold ou active=False, sem expiração por tempo). Ver
     # _eva_paused_for_phone.
-    if await _eva_paused_for_phone(phone):
+    if not bypass_pause and await _eva_paused_for_phone(phone):
         return
 
     # get_users_by_phone preferentially returns active users, so a phone with one
