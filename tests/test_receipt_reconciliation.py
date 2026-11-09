@@ -40,9 +40,9 @@ def _patches(*, candidates, traced=False, alerted=False, kind="payment"):
     )
 
 
-async def test_untraced_payment_alerts_and_marks():
+async def test_untraced_document_alerts_and_marks():
     from app.receipt_reconciliation import reconcile
-    p = _patches(candidates=[_cand()], traced=False, alerted=False, kind="payment")
+    p = _patches(candidates=[_cand()], traced=False, alerted=False, kind="document")
     with p[0], p[1], p[2], p[3], p[4], p[5] as mail, p[6] as logev:
         n = await reconcile(NOW)
     assert n == 1
@@ -159,7 +159,7 @@ async def test_one_bad_candidate_does_not_abort_batch():
          patch("app.receipt_reconciliation.already_alerted", new_callable=AsyncMock, return_value=False), \
          patch("app.receipt_reconciliation._download_bytes", new_callable=AsyncMock, return_value=b"img"), \
          patch("app.receipt_reconciliation.classify_image_raw", new_callable=AsyncMock,
-               side_effect=[RuntimeError("429 insufficient_quota"), ("payment", "x")]), \
+               side_effect=[RuntimeError("429 insufficient_quota"), ("document", "x")]), \
          patch("app.receipt_reconciliation.send_clinic_notification_email", new_callable=AsyncMock) as mail, \
          patch("app.receipt_reconciliation.log_event", new_callable=AsyncMock):
         n = await reconcile(NOW)
@@ -258,3 +258,84 @@ async def test_replay_falls_back_to_alert_when_not_a_receipt():
     logev.assert_not_awaited()
     save.assert_not_awaited()
     proc.assert_not_awaited()
+
+
+def _reconcile_ctx(stack, cands, kind="payment", replayed=False, replay=None):
+    """Aplica os mocks do reconcile num ExitStack e devolve (replay, mail, logev)."""
+    p = _patches(candidates=cands, kind=kind)
+    for x in p[:5]:
+        stack.enter_context(x)
+    mail = stack.enter_context(p[5])
+    logev = stack.enter_context(p[6])
+    stack.enter_context(patch("app.receipt_reconciliation.already_replayed",
+                              new_callable=AsyncMock, return_value=replayed))
+    rep = stack.enter_context(patch("app.receipt_reconciliation.replay_dropped_receipt",
+                                    new_callable=AsyncMock, return_value=True) if replay is None
+                              else patch("app.receipt_reconciliation.replay_dropped_receipt", replay))
+    return rep, mail, logev
+
+
+async def test_reconcile_payment_calls_replay():
+    from contextlib import ExitStack
+    from app.receipt_reconciliation import reconcile
+    with ExitStack() as st:
+        rep, mail, logev = _reconcile_ctx(st, [_cand()])
+        await reconcile(NOW)
+    rep.assert_awaited_once()
+    assert rep.await_args.args[0]["attachment_id"] == 999
+    assert rep.await_args.args[1] == b"img"
+    mail.assert_not_awaited()
+
+
+async def test_reconcile_document_still_alerts():
+    from contextlib import ExitStack
+    from app.receipt_reconciliation import reconcile
+    with ExitStack() as st:
+        rep, mail, logev = _reconcile_ctx(st, [_cand()], kind="document")
+        n = await reconcile(NOW)
+    assert n == 1
+    rep.assert_not_awaited()
+    mail.assert_awaited_once()
+    assert logev.await_args.args[0] == "receipt_drop_alerted"
+
+
+async def test_reconcile_skips_already_replayed():
+    from contextlib import ExitStack
+    from app.receipt_reconciliation import reconcile
+    with ExitStack() as st:
+        rep, mail, logev = _reconcile_ctx(st, [_cand()], replayed=True)
+        await reconcile(NOW)
+    rep.assert_not_awaited()
+    mail.assert_not_awaited()
+
+
+async def test_reconcile_candidate_exception_does_not_abort():
+    """Falha fora do replay (ex.: classificação) num candidato não derruba os demais."""
+    from contextlib import ExitStack
+    from app.receipt_reconciliation import reconcile
+    cands = [_cand(attachment_id=1), _cand(attachment_id=2)]
+    with ExitStack() as st:
+        rep, mail, logev = _reconcile_ctx(st, cands)
+        st.enter_context(patch("app.receipt_reconciliation.classify_image_raw",
+                               new_callable=AsyncMock,
+                               side_effect=[RuntimeError("boom"), ("payment", "x")]))
+        await reconcile(NOW)
+    rep.assert_awaited_once()
+    assert rep.await_args.args[0]["attachment_id"] == 2
+
+
+async def test_reconcile_replay_crash_alerts_clinic_and_continues():
+    """Replay que lança vira alerta por e-mail (nunca comprovante enterrado em silêncio)
+    e a rodada segue para o próximo candidato."""
+    from contextlib import ExitStack
+    from app.receipt_reconciliation import reconcile
+    cands = [_cand(attachment_id=1), _cand(attachment_id=2)]
+    replay = AsyncMock(side_effect=[RuntimeError("boom"), True])
+    with ExitStack() as st:
+        rep, mail, logev = _reconcile_ctx(st, cands, replay=replay)
+        n = await reconcile(NOW)
+    assert replay.await_count == 2
+    mail.assert_awaited_once()
+    assert n == 1
+    assert logev.await_args.args[0] == "receipt_drop_alerted"
+    assert logev.await_args.args[2]["attachment_id"] == 1

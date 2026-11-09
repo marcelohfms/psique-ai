@@ -180,6 +180,34 @@ async def reconcile(now: datetime, *, floor_min: int = 10, window_min: int = 60)
             kind, _canonical = await classify_image_raw(img, phone)
             if kind not in ("payment", "document"):
                 continue
+            if kind == "payment":
+                if await already_replayed(aid):
+                    continue
+                try:
+                    replayed = await replay_dropped_receipt(cand, img)
+                except Exception:
+                    # Replay quebrou (o marcador pode já estar gravado): vira alerta,
+                    # nunca um comprovante enterrado em silêncio.
+                    logger.exception("RECONCILE_REPLAY_FAILED attachment_id=%s", aid)
+                    replayed = False
+                    await _alert_clinic(cand, "payment")
+                    # Marca como alertado para não repetir o e-mail a cada rodada.
+                    await log_event(RECEIPT_DROP_EVENT, phone, {
+                        "attachment_id": aid,
+                        "conversation_id": cand.get("conversation_id"),
+                        "kind": kind,
+                    })
+                    alerts += 1
+                    continue
+                if not replayed:
+                    # replay já mandou o e-mail (não era comprovante); marca p/ não repetir.
+                    await log_event(RECEIPT_DROP_EVENT, phone, {
+                        "attachment_id": aid,
+                        "conversation_id": cand.get("conversation_id"),
+                        "kind": kind,
+                    })
+                    alerts += 1
+                continue
             await _alert_clinic(cand, kind)
             await log_event(RECEIPT_DROP_EVENT, phone, {
                 "attachment_id": aid,
