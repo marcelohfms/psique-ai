@@ -260,6 +260,57 @@ async def test_replay_falls_back_to_alert_when_not_a_receipt():
     proc.assert_not_awaited()
 
 
+async def test_replay_in_manual_hold_passes_through_pause_gate():
+    """(b) Contato em pausa/manual_hold: o process_message REAL deixa o replay passar
+    pelo portão da pausa (bypass_pause=True) e chega no grafo, em vez de calar."""
+    import app.graph.graph as gg
+    from app.receipt_reconciliation import replay_dropped_receipt
+
+    chatbot = MagicMock()
+    chatbot.aget_state = AsyncMock(side_effect=RuntimeError("passou do portao"))
+    original = gg.chatbot
+    gg.chatbot = chatbot
+    try:
+        with patch("app.receipt_reconciliation.describe_image_bytes",
+                   new_callable=AsyncMock, return_value="COMPROVANTE DE PAGAMENTO: R$ 100"), \
+             patch("app.receipt_reconciliation.log_event", new_callable=AsyncMock), \
+             patch("app.main.save_message", new_callable=AsyncMock), \
+             patch("app.main._eva_paused_for_phone", new_callable=AsyncMock, return_value=True), \
+             patch("app.main.get_user_by_phone", new_callable=AsyncMock, return_value=None), \
+             patch("app.main.get_users_by_phone", new_callable=AsyncMock, return_value=[]):
+            with pytest.raises(RuntimeError, match="passou do portao"):
+                await replay_dropped_receipt(_cand(), b"img")
+        chatbot.aget_state.assert_called()
+    finally:
+        gg.chatbot = original
+
+
+async def test_replay_phone_without_ninth_digit_is_normalized():
+    """(i) Telefone cru de 12 dígitos (sem o 9) vira a forma canônica com 9 antes de
+    describe_image_bytes, log_event, save_message e process_message."""
+    from app.receipt_reconciliation import replay_dropped_receipt
+
+    texto = "COMPROVANTE DE PAGAMENTO: R$ 100"
+    with patch("app.receipt_reconciliation.describe_image_bytes",
+               new_callable=AsyncMock, return_value=texto) as desc, \
+         patch("app.receipt_reconciliation.log_event", new_callable=AsyncMock) as logev, \
+         patch("app.main.save_message", new_callable=AsyncMock) as save, \
+         patch("app.main.process_message", new_callable=AsyncMock) as proc:
+        await replay_dropped_receipt(_cand(phone="558171052827"), b"img")
+
+    canon = "5581971052827@s.whatsapp.net"
+    assert desc.await_args.kwargs["phone"] == canon
+    assert logev.await_args.args[1] == canon
+    save.assert_awaited_once_with(canon, "user", texto)
+    proc.assert_awaited_once_with(canon, texto, bypass_pause=True)
+
+
+# (d) md5 duplicado: a trava vive dentro de register_payment (DUPLICATE_RECEIPT_MARKER)
+# e já é coberta por test_tools.py::test_register_payment_blocks_reused_receipt_file.
+# O replay não registra nada por conta própria: só chama process_message uma vez (ver
+# test_replay_registers_and_notifies), então a trava vale igual ao caminho normal.
+
+
 def _reconcile_ctx(stack, cands, kind="payment", replayed=False, replay=None):
     """Aplica os mocks do reconcile num ExitStack e devolve (replay, mail, logev)."""
     p = _patches(candidates=cands, kind=kind)
