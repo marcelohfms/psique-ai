@@ -175,3 +175,39 @@ async def test_empty_phone_candidate_skipped():
         n = await reconcile(NOW)
     assert n == 0
     mail.assert_not_awaited()
+
+
+async def test_already_replayed_true_when_event_exists():
+    """already_replayed consulta o evento receipt_drop_replayed pelo attachment_id."""
+    from app.receipt_reconciliation import already_replayed, REPLAY_EVENT
+
+    assert REPLAY_EVENT == "receipt_drop_replayed"
+    captured = {}
+    table = MagicMock()
+    for m in ("select", "limit"):
+        getattr(table, m).return_value = table
+
+    def _eq(col, val):
+        captured["eq"] = (col, val)
+        return table
+
+    def _contains(col, val):
+        captured["contains"] = (col, val)
+        return table
+
+    table.eq.side_effect = _eq
+    table.contains.side_effect = _contains
+    table.execute = AsyncMock(return_value=MagicMock(data=[{"id": 1}]))
+    client = MagicMock()
+    client.from_.return_value = table
+
+    with patch("app.receipt_reconciliation.get_supabase",
+               new_callable=AsyncMock, return_value=client):
+        assert await already_replayed(2112) is True
+    assert captured["eq"] == ("event_type", "receipt_drop_replayed")
+    assert captured["contains"] == ("metadata", {"attachment_id": 2112})
+
+    table.execute = AsyncMock(return_value=MagicMock(data=[]))
+    with patch("app.receipt_reconciliation.get_supabase",
+               new_callable=AsyncMock, return_value=client):
+        assert await already_replayed(7) is False

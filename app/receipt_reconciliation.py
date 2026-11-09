@@ -26,6 +26,8 @@ from app.phone import _phone_variants
 logger = logging.getLogger(__name__)
 
 RECEIPT_DROP_EVENT = "receipt_drop_alerted"
+# Marca que o anexo já foi reinjetado no fluxo normal da Eva (no máximo uma vez).
+REPLAY_EVENT = "receipt_drop_replayed"
 # Tolerância em torno da chegada do anexo: um registro (pela Eva ou pelo painel) que
 # aconteça até 15 min ANTES já conta como rastro, cobrindo folga de relógio.
 TRACE_TOLERANCE_S = 15 * 60
@@ -75,6 +77,19 @@ async def already_alerted(attachment_id: int) -> bool:
     r = (
         await client.from_("events").select("id")
         .eq("event_type", RECEIPT_DROP_EVENT)
+        .contains("metadata", {"attachment_id": attachment_id})
+        .limit(1).execute()
+    )
+    return bool(r.data)
+
+
+async def already_replayed(attachment_id: int) -> bool:
+    """True se este anexo já foi reinjetado na Eva numa rodada anterior — garante que
+    o comprovante perdido seja reprocessado no máximo uma vez."""
+    client = await get_supabase()
+    r = (
+        await client.from_("events").select("id")
+        .eq("event_type", REPLAY_EVENT)
         .contains("metadata", {"attachment_id": attachment_id})
         .limit(1).execute()
     )
