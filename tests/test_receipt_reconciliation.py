@@ -311,13 +311,16 @@ async def test_replay_phone_without_ninth_digit_is_normalized():
 # test_replay_registers_and_notifies), então a trava vale igual ao caminho normal.
 
 
-def _reconcile_ctx(stack, cands, kind="payment", replayed=False, replay=None):
+def _reconcile_ctx(stack, cands, kind="payment", replayed=False, replay=None,
+                   payment_traced=False):
     """Aplica os mocks do reconcile num ExitStack e devolve (replay, mail, logev)."""
     p = _patches(candidates=cands, kind=kind)
     for x in p[:5]:
         stack.enter_context(x)
     mail = stack.enter_context(p[5])
     logev = stack.enter_context(p[6])
+    stack.enter_context(patch("app.receipt_reconciliation.has_payment_trace_until_now",
+                              new_callable=AsyncMock, return_value=payment_traced))
     stack.enter_context(patch("app.receipt_reconciliation.already_replayed",
                               new_callable=AsyncMock, return_value=replayed))
     rep = stack.enter_context(patch("app.receipt_reconciliation.replay_dropped_receipt",
@@ -348,6 +351,60 @@ async def test_reconcile_document_still_alerts():
     rep.assert_not_awaited()
     mail.assert_awaited_once()
     assert logev.await_args.args[0] == "receipt_drop_alerted"
+
+
+async def test_reconcile_skips_when_panel_registered_after_fifteen_min():
+    """A atendente deu baixa da taxa pelo painel SEM subir a imagem (sem md5), 30 min
+    depois do anexo — fora da janela de ±15 min do has_trace. Sem a checagem alargada,
+    o replay rodaria e register_payment gravaria de novo (o md5 não pega, pois não há
+    md5), duplicando o lançamento e mandando 2ª confirmação ao paciente. Com
+    has_payment_trace_until_now (do anexo até agora) o reconcile pula e NÃO reinjeta."""
+    from contextlib import ExitStack
+    from app.receipt_reconciliation import reconcile
+    with ExitStack() as st:
+        rep, mail, logev = _reconcile_ctx(st, [_cand()], payment_traced=True)
+        n = await reconcile(NOW)
+    rep.assert_not_awaited()
+    mail.assert_not_awaited()
+    assert n == 0
+
+
+async def test_has_payment_trace_until_now_queries_up_to_now():
+    """A janela da checagem alargada vai de (chegada − tolerância) até AGORA, cobrindo
+    uma baixa pelo painel feita minutos depois do anexo (fora dos ±15 min)."""
+    from app.receipt_reconciliation import (
+        has_payment_trace_until_now, TRACE_TOLERANCE_S, _iso,
+    )
+
+    captured = {}
+    table = MagicMock()
+    for m in ("select", "in_", "gte", "lte", "or_", "eq", "ilike", "limit"):
+        getattr(table, m).return_value = table
+
+    def _gte(col, val):
+        captured["lower"] = val
+        return table
+
+    def _lte(col, val):
+        captured.setdefault("uppers", []).append(val)
+        return table
+
+    table.gte.side_effect = _gte
+    table.lte.side_effect = _lte
+    table.execute = AsyncMock(return_value=MagicMock(data=[]))
+    client = MagicMock()
+    client.from_.return_value = table
+
+    created = int(NOW.timestamp()) - 1800  # anexo 30 min atrás
+    now_ts = int(NOW.timestamp())
+    with patch("app.receipt_reconciliation.get_supabase",
+               new_callable=AsyncMock, return_value=client), \
+         patch("app.receipt_reconciliation._now_ts", return_value=now_ts):
+        await has_payment_trace_until_now("5581971052827", created)
+
+    assert captured["lower"] == _iso(created - TRACE_TOLERANCE_S)
+    # o teto é ~agora, bem depois de created+15min
+    assert any(u == _iso(now_ts) for u in captured["uppers"])
 
 
 async def test_reconcile_skips_already_replayed():

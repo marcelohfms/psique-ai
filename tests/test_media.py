@@ -548,3 +548,107 @@ async def test_classify_image_raw_ignore():
         kind, _canonical = await classify_image_raw(b"fake-bytes")
 
     assert kind == "ignore"
+
+
+# ── describe_image_bytes(payment_only=True) — usado pela reinjeção do comprovante ──
+# Quando o cron reinjeta um comprovante perdido, ele SÓ quer o caminho de pagamento.
+# Se a 2ª classificação cair em documento/ignore, describe_image_bytes NÃO pode rodar
+# os efeitos do ramo de documento (mensagem ao paciente, upload no Drive de documentos,
+# e-mail à clínica) — isso mandaria "Recebemos seu documento! 📄" até para contato em
+# manual_hold e geraria um 2º e-mail contraditório. Com payment_only=True a função
+# devolve None logo após classificar, sem nenhum efeito colateral.
+
+async def test_payment_only_document_returns_none_without_side_effects():
+    """payment_only=True + imagem classificada como documento → None SEM efeitos:
+    nada de send_text ao paciente, nada de upload no Drive de documentos, nada de
+    e-mail à clínica."""
+    from app.media import describe_image_bytes
+    fake_openai = AsyncMock()
+    fake_openai.chat.completions.create = AsyncMock(
+        return_value=_mock_openai_response("LAUDO: laudo psiquiátrico de 3 páginas")
+    )
+    with patch("app.media._get_openai", return_value=fake_openai), \
+         patch("app.database.get_user_by_phone", new_callable=AsyncMock,
+               return_value={"patient_name": "Ana Souza"}), \
+         patch.dict("os.environ", {"GOOGLE_DRIVE_DOCUMENTS_FOLDER_ID": "folder-123"}), \
+         patch("app.google_drive.upload_document", new_callable=AsyncMock) as mock_upload, \
+         patch("app.whatsapp.send_text", new_callable=AsyncMock) as mock_send, \
+         patch("app.database.save_message", new_callable=AsyncMock), \
+         patch("app.email_sender.send_clinic_notification_email", new_callable=AsyncMock) as mock_mail:
+        result = await describe_image_bytes(
+            b"fake-bytes", phone="5511999999999@s.whatsapp.net", payment_only=True
+        )
+
+    assert result is None
+    mock_upload.assert_not_awaited()
+    mock_send.assert_not_awaited()
+    mock_mail.assert_not_awaited()
+
+
+async def test_payment_only_ignore_returns_none_without_side_effects():
+    """payment_only=True + imagem irrelevante (IGNORAR) → None, sem efeitos."""
+    from app.media import describe_image_bytes
+    fake_openai = AsyncMock()
+    fake_openai.chat.completions.create = AsyncMock(
+        return_value=_mock_openai_response("IGNORAR")
+    )
+    with patch("app.media._get_openai", return_value=fake_openai), \
+         patch("app.whatsapp.send_text", new_callable=AsyncMock) as mock_send, \
+         patch("app.email_sender.send_clinic_notification_email", new_callable=AsyncMock) as mock_mail:
+        result = await describe_image_bytes(
+            b"fake-bytes", phone="5511999999999@s.whatsapp.net", payment_only=True
+        )
+
+    assert result is None
+    mock_send.assert_not_awaited()
+    mock_mail.assert_not_awaited()
+
+
+async def test_payment_only_payment_still_returns_description():
+    """payment_only=True + comprovante → comportamento normal: upload no Drive de
+    pagamentos e texto devolvido para a Eva registrar."""
+    from app.media import describe_image_bytes, is_payment_receipt_message
+    fake_openai = AsyncMock()
+    fake_openai.chat.completions.create = AsyncMock(
+        return_value=_mock_openai_response(
+            "COMPROVANTE DE PAGAMENTO: valor transferido R$ 100,00, PIX PSIQUE"
+        )
+    )
+    with patch("app.media._get_openai", return_value=fake_openai), \
+         patch("app.database.get_user_by_phone", new_callable=AsyncMock,
+               return_value={"patient_name": "Maria"}), \
+         patch("app.google_drive.upload_image", new_callable=AsyncMock,
+               return_value="https://drive.google.com/file/d/rcpt/view"), \
+         patch.dict("os.environ", {"GOOGLE_DRIVE_PAYMENTS_FOLDER_ID": "folder-1"}):
+        result = await describe_image_bytes(
+            b"fake-bytes", phone="5511999999999@s.whatsapp.net", payment_only=True
+        )
+
+    assert result is not None
+    assert is_payment_receipt_message(result)
+
+
+async def test_default_payment_only_false_still_routes_document():
+    """Regressão: o default (payment_only=False) continua tratando documento pelo
+    ramo completo — thank-you ao paciente, upload no Drive e e-mail à clínica — para
+    os ingestores normais (Meta/Chatwoot)."""
+    from app.media import describe_image_bytes
+    fake_openai = AsyncMock()
+    fake_openai.chat.completions.create = AsyncMock(
+        return_value=_mock_openai_response("EXAME: hemograma completo")
+    )
+    with patch("app.media._get_openai", return_value=fake_openai), \
+         patch("app.database.get_user_by_phone", new_callable=AsyncMock,
+               return_value={"patient_name": "Joao Alves"}), \
+         patch.dict("os.environ", {"GOOGLE_DRIVE_DOCUMENTS_FOLDER_ID": "folder-123"}), \
+         patch("app.google_drive.upload_document", new_callable=AsyncMock,
+               return_value="https://drive.google.com/file/d/doc1/view") as mock_upload, \
+         patch("app.whatsapp.send_text", new_callable=AsyncMock) as mock_send, \
+         patch("app.database.save_message", new_callable=AsyncMock), \
+         patch("app.email_sender.send_clinic_notification_email", new_callable=AsyncMock) as mock_mail:
+        result = await describe_image_bytes(b"fake-bytes", phone="5511999999999@s.whatsapp.net")
+
+    assert result is None
+    mock_upload.assert_awaited_once()
+    mock_send.assert_awaited_once()
+    mock_mail.assert_awaited_once()

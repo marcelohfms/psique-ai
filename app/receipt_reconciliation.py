@@ -39,6 +39,10 @@ def _iso(epoch_s: int) -> str:
     return datetime.fromtimestamp(epoch_s, timezone.utc).isoformat()
 
 
+def _now_ts() -> int:
+    return int(datetime.now(timezone.utc).timestamp())
+
+
 async def has_trace(phone: str, created_at: int) -> bool:
     """True se o anexo já deixou rastro no nosso banco: uma linha-espelho em `messages`
     (marcador `[imagem]:` ou "Recebemos seu documento") ou um evento de pagamento, para
@@ -68,6 +72,39 @@ async def has_trace(phone: str, created_at: int) -> bool:
         .limit(1).execute()
     )
     return bool(evs.data)
+
+
+async def has_payment_trace_until_now(phone: str, created_at: int) -> bool:
+    """Como has_trace, mas a janela vai da chegada do anexo (−15 min de folga) até AGORA,
+    e olha só rastro de PAGAMENTO: evento `payment_receipt_registered` ou uma linha-espelho
+    `[imagem]` em `messages`, para qualquer variante do telefone.
+
+    Por quê: o replay dispara 10–60 min depois do anexo. Se a atendente deu baixa da taxa
+    pelo painel SEM subir a imagem (sem drive_link, sem file_md5) entre 15 e 60 min após o
+    paciente enviar, o has_trace (±15 min) não vê, e a trava de md5 do register_payment não
+    pega (não há md5) — resultado: lançamento duplicado + 2ª confirmação ao paciente. Esta
+    checagem alargada fecha essa janela antes de reinjetar."""
+    variants = _phone_variants(phone)
+    lower = _iso(created_at - TRACE_TOLERANCE_S)
+    upper = _iso(_now_ts())
+    client = await get_supabase()
+
+    evs = (
+        await client.from_("events").select("id")
+        .in_("phone", variants).gte("created_at", lower).lte("created_at", upper)
+        .eq("event_type", "payment_receipt_registered")
+        .limit(1).execute()
+    )
+    if evs.data:
+        return True
+
+    msgs = (
+        await client.from_("messages").select("id")
+        .in_("phone", variants).gte("created_at", lower).lte("created_at", upper)
+        .ilike("content", "%[imagem]%")
+        .limit(1).execute()
+    )
+    return bool(msgs.data)
 
 
 async def already_alerted(attachment_id: int) -> bool:
@@ -133,7 +170,7 @@ async def replay_dropped_receipt(cand: dict, img: bytes) -> bool:
     variants = _phone_variants(raw)
     canonico = (variants[0] if variants else raw) + "@s.whatsapp.net"
 
-    texto = await describe_image_bytes(img, phone=canonico)
+    texto = await describe_image_bytes(img, phone=canonico, payment_only=True)
     if not texto:
         await _alert_clinic(cand, "payment")
         return False
@@ -181,6 +218,12 @@ async def reconcile(now: datetime, *, floor_min: int = 10, window_min: int = 60)
             if kind not in ("payment", "document"):
                 continue
             if kind == "payment":
+                # O replay dispara 10–60 min depois do anexo; o has_trace (±15 min) não
+                # alcança uma baixa manual feita pelo painel nesse intervalo. Confere o
+                # rastro de pagamento da chegada do anexo até agora antes de reinjetar —
+                # senão register_payment grava de novo sobre o lançamento do painel.
+                if await has_payment_trace_until_now(phone, cand.get("created_at", 0)):
+                    continue
                 if await already_replayed(aid):
                     continue
                 try:
