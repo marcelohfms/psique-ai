@@ -375,6 +375,8 @@ async def describe_image_bytes(
     phone: str = "",
     source_bytes: bytes | None = None,
     source_ext: str = "jpg",
+    *,
+    payment_only: bool = False,
 ) -> str | None:
     """Classify image/PDF and route accordingly.
 
@@ -386,8 +388,22 @@ async def describe_image_bytes(
 
     source_bytes: original file bytes to upload (e.g. raw PDF). If None, image_bytes is used.
     source_ext: file extension for the uploaded file ('jpg' or 'pdf').
+    payment_only: when True, ONLY the payment branch runs. If the (re)classification is
+      NOT "payment" (document or ignore), return None IMMEDIATELY after classifying,
+      WITHOUT any document/ignore side effects (no send_text to the patient, no Drive
+      upload, no clinic e-mail). The reinjeção de comprovante perdido
+      (receipt_reconciliation.replay_dropped_receipt) usa isto: se a 2ª classificação
+      divergir para documento, quem avisa a clínica é o próprio replay (um único
+      e-mail), e nenhuma mensagem de "documento recebido" vaza para o paciente — nem
+      para contato em manual_hold.
     """
     kind, description = await classify_image_raw(image_bytes, phone)
+
+    # Reinjeção só-pagamento: qualquer coisa que não seja comprovante volta None já,
+    # sem rodar nenhum efeito do ramo de documento/ignore. O chamador decide o resto.
+    if payment_only and kind != "payment":
+        logger.info("IMAGE_PAYMENT_ONLY_SKIP phone=%s kind=%s", phone, kind)
+        return None
 
     # Imagens irrelevantes (bom dia, motivacionais, etc.) — descartar silenciosamente
     if kind == "ignore":

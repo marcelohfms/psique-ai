@@ -7890,6 +7890,43 @@ async def test_collect_info_prompt_has_channel_scope_rule():
     assert CHANNEL_SCOPE_RULE in captured.get("system", "")
 
 
+# ── bypass_pause local em process_message ─────────────────────────────────────
+
+async def test_process_message_paused_returns_without_bypass():
+    import app.graph.graph as gg
+    chatbot = _make_chatbot()
+    original = gg.chatbot
+    gg.chatbot = chatbot
+    try:
+        with patch("app.main.get_user_by_phone", new_callable=AsyncMock, return_value=None), \
+             patch("app.main._eva_paused_for_phone", new_callable=AsyncMock, return_value=True), \
+             patch("app.main.get_users_by_phone", new_callable=AsyncMock, return_value=[]):
+            from app.main import process_message
+            await process_message(PHONE, "oi bypass-test-sem")
+            chatbot.aget_state.assert_not_called()
+            chatbot.ainvoke.assert_not_called()
+    finally:
+        gg.chatbot = original
+
+
+async def test_process_message_paused_proceeds_with_bypass():
+    import app.graph.graph as gg
+    chatbot = _make_chatbot()
+    chatbot.aget_state = AsyncMock(side_effect=RuntimeError("passou do portão"))
+    original = gg.chatbot
+    gg.chatbot = chatbot
+    try:
+        with patch("app.main.get_user_by_phone", new_callable=AsyncMock, return_value=None), \
+             patch("app.main._eva_paused_for_phone", new_callable=AsyncMock, return_value=True), \
+             patch("app.main.get_users_by_phone", new_callable=AsyncMock, return_value=[]):
+            from app.main import process_message
+            with pytest.raises(RuntimeError, match="passou do portão"):
+                await process_message(PHONE, "texto bypass-test-com", bypass_pause=True)
+            chatbot.aget_state.assert_called()
+    finally:
+        gg.chatbot = original
+
+
 def test_booking_fee_rule_trusts_register_payment_for_key_check():
     """A Eva NÃO deve julgar a chave do destinatário por conta própria a partir da
     descrição da imagem: comprovantes de carteiras digitais (Mercado Pago, bloco

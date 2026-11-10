@@ -40,9 +40,9 @@ def _patches(*, candidates, traced=False, alerted=False, kind="payment"):
     )
 
 
-async def test_untraced_payment_alerts_and_marks():
+async def test_untraced_document_alerts_and_marks():
     from app.receipt_reconciliation import reconcile
-    p = _patches(candidates=[_cand()], traced=False, alerted=False, kind="payment")
+    p = _patches(candidates=[_cand()], traced=False, alerted=False, kind="document")
     with p[0], p[1], p[2], p[3], p[4], p[5] as mail, p[6] as logev:
         n = await reconcile(NOW)
     assert n == 1
@@ -159,7 +159,7 @@ async def test_one_bad_candidate_does_not_abort_batch():
          patch("app.receipt_reconciliation.already_alerted", new_callable=AsyncMock, return_value=False), \
          patch("app.receipt_reconciliation._download_bytes", new_callable=AsyncMock, return_value=b"img"), \
          patch("app.receipt_reconciliation.classify_image_raw", new_callable=AsyncMock,
-               side_effect=[RuntimeError("429 insufficient_quota"), ("payment", "x")]), \
+               side_effect=[RuntimeError("429 insufficient_quota"), ("document", "x")]), \
          patch("app.receipt_reconciliation.send_clinic_notification_email", new_callable=AsyncMock) as mail, \
          patch("app.receipt_reconciliation.log_event", new_callable=AsyncMock):
         n = await reconcile(NOW)
@@ -175,3 +175,291 @@ async def test_empty_phone_candidate_skipped():
         n = await reconcile(NOW)
     assert n == 0
     mail.assert_not_awaited()
+
+
+async def test_already_replayed_true_when_event_exists():
+    """already_replayed consulta o evento receipt_drop_replayed pelo attachment_id."""
+    from app.receipt_reconciliation import already_replayed, REPLAY_EVENT
+
+    assert REPLAY_EVENT == "receipt_drop_replayed"
+    captured = {}
+    table = MagicMock()
+    for m in ("select", "limit"):
+        getattr(table, m).return_value = table
+
+    def _eq(col, val):
+        captured["eq"] = (col, val)
+        return table
+
+    def _contains(col, val):
+        captured["contains"] = (col, val)
+        return table
+
+    table.eq.side_effect = _eq
+    table.contains.side_effect = _contains
+    table.execute = AsyncMock(return_value=MagicMock(data=[{"id": 1}]))
+    client = MagicMock()
+    client.from_.return_value = table
+
+    with patch("app.receipt_reconciliation.get_supabase",
+               new_callable=AsyncMock, return_value=client):
+        assert await already_replayed(2112) is True
+    assert captured["eq"] == ("event_type", "receipt_drop_replayed")
+    assert captured["contains"] == ("metadata", {"attachment_id": 2112})
+
+    table.execute = AsyncMock(return_value=MagicMock(data=[]))
+    with patch("app.receipt_reconciliation.get_supabase",
+               new_callable=AsyncMock, return_value=client):
+        assert await already_replayed(7) is False
+
+
+async def test_replay_registers_and_notifies():
+    """Comprovante lido: espelha em messages, grava o marcador e roda a Eva com bypass."""
+    from app.receipt_reconciliation import replay_dropped_receipt
+
+    texto = "COMPROVANTE DE PAGAMENTO: R$ 100 [drive_link:https://d/x]"
+    with patch("app.receipt_reconciliation.describe_image_bytes",
+               new_callable=AsyncMock, return_value=texto) as desc, \
+         patch("app.receipt_reconciliation.log_event", new_callable=AsyncMock) as logev, \
+         patch("app.receipt_reconciliation._alert_clinic", new_callable=AsyncMock) as alert, \
+         patch("app.main.save_message", new_callable=AsyncMock) as save, \
+         patch("app.main.process_message", new_callable=AsyncMock) as proc:
+        ok = await replay_dropped_receipt(_cand(), b"img")
+
+    assert ok is True
+    canon = "5581971052827@s.whatsapp.net"
+    assert desc.await_args.kwargs["phone"] == canon
+    logev.assert_awaited_once()
+    args = logev.await_args.args
+    assert args[0] == "receipt_drop_replayed"
+    assert args[1] == canon
+    assert args[2]["attachment_id"] == 999
+    assert args[2]["conversation_id"] == 505
+    save.assert_awaited_once_with(canon, "user", texto)
+    proc.assert_awaited_once_with(canon, texto, bypass_pause=True)
+    alert.assert_not_awaited()
+
+
+async def test_replay_falls_back_to_alert_when_not_a_receipt():
+    """Reclassificado como documento: alerta a clínica, sem marcador nem Eva."""
+    from app.receipt_reconciliation import replay_dropped_receipt
+
+    cand = _cand()
+    with patch("app.receipt_reconciliation.describe_image_bytes",
+               new_callable=AsyncMock, return_value=None), \
+         patch("app.receipt_reconciliation.log_event", new_callable=AsyncMock) as logev, \
+         patch("app.receipt_reconciliation._alert_clinic", new_callable=AsyncMock) as alert, \
+         patch("app.main.save_message", new_callable=AsyncMock) as save, \
+         patch("app.main.process_message", new_callable=AsyncMock) as proc:
+        ok = await replay_dropped_receipt(cand, b"img")
+
+    assert ok is False
+    alert.assert_awaited_once_with(cand, "payment")
+    logev.assert_not_awaited()
+    save.assert_not_awaited()
+    proc.assert_not_awaited()
+
+
+async def test_replay_in_manual_hold_passes_through_pause_gate():
+    """(b) Contato em pausa/manual_hold: o process_message REAL deixa o replay passar
+    pelo portão da pausa (bypass_pause=True) e chega no grafo, em vez de calar."""
+    import app.graph.graph as gg
+    from app.receipt_reconciliation import replay_dropped_receipt
+
+    chatbot = MagicMock()
+    chatbot.aget_state = AsyncMock(side_effect=RuntimeError("passou do portao"))
+    original = gg.chatbot
+    gg.chatbot = chatbot
+    try:
+        with patch("app.receipt_reconciliation.describe_image_bytes",
+                   new_callable=AsyncMock, return_value="COMPROVANTE DE PAGAMENTO: R$ 100"), \
+             patch("app.receipt_reconciliation.log_event", new_callable=AsyncMock), \
+             patch("app.main.save_message", new_callable=AsyncMock), \
+             patch("app.main._eva_paused_for_phone", new_callable=AsyncMock, return_value=True), \
+             patch("app.main.get_user_by_phone", new_callable=AsyncMock, return_value=None), \
+             patch("app.main.get_users_by_phone", new_callable=AsyncMock, return_value=[]):
+            with pytest.raises(RuntimeError, match="passou do portao"):
+                await replay_dropped_receipt(_cand(), b"img")
+        chatbot.aget_state.assert_called()
+    finally:
+        gg.chatbot = original
+
+
+async def test_replay_phone_without_ninth_digit_is_normalized():
+    """(i) Telefone cru de 12 dígitos (sem o 9) vira a forma canônica com 9 antes de
+    describe_image_bytes, log_event, save_message e process_message."""
+    from app.receipt_reconciliation import replay_dropped_receipt
+
+    texto = "COMPROVANTE DE PAGAMENTO: R$ 100"
+    with patch("app.receipt_reconciliation.describe_image_bytes",
+               new_callable=AsyncMock, return_value=texto) as desc, \
+         patch("app.receipt_reconciliation.log_event", new_callable=AsyncMock) as logev, \
+         patch("app.main.save_message", new_callable=AsyncMock) as save, \
+         patch("app.main.process_message", new_callable=AsyncMock) as proc:
+        await replay_dropped_receipt(_cand(phone="558171052827"), b"img")
+
+    canon = "5581971052827@s.whatsapp.net"
+    assert desc.await_args.kwargs["phone"] == canon
+    assert logev.await_args.args[1] == canon
+    save.assert_awaited_once_with(canon, "user", texto)
+    proc.assert_awaited_once_with(canon, texto, bypass_pause=True)
+
+
+# (d) md5 duplicado: a trava vive dentro de register_payment (DUPLICATE_RECEIPT_MARKER)
+# e já é coberta por test_tools.py::test_register_payment_blocks_reused_receipt_file.
+# O replay não registra nada por conta própria: só chama process_message uma vez (ver
+# test_replay_registers_and_notifies), então a trava vale igual ao caminho normal.
+
+
+def _reconcile_ctx(stack, cands, kind="payment", replayed=False, replay=None,
+                   payment_traced=False):
+    """Aplica os mocks do reconcile num ExitStack e devolve (replay, mail, logev)."""
+    p = _patches(candidates=cands, kind=kind)
+    for x in p[:5]:
+        stack.enter_context(x)
+    mail = stack.enter_context(p[5])
+    logev = stack.enter_context(p[6])
+    stack.enter_context(patch("app.receipt_reconciliation.has_payment_trace_until_now",
+                              new_callable=AsyncMock, return_value=payment_traced))
+    stack.enter_context(patch("app.receipt_reconciliation.already_replayed",
+                              new_callable=AsyncMock, return_value=replayed))
+    rep = stack.enter_context(patch("app.receipt_reconciliation.replay_dropped_receipt",
+                                    new_callable=AsyncMock, return_value=True) if replay is None
+                              else patch("app.receipt_reconciliation.replay_dropped_receipt", replay))
+    return rep, mail, logev
+
+
+async def test_reconcile_payment_calls_replay():
+    from contextlib import ExitStack
+    from app.receipt_reconciliation import reconcile
+    with ExitStack() as st:
+        rep, mail, logev = _reconcile_ctx(st, [_cand()])
+        await reconcile(NOW)
+    rep.assert_awaited_once()
+    assert rep.await_args.args[0]["attachment_id"] == 999
+    assert rep.await_args.args[1] == b"img"
+    mail.assert_not_awaited()
+
+
+async def test_reconcile_document_still_alerts():
+    from contextlib import ExitStack
+    from app.receipt_reconciliation import reconcile
+    with ExitStack() as st:
+        rep, mail, logev = _reconcile_ctx(st, [_cand()], kind="document")
+        n = await reconcile(NOW)
+    assert n == 1
+    rep.assert_not_awaited()
+    mail.assert_awaited_once()
+    assert logev.await_args.args[0] == "receipt_drop_alerted"
+
+
+async def test_reconcile_skips_when_panel_registered_after_fifteen_min():
+    """A atendente deu baixa da taxa pelo painel SEM subir a imagem (sem md5), 30 min
+    depois do anexo — fora da janela de ±15 min do has_trace. Sem a checagem alargada,
+    o replay rodaria e register_payment gravaria de novo (o md5 não pega, pois não há
+    md5), duplicando o lançamento e mandando 2ª confirmação ao paciente. Com
+    has_payment_trace_until_now (do anexo até agora) o reconcile pula e NÃO reinjeta."""
+    from contextlib import ExitStack
+    from app.receipt_reconciliation import reconcile
+    with ExitStack() as st:
+        rep, mail, logev = _reconcile_ctx(st, [_cand()], payment_traced=True)
+        n = await reconcile(NOW)
+    rep.assert_not_awaited()
+    mail.assert_not_awaited()
+    assert n == 0
+
+
+async def test_has_payment_trace_until_now_queries_up_to_now():
+    """A janela da checagem alargada vai de (chegada − tolerância) até AGORA, cobrindo
+    uma baixa pelo painel feita minutos depois do anexo (fora dos ±15 min)."""
+    from app.receipt_reconciliation import (
+        has_payment_trace_until_now, TRACE_TOLERANCE_S, _iso,
+    )
+
+    captured = {}
+    table = MagicMock()
+    for m in ("select", "in_", "gte", "lte", "or_", "eq", "ilike", "limit"):
+        getattr(table, m).return_value = table
+
+    def _gte(col, val):
+        captured["lower"] = val
+        return table
+
+    def _lte(col, val):
+        captured.setdefault("uppers", []).append(val)
+        return table
+
+    table.gte.side_effect = _gte
+    table.lte.side_effect = _lte
+    table.execute = AsyncMock(return_value=MagicMock(data=[]))
+    client = MagicMock()
+    client.from_.return_value = table
+
+    created = int(NOW.timestamp()) - 1800  # anexo 30 min atrás
+    now_ts = int(NOW.timestamp())
+    with patch("app.receipt_reconciliation.get_supabase",
+               new_callable=AsyncMock, return_value=client), \
+         patch("app.receipt_reconciliation._now_ts", return_value=now_ts):
+        await has_payment_trace_until_now("5581971052827", created)
+
+    assert captured["lower"] == _iso(created - TRACE_TOLERANCE_S)
+    # o teto é ~agora, bem depois de created+15min
+    assert any(u == _iso(now_ts) for u in captured["uppers"])
+
+
+async def test_reconcile_skips_already_replayed():
+    from contextlib import ExitStack
+    from app.receipt_reconciliation import reconcile
+    with ExitStack() as st:
+        rep, mail, logev = _reconcile_ctx(st, [_cand()], replayed=True)
+        await reconcile(NOW)
+    rep.assert_not_awaited()
+    mail.assert_not_awaited()
+
+
+async def test_reconcile_candidate_exception_does_not_abort():
+    """Falha fora do replay (ex.: classificação) num candidato não derruba os demais."""
+    from contextlib import ExitStack
+    from app.receipt_reconciliation import reconcile
+    cands = [_cand(attachment_id=1), _cand(attachment_id=2)]
+    with ExitStack() as st:
+        rep, mail, logev = _reconcile_ctx(st, cands)
+        st.enter_context(patch("app.receipt_reconciliation.classify_image_raw",
+                               new_callable=AsyncMock,
+                               side_effect=[RuntimeError("boom"), ("payment", "x")]))
+        await reconcile(NOW)
+    rep.assert_awaited_once()
+    assert rep.await_args.args[0]["attachment_id"] == 2
+
+
+async def test_reconcile_replay_crash_alerts_clinic_and_continues():
+    """Replay que lança vira alerta por e-mail (nunca comprovante enterrado em silêncio)
+    e a rodada segue para o próximo candidato."""
+    from contextlib import ExitStack
+    from app.receipt_reconciliation import reconcile
+    cands = [_cand(attachment_id=1), _cand(attachment_id=2)]
+    replay = AsyncMock(side_effect=[RuntimeError("boom"), True])
+    with ExitStack() as st:
+        rep, mail, logev = _reconcile_ctx(st, cands, replay=replay)
+        n = await reconcile(NOW)
+    assert replay.await_count == 2
+    mail.assert_awaited_once()
+    assert n == 1
+    assert logev.await_args.args[0] == "receipt_drop_alerted"
+    assert logev.await_args.args[2]["attachment_id"] == 1
+
+
+async def test_reconcile_replay_false_marks_alerted_without_own_email():
+    """Replay retorna False (não era comprovante; ele mesmo já mandou o e-mail): o
+    reconcile só grava receipt_drop_alerted e conta 1, sem e-mail próprio."""
+    from contextlib import ExitStack
+    from app.receipt_reconciliation import reconcile
+    replay = AsyncMock(return_value=False)
+    with ExitStack() as st:
+        rep, mail, logev = _reconcile_ctx(st, [_cand()], replay=replay)
+        n = await reconcile(NOW)
+    assert n == 1
+    replay.assert_awaited_once()
+    mail.assert_not_awaited()
+    logev.assert_awaited_once()
+    assert logev.await_args.args[0] == "receipt_drop_alerted"

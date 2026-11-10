@@ -20,12 +20,14 @@ import httpx
 from app.chatwoot import list_recent_incoming_attachments
 from app.database import get_supabase, log_event
 from app.email_sender import send_clinic_notification_email
-from app.media import classify_image_raw
+from app.media import classify_image_raw, describe_image_bytes
 from app.phone import _phone_variants
 
 logger = logging.getLogger(__name__)
 
 RECEIPT_DROP_EVENT = "receipt_drop_alerted"
+# Marca que o anexo já foi reinjetado no fluxo normal da Eva (no máximo uma vez).
+REPLAY_EVENT = "receipt_drop_replayed"
 # Tolerância em torno da chegada do anexo: um registro (pela Eva ou pelo painel) que
 # aconteça até 15 min ANTES já conta como rastro, cobrindo folga de relógio.
 TRACE_TOLERANCE_S = 15 * 60
@@ -35,6 +37,10 @@ _RECEIPT_EVENTS = ("payment_receipt_registered", "payment_receipt_unreadable")
 
 def _iso(epoch_s: int) -> str:
     return datetime.fromtimestamp(epoch_s, timezone.utc).isoformat()
+
+
+def _now_ts() -> int:
+    return int(datetime.now(timezone.utc).timestamp())
 
 
 async def has_trace(phone: str, created_at: int) -> bool:
@@ -68,6 +74,39 @@ async def has_trace(phone: str, created_at: int) -> bool:
     return bool(evs.data)
 
 
+async def has_payment_trace_until_now(phone: str, created_at: int) -> bool:
+    """Como has_trace, mas a janela vai da chegada do anexo (−15 min de folga) até AGORA,
+    e olha só rastro de PAGAMENTO: evento `payment_receipt_registered` ou uma linha-espelho
+    `[imagem]` em `messages`, para qualquer variante do telefone.
+
+    Por quê: o replay dispara 10–60 min depois do anexo. Se a atendente deu baixa da taxa
+    pelo painel SEM subir a imagem (sem drive_link, sem file_md5) entre 15 e 60 min após o
+    paciente enviar, o has_trace (±15 min) não vê, e a trava de md5 do register_payment não
+    pega (não há md5) — resultado: lançamento duplicado + 2ª confirmação ao paciente. Esta
+    checagem alargada fecha essa janela antes de reinjetar."""
+    variants = _phone_variants(phone)
+    lower = _iso(created_at - TRACE_TOLERANCE_S)
+    upper = _iso(_now_ts())
+    client = await get_supabase()
+
+    evs = (
+        await client.from_("events").select("id")
+        .in_("phone", variants).gte("created_at", lower).lte("created_at", upper)
+        .eq("event_type", "payment_receipt_registered")
+        .limit(1).execute()
+    )
+    if evs.data:
+        return True
+
+    msgs = (
+        await client.from_("messages").select("id")
+        .in_("phone", variants).gte("created_at", lower).lte("created_at", upper)
+        .ilike("content", "%[imagem]%")
+        .limit(1).execute()
+    )
+    return bool(msgs.data)
+
+
 async def already_alerted(attachment_id: int) -> bool:
     """True se este anexo já gerou um alerta numa rodada anterior — evita cutucar a
     clínica a cada 15 min sobre o mesmo comprovante."""
@@ -75,6 +114,19 @@ async def already_alerted(attachment_id: int) -> bool:
     r = (
         await client.from_("events").select("id")
         .eq("event_type", RECEIPT_DROP_EVENT)
+        .contains("metadata", {"attachment_id": attachment_id})
+        .limit(1).execute()
+    )
+    return bool(r.data)
+
+
+async def already_replayed(attachment_id: int) -> bool:
+    """True se este anexo já foi reinjetado na Eva numa rodada anterior — garante que
+    o comprovante perdido seja reprocessado no máximo uma vez."""
+    client = await get_supabase()
+    r = (
+        await client.from_("events").select("id")
+        .eq("event_type", REPLAY_EVENT)
         .contains("metadata", {"attachment_id": attachment_id})
         .limit(1).execute()
     )
@@ -101,6 +153,40 @@ async def _alert_clinic(cand: dict, kind: str) -> None:
         "Por favor, abra a conversa no Chatwoot e trate manualmente (ex.: registre o "
         "comprovante pelo painel), em vez de pedir para o paciente reenviar.",
     )
+
+
+async def replay_dropped_receipt(cand: dict, img: bytes) -> bool:
+    """Reinjeta no caminho normal da Eva um comprovante que sumiu na ingestão.
+
+    Roda classificação + upload no Drive + releitura do valor (describe_image_bytes).
+    Se virou texto de comprovante, espelha em messages e roda a Eva com bypass da pausa,
+    para o register_payment registrar (com todas as travas) e a Eva avisar o paciente.
+    Se não for comprovante (virou documento/irrelevante), cai no alerta por e-mail.
+    Retorna True se reinjetou, False se caiu no alerta."""
+    # Import local: app.main importa este módulo indiretamente (evita ciclo).
+    from app.main import process_message, save_message
+
+    raw = cand.get("phone", "")
+    variants = _phone_variants(raw)
+    canonico = (variants[0] if variants else raw) + "@s.whatsapp.net"
+
+    texto = await describe_image_bytes(img, phone=canonico, payment_only=True)
+    if not texto:
+        await _alert_clinic(cand, "payment")
+        return False
+
+    # O attachment_id no metadata é o que already_replayed consulta (idempotência).
+    await log_event(
+        REPLAY_EVENT,
+        canonico,
+        {
+            "attachment_id": cand.get("attachment_id"),
+            "conversation_id": cand.get("conversation_id"),
+        },
+    )
+    await save_message(canonico, "user", texto)
+    await process_message(canonico, texto, bypass_pause=True)
+    return True
 
 
 async def reconcile(now: datetime, *, floor_min: int = 10, window_min: int = 60) -> int:
@@ -130,6 +216,32 @@ async def reconcile(now: datetime, *, floor_min: int = 10, window_min: int = 60)
             img = await _download_bytes(cand.get("data_url", ""))
             kind, _canonical = await classify_image_raw(img, phone)
             if kind not in ("payment", "document"):
+                continue
+            if kind == "payment":
+                # O replay dispara 10–60 min depois do anexo; o has_trace (±15 min) não
+                # alcança uma baixa manual feita pelo painel nesse intervalo. Confere o
+                # rastro de pagamento da chegada do anexo até agora antes de reinjetar —
+                # senão register_payment grava de novo sobre o lançamento do painel.
+                if await has_payment_trace_until_now(phone, cand.get("created_at", 0)):
+                    continue
+                if await already_replayed(aid):
+                    continue
+                try:
+                    replayed = await replay_dropped_receipt(cand, img)
+                except Exception:
+                    # Replay quebrou (o marcador pode já estar gravado): vira alerta,
+                    # nunca um comprovante enterrado em silêncio.
+                    logger.exception("RECONCILE_REPLAY_FAILED attachment_id=%s", aid)
+                    replayed = False
+                    await _alert_clinic(cand, "payment")
+                if not replayed:
+                    # Já alertou (e-mail do replay ou do crash acima); marca p/ não repetir.
+                    await log_event(RECEIPT_DROP_EVENT, phone, {
+                        "attachment_id": aid,
+                        "conversation_id": cand.get("conversation_id"),
+                        "kind": kind,
+                    })
+                    alerts += 1
                 continue
             await _alert_clinic(cand, kind)
             await log_event(RECEIPT_DROP_EVENT, phone, {
