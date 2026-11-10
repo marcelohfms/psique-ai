@@ -1927,6 +1927,24 @@ async def collect_info_node(state: ConversationState, config: RunnableConfig) ->
                 field, val[:120], state["phone"],
             )
             continue
+        # Consulta de terceiro (is_patient False): o nome do paciente NUNCA pode ser
+        # o nome do contato. O LLM re-extrai o histórico num turno de fallback e
+        # confunde quem fala com o paciente, sobrescrevendo o nome já capturado
+        # (caso Davi, 5581996981543, 10/11/2026: o prontuário do filho virou o nome
+        # da mãe). O Step 2c determinístico já barra isso; aqui era a mesma porta
+        # sem a fechadura.
+        if (
+            field == "patient_name"
+            and state.get("is_patient") is False
+            and _same_name(val, state.get("user_name"))
+        ):
+            import logging as _log
+            _log.getLogger(__name__).warning(
+                "NOME_PACIENTE_IGUAL_CONTATO_DESCARTADO: LLM extraiu patient_name=%r "
+                "igual ao nome do contato numa consulta de terceiro phone=%s",
+                val[:120], state["phone"],
+            )
+            continue
         # A LLM também escreve o parentesco por conta própria ("avó materna",
         # "mãe ou pai"). Passa pelo mesmo normalizador do passo 6b para gravar um
         # rótulo do painel que a regra da idade reconhece.
@@ -2039,10 +2057,20 @@ async def collect_info_node(state: ConversationState, config: RunnableConfig) ->
         update["stage"] = "patient_agent"
         if _is_document:
             update["pending_action"] = "request_document"
+        # Defesa em profundidade: na gravação final do cadastro, numa consulta de
+        # terceiro (is_patient False), nunca gravar o nome do contato como nome do
+        # paciente. patient_name=None faz o upsert_user manter o nome já gravado em
+        # patients.name em vez de sobrescrevê-lo (caso Davi, 10/11/2026).
+        _final_patient_name = merged.get("patient_name")
+        if (
+            merged.get("is_patient") is False
+            and _same_name(_final_patient_name, merged.get("user_name"))
+        ):
+            _final_patient_name = None
         try:
             _final_id = await upsert_user(state["phone"], {
                 "name": merged.get("user_name"),
-                "patient_name": merged.get("patient_name"),
+                "patient_name": _final_patient_name,
                 "age": merged.get("patient_age"),
                 "birth_date": merged.get("birth_date"),
                 "patient_cpf": merged.get("patient_cpf"),

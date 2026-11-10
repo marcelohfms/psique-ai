@@ -7939,3 +7939,81 @@ def test_booking_fee_rule_trusts_register_payment_for_key_check():
     assert "register_payment" in rule
     assert "Mercado Pago" in rule
     assert "Se register_payment retornar sucesso" in rule
+
+
+async def test_collect_info_llm_does_not_overwrite_patient_name_with_contact_name():
+    """Caso Davi (5581996981543, 10/11/2026): a mãe (contato) agenda para o filho.
+    O step-machine grava patient_name=filho corretamente, mas num turno que cai no
+    FALLBACK do LLM o modelo re-extrai o histórico e devolve patient_name = nome da
+    MÃE. O loop de merge do LLM gravava isso sem conferir, sobrescrevendo o nome do
+    paciente pelo nome do contato. Para is_patient=False, patient_name igual ao
+    nome do contato deve ser DESCARTADO (mesma trava que o step-machine já tem)."""
+    from app.graph.nodes import collect_info_node
+    from app.graph.schemas import CollectInfoOutput
+
+    _CONTACT = "Maria José Augusta da Silva"
+    _PATIENT = "Davi Matheus da Silva Melo"
+
+    llm_result = CollectInfoOutput(
+        reply="Certo, vou prosseguir.",
+        patient_name=_CONTACT,   # LLM confunde a mãe com o paciente
+        is_complete=False,
+    )
+
+    state = {
+        "phone": PHONE,
+        # sem palavra de pedido -> _has_request False -> pula o step-machine -> LLM
+        "messages": [HumanMessage(content="ok")],
+        "user_name": _CONTACT,
+        "is_patient": False,
+        "patient_name": _PATIENT,   # já capturado corretamente antes
+        "birth_date": "29/05/2015",
+        "patient_age": 11,
+        "preferred_doctor": "julio",
+    }
+    with patch("app.graph.nodes._get_collect_llm") as mock_llm_fn, \
+         patch("app.graph.nodes.send_text", new_callable=AsyncMock), \
+         patch("app.graph.nodes.save_message", new_callable=AsyncMock), \
+         patch("app.graph.nodes.log_event", new_callable=AsyncMock), \
+         patch("app.graph.nodes.upsert_user", new_callable=AsyncMock, return_value="p-1"), \
+         patch("app.graph.nodes.get_users_by_phone", new_callable=AsyncMock, return_value=[]):
+        mock_llm = MagicMock()
+        mock_llm.ainvoke = AsyncMock(return_value=llm_result)
+        mock_llm_fn.return_value = mock_llm
+        update = await collect_info_node(state, {})
+
+    # O nome do paciente NUNCA pode virar o nome do contato.
+    assert update.get("patient_name") != _CONTACT
+
+
+async def test_collect_info_llm_keeps_patient_name_when_contact_is_patient():
+    """Trava deve ser restrita a is_patient=False. Quando o contato É o paciente
+    (is_patient=True), patient_name igual ao user_name é legítimo e não é descartado."""
+    from app.graph.nodes import collect_info_node
+    from app.graph.schemas import CollectInfoOutput
+
+    _NAME = "Fernanda Lima Souza"
+    llm_result = CollectInfoOutput(reply="ok", patient_name=_NAME, is_complete=False)
+
+    state = {
+        "phone": PHONE,
+        "messages": [HumanMessage(content="ok")],
+        "user_name": _NAME,
+        "is_patient": True,
+        "patient_name": None,
+        "birth_date": "10/05/1990",
+        "patient_age": 35,
+        "preferred_doctor": "bruna",
+    }
+    with patch("app.graph.nodes._get_collect_llm") as mock_llm_fn, \
+         patch("app.graph.nodes.send_text", new_callable=AsyncMock), \
+         patch("app.graph.nodes.save_message", new_callable=AsyncMock), \
+         patch("app.graph.nodes.log_event", new_callable=AsyncMock), \
+         patch("app.graph.nodes.upsert_user", new_callable=AsyncMock, return_value="p-2"), \
+         patch("app.graph.nodes.get_users_by_phone", new_callable=AsyncMock, return_value=[]):
+        mock_llm = MagicMock()
+        mock_llm.ainvoke = AsyncMock(return_value=llm_result)
+        mock_llm_fn.return_value = mock_llm
+        update = await collect_info_node(state, {})
+
+    assert update.get("patient_name") == _NAME
