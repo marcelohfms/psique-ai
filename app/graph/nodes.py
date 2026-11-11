@@ -950,6 +950,17 @@ async def collect_info_node(state: ConversationState, config: RunnableConfig) ->
             }
             if is_registration_complete(u):
                 return {**loaded, "stage": "patient_agent", "messages": []}
+            # Pedido de documento (NF, recibo, laudo…) de um contato que JÁ tem
+            # paciente cadastrado não exige o cadastro completo de AGENDAMENTO
+            # (guardian_cpf etc.) — a request_document resolve o paciente pelo
+            # telefone/consulta. Sem este desvio, um menor marcado como paciente
+            # novo e sem o CPF do responsável prendia o pedido no collect_info (nó
+            # sem a tool), a Eva ficava pedindo "Qual é o CPF do responsável?" e a
+            # NF nunca era registrada (caso João Givaldo, mãe Heliana,
+            # 5581988611114, 10/11/2026). Encaminha ao patient_agent, como já faz o
+            # desvio de comprovante em _route_entry.
+            if _detect_document_emission_request(_last_human_msg):
+                return {**loaded, "stage": "patient_agent", "messages": []}
             # Cadastro incompleto de terceiro com o paciente batizado com o nome do
             # contato: é a cópia implícita do upsert_user no passo do nome, feita
             # antes de sabermos para quem é a consulta. Não é um nome de paciente
