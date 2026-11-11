@@ -1193,3 +1193,34 @@ async def test_update_event_not_confirmed_has_no_color():
             patient_name="Lucas", doctor_name="Dr. Júlio", modality="online",
         )
     assert "colorId" not in mock_upd.call_args[0][3]
+
+
+# ── dia da semana certo na apresentação dos horários ────────────────────────────
+# Regression (Dra. Bruna, 10/11/2026): a mensagem enviada ao paciente trazia o dia
+# da semana errado — "Terça, 11/11" (era quarta), "Domingo, 16/11" e "Domingo,
+# 23/11" (eram segundas). A camada determinística rotula toda data corretamente;
+# o erro veio da Eva recalcular o dia da semana a partir do dd/mm. Estes testes
+# travam a camada determinística e garantem o guard que proíbe a Eva recalcular.
+
+@pytest.mark.parametrize("dia,esperado", [
+    (date(2026, 11, 11), "quarta-feira"),
+    (date(2026, 11, 16), "segunda-feira"),
+    (date(2026, 11, 18), "quarta-feira"),
+    (date(2026, 11, 23), "segunda-feira"),
+])
+def test_slot_header_pareia_dia_da_semana_certo(dia, esperado):
+    """O cabeçalho que a tool entrega para a Eva precisa casar o dia da semana
+    com a data — nunca um dia atrás."""
+    from app.graph.tools import _format_any_day_section
+    slot = datetime(dia.year, dia.month, dia.day, 14, 0, tzinfo=TZ)
+    header = _format_any_day_section(dia, {"tarde": [(slot, "escolha")]}, "tarde")
+    assert header.startswith(f"{esperado}, dia {dia.strftime('%d/%m')}")
+
+
+def test_prompt_proibe_recalcular_dia_da_semana():
+    """Ambos os blocos devem instruir a copiar o dia da semana da tool, nunca
+    deduzi-lo do dd/mm."""
+    from app.graph.prompts import EXISTING_PATIENT_SYSTEM, NEW_PATIENT_SYSTEM
+    for block in (EXISTING_PATIENT_SYSTEM, NEW_PATIENT_SYSTEM):
+        assert "COPIE, NÃO CALCULE" in block
+        assert "PROIBIDO deduzir, calcular ou adivinhar o dia da semana" in block

@@ -1411,6 +1411,12 @@ reagendamento, documentos ou qualquer outra situação.
 - Ao mencionar qualquer data ou horário, SEMPRE inclua a data numérica no formato dd/mm — inclusive ao apresentar \
 horários disponíveis. Exemplo correto: "segunda, dia 19/05, às 09h". NUNCA diga apenas "segunda-feira" ou "essa semana" \
 sem a data numérica. Ao apresentar uma lista de horários, repita a data em cada opção se os dias forem diferentes.
+- NOME DO DIA DA SEMANA — COPIE, NÃO CALCULE: o dia da semana (segunda, terça, quarta…) de cada data \
+deve ser copiado LETRA POR LETRA de como a tool get_available_slots devolveu junto daquela data. A tool \
+SEMPRE diz o dia certo (ex.: devolveu "Quarta, dia 11/11" → escreva "quarta, 11/11", NUNCA "terça"). É \
+PROIBIDO deduzir, calcular ou adivinhar o dia da semana a partir do número dd/mm — você erra essa conta e \
+manda o paciente para o dia errado. Na dúvida sobre o dia da semana de uma data, não escreva o nome do dia: \
+mostre só a data numérica dd/mm.
 - Ao apresentar horários disponíveis ao paciente, SEMPRE inclua ao final da lista o aviso: \
 "⚠️ Como os agendamentos são realizados simultaneamente, os horários informados precisam ter a disponibilidade confirmada no momento da sua escolha."
 - Se o paciente mencionar urgência, emergência, encaixe ou precisar de atendimento o mais rápido possível: \
@@ -1713,6 +1719,12 @@ pela ferramenta — nunca escreva sua própria mensagem de transferência.
 - Ao mencionar qualquer data ou horário, SEMPRE inclua a data numérica no formato dd/mm — inclusive ao apresentar \
 horários disponíveis. Exemplo correto: "segunda, dia 19/05, às 09h". NUNCA diga apenas "segunda-feira" ou "essa semana" \
 sem a data numérica. Ao apresentar uma lista de horários, repita a data em cada opção se os dias forem diferentes.
+- NOME DO DIA DA SEMANA — COPIE, NÃO CALCULE: o dia da semana (segunda, terça, quarta…) de cada data \
+deve ser copiado LETRA POR LETRA de como a tool get_available_slots devolveu junto daquela data. A tool \
+SEMPRE diz o dia certo (ex.: devolveu "Quarta, dia 11/11" → escreva "quarta, 11/11", NUNCA "terça"). É \
+PROIBIDO deduzir, calcular ou adivinhar o dia da semana a partir do número dd/mm — você erra essa conta e \
+manda o paciente para o dia errado. Na dúvida sobre o dia da semana de uma data, não escreva o nome do dia: \
+mostre só a data numérica dd/mm.
 - Ao apresentar horários disponíveis ao paciente, SEMPRE inclua ao final da lista o aviso: \
 "⚠️ Como os agendamentos são realizados simultaneamente, os horários informados precisam ter a disponibilidade confirmada no momento da sua escolha."
 {attendant_instruction_rule}
