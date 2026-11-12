@@ -8017,3 +8017,63 @@ async def test_collect_info_llm_keeps_patient_name_when_contact_is_patient():
         update = await collect_info_node(state, {})
 
     assert update.get("patient_name") == _NAME
+
+
+# ── Pedido de documento de paciente já cadastrado não trava no collect_info ──────
+# caso João Givaldo (mãe Heliana, 5581988611114, 10/11/2026): menor do Dr. Júlio
+# marcado como paciente novo (is_returning_patient=False) e SEM guardian_cpf no
+# cadastro. A mãe pediu a nota fiscal, mas is_registration_complete=False prendia a
+# conversa no collect_info (nó sem request_document) e a Eva ficava pedindo
+# "Qual é o CPF do responsável?" em vez de registrar a NF.
+_MINOR_NEW_NO_CPF = {
+    "id": "pat-joao-uuid",
+    "number": "5581988611114",
+    "name": "Heliana Nascimento Santos Jacinto",       # nome do CONTATO (responsável)
+    "patient_name": "João Givaldo Santos Jacinto",      # nome do PACIENTE
+    "age": 16,
+    "is_patient": False,
+    "is_returning_patient": False,
+    "doctor_id": "d5baa58b-a788-4f40-b8c0-512c189150be",  # julio
+    "birth_date": "29/07/2010",
+    "email": "jacintoheliana@gmail.com",
+    "guardian_name": "Heliana Nascimento Santos Jacinto",
+    "guardian_cpf": None,                                # <-- faltando → cadastro incompleto
+    "guardian_relationship": "mãe",
+    "active": True,
+}
+
+
+async def test_document_request_from_registered_patient_routes_to_patient_agent():
+    """Pedido de documento de um contato que já tem paciente cadastrado deve ir ao
+    patient_agent (onde existe request_document), mesmo com o cadastro de
+    agendamento incompleto — nunca ficar preso pedindo o CPF do responsável."""
+    from app.database import is_registration_complete
+    from app.graph.nodes import collect_info_node
+
+    # pré-condição do bug: o cadastro é de fato incompleto pela régua de agendamento
+    assert is_registration_complete(_MINOR_NEW_NO_CPF) is False
+
+    state = {
+        "phone": PHONE,
+        "messages": [HumanMessage(content="Estou precisando da nota fiscal da última consulta dele")],
+    }
+
+    # LLM do collect_info devolveria um resultado que NÃO leva ao patient_agent;
+    # se o guard de documento não desviar antes, o stage não será patient_agent.
+    from app.graph.schemas import CollectInfoOutput
+    llm_result = CollectInfoOutput(reply="Qual é o CPF do responsável?", is_complete=False)
+
+    with patch("app.graph.nodes._get_collect_llm") as mock_llm_fn, \
+         patch("app.graph.nodes.send_text", new_callable=AsyncMock), \
+         patch("app.graph.nodes.save_message", new_callable=AsyncMock), \
+         patch("app.graph.nodes.log_event", new_callable=AsyncMock), \
+         patch("app.graph.nodes.upsert_user", new_callable=AsyncMock, return_value="pat-joao-uuid"), \
+         patch("app.graph.nodes.get_users_by_phone", new_callable=AsyncMock, return_value=[_MINOR_NEW_NO_CPF]):
+        mock_llm = MagicMock()
+        mock_llm.ainvoke = AsyncMock(return_value=llm_result)
+        mock_llm_fn.return_value = mock_llm
+        update = await collect_info_node(state, {})
+
+    assert update.get("stage") == "patient_agent"
+    # carrega o contexto do paciente para o patient_agent agir sobre o pedido
+    assert update.get("patient_name") == "João Givaldo Santos Jacinto"
