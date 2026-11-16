@@ -3798,6 +3798,18 @@ async def _increment_amount_paid(client, appointment_ids: list[str], cents: int)
     return first
 
 
+async def _set_amount_paid(client, appointment_ids: list[str], cents: int) -> None:
+    """Fixa o acumulado pago (valor absoluto) de cada consulta, via rpc. Best-effort:
+    falha só é logada, o pagamento da atendente já foi gravado."""
+    for aid in appointment_ids:
+        try:
+            await client.rpc(
+                "set_amount_paid", {"p_appointment_id": aid, "p_cents": cents}
+            ).execute()
+        except Exception:
+            logger.exception("SET_AMOUNT_PAID FAILED appt=%s cents=%s", aid, cents)
+
+
 def _parse_brl_amount(raw: str) -> float:
     """Parse a monetary string that may use Brazilian (1.234,56) or plain/US
     (1234.56 / 1234) formatting into a float. Returns 0.0 if unparseable.
@@ -4880,6 +4892,11 @@ async def register_payment(
             except Exception:
                 _logger.exception("APPT UPDATE FAILED appt=%s patient=%s", aid, patient_name)
 
+    async def _set_acc_full() -> None:
+        """Quitação por autoridade da atendente: acumulado = valor esperado."""
+        ids = linked_appt_ids if linked_appt_ids else ([appt_id_to_pay] if appt_id_to_pay else [])
+        await _set_amount_paid(client, ids, int(round(expected * 100)))
+
     # ── Courtesy (custom_price == 0) — always QUITADA ────────────────────────
     if custom_price == 0:
         if appt_id_to_pay:
@@ -4887,6 +4904,7 @@ async def register_payment(
                 "paid_at": now_dt.isoformat(),
                 "booking_fee_paid_at": now_dt.isoformat(),
             })
+            await _set_acc_full()
         _sheets_append_failed = False
         try:
             await append_payment_receipt(
@@ -4970,6 +4988,7 @@ async def register_payment(
         payment_type = "Consulta"
         if appt_id_to_pay:
             await _update_appts({"paid_at": now_dt.isoformat(), "booking_fee_paid_at": now_dt.isoformat()})
+            await _set_acc_full()
     elif amount_float <= 0:
         # Valor ilegível mesmo após a releitura reforçada (app.media._reread_amount).
         # NÃO grava planilha nem marca taxa (fazer isso com "?" dava falsa impressão

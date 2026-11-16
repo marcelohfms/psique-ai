@@ -8997,3 +8997,59 @@ async def test_primeira_consulta_dividida_soma_igual_nas_duas_linhas():
     result, ctx = await _run_pix("300,00", 30000, client=client)
     assert set(ctx["inc"].await_args.args[1]) == {"id_parte1", "id_parte2"}
     assert ctx["inc"].await_args.args[2] == 30000
+
+
+# ── register_payment: pagamentos da atendente alimentam o acumulado ───────────
+
+def _rpc_spy(client):
+    rpc_exec = AsyncMock(return_value=MagicMock(data=0))
+    client.rpc = MagicMock(return_value=MagicMock(execute=rpc_exec))
+    return client.rpc
+
+
+async def test_pagamento_link_seta_acumulado_cheio():
+    from app.graph.tools import register_payment
+    client, _, _ = _make_supabase_client_with_appointment(
+        start_time=(datetime.now(TZ) + timedelta(days=30)).isoformat(),
+        end_time=(datetime.now(TZ) + timedelta(days=30, hours=1)).isoformat(),
+    )
+    rpc = _rpc_spy(client)
+    with patch("app.graph.tools.get_supabase", new_callable=AsyncMock, return_value=client), \
+         patch("app.graph.tools.get_users_by_phone", new_callable=AsyncMock, return_value=[{"id": "user-123", "patient_name": "Maria"}]), \
+         patch("app.graph.tools.log_event", new_callable=AsyncMock), \
+         patch("app.graph.tools._expected_consultation_amount", return_value=600), \
+         patch("app.graph.tools._notify_clinic", new_callable=AsyncMock), \
+         patch("app.google_drive.rename_file", new_callable=AsyncMock), \
+         patch("app.google_sheets.append_payment_receipt", new_callable=AsyncMock), \
+         patch("app.graph.tools.send_text", new_callable=AsyncMock):
+        result = await register_payment.coroutine(
+            amount="600,00", drive_link="", is_link=True,
+            state=_make_state(silent_mode=True, messages=[
+                HumanMessage(content="[Instrução da atendente]: PAGAMENTO CONFIRMADO Maria R$ 600,00"),
+            ]),
+            config=CONFIG,
+        )
+    assert "QUITADA" in result
+    rpc.assert_any_call("set_amount_paid", {"p_appointment_id": "apt-1", "p_cents": 60000})
+
+
+async def test_cortesia_nao_fica_com_saldo_pendente():
+    from app.graph.tools import register_payment
+    client, _, _ = _make_supabase_client_with_appointment_waived(
+        booking_fee_waived=True, custom_price=0
+    )
+    rpc = _rpc_spy(client)
+    with patch("app.graph.tools.get_supabase", new_callable=AsyncMock, return_value=client), \
+         patch("app.graph.tools.get_users_by_phone", new_callable=AsyncMock, return_value=[{"id": "user-123", "patient_name": "Maria"}]), \
+         patch("app.graph.tools.log_event", new_callable=AsyncMock), \
+         patch("app.graph.tools._notify_clinic", new_callable=AsyncMock), \
+         patch("app.google_drive.rename_file", new_callable=AsyncMock), \
+         patch("app.google_sheets.append_payment_receipt", new_callable=AsyncMock), \
+         patch("app.graph.tools.send_text", new_callable=AsyncMock):
+        result = await register_payment.coroutine(
+            amount="0,00", drive_link="",
+            state=_make_state(preferred_doctor="julio", patient_age=35, messages=[HumanMessage(content="[Instrução da atendente]: registre o pagamento, é cortesia")]),
+            config=CONFIG,
+        )
+    assert "QUITADA" in result
+    rpc.assert_any_call("set_amount_paid", {"p_appointment_id": "apt-wv", "p_cents": 0})

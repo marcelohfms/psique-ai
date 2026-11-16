@@ -792,6 +792,11 @@ async def mark_paid(
     payment_type = "Taxa de Reserva" if tipo == "taxa" else "Consulta"
     for aid in appointment_ids:
         await client.from_("appointments").update({field: now}).eq("appointment_id", aid).execute()
+        try:
+            fn = "increment_amount_paid" if tipo == "taxa" else "set_amount_paid"
+            await client.rpc(fn, {"p_appointment_id": aid, "p_cents": int(valor) * 100}).execute()
+        except Exception:
+            logger.exception("AMOUNT_PAID RPC FAILED appt=%s tipo=%s", aid, tipo)
 
     forma_label = FORMA_PAGAMENTO_LABEL.get(forma_pagamento, forma_pagamento)
     amount_str = str(valor)

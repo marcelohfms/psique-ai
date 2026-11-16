@@ -296,3 +296,47 @@ def test_missing_smtp_vars_lista_apenas_ausentes():
               "SMTP_PASSWORD": "x", "CLINIC_NOTIFY_EMAIL": "clinica@test"}
     with patch.dict(os.environ, env_ok, clear=False):
         assert payments.missing_smtp_vars() == []
+
+
+def _rpc_client(mock_supabase):
+    update_mock = AsyncMock(return_value=AsyncMock(data=[{}]))
+    mock_supabase.from_.return_value.update.return_value.eq.return_value.execute = update_mock
+    rpc = MagicMock(return_value=MagicMock(execute=AsyncMock(return_value=MagicMock(data=0))))
+    mock_supabase.rpc = rpc
+    return rpc
+
+
+@pytest.mark.asyncio
+async def test_painel_taxa_soma_cem(mock_supabase):
+    rpc = _rpc_client(mock_supabase)
+    with patch("payments._append_payment_sheet", new_callable=AsyncMock), \
+         patch("payments._send_clinic_email", new_callable=AsyncMock), \
+         patch("attendant_db.log_event", new_callable=AsyncMock):
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
+            resp = await ac.post(
+                "/api/pagamentos/appt-1/pagar",
+                json={"tipo": "taxa", "valor": 100, "forma_pagamento": "PIX",
+                      "paciente": "X", "medico": "Y", "data_hora": "01/01/2026 10:00", "phone": ""},
+                headers=HEADERS,
+            )
+    assert resp.status_code == 200
+    rpc.assert_called_once_with("increment_amount_paid", {"p_appointment_id": "appt-1", "p_cents": 10000})
+
+
+@pytest.mark.asyncio
+async def test_painel_consulta_seta_acumulado_e_paid_at(mock_supabase):
+    rpc = _rpc_client(mock_supabase)
+    with patch("payments._append_payment_sheet", new_callable=AsyncMock), \
+         patch("payments._send_clinic_email", new_callable=AsyncMock), \
+         patch("attendant_db.log_event", new_callable=AsyncMock):
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
+            resp = await ac.post(
+                "/api/pagamentos/appt-1/pagar",
+                json={"tipo": "consulta", "valor": 650, "forma_pagamento": "PIX",
+                      "paciente": "X", "medico": "Y", "data_hora": "01/01/2026 10:00", "phone": ""},
+                headers=HEADERS,
+            )
+    assert resp.status_code == 200
+    payload = mock_supabase.from_.return_value.update.call_args[0][0]
+    assert "paid_at" in payload
+    rpc.assert_called_once_with("set_amount_paid", {"p_appointment_id": "appt-1", "p_cents": 65000})
