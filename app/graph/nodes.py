@@ -3289,6 +3289,26 @@ async def patient_agent_node(state: ConversationState, config: RunnableConfig) -
             _pname = (apt.get("patient_name") or "").strip()
             _who = f"{_pname} — " if _pname else ""
             label = f"- {_who}{dt.strftime('%d/%m/%Y às %H:%M')} ({_suffix}){modality_tag} (ID: {apt['appointment_id']}){fee_tag}{reschedule_tag}"
+            # Saldo real quando já houve pagamento parcial: esperado - acumulado,
+            # mesma conta do register_payment. Sem isso a Eva usa a tabela fixa
+            # (preço menos R$ 100) e cobra a mais de quem já pagou um complemento.
+            _paid_cents = apt.get("amount_paid_cents") or 0
+            if _paid_cents > 0 and not apt.get("paid_at"):
+                try:
+                    from app.dates import compute_age as _ca
+                    _apt_age = _ca(apt.get("patient_birth_date"), _now_recife.date())
+                    _cp = 0 if apt.get("is_courtesy") else apt.get("patient_custom_price")
+                    _exp = _expected_consultation_amount(
+                        DOCTOR_NAMES.get(apt.get("doctor_id"), ""),
+                        _apt_age if _apt_age is not None else 99,
+                        apt.get("consultation_type"),
+                        now_dt,
+                        price_override=_cp,
+                    )
+                    _restante = max(0, _exp - _paid_cents // 100)
+                    label += f" (saldo restante: R$ {_restante},00)"
+                except Exception:
+                    __import__("logging").getLogger(__name__).exception("SALDO_REAL_FALHOU appt=%s", apt.get("appointment_id"))
             if apt.get("already_occurred"):
                 past_unpaid_lines.append(label)
             elif apt.get("recently_ended"):

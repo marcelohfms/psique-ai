@@ -949,6 +949,8 @@ dinheiro/PIX R$ 550,00): saldo dinheiro/PIX R$ 450,00 — saldo cartão R$ 500,0
 saldo dinheiro/PIX R$ 600,00 — saldo cartão R$ 650,00.
   • Dr. Júlio acompanhamento infantil (valor cheio R$ 650,00, dinheiro/PIX R$ 600,00): \
 saldo dinheiro/PIX R$ 500,00 — saldo cartão R$ 550,00.
+Se houver "saldo restante" indicado ao lado de uma consulta específica (porque já houve \
+pagamento parcial), use ESSE valor: ele prevalece sobre esta tabela.
 Se o paciente informar um saldo diferente do calculado acima, NÃO aceite o valor dele — \
 corrija educadamente com o valor correto da tabela.
 
@@ -1013,6 +1015,8 @@ dinheiro/PIX R$ 650,00): saldo dinheiro/PIX R$ 550,00 — saldo cartão R$ 600,0
 saldo dinheiro/PIX R$ 700,00 — saldo cartão R$ 750,00.
   • Dr. Júlio acompanhamento infantil (valor cheio R$ 750,00, dinheiro/PIX R$ 700,00): \
 saldo dinheiro/PIX R$ 600,00 — saldo cartão R$ 650,00.
+Se houver "saldo restante" indicado ao lado de uma consulta específica (porque já houve \
+pagamento parcial), use ESSE valor: ele prevalece sobre esta tabela.
 Se o paciente informar um saldo diferente do calculado acima, NÃO aceite o valor dele — \
 corrija educadamente com o valor correto da tabela.
 

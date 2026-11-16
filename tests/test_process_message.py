@@ -1745,7 +1745,7 @@ def _make_patient_agent_state(**overrides) -> dict:
     return base
 
 
-async def _run_patient_agent(state: dict, last_assistant_time=None) -> "SystemMessage":
+async def _run_patient_agent(state: dict, last_assistant_time=None, upcoming=None) -> "SystemMessage":
     """Helper: run patient_agent_node and return the SystemMessage passed to the LLM."""
     from app.graph.nodes import patient_agent_node
     from langchain_core.messages import SystemMessage
@@ -1763,7 +1763,7 @@ async def _run_patient_agent(state: dict, last_assistant_time=None) -> "SystemMe
     with patch("app.graph.nodes._get_agent_llm") as mock_llm_fn, \
          patch("app.graph.nodes.send_text", new_callable=AsyncMock), \
          patch("app.graph.nodes.save_message", new_callable=AsyncMock), \
-         patch("app.graph.nodes.get_upcoming_appointments", new_callable=AsyncMock, return_value=[]), \
+         patch("app.graph.nodes.get_upcoming_appointments", new_callable=AsyncMock, return_value=upcoming or []), \
          patch("app.graph.nodes.get_user_by_phone", new_callable=AsyncMock, return_value={"price_adjustment_notified_at": "2026-01-01"}), \
          patch("app.graph.nodes.get_last_assistant_message_time", new_callable=AsyncMock, return_value=last_assistant_time), \
          patch("app.google_calendar.format_doctor_schedules", return_value="seg-sex"):
@@ -8101,3 +8101,32 @@ async def test_document_request_from_registered_patient_routes_to_patient_agent(
     assert update.get("stage") == "patient_agent"
     # carrega o contexto do paciente para o patient_agent agir sobre o pedido
     assert update.get("patient_name") == "João Givaldo Santos Jacinto"
+
+
+async def test_prompt_mostra_saldo_real_com_parcial():
+    """Consulta com R$ 400 já pagos (taxa + complemento) e esperado R$ 600: o prompt traz o saldo real ao lado
+    da consulta, não o da tabela fixa."""
+    from datetime import datetime, timedelta, timezone
+    from app.database import DOCTOR_IDS
+
+    start = datetime.now(timezone.utc) + timedelta(days=3)
+    apt = {
+        "appointment_id": "apt-parcial",
+        "patient_id": "p1",
+        "start_time": start.isoformat(),
+        "end_time": (start + timedelta(hours=1)).isoformat(),
+        "status": "scheduled",
+        "booking_fee_paid_at": "2026-11-01T10:00:00+00:00",
+        "paid_at": None,
+        "modality": "presencial",
+        "amount_paid_cents": 40000,
+        "doctor_id": DOCTOR_IDS["bruna"],
+        "consultation_type": "acompanhamento",
+        "patient_birth_date": "10/05/1989",
+        "patient_custom_price": None,
+        "patient_name": "Carlos Silva",
+    }
+    state = _make_patient_agent_state(preferred_doctor="bruna")
+    with patch("app.graph.nodes._expected_consultation_amount", return_value=600):
+        system_msg = await _run_patient_agent(state, upcoming=[apt])
+    assert "saldo restante: R$ 200,00" in system_msg.content
