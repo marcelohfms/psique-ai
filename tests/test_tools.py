@@ -9053,3 +9053,70 @@ async def test_cortesia_nao_fica_com_saldo_pendente():
         )
     assert "QUITADA" in result
     rpc.assert_any_call("set_amount_paid", {"p_appointment_id": "apt-wv", "p_cents": 0})
+
+
+# ── register_payment: rpc de acumulado falha (fail-open corrigido) ────────────
+
+async def _run_pix_rpc_falha(amount, prev_cents, *, update_falha=False, expected=600):
+    from app.graph.tools import register_payment
+    client, table, execute = _make_supabase_client_with_appointment(
+        start_time=(datetime.now(TZ) + timedelta(days=30)).isoformat(),
+        end_time=(datetime.now(TZ) + timedelta(days=30, hours=1)).isoformat(),
+    )
+    orig = execute.side_effect
+
+    def _wrapped(*a, **k):
+        if update_falha and table.update.called:
+            raise RuntimeError("db down")
+        res = orig(*a, **k)
+        data = getattr(res, "data", None)
+        if isinstance(data, list):
+            for row in data:
+                if isinstance(row, dict) and "paid_at" in row:
+                    row["amount_paid_cents"] = prev_cents
+        return res
+    execute.side_effect = _wrapped
+    with patch("app.graph.tools.get_supabase", new_callable=AsyncMock, return_value=client), \
+         patch("app.graph.tools.get_users_by_phone", new_callable=AsyncMock, return_value=[{"id": "user-123", "patient_name": "Maria"}]), \
+         patch("app.graph.tools.log_event", new_callable=AsyncMock), \
+         patch("app.graph.tools._expected_consultation_amount", return_value=expected), \
+         patch("app.google_drive.get_file_md5", new_callable=AsyncMock, return_value="md5x"), \
+         patch("app.google_drive.rename_file", new_callable=AsyncMock), \
+         patch("app.graph.tools._find_previous_receipt", new_callable=AsyncMock, return_value=None), \
+         patch("app.graph.tools._increment_amount_paid", new_callable=AsyncMock, side_effect=RuntimeError("rpc down")), \
+         patch("app.google_sheets.append_payment_receipt", new_callable=AsyncMock), \
+         patch("app.graph.tools._notify_clinic", new_callable=AsyncMock) as mock_notify, \
+         patch("app.graph.tools.send_text", new_callable=AsyncMock):
+        result = await register_payment.coroutine(
+            amount=amount,
+            drive_link="https://drive.google.com/file/d/pix2/view",
+            state=_make_state(),
+            config=CONFIG,
+        )
+    return result, table, mock_notify
+
+
+def test_register_payment_select_inclui_amount_paid_cents():
+    import inspect
+    from app.graph import tools
+    src = inspect.getsource(tools.register_payment.coroutine)
+    assert '"amount_paid_cents"' in src.split("_appt_fields = (")[1].split(")")[0]
+
+
+async def test_rpc_falha_persiste_acumulado_real_e_nao_quita_errado():
+    # prévio 40000 (taxa + parcial), nova parcela 100 => 50000 < 60000: nada de QUITADA
+    result, table, notify = await _run_pix_rpc_falha("100,00", 40000)
+    persisted = [c.args[0] for c in table.update.call_args_list if "amount_paid_cents" in c.args[0]]
+    assert persisted and persisted[-1]["amount_paid_cents"] == 50000  # le o 40000 real
+    assert "QUITADA" not in result
+
+
+async def test_rpc_falha_e_persistencia_falha_degrada_sem_quitar():
+    result, table, notify = await _run_pix_rpc_falha("600,00", 0, update_falha=True)
+    assert "QUITADA" not in result
+    assert "confirmado" in result
+    fields = {}
+    for c in table.update.call_args_list:
+        fields.update(c.args[0])
+    assert "paid_at" not in fields
+    notify.assert_awaited()

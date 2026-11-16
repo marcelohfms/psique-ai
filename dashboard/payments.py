@@ -791,7 +791,20 @@ async def mark_paid(
     field = "booking_fee_paid_at" if tipo == "taxa" else "paid_at"
     payment_type = "Taxa de Reserva" if tipo == "taxa" else "Consulta"
     for aid in appointment_ids:
+        # Taxa: só soma no acumulado se ainda não estava paga (espelha a guarda da
+        # Eva; evita contar em dobro na corrida painel x Eva com o mesmo comprovante).
+        fee_already_paid = False
+        if tipo == "taxa":
+            try:
+                prev = await client.from_("appointments").select(
+                    "booking_fee_paid_at"
+                ).eq("appointment_id", aid).maybe_single().execute()
+                fee_already_paid = bool((getattr(prev, "data", None) or {}).get("booking_fee_paid_at"))
+            except Exception:
+                logger.exception("FEE_PAID_READ FAILED appt=%s", aid)
         await client.from_("appointments").update({field: now}).eq("appointment_id", aid).execute()
+        if tipo == "taxa" and fee_already_paid:
+            continue
         try:
             fn = "increment_amount_paid" if tipo == "taxa" else "set_amount_paid"
             await client.rpc(fn, {"p_appointment_id": aid, "p_cents": int(valor) * 100}).execute()

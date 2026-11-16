@@ -4563,7 +4563,8 @@ async def register_payment(
     now_iso = datetime.now(TZ).isoformat()
     _appt_fields = (
         "appointment_id, contact_id, start_time, end_time, doctor_id, paid_at, "
-        "booking_fee_paid_at, status, consultation_type, booking_fee_waived, is_courtesy"
+        "booking_fee_paid_at, status, consultation_type, booking_fee_waived, is_courtesy, "
+        "amount_paid_cents"
     )
 
     # No start_time window in the query: a patient may settle the saldo weeks or
@@ -4878,11 +4879,6 @@ async def register_payment(
         doctor_key, _age, _consultation_type, pricing_dt, price_override=custom_price
     )
 
-    if _appt_bfw:
-        expected_remaining = expected        # booking fee was never owed
-    else:
-        expected_remaining = (expected - 100) if booking_fee_already_paid else expected
-
     async def _update_appts(fields: dict) -> None:
         """Apply a payment field update to all linked appointment IDs."""
         ids = linked_appt_ids if linked_appt_ids else ([appt_id_to_pay] if appt_id_to_pay else [])
@@ -5033,12 +5029,48 @@ async def register_payment(
                 _acc_cents = await _increment_amount_paid(client, _ids, _cents)
             except Exception:
                 _logger.exception("INCREMENT_AMOUNT_PAID FAILED patient=%s", patient_name)
-                _prev_cents = 0
+                # Fallback: lê o acumulado real (o select inclui amount_paid_cents) e
+                # PERSISTE o novo valor por update direto. Sem persistir, a próxima
+                # parcela recalcularia a partir do valor velho e perderia esta.
                 try:
                     _prev_cents = int(appt_result.data[0].get("amount_paid_cents") or 0)
                 except Exception:
                     _prev_cents = 0
                 _acc_cents = _prev_cents + _cents
+                _persisted = True
+                try:
+                    for _aid in _ids:
+                        await client.from_("appointments").update(
+                            {"amount_paid_cents": _acc_cents}
+                        ).eq("appointment_id", _aid).execute()
+                except Exception:
+                    _persisted = False
+                    _logger.exception("AMOUNT_PAID PERSIST FAILED patient=%s", patient_name)
+                if not _persisted:
+                    # Degrada com segurança: não quita nem anuncia QUITADA por palpite.
+                    try:
+                        await _notify_clinic(
+                            f"⚠️ Comprovante recebido, mas NÃO foi possível somar no "
+                            f"acumulado da consulta (falha no banco). Confira e lance "
+                            f"manualmente no painel.\nPaciente: {patient_name}"
+                            f"\nValor: R$ {amount}\nConsulta: {appointment_dt}"
+                            f"\nLink: {drive_link}",
+                            subject=f"Comprovante sem registro de saldo — {patient_name}",
+                        )
+                    except Exception:
+                        _logger.exception("NOTIFY_CLINIC FAILED (persist) patient=%s", patient_name)
+                    try:
+                        await log_event("payment_accumulate_failed", phone, {
+                            "patient_name": patient_name, "amount": amount,
+                            "drive_link": drive_link, "appointment_dt": appointment_dt,
+                        })
+                    except Exception:
+                        _logger.exception("LOG_EVENT_FAILED (persist) patient=%s", patient_name)
+                    return (
+                        "Recebemos o comprovante, mas o registro do pagamento ainda está "
+                        "sendo confirmado pela equipe. NÃO diga que a consulta está quitada "
+                        "nem cobre valor; avise que a clínica confirma em breve."
+                    )
         else:
             _acc_cents = _cents
         _acc_reais = _acc_cents / 100

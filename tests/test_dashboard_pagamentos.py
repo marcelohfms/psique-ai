@@ -323,6 +323,42 @@ async def test_painel_taxa_soma_cem(mock_supabase):
     rpc.assert_called_once_with("increment_amount_paid", {"p_appointment_id": "appt-1", "p_cents": 10000})
 
 
+def _fee_state(mock_supabase, fee_paid_at):
+    sel = AsyncMock(return_value=MagicMock(data={"booking_fee_paid_at": fee_paid_at}))
+    mock_supabase.from_.return_value.select.return_value.eq.return_value.maybe_single.return_value.execute = sel
+
+
+async def _pagar_taxa(mock_supabase):
+    with patch("payments._append_payment_sheet", new_callable=AsyncMock), \
+         patch("payments._send_clinic_email", new_callable=AsyncMock), \
+         patch("attendant_db.log_event", new_callable=AsyncMock):
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
+            return await ac.post(
+                "/api/pagamentos/appt-1/pagar",
+                json={"tipo": "taxa", "valor": 100, "forma_pagamento": "PIX",
+                      "paciente": "X", "medico": "Y", "data_hora": "01/01/2026 10:00", "phone": ""},
+                headers=HEADERS,
+            )
+
+
+@pytest.mark.asyncio
+async def test_painel_taxa_ja_paga_nao_incrementa(mock_supabase):
+    rpc = _rpc_client(mock_supabase)
+    _fee_state(mock_supabase, "2026-01-01T10:00:00+00:00")
+    resp = await _pagar_taxa(mock_supabase)
+    assert resp.status_code == 200
+    rpc.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_painel_taxa_nula_incrementa(mock_supabase):
+    rpc = _rpc_client(mock_supabase)
+    _fee_state(mock_supabase, None)
+    resp = await _pagar_taxa(mock_supabase)
+    assert resp.status_code == 200
+    rpc.assert_called_once_with("increment_amount_paid", {"p_appointment_id": "appt-1", "p_cents": 10000})
+
+
 @pytest.mark.asyncio
 async def test_painel_consulta_seta_acumulado_e_paid_at(mock_supabase):
     rpc = _rpc_client(mock_supabase)
