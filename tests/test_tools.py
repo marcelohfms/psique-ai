@@ -6353,7 +6353,8 @@ async def test_register_payment_self_path_resolves_old_completed_appointment():
          patch("app.graph.tools.send_text", new_callable=AsyncMock), \
          patch("app.google_drive.rename_file", new_callable=AsyncMock), \
          patch("app.google_sheets.append_payment_receipt", new_callable=AsyncMock) as mock_sheets, \
-         patch("app.graph.tools._notify_clinic", new_callable=AsyncMock):
+         patch("app.graph.tools._notify_clinic", new_callable=AsyncMock), \
+         patch("app.graph.tools._increment_amount_paid", new_callable=AsyncMock, return_value=65000):  # taxa R$100 + saldo R$550
         result = await register_payment.coroutine(
             amount="550,00",
             drive_link="https://drive.google.com/file/d/abc/view",
@@ -6591,7 +6592,8 @@ async def test_register_payment_settles_saldo_of_completed_appt_older_than_15_da
          patch("app.graph.tools.send_text", new_callable=AsyncMock), \
          patch("app.google_drive.rename_file", new_callable=AsyncMock), \
          patch("app.google_sheets.append_payment_receipt", new_callable=AsyncMock) as mock_sheets, \
-         patch("app.graph.tools._notify_clinic", new_callable=AsyncMock):
+         patch("app.graph.tools._notify_clinic", new_callable=AsyncMock), \
+         patch("app.graph.tools._increment_amount_paid", new_callable=AsyncMock, return_value=65000):  # taxa R$100 + saldo R$550
         result = await register_payment.coroutine(
             amount="550,00",
             drive_link="https://drive.google.com/file/d/abc/view",
@@ -8327,7 +8329,8 @@ async def test_register_payment_saldo_goes_to_open_completed_not_paid_courtesy()
          patch("app.graph.tools.send_text", new_callable=AsyncMock), \
          patch("app.google_drive.rename_file", new_callable=AsyncMock), \
          patch("app.google_sheets.append_payment_receipt", new_callable=AsyncMock) as mock_sheets, \
-         patch("app.graph.tools._notify_clinic", new_callable=AsyncMock):
+         patch("app.graph.tools._notify_clinic", new_callable=AsyncMock), \
+         patch("app.graph.tools._increment_amount_paid", new_callable=AsyncMock, return_value=65000):  # taxa R$100 + saldo R$550
         result = await register_payment.coroutine(
             amount="550,00",
             drive_link="https://drive.google.com/file/d/abc/view",
@@ -8898,3 +8901,222 @@ def test_is_unique_violation_detects_code_and_text():
     assert _is_unique_violation(Exception("algo com 23505 no meio"))
     assert not _is_unique_violation(Exception("timeout na rede"))
     assert not _is_unique_violation(APIError({"code": "23503", "message": "fk"}))
+
+
+# ── register_payment: PIX complementares somam e quitam pelo valor rígido ─────
+
+async def _run_pix(amount, acc_cents, *, client=None, md5_prev=False, expected=600):
+    """Roda register_payment com _increment_amount_paid mockado devolvendo
+    `acc_cents` (acumulado após a parcela). Devolve (result, ctx)."""
+    from app.graph.tools import register_payment
+    if client is None:
+        client, table, _ = _make_supabase_client_with_appointment(
+            start_time=(datetime.now(TZ) + timedelta(days=30)).isoformat(),
+            end_time=(datetime.now(TZ) + timedelta(days=30, hours=1)).isoformat(),
+        )
+    else:
+        table = None
+    ctx = {}
+    with patch("app.graph.tools.get_supabase", new_callable=AsyncMock, return_value=client), \
+         patch("app.graph.tools.get_users_by_phone", new_callable=AsyncMock, return_value=[{"id": "user-123", "patient_name": "Maria"}]), \
+         patch("app.graph.tools.log_event", new_callable=AsyncMock), \
+         patch("app.graph.tools._expected_consultation_amount", return_value=expected), \
+         patch("app.google_drive.get_file_md5", new_callable=AsyncMock, return_value="md5x"), \
+         patch("app.google_drive.rename_file", new_callable=AsyncMock), \
+         patch("app.graph.tools._find_previous_receipt", new_callable=AsyncMock,
+               return_value=({"metadata": {"drive_link": "https://x/antigo"}} if md5_prev else None)), \
+         patch("app.graph.tools._increment_amount_paid", new_callable=AsyncMock, return_value=acc_cents) as mock_inc, \
+         patch("app.google_sheets.append_payment_receipt", new_callable=AsyncMock) as mock_sheets, \
+         patch("app.graph.tools._notify_clinic", new_callable=AsyncMock) as mock_notify, \
+         patch("app.graph.tools.send_text", new_callable=AsyncMock):
+        result = await register_payment.coroutine(
+            amount=amount,
+            drive_link="https://drive.google.com/file/d/pix2/view",
+            state=_make_state(),
+            config=CONFIG,
+        )
+    ctx.update(inc=mock_inc, sheets=mock_sheets, notify=mock_notify, table=table)
+    return result, ctx
+
+
+def _updated_fields(table):
+    out = {}
+    for c in table.update.call_args_list:
+        out.update(c.args[0])
+    return out
+
+
+async def test_segundo_pix_complementar_quita_a_consulta():
+    result, ctx = await _run_pix("200,00", 60000)
+    assert "QUITADA" in result
+    assert _updated_fields(ctx["table"]).get("paid_at") is not None
+    assert ctx["sheets"].call_args.kwargs["payment_type"] == "Consulta"
+    ctx["inc"].assert_awaited_once()
+    assert ctx["inc"].await_args.args[2] == 20000
+
+
+async def test_parcela_intermediaria_mostra_saldo_real():
+    result, ctx = await _run_pix("200,00", 40000)
+    assert ctx["sheets"].call_args.kwargs["payment_type"] == "Pagamento Parcial"
+    assert "200" in result
+    assert "paid_at" not in _updated_fields(ctx["table"])
+
+
+async def test_pagamento_a_mais_quita_e_avisa_clinica():
+    result, ctx = await _run_pix("300,00", 70000)
+    assert ctx["sheets"].call_args.kwargs["payment_type"] == "Consulta"
+    assert _updated_fields(ctx["table"]).get("paid_at") is not None
+    assert "-" not in result.split("Valor pago")[-1].replace("—", "")
+    assert "Saldo" not in result
+    msgs = [c.args[0] for c in ctx["notify"].await_args_list]
+    assert any("Excedente: R$ 100.00" in m for m in msgs)
+
+
+async def test_reenvio_md5_repetido_nao_soma():
+    result, ctx = await _run_pix("200,00", 60000, md5_prev=True)
+    ctx["inc"].assert_not_awaited()
+    ctx["sheets"].assert_not_called()
+
+
+async def test_primeira_consulta_dividida_soma_igual_nas_duas_linhas():
+    start = (datetime.now(TZ) + timedelta(days=30)).isoformat()
+    client, table, execute = _make_supabase_client_with_appointment(start_time=start, end_time=start)
+    base = execute.side_effect
+
+    def _se(*a, **kw):
+        r = base(*a, **kw)
+        if base.call_count == 2:
+            r.data[0]["consultation_type"] = "primeira_consulta"
+        if base.call_count == 3:
+            return MagicMock(data=[
+                {"appointment_id": "id_parte1", "start_time": start},
+                {"appointment_id": "id_parte2", "start_time": start},
+            ])
+        return r
+    execute.side_effect = _se
+    result, ctx = await _run_pix("300,00", 30000, client=client)
+    assert set(ctx["inc"].await_args.args[1]) == {"id_parte1", "id_parte2"}
+    assert ctx["inc"].await_args.args[2] == 30000
+
+
+# ── register_payment: pagamentos da atendente alimentam o acumulado ───────────
+
+def _rpc_spy(client):
+    rpc_exec = AsyncMock(return_value=MagicMock(data=0))
+    client.rpc = MagicMock(return_value=MagicMock(execute=rpc_exec))
+    return client.rpc
+
+
+async def test_pagamento_link_seta_acumulado_cheio():
+    from app.graph.tools import register_payment
+    client, _, _ = _make_supabase_client_with_appointment(
+        start_time=(datetime.now(TZ) + timedelta(days=30)).isoformat(),
+        end_time=(datetime.now(TZ) + timedelta(days=30, hours=1)).isoformat(),
+    )
+    rpc = _rpc_spy(client)
+    with patch("app.graph.tools.get_supabase", new_callable=AsyncMock, return_value=client), \
+         patch("app.graph.tools.get_users_by_phone", new_callable=AsyncMock, return_value=[{"id": "user-123", "patient_name": "Maria"}]), \
+         patch("app.graph.tools.log_event", new_callable=AsyncMock), \
+         patch("app.graph.tools._expected_consultation_amount", return_value=600), \
+         patch("app.graph.tools._notify_clinic", new_callable=AsyncMock), \
+         patch("app.google_drive.rename_file", new_callable=AsyncMock), \
+         patch("app.google_sheets.append_payment_receipt", new_callable=AsyncMock), \
+         patch("app.graph.tools.send_text", new_callable=AsyncMock):
+        result = await register_payment.coroutine(
+            amount="600,00", drive_link="", is_link=True,
+            state=_make_state(silent_mode=True, messages=[
+                HumanMessage(content="[Instrução da atendente]: PAGAMENTO CONFIRMADO Maria R$ 600,00"),
+            ]),
+            config=CONFIG,
+        )
+    assert "QUITADA" in result
+    rpc.assert_any_call("set_amount_paid", {"p_appointment_id": "apt-1", "p_cents": 60000})
+
+
+async def test_cortesia_nao_fica_com_saldo_pendente():
+    from app.graph.tools import register_payment
+    client, _, _ = _make_supabase_client_with_appointment_waived(
+        booking_fee_waived=True, custom_price=0
+    )
+    rpc = _rpc_spy(client)
+    with patch("app.graph.tools.get_supabase", new_callable=AsyncMock, return_value=client), \
+         patch("app.graph.tools.get_users_by_phone", new_callable=AsyncMock, return_value=[{"id": "user-123", "patient_name": "Maria"}]), \
+         patch("app.graph.tools.log_event", new_callable=AsyncMock), \
+         patch("app.graph.tools._notify_clinic", new_callable=AsyncMock), \
+         patch("app.google_drive.rename_file", new_callable=AsyncMock), \
+         patch("app.google_sheets.append_payment_receipt", new_callable=AsyncMock), \
+         patch("app.graph.tools.send_text", new_callable=AsyncMock):
+        result = await register_payment.coroutine(
+            amount="0,00", drive_link="",
+            state=_make_state(preferred_doctor="julio", patient_age=35, messages=[HumanMessage(content="[Instrução da atendente]: registre o pagamento, é cortesia")]),
+            config=CONFIG,
+        )
+    assert "QUITADA" in result
+    rpc.assert_any_call("set_amount_paid", {"p_appointment_id": "apt-wv", "p_cents": 0})
+
+
+# ── register_payment: rpc de acumulado falha (fail-open corrigido) ────────────
+
+async def _run_pix_rpc_falha(amount, prev_cents, *, update_falha=False, expected=600):
+    from app.graph.tools import register_payment
+    client, table, execute = _make_supabase_client_with_appointment(
+        start_time=(datetime.now(TZ) + timedelta(days=30)).isoformat(),
+        end_time=(datetime.now(TZ) + timedelta(days=30, hours=1)).isoformat(),
+    )
+    orig = execute.side_effect
+
+    def _wrapped(*a, **k):
+        if update_falha and table.update.called:
+            raise RuntimeError("db down")
+        res = orig(*a, **k)
+        data = getattr(res, "data", None)
+        if isinstance(data, list):
+            for row in data:
+                if isinstance(row, dict) and "paid_at" in row:
+                    row["amount_paid_cents"] = prev_cents
+        return res
+    execute.side_effect = _wrapped
+    with patch("app.graph.tools.get_supabase", new_callable=AsyncMock, return_value=client), \
+         patch("app.graph.tools.get_users_by_phone", new_callable=AsyncMock, return_value=[{"id": "user-123", "patient_name": "Maria"}]), \
+         patch("app.graph.tools.log_event", new_callable=AsyncMock), \
+         patch("app.graph.tools._expected_consultation_amount", return_value=expected), \
+         patch("app.google_drive.get_file_md5", new_callable=AsyncMock, return_value="md5x"), \
+         patch("app.google_drive.rename_file", new_callable=AsyncMock), \
+         patch("app.graph.tools._find_previous_receipt", new_callable=AsyncMock, return_value=None), \
+         patch("app.graph.tools._increment_amount_paid", new_callable=AsyncMock, side_effect=RuntimeError("rpc down")), \
+         patch("app.google_sheets.append_payment_receipt", new_callable=AsyncMock), \
+         patch("app.graph.tools._notify_clinic", new_callable=AsyncMock) as mock_notify, \
+         patch("app.graph.tools.send_text", new_callable=AsyncMock):
+        result = await register_payment.coroutine(
+            amount=amount,
+            drive_link="https://drive.google.com/file/d/pix2/view",
+            state=_make_state(),
+            config=CONFIG,
+        )
+    return result, table, mock_notify
+
+
+def test_register_payment_select_inclui_amount_paid_cents():
+    import inspect
+    from app.graph import tools
+    src = inspect.getsource(tools.register_payment.coroutine)
+    assert '"amount_paid_cents"' in src.split("_appt_fields = (")[1].split(")")[0]
+
+
+async def test_rpc_falha_persiste_acumulado_real_e_nao_quita_errado():
+    # prévio 40000 (taxa + parcial), nova parcela 100 => 50000 < 60000: nada de QUITADA
+    result, table, notify = await _run_pix_rpc_falha("100,00", 40000)
+    persisted = [c.args[0] for c in table.update.call_args_list if "amount_paid_cents" in c.args[0]]
+    assert persisted and persisted[-1]["amount_paid_cents"] == 50000  # le o 40000 real
+    assert "QUITADA" not in result
+
+
+async def test_rpc_falha_e_persistencia_falha_degrada_sem_quitar():
+    result, table, notify = await _run_pix_rpc_falha("600,00", 0, update_falha=True)
+    assert "QUITADA" not in result
+    assert "confirmado" in result
+    fields = {}
+    for c in table.update.call_args_list:
+        fields.update(c.args[0])
+    assert "paid_at" not in fields
+    notify.assert_awaited()

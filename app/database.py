@@ -456,12 +456,21 @@ async def get_upcoming_appointments(phone: str) -> list[dict]:
         return []
     patient_ids = [u["id"] for u in users]
     name_by_id = {u["id"]: (u.get("patient_name") or u.get("name") or "") for u in users}
+    # Nascimento e preço especial do paciente: o chamador precisa deles para
+    # calcular o saldo real de cada consulta (esperado - já pago).
+    _pricing_by_id = {
+        u["id"]: {
+            "patient_birth_date": u.get("birth_date"),
+            "patient_custom_price": u.get("custom_price"),
+        }
+        for u in users
+    }
     from datetime import datetime, timezone, timedelta
     now = datetime.now(timezone.utc)
     now_iso = now.isoformat()
     cutoff_recent = (now - timedelta(hours=48)).isoformat()
 
-    _appt_fields = "appointment_id, patient_id, start_time, end_time, status, reschedule_requested_at, booking_fee_paid_at, booking_fee_waived, paid_at, modality, is_courtesy"
+    _appt_fields = "appointment_id, patient_id, start_time, end_time, status, reschedule_requested_at, booking_fee_paid_at, booking_fee_waived, paid_at, modality, is_courtesy, amount_paid_cents, doctor_id, consultation_type"
 
     # Future + ongoing (end_time has not yet passed)
     future_result = (
@@ -522,7 +531,7 @@ async def get_upcoming_appointments(phone: str) -> list[dict]:
     # (caso João Pedro Lins Da Costa Gomes, 5581992349207, 2026-07-30).
     canceled_unpaid_result = (
         await client.from_("appointments")
-        .select(_appt_fields + ", doctor_id")
+        .select(_appt_fields)
         .eq("status", "canceled")
         .in_("patient_id", patient_ids)
         .not_.is_("payment_reminder_sent_at", "null")
@@ -533,6 +542,15 @@ async def get_upcoming_appointments(phone: str) -> list[dict]:
 
     # Attach patient_name to each row so the caller can attribute the appointment
     # to the correct patient when the contact manages more than one.
+    def _attach(r: dict) -> dict:
+        return dict(r, **_pricing_by_id.get(r.get("patient_id"), {}))
+
+    future_result.data = [_attach(r) for r in (future_result.data or [])]
+    recent_result.data = [_attach(r) for r in (recent_result.data or [])]
+    unpaid_past_result.data = [_attach(r) for r in (unpaid_past_result.data or [])]
+    stale_reschedule_result.data = [_attach(r) for r in (stale_reschedule_result.data or [])]
+    canceled_unpaid_result.data = [_attach(r) for r in (canceled_unpaid_result.data or [])]
+
     future = [dict(r, patient_name=name_by_id.get(r.get("patient_id"), "")) for r in (future_result.data or [])]
     recent = [dict(r, recently_ended=True, patient_name=name_by_id.get(r.get("patient_id"), "")) for r in (recent_result.data or [])]
     unpaid_past = [
