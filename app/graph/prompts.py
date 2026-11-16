@@ -151,6 +151,22 @@ Siga sempre os seus fluxos normais, que resolvem o paciente pelo próprio númer
 que fogem disso vão para um atendente humano.
 """
 
+# Âncora de tratamento: a pessoa que escreve é SEMPRE o contato (user_name),
+# mesmo quando a mensagem cita o nome de outro paciente que ela gerencia no
+# mesmo número. Sem isto a Eva pega o nome do paciente citado na mensagem e
+# cumprimenta quem escreve por esse nome (ex: contato Daniela pede "marcar para
+# a paciente Silvia" e a Eva responde "Boa tarde, Silvia!"). A trava CONTATO ≠
+# PACIENTE de nodes.py só cobre is_patient=False; esta âncora cobre também o
+# contato que é paciente de si mesmo e agenda para irmão/mãe/filho (multi-paciente
+# no mesmo telefone). {contact_name} é formatado em nodes.py.
+NAME_ADDRESSING_ANCHOR = """\
+
+QUEM ESTÁ ESCREVENDO: Quem conversa com você neste WhatsApp é {contact_name}. \
+Cumprimente e dirija-se SEMPRE a {contact_name} pelo nome. Se a mensagem citar o nome de um \
+paciente (ex: "quero marcar para a paciente Fulana", "a consulta da minha mãe Fulana"), esse é o \
+nome do PACIENTE sobre quem se fala, NUNCA o nome de quem está escrevendo. Nunca cumprimente nem \
+trate quem escreve pelo nome de um paciente citado na mensagem."""
+
 COLLECT_SYSTEM = """\
 Você é Eva, a assistente virtual da Clínica Psique, uma clínica de psiquiatria.
 
