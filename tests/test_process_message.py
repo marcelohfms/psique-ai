@@ -1853,6 +1853,30 @@ async def test_patient_agent_prefers_social_name_over_civil_name():
     assert "atendendo Carlos Silva" not in system_msg.content
 
 
+async def test_patient_agent_anchors_greeting_to_contact_when_message_names_patient():
+    """Contato que é paciente de si mesmo (is_patient=True) mas agenda para outra
+    pessoa que gerencia no mesmo número: a âncora de tratamento deve estar no prompt
+    para a Eva não cumprimentar quem escreve pelo nome do paciente citado na mensagem.
+
+    Caso Daniela Passos (5581981179458, 16/11/2026): ela cuida da irmã Flavia e da
+    mãe Silvia; pediu 'quero marcar consulta para paciente Silvia de Souza Passos' e
+    a Eva respondeu 'Boa tarde, Silvia!'. A trava CONTATO ≠ PACIENTE não cobria o
+    caso porque is_patient=True; esta âncora cobre o contato multi-paciente."""
+    state = _make_patient_agent_state(
+        user_name="Daniela Passos",
+        patient_name="Daniela de Souza Passos",
+        is_patient=True,
+        messages=[HumanMessage(content="quero marcar consulta para paciente Silvia de Souza Passos")],
+    )
+    system_msg = await _run_patient_agent(state, last_assistant_time=None)
+    assert system_msg is not None
+    # A âncora deve nomear o contato (quem escreve) como o alvo do tratamento.
+    assert "QUEM ESTÁ ESCREVENDO" in system_msg.content
+    assert "Daniela Passos" in system_msg.content
+    # E deixar explícito que um nome de paciente citado na mensagem não é de quem escreve.
+    assert "nome do PACIENTE" in system_msg.content
+
+
 async def test_pending_appointment_success_with_internal_prefix():
     """Regressão: confirm_appointment retorna o código AGENDAMENTO_OK prefixado com
     '[INSTRUÇÃO INTERNA — NÃO ENVIE AO PACIENTE]'. O handler de pending_appointment

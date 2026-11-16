@@ -22,7 +22,7 @@ from app.graph.tools import (
     request_external_contact, nudge_external_contact,
     _expected_consultation_amount,
 )
-from app.graph.prompts import COLLECT_SYSTEM, MINOR_RULE, MINOR_RETURNING_RULE, ADULT_RULE, GUARDIAN_RULE, EXISTING_PATIENT_SYSTEM, NEW_PATIENT_SYSTEM, CANCELLATION_RULES, MODALITY_CHANGE_RULE, CLINIC_ADDRESS, CLINIC_ADDRESS_TEXT, get_doctors_info, sanitize_clinic_address, get_booking_fee_rule, MEDICAL_LIMITS_RULE, AGE_EXCEPTION_RULE, DOCTOR_CORRECTION_RULE, EMAIL_RULE, get_pricing_rules, ATTENDANT_INSTRUCTION_RULE, get_pricing_exception_rule, CORRECT_PIX_KEY, SOCIAL_NAME_RULE, MINOR_FIRST_CONSULT_INFO, MINOR_RULE_SCHEDULING_ONLY, NO_REPEAT_ANSWER_RULE, CHANNEL_SCOPE_RULE
+from app.graph.prompts import COLLECT_SYSTEM, MINOR_RULE, MINOR_RETURNING_RULE, ADULT_RULE, GUARDIAN_RULE, EXISTING_PATIENT_SYSTEM, NEW_PATIENT_SYSTEM, CANCELLATION_RULES, MODALITY_CHANGE_RULE, CLINIC_ADDRESS, CLINIC_ADDRESS_TEXT, get_doctors_info, sanitize_clinic_address, get_booking_fee_rule, MEDICAL_LIMITS_RULE, AGE_EXCEPTION_RULE, DOCTOR_CORRECTION_RULE, EMAIL_RULE, get_pricing_rules, ATTENDANT_INSTRUCTION_RULE, get_pricing_exception_rule, CORRECT_PIX_KEY, SOCIAL_NAME_RULE, MINOR_FIRST_CONSULT_INFO, MINOR_RULE_SCHEDULING_ONLY, NO_REPEAT_ANSWER_RULE, CHANNEL_SCOPE_RULE, NAME_ADDRESSING_ANCHOR
 from app.whatsapp import send_text
 from app.database import upsert_user, log_event, get_events_by_type, get_upcoming_appointments, get_user_by_phone, get_users_by_phone, DOCTOR_IDS, DOCTOR_NAMES, save_message, get_last_assistant_message_time, is_registration_complete, missing_registration_field
 from app.chatwoot import get_conversation_id, add_private_note
@@ -3158,6 +3158,15 @@ async def patient_agent_node(state: ConversationState, config: RunnableConfig) -
     )
     # Escopo do canal e defesa anti-injeção (achados 2 e 3 da auditoria comportamental).
     system_prompt += CHANNEL_SCOPE_RULE
+
+    # Âncora de tratamento: quem escreve é SEMPRE o contato, mesmo quando a
+    # mensagem cita o nome de outro paciente que ele gerencia no mesmo número.
+    # Cobre o buraco da trava CONTATO ≠ PACIENTE abaixo, que só dispara para
+    # is_patient=False — um contato que é paciente de si mesmo e agenda para a
+    # mãe/irmão (ex: Daniela pede "marcar para a paciente Silvia") não caía nela,
+    # e a Eva cumprimentava quem escreve pelo nome do paciente citado.
+    if state.get("user_name"):
+        system_prompt += NAME_ADDRESSING_ANCHOR.format(contact_name=contact_name)
 
     # Inject contact-vs-patient rule when the WhatsApp contact is NOT the patient.
     # Without this, the LLM defaults to using patient_name (prominent in the prompt header)
