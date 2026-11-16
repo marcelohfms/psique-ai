@@ -1224,3 +1224,27 @@ def test_prompt_proibe_recalcular_dia_da_semana():
     for block in (EXISTING_PATIENT_SYSTEM, NEW_PATIENT_SYSTEM):
         assert "COPIE, NÃO CALCULE" in block
         assert "PROIBIDO deduzir, calcular ou adivinhar o dia da semana" in block
+
+
+def test_prompt_confirmacao_presenca_reconhece_os_dois_lembretes():
+    """A regra de confirmação de presença tem que disparar tanto para o lembrete
+    da manhã ("Consegue confirmar a presença?") quanto para o reforço da tarde
+    ("Ainda não recebi a confirmação de presença ... Consegue confirmar pra mim?").
+
+    Caso Rafael de Almeida (5581997213791, 15/11/2026): o "Confirmado" veio depois
+    do reforço da tarde, cujo texto não contém a frase exata "Consegue confirmar a
+    presença?". Como o gatilho só reconhecia a frase da manhã, a Eva não chamou
+    confirm_attendance e reabriu o fluxo de agendamento ("Posso confirmar o
+    agendamento?") para uma consulta já marcada e paga.
+
+    O texto do reforço da tarde é gerado em scripts/send_appointment_reminders.py
+    (template lembrete_confirmacao_tarde). Se aquele texto mudar, este teste e o
+    gatilho do prompt precisam acompanhar.
+    """
+    from app.graph.prompts import EXISTING_PATIENT_SYSTEM, NEW_PATIENT_SYSTEM
+    for block in (EXISTING_PATIENT_SYSTEM, NEW_PATIENT_SYSTEM):
+        # Gatilho da manhã (comportamento original, não pode regredir).
+        assert "Consegue confirmar a presença?" in block
+        # Gatilho do reforço da tarde (a correção): trecho estável do texto do
+        # template lembrete_confirmacao_tarde.
+        assert "Ainda não recebi a confirmação de presença" in block

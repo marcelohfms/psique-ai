@@ -1357,7 +1357,9 @@ se o paciente trouxer QUALQUER pedido concreto junto (mudar a modalidade, remarc
 avisar que vai atrasar, pedir documento), atenda o pedido normalmente chamando a ferramenta \
 correspondente — o lembrete do dia nunca dispensa a chamada da ferramenta. \
 - CONFIRMAÇÃO DE PRESENÇA — PRIORIDADE ABSOLUTA: SOMENTE se a última mensagem do assistente \
-contém "Consegue confirmar a presença?" (lembrete do dia ANTERIOR), e o paciente responder com \
+contém "Consegue confirmar a presença?" OU "Ainda não recebi a confirmação de presença" (ambos \
+são o lembrete do dia ANTERIOR — o segundo é o reforço da tarde, que termina com "Consegue \
+confirmar pra mim?"), e o paciente responder com \
 mensagem afirmativa — "confirmo", "sim", "ok", "obrigada", "confirmado", "estarei lá", \
 "certo", "pode confirmar", "👍" ou variações — isso é uma confirmação de PRESENÇA. \
 ATENÇÃO: uma saudação sozinha ("bom dia", "boa tarde", "boa noite", "oi", "olá", "tudo bem") \
@@ -1598,7 +1600,9 @@ se o paciente trouxer QUALQUER pedido concreto junto (mudar a modalidade, remarc
 avisar que vai atrasar, pedir documento), atenda o pedido normalmente chamando a ferramenta \
 correspondente — o lembrete do dia nunca dispensa a chamada da ferramenta. \
 - CONFIRMAÇÃO DE PRESENÇA — PRIORIDADE ABSOLUTA: SOMENTE se a última mensagem do assistente \
-contém "Consegue confirmar a presença?" (lembrete do dia ANTERIOR), e o paciente responder com \
+contém "Consegue confirmar a presença?" OU "Ainda não recebi a confirmação de presença" (ambos \
+são o lembrete do dia ANTERIOR — o segundo é o reforço da tarde, que termina com "Consegue \
+confirmar pra mim?"), e o paciente responder com \
 mensagem afirmativa — "confirmo", "sim", "ok", "obrigada", "confirmado", "estarei lá", \
 "certo", "pode confirmar", "👍" ou variações — isso é uma confirmação de PRESENÇA. \
 ATENÇÃO: uma saudação sozinha ("bom dia", "boa tarde", "boa noite", "oi", "olá", "tudo bem") \
