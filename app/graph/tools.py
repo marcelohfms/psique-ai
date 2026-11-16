@@ -3779,6 +3779,25 @@ def _expected_consultation_amount(
     return base - 50  # R$50 PIX/cash discount
 
 
+async def _increment_amount_paid(client, appointment_ids: list[str], cents: int) -> int:
+    """Soma `cents` ao acumulado pago de cada consulta (rpc atômica) e devolve o
+    acumulado da PRIMEIRA linha. As linhas ligadas de uma 1ª consulta dividida
+    recebem o mesmo valor, então ficam iguais entre si."""
+    first = 0
+    for idx, aid in enumerate(appointment_ids):
+        res = await client.rpc(
+            "increment_amount_paid", {"p_appointment_id": aid, "p_cents": cents}
+        ).execute()
+        data = getattr(res, "data", res)
+        if isinstance(data, list):
+            data = data[0] if data else 0
+        if isinstance(data, dict):
+            data = next(iter(data.values()), 0)
+        if idx == 0:
+            first = int(data or 0)
+    return first
+
+
 def _parse_brl_amount(raw: str) -> float:
     """Parse a monetary string that may use Brazilian (1.234,56) or plain/US
     (1234.56 / 1234) formatting into a float. Returns 0.0 if unparseable.
@@ -4985,45 +5004,76 @@ async def register_payment(
         except Exception:
             _logger.exception("LOG_EVENT_FAILED (unreadable amount) patient=%s", patient_name)
         return _payment_unreadable_amount_prompt()
-    elif abs(amount_float - 100) < 1 and not booking_fee_already_paid:
-        # Taxa de reserva (only when not yet paid)
-        payment_type = "Taxa de Reserva"
-        if appt_id_to_pay:
-            await _update_appts({"booking_fee_paid_at": now_dt.isoformat()})
-        saldo = expected - 100
-        if appt_already_occurred:
-            payment_note = (
-                f"Valor pago: R$ {amount} — taxa de reserva registrada. "
-                f"A consulta já ocorreu — o saldo restante de R$ {saldo:.0f},00 (com desconto PIX) "
-                f"já pode ser quitado agora."
-            )
-        else:
-            payment_note = (
-                f"Valor pago: R$ {amount} — taxa de reserva registrada. "
-                f"Saldo restante para quitação no dia da consulta: R$ {saldo:.0f},00 (com desconto PIX)."
-            )
-    elif amount_float >= expected_remaining:
-        # Full payment or saldo that settles the consultation
-        payment_type = "Consulta"
-        if appt_id_to_pay:
-            await _update_appts({"paid_at": now_dt.isoformat(), "booking_fee_paid_at": now_dt.isoformat()})
-        payment_note = f"Valor pago: R$ {amount} — consulta QUITADA. Nenhum valor adicional será cobrado."
     else:
-        # Partial payment — still owes a balance
-        payment_type = "Pagamento Parcial"
-        if appt_id_to_pay:
-            await _update_appts({"booking_fee_paid_at": now_dt.isoformat()})
-        saldo = expected_remaining - amount_float
-        if custom_price is not None:
-            payment_note = (
-                f"Valor pago: R$ {amount}. Consulta ainda NÃO quitada. "
-                f"Saldo restante: R$ {saldo:.2f} (valor especial do paciente: R$ {expected:.0f},00)."
-            )
+        # Comprovante PIX: soma a parcela no acumulado da consulta e decide o tipo
+        # pelo acumulado real contra o valor rígido da tabela (expected).
+        _cents = round(amount_float * 100)
+        _ids = linked_appt_ids if linked_appt_ids else ([appt_id_to_pay] if appt_id_to_pay else [])
+        if _ids:
+            try:
+                _acc_cents = await _increment_amount_paid(client, _ids, _cents)
+            except Exception:
+                _logger.exception("INCREMENT_AMOUNT_PAID FAILED patient=%s", patient_name)
+                _prev_cents = 0
+                try:
+                    _prev_cents = int(appt_result.data[0].get("amount_paid_cents") or 0)
+                except Exception:
+                    _prev_cents = 0
+                _acc_cents = _prev_cents + _cents
         else:
-            payment_note = (
-                f"Valor pago: R$ {amount}. Consulta ainda NÃO quitada. "
-                f"Saldo restante: R$ {saldo:.2f} (valor total com desconto PIX: R$ {expected:.0f},00)."
-            )
+            _acc_cents = _cents
+        _acc_reais = _acc_cents / 100
+        saldo = max(0, expected - _acc_reais)
+
+        if abs(amount_float - 100) < 1 and not booking_fee_already_paid:
+            # Taxa de reserva (only when not yet paid)
+            payment_type = "Taxa de Reserva"
+            if appt_id_to_pay:
+                await _update_appts({"booking_fee_paid_at": now_dt.isoformat()})
+            if appt_already_occurred:
+                payment_note = (
+                    f"Valor pago: R$ {amount} — taxa de reserva registrada. "
+                    f"A consulta já ocorreu — o saldo restante de R$ {saldo:.0f},00 (com desconto PIX) "
+                    f"já pode ser quitado agora."
+                )
+            else:
+                payment_note = (
+                    f"Valor pago: R$ {amount} — taxa de reserva registrada. "
+                    f"Saldo restante para quitação no dia da consulta: R$ {saldo:.0f},00 (com desconto PIX)."
+                )
+        elif _acc_reais >= expected:
+            # O acumulado atinge o valor rígido: quita a consulta
+            payment_type = "Consulta"
+            if appt_id_to_pay:
+                await _update_appts({"paid_at": now_dt.isoformat(), "booking_fee_paid_at": now_dt.isoformat()})
+            payment_note = f"Valor pago: R$ {amount} — consulta QUITADA. Nenhum valor adicional será cobrado."
+            if _acc_reais > expected:
+                _excedente = _acc_reais - expected
+                try:
+                    await _notify_clinic(
+                        f"⚠️ Pagamento acima do valor da consulta.\nPaciente: {patient_name}"
+                        f"\nConsulta: {appointment_dt}\nExcedente: R$ {_excedente:.2f}"
+                        f"\nNenhum valor foi movido nem creditado; avalie a devolução."
+                        f"\nLink: {drive_link}",
+                        subject=f"Pagamento a mais — {patient_name}",
+                    )
+                except Exception:
+                    _logger.exception("NOTIFY_CLINIC FAILED (overpayment) patient=%s", patient_name)
+        else:
+            # Parcela intermediária — ainda deve saldo
+            payment_type = "Pagamento Parcial"
+            if appt_id_to_pay:
+                await _update_appts({"booking_fee_paid_at": now_dt.isoformat()})
+            if custom_price is not None:
+                payment_note = (
+                    f"Valor pago: R$ {amount}. Consulta ainda NÃO quitada. "
+                    f"Saldo restante: R$ {saldo:.2f} (valor especial do paciente: R$ {expected:.0f},00)."
+                )
+            else:
+                payment_note = (
+                    f"Valor pago: R$ {amount}. Consulta ainda NÃO quitada. "
+                    f"Saldo restante: R$ {saldo:.2f} (valor total com desconto PIX: R$ {expected:.0f},00)."
+                )
 
     # ── Record in Google Sheets ────────────────────────────────────────────────
     _sheets_append_failed = False
