@@ -8121,12 +8121,22 @@ async def test_prompt_mostra_saldo_real_com_parcial():
         "modality": "presencial",
         "amount_paid_cents": 40000,
         "doctor_id": DOCTOR_IDS["bruna"],
-        "consultation_type": "acompanhamento",
-        "patient_birth_date": "10/05/1989",
-        "patient_custom_price": None,
-        "patient_name": "Carlos Silva",
+        "consultation_type": "primeira_consulta",
+        "patient_birth_date": "10/05/2016",
+        "patient_custom_price": 650,
+        "patient_name": "Pedro Menor",
     }
-    state = _make_patient_agent_state(preferred_doctor="bruna")
-    with patch("app.graph.nodes._expected_consultation_amount", return_value=600):
+    # Paciente ativo do state é outro (Dr. Júlio, 35 anos): o cálculo precisa usar
+    # os dados DA CONSULTA (médico, idade, tipo, preço especial), não os do ativo.
+    state = _make_patient_agent_state(preferred_doctor="julio", patient_age=35)
+    with patch("app.graph.nodes._expected_consultation_amount", return_value=600) as m_exp:
         system_msg = await _run_patient_agent(state, upcoming=[apt])
     assert "saldo restante: R$ 200,00" in system_msg.content
+    from app.dates import compute_age
+    from datetime import date
+    args, kwargs = m_exp.call_args_list[-1]
+    assert args[0] == "bruna"
+    assert args[1] == compute_age("10/05/2016", date.today())
+    assert args[1] < 18
+    assert args[2] == "primeira_consulta"
+    assert kwargs["price_override"] == 650
