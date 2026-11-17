@@ -3008,6 +3008,53 @@ async def test_mark_reschedule_in_progress_count_query_ignores_unpaid_reschedule
     assert "fee_paid.eq.false" not in fee_filter   # pré-pagamento não conta
 
 
+async def _run_mark_with_count(count):
+    from app.graph.tools import mark_reschedule_in_progress
+    client, table, execute = _make_supabase_client()
+    appt_data = {
+        "appointment_id": "evt-abc",
+        "status": "scheduled",
+        "patient_id": "user-1",
+        "start_time": (datetime.now(TZ) + timedelta(days=10)).isoformat(),
+        "booking_fee_paid_at": "2026-01-01T10:00:00-03:00",
+        "booking_fee_waived": False,
+    }
+    execute.side_effect = [
+        MagicMock(data=appt_data),
+        MagicMock(count=count),
+        MagicMock(data=[]),
+    ]
+    with patch("app.graph.tools.get_supabase", new_callable=AsyncMock, return_value=client), \
+         patch("app.graph.tools.get_users_by_phone", new_callable=AsyncMock, return_value=[{"id": "user-1"}]), \
+         patch("app.graph.tools._resolve_doctor", new_callable=AsyncMock, return_value="julio"), \
+         patch("app.graph.tools._get_doctor_calendar_id", new_callable=AsyncMock, return_value="cal-123"), \
+         patch("app.google_calendar.cancel_event", new_callable=AsyncMock), \
+         patch("app.graph.tools.log_event", new_callable=AsyncMock):
+        result = await mark_reschedule_in_progress.coroutine(
+            appointment_id="evt-abc", state=_make_state(), config=CONFIG,
+        )
+    return result, table
+
+
+async def test_mark_reschedule_count_scoped_by_appointment_not_phone():
+    """Caso Diego Pita: remarcação anterior de OUTRA consulta não bloqueia esta.
+    A contagem filtra por metadata->>appointment_id da consulta atual, sem phone."""
+    result, table = await _run_mark_with_count(0)
+    assert "já utilizou" not in result.lower()
+    assert "único reagendamento" in result.lower()
+    eq_calls = [c.args for c in table.eq.call_args_list if len(c.args) == 2]
+    assert ("metadata->>appointment_id", "evt-abc") in eq_calls
+    assert ("event_type", "appointment_rescheduled") in eq_calls
+    assert not any(a[0] == "phone" for a in eq_calls)
+
+
+async def test_mark_reschedule_blocked_when_same_appointment_already_rescheduled():
+    """Mesma consulta já remarcada pelo paciente com taxa paga: política bloqueia."""
+    result, _ = await _run_mark_with_count(1)
+    assert "POLÍTICA DE REAGENDAMENTO" in result
+    assert "nova taxa" in result.lower()
+
+
 async def test_mark_reschedule_in_progress_canceled_status_says_slot_released():
     """Consulta já cancelada (ex: por timeout de taxa não paga): a tool não pode deixar
     a Eva inferir que a consulta ainda está reservada — regressão do caso Larissa
