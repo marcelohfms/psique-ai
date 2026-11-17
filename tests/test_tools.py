@@ -3718,6 +3718,45 @@ async def test_reschedule_appointment_second_reschedule_blocks_and_requires_new_
     ), "não deve registrar appointment_rescheduled na segunda remarcação bloqueada"
 
 
+async def test_reschedule_appointment_backstop_scoped_by_appointment_not_phone():
+    """Caso Diego Pita: remarcação anterior de OUTRA consulta do mesmo telefone não
+    pode disparar o backstop da nova taxa. A contagem é escopada por
+    metadata->>appointment_id da consulta atual (sem filtro de phone); com count=0
+    para esta consulta, a remarcação segue e a taxa é preservada."""
+    from app.graph.tools import reschedule_appointment
+    client, table, execute = _make_supabase_client()
+    old_start = (datetime.now(TZ) + timedelta(days=10)).replace(microsecond=0)
+    new_slot = (datetime.now(TZ) + timedelta(days=12)).replace(minute=0, second=0, microsecond=0)
+    execute.return_value = MagicMock(data={
+        "start_time": old_start.isoformat(),
+        "patient_id": "user-1",
+        "patients": {"name": "Maria"},
+        "booking_fee_paid_at": "2026-01-01T10:00:00-03:00",
+        "booking_fee_waived": False,
+        "status": "scheduled",
+    }, count=0)  # nenhuma remarcação desta consulta (a outra é de outro appointment_id)
+    with patch.dict("app.google_calendar.SCHEDULE_EXCEPTIONS", {}, clear=True), \
+         patch("app.graph.tools._get_doctor_calendar_id", new_callable=AsyncMock, return_value="cal123"), \
+         patch("app.google_calendar.update_event", new_callable=AsyncMock) as mock_update, \
+         patch("app.graph.tools.get_supabase", new_callable=AsyncMock, return_value=client), \
+         patch("app.graph.tools.get_users_by_phone", new_callable=AsyncMock, return_value=[{"id": "user-1"}]), \
+         patch("app.graph.tools.log_event", new_callable=AsyncMock), \
+         patch("app.graph.tools._notify_clinic", new_callable=AsyncMock):
+        result = await reschedule_appointment.coroutine(
+            appointment_id="evt-abc",
+            new_slot_datetime=new_slot.strftime("%Y-%m-%dT%H:%M:%S"),
+            slot_duration_minutes=60,
+            state=_make_state(),
+            config=CONFIG,
+        )
+    assert "nova taxa de reserva" not in result.lower()
+    mock_update.assert_awaited()  # remarcou normalmente, sem cobrar 2ª taxa
+    eq_calls = [c.args for c in table.eq.call_args_list if len(c.args) == 2]
+    assert ("metadata->>appointment_id", "evt-abc") in eq_calls
+    assert ("event_type", "appointment_rescheduled") in eq_calls
+    assert not any(a[0] == "phone" for a in eq_calls)
+
+
 async def test_reschedule_appointment_event_records_fee_paid_false_when_unpaid():
     """Se a taxa ainda NÃO foi paga, o evento appointment_rescheduled grava
     fee_paid=False — assim a política de 1 remarcação não conta essa troca."""
