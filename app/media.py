@@ -8,6 +8,7 @@ Flow:
   4. ImageMessage → upload to Drive (if configured) + vision classification/description
      (áudio nunca é transcrito — o paciente recebe aviso de que áudio não é processado)
 """
+import asyncio
 import base64
 import logging
 import os
@@ -549,6 +550,18 @@ async def _notify_image_processing_failure(phone: str, media_id: str) -> None:
         logger.exception("IMAGE_FAILURE_CLINIC_NOTIFY failed phone=%s", phone)
 
 
+# Leitura da imagem (download da Meta + visão da OpenAI) roda inline no webhook. Uma
+# falha passageira (timeout de rede, 5xx da Meta/OpenAI) na primeira tentativa NÃO pode
+# descartar a mensagem: era assim que o comprovante mudo sumia (caso Júlia/Irlanda,
+# 18/11/2026) e só o cron reconcile_dropped_receipts resgatava ~30 min depois. Repetimos
+# a leitura na hora, com backoff curto, antes de desistir e avisar a clínica. Só a
+# EXCEÇÃO é retentada: None sem exceção (documento/imagem irrelevante) é decisão legítima
+# e já disparou seus efeitos lá dentro, então jamais é repetido. O webhook responde 200
+# à Meta antes disso (asyncio.create_task em app/main.py), logo o backoff não a atrasa.
+IMAGE_READ_MAX_ATTEMPTS = 3
+IMAGE_READ_BACKOFF_SECONDS = 1.0
+
+
 async def process_media(media_id: str, media_type: str, phone: str = "") -> str | None:
     """
     Returns described text for image messages.
@@ -556,14 +569,29 @@ async def process_media(media_id: str, media_type: str, phone: str = "") -> str 
     transcribed (patients get an auto-reply that audio isn't processed).
     Returns None for unsupported types.
     """
-    try:
-        if media_type == "image":
+    if media_type != "image":
+        return None
+
+    last_exc: Exception | None = None
+    for attempt in range(1, IMAGE_READ_MAX_ATTEMPTS + 1):
+        try:
+            # Retorno normal (inclusive None de laudo/exame/imagem irrelevante) encerra
+            # já: não é falha e não deve ser repetido.
             return await describe_image(media_id, phone)
-    except Exception:
-        logger.exception("Failed to process media %s (type=%s)", media_id, media_type)
-        # Falha real de imagem avisa a clínica (paridade com o caminho de documento).
-        # Só a exceção chega aqui: laudo/exame e imagem irrelevante retornam None sem
-        # lançar, então não geram alarme falso. Nunca deixa o aviso derrubar a ingestão.
-        if media_type == "image":
-            await _notify_image_processing_failure(phone, media_id)
+        except Exception as exc:
+            last_exc = exc
+            logger.warning(
+                "IMAGE_READ_RETRY attempt=%d/%d media_id=%s err=%s",
+                attempt, IMAGE_READ_MAX_ATTEMPTS, media_id, exc,
+            )
+            if attempt < IMAGE_READ_MAX_ATTEMPTS:
+                await asyncio.sleep(IMAGE_READ_BACKOFF_SECONDS * attempt)
+
+    # Esgotou as tentativas: falha real de imagem avisa a clínica (paridade com o
+    # caminho de documento). Nunca deixa o aviso derrubar a ingestão.
+    logger.error(
+        "Failed to process media %s (type=%s) after %d attempts",
+        media_id, media_type, IMAGE_READ_MAX_ATTEMPTS, exc_info=last_exc,
+    )
+    await _notify_image_processing_failure(phone, media_id)
     return None
