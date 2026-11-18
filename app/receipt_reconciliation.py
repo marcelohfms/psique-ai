@@ -164,11 +164,28 @@ async def replay_dropped_receipt(cand: dict, img: bytes) -> bool:
     Se não for comprovante (virou documento/irrelevante), cai no alerta por e-mail.
     Retorna True se reinjetou, False se caiu no alerta."""
     # Import local: app.main importa este módulo indiretamente (evita ciclo).
-    from app.main import process_message, save_message
+    from app.main import process_message, save_message, _eva_paused_for_phone
 
     raw = cand.get("phone", "")
     variants = _phone_variants(raw)
     canonico = (variants[0] if variants else raw) + "@s.whatsapp.net"
+
+    # Contato deliberadamente pausado (manual_hold ou active=False): a Eva fica em
+    # silêncio TOTAL, inclusive para comprovante reinjetado. O bypass_pass=True do
+    # replay existe para a conversa só temporariamente eva-inativa, não para um
+    # desligamento definitivo — sem este guard, cada comprovante dropado reabria a
+    # conversa e a Eva voltava a falar (caso Clínica Affectus 5581991812399, parada
+    # desde 12/11/2026 e ainda respondendo em 18/11). Em vez de rodar a Eva, avisa a
+    # clínica por e-mail, no mesmo molde do design original ("comprovantes mudos" era
+    # só e-mail, sem auto-registro). A checagem vem ANTES do describe_image_bytes para
+    # não gastar Vision nem subir nada ao Drive de um contato calado.
+    if await _eva_paused_for_phone(canonico):
+        logger.info(
+            "REPLAY_SKIP_PAUSED phone=%s — contato em pausa, alertando a clínica por e-mail",
+            canonico,
+        )
+        await _alert_clinic(cand, "payment")
+        return False
 
     texto = await describe_image_bytes(img, phone=canonico, payment_only=True)
     if not texto:
