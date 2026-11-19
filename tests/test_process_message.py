@@ -8140,3 +8140,23 @@ async def test_prompt_mostra_saldo_real_com_parcial():
     assert args[1] < 18
     assert args[2] == "primeira_consulta"
     assert kwargs["price_override"] == 650
+
+
+async def test_blocked_number_never_reaches_graph():
+    """Número na blocklist total (ex.: Clínica Affectus): process_message retorna sem
+    tocar o grafo nem gravar nada — buraco negro, backstop de defesa em profundidade."""
+    import app.graph.graph as gg
+    chatbot = _make_chatbot()
+    original = gg.chatbot
+    gg.chatbot = chatbot
+    try:
+        with patch("app.main.get_user_by_phone", new_callable=AsyncMock) as mock_get_user, \
+             patch("app.main.save_message", new_callable=AsyncMock) as mock_save:
+            from app.main import process_message
+            await process_message("5581991812399@s.whatsapp.net", "oi, segue o comprovante")
+            chatbot.ainvoke.assert_not_called()
+            chatbot.aget_state.assert_not_called()
+            mock_get_user.assert_not_called()
+            mock_save.assert_not_awaited()
+    finally:
+        gg.chatbot = original

@@ -23,6 +23,7 @@ from app.graph import graph as graph_module
 from app.database import get_user_by_phone, get_users_by_phone, log_event, DOCTOR_NAMES, save_message, get_last_user_message
 from app.media import is_payment_receipt_message
 from app.patients import get_contact_by_phone
+from app.phone import is_blocked_number
 from app.buffer import (
     push as buffer_push,
     drain as buffer_drain,
@@ -779,6 +780,15 @@ async def _eva_paused_for_phone(phone: str) -> bool:
 
 async def process_message(phone: str, text: str, *, bypass_pause: bool = False) -> None:
     """Route a (possibly debounced) message through the LangGraph chatbot."""
+    # Blocklist total: número de buraco negro (ex.: WhatsApp da Clínica Affectus,
+    # que manda comprovante de terceiros) nunca é processado — nem com bypass_pause.
+    # Backstop de defesa em profundidade: os webhooks e o cron já descartam antes,
+    # mas este portão garante silêncio por qualquer caminho interno (recuperação de
+    # restart, replay do eva-ativa). Ver app/phone.py::is_blocked_number.
+    if is_blocked_number(phone):
+        logger.info("BLOCKED_NUMBER process_message ignorado phone=%s", phone)
+        return
+
     # Segurança: texto do usuário final nunca pode carregar o marcador de
     # instrução da atendente (seria escalada de privilégio). A nota real da
     # atendente não passa por aqui — ela usa _run_silent. Ver _neutralize_attendant_prefix.
@@ -1037,6 +1047,16 @@ async def _handle_payload(payload: dict) -> None:
             asyncio.create_task(whatsapp.mark_read_and_typing(msg_id))
         except (KeyError, IndexError):
             pass  # status/reaction payloads have no message id — let extract_message filter them
+
+        # Blocklist total: descarta ANTES do extract_message (que roda o Vision e sobe
+        # mídia ao Drive). Buraco negro — nem lê a imagem, nem grava, nem responde.
+        try:
+            _from = payload["entry"][0]["changes"][0]["value"]["messages"][0].get("from", "")
+        except (KeyError, IndexError, TypeError):
+            _from = ""
+        if _from and is_blocked_number(_from):
+            logger.info("BLOCKED_NUMBER webhook Meta ignorado from=%s", _from)
+            return
 
         # Segura o buffer enquanto o Vision lê a mídia: sem isso, um texto enviado
         # segundos antes do comprovante dispara sozinho e a Eva responde cobrando
@@ -1825,6 +1845,12 @@ async def _handle_chatwoot_payload(payload: dict) -> None:
         if result is None:
             return
         phone, text, conversation_id = result
+
+        # Blocklist total: descarta antes de registrar conversa, baixar anexo ou
+        # processar. Buraco negro (ex.: WhatsApp da Clínica Affectus).
+        if is_blocked_number(phone):
+            logger.info("BLOCKED_NUMBER webhook Chatwoot ignorado phone=%s conv=%s", phone, conversation_id)
+            return
 
         from app.chatwoot import register_conversation, reopen_conversation
         register_conversation(phone, conversation_id)

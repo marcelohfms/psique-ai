@@ -463,3 +463,34 @@ async def test_reconcile_replay_false_marks_alerted_without_own_email():
     mail.assert_not_awaited()
     logev.assert_awaited_once()
     assert logev.await_args.args[0] == "receipt_drop_alerted"
+
+
+async def test_reconcile_skips_blocked_number_entirely():
+    """Número na blocklist total: o cron nem baixa, nem classifica, nem alerta —
+    buraco negro (caso Clínica Affectus 5581991812399)."""
+    from app.receipt_reconciliation import reconcile
+
+    cands = [_cand(phone="5581991812399", attachment_id=1),
+             _cand(phone="5583999999999", attachment_id=2)]
+    with patch("app.receipt_reconciliation.list_recent_incoming_attachments",
+               new_callable=AsyncMock, return_value=cands), \
+         patch("app.receipt_reconciliation.already_alerted", new_callable=AsyncMock, return_value=False), \
+         patch("app.receipt_reconciliation.has_trace", new_callable=AsyncMock, return_value=False), \
+         patch("app.receipt_reconciliation._download_bytes", new_callable=AsyncMock, return_value=b"img") as dl, \
+         patch("app.receipt_reconciliation.classify_image_raw", new_callable=AsyncMock,
+               return_value=("payment", "t")), \
+         patch("app.receipt_reconciliation.has_payment_trace_until_now",
+               new_callable=AsyncMock, return_value=False), \
+         patch("app.receipt_reconciliation.already_replayed", new_callable=AsyncMock, return_value=False), \
+         patch("app.receipt_reconciliation.replay_dropped_receipt", new_callable=AsyncMock, return_value=True) as replay, \
+         patch("app.receipt_reconciliation._alert_clinic", new_callable=AsyncMock) as alert, \
+         patch("app.receipt_reconciliation.log_event", new_callable=AsyncMock):
+        await reconcile(NOW)
+
+    # O número bloqueado nunca é baixado nem alertado nem reinjetado.
+    blocked_urls = [c.args[0] for c in dl.await_args_list]
+    assert all("blocked" not in u for u in blocked_urls)
+    assert dl.await_count == 1  # só o número legítimo foi baixado
+    for m in (replay, alert):
+        for c in m.await_args_list:
+            assert c.args[0].get("phone") != "5581991812399"
