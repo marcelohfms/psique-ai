@@ -154,6 +154,10 @@ JOBS: tuple[Job, ...] = (
         _SUPABASE + _SMTP + ("CLINIC_NOTIFY_EMAIL",)),
     Job("funnel_report", "send_funnel_report", At(8, weekdays=(0,)),
         _SUPABASE + _SMTP + ("FUNNEL_REPORT_EMAIL",)),
+    # Relatório diário de comprovantes que falharam na leitura (caíram / ilegíveis).
+    # Vai SÓ para a dona (RECEIPT_FAILURE_REPORT_EMAIL). Ver app/receipt_failure_report.py.
+    Job("daily_receipt_failure_report", "send_daily_receipt_failure_report", At(8),
+        _SUPABASE + _SMTP + ("RECEIPT_FAILURE_REPORT_EMAIL",)),
     Job("no_show_messages", "send_no_show_messages", At(9),
         _SUPABASE + _PG + _WHATSAPP + _CHATWOOT),
     Job("pending_payments_reminder", "send_pending_payments_reminder",
