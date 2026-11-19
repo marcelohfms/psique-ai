@@ -851,7 +851,7 @@ async def test_chatwoot_webhook_processes_audio_attachment(async_client):
     ]
     with patch("app.main.buffer_push") as mock_push, \
          patch("app.main.save_message") as mock_save, \
-         patch("app.main._process_chatwoot_attachments", new_callable=AsyncMock, return_value="[áudio transcrito]: consulta amanhã") as mock_att:
+         patch("app.main._process_chatwoot_attachments", new_callable=AsyncMock, return_value=("[áudio transcrito]: consulta amanhã", False)) as mock_att:
         mock_push.return_value = None
         mock_save.return_value = None
         response = await async_client.post("/chatwoot-webhook", json=payload)
@@ -873,7 +873,7 @@ async def test_chatwoot_webhook_processes_attachment_with_caption(async_client):
     with patch("app.main.buffer_push") as mock_push, \
          patch("app.main.save_message") as mock_save, \
          patch("app.main._process_chatwoot_attachments", new_callable=AsyncMock,
-               return_value="[imagem]: COMPROVANTE DE PAGAMENTO: R$ 100,00 [drive_link:https://drive.google.com/file/d/x/view]") as mock_att:
+               return_value=("[imagem]: COMPROVANTE DE PAGAMENTO: R$ 100,00 [drive_link:https://drive.google.com/file/d/x/view]", False)) as mock_att:
         mock_push.return_value = None
         mock_save.return_value = None
         response = await async_client.post("/chatwoot-webhook", json=payload)
@@ -896,7 +896,7 @@ async def test_chatwoot_webhook_document_with_caption_falls_back_to_caption(asyn
     ]
     with patch("app.main.buffer_push") as mock_push, \
          patch("app.main.save_message") as mock_save, \
-         patch("app.main._process_chatwoot_attachments", new_callable=AsyncMock, return_value=None) as mock_att:
+         patch("app.main._process_chatwoot_attachments", new_callable=AsyncMock, return_value=(None, False)) as mock_att:
         mock_push.return_value = None
         mock_save.return_value = None
         response = await async_client.post("/chatwoot-webhook", json=payload)
@@ -926,7 +926,7 @@ async def test_process_chatwoot_attachments_forwards_phone_for_image():
 
         result = await _process_chatwoot_attachments(attachments, phone="5511999999999@s.whatsapp.net")
 
-    assert result == "[imagem]: ok"
+    assert result == ("[imagem]: ok", False)
     mock_describe.assert_awaited_once_with(b"fake-image-bytes", phone="5511999999999@s.whatsapp.net")
 
 
@@ -947,7 +947,7 @@ async def test_process_chatwoot_attachments_forwards_phone_for_pdf():
 
         result = await _process_chatwoot_attachments(attachments, phone="5511999999999@s.whatsapp.net")
 
-    assert result == "[imagem]: ok"
+    assert result == ("[imagem]: ok", False)
     mock_describe.assert_awaited_once_with(b"fake-pdf-bytes", phone="5511999999999@s.whatsapp.net")
 
 
@@ -1026,7 +1026,7 @@ async def test_process_chatwoot_attachments_detects_pdf_via_extension():
 
         result = await _process_chatwoot_attachments(attachments, phone="5511999999999@s.whatsapp.net")
 
-    assert result == "[pdf]: ok"
+    assert result == ("[pdf]: ok", False)
     mock_describe.assert_awaited_once()
 
 
@@ -1037,7 +1037,7 @@ async def test_chatwoot_webhook_passes_phone_to_attachment_processing(async_clie
     payload["attachments"] = [{"file_type": "audio", "data_url": "https://storage.example.com/audio.ogg"}]
     with patch("app.main.buffer_push") as mock_push, \
          patch("app.main.save_message") as mock_save, \
-         patch("app.main._process_chatwoot_attachments", new_callable=AsyncMock, return_value="[áudio transcrito]: consulta amanhã") as mock_att:
+         patch("app.main._process_chatwoot_attachments", new_callable=AsyncMock, return_value=("[áudio transcrito]: consulta amanhã", False)) as mock_att:
         mock_push.return_value = None
         mock_save.return_value = None
         response = await async_client.post("/chatwoot-webhook", json=payload)
@@ -1051,7 +1051,7 @@ async def test_chatwoot_webhook_ignores_empty_attachment(async_client):
     payload = _chatwoot_payload(content="")
     payload["attachments"] = [{"file_type": "audio", "data_url": ""}]
     with patch("app.main.buffer_push") as mock_push, \
-         patch("app.main._process_chatwoot_attachments", new_callable=AsyncMock, return_value=None) as mock_att:
+         patch("app.main._process_chatwoot_attachments", new_callable=AsyncMock, return_value=(None, False)) as mock_att:
         mock_push.return_value = None
         response = await async_client.post("/chatwoot-webhook", json=payload)
         assert response.status_code == 200
@@ -1739,7 +1739,7 @@ async def test_conv_updated_eva_ativa_added_reprocesses_attachment_only_receipt(
         mock_last.return_value = {
             "content": "", "attachments": attachments, "created_at": 100, "last_note_at": None,
         }
-        mock_process.return_value = "[imagem]: COMPROVANTE DE PAGAMENTO: R$100 [drive_link:https://drive/x]"
+        mock_process.return_value = ("[imagem]: COMPROVANTE DE PAGAMENTO: R$100 [drive_link:https://drive/x]", False)
         handled = await _handle_label_change(payload)
 
     assert handled is True
@@ -1768,7 +1768,7 @@ async def test_conv_updated_eva_ativa_saves_receipt_when_not_yet_persisted():
         mock_last.return_value = {
             "content": "", "attachments": attachments, "created_at": 100, "last_note_at": None,
         }
-        mock_process.return_value = receipt
+        mock_process.return_value = (receipt, False)
         # última mensagem "user" gravada NÃO é um comprovante → o comprovante do
         # replay ainda não está em `messages`.
         mock_last_saved.return_value = "boa tarde"
@@ -1799,7 +1799,7 @@ async def test_conv_updated_eva_ativa_does_not_resave_receipt_already_persisted(
             "content": "", "attachments": attachments, "created_at": 100, "last_note_at": None,
         }
         # novo drive_link, texto diferente do que já está salvo...
-        mock_process.return_value = "[imagem]: COMPROVANTE DE PAGAMENTO: R$100 [drive_link:https://drive/NEW]"
+        mock_process.return_value = ("[imagem]: COMPROVANTE DE PAGAMENTO: R$100 [drive_link:https://drive/NEW]", False)
         # ...mas a última mensagem "user" já é um comprovante (drive_link antigo).
         mock_last_saved.return_value = "[imagem]: COMPROVANTE DE PAGAMENTO: R$100 [drive_link:https://drive/OLD]"
         handled = await _handle_label_change(payload)
@@ -2538,3 +2538,90 @@ async def test_image_only_drop_is_logged(caplog):
         "IMAGE_ONLY_DROPPED" in r.getMessage() and "media-456" in r.getMessage()
         for r in caplog.records
     )
+
+
+# ── Resgate do comprovante na chegada (Chatwoot) ──────────────────────────────
+
+def _rescue_payload(attachment_id: int = 2242, inbox_id: int = 7, event: str = "message_created") -> dict:
+    payload = _chatwoot_payload(content="", conversation_id=542)
+    payload["event"] = event
+    payload["inbox"] = {"id": inbox_id}
+    payload["created_at"] = 1763560000
+    payload["attachments"] = [
+        {"id": attachment_id, "file_type": "image", "data_url": "https://storage.example.com/comp.jpg"}
+    ]
+    return payload
+
+
+async def _run_rescue_payload(payload: dict, monkeypatch, process_result=(None, True)) -> AsyncMock:
+    from app.main import _handle_chatwoot_payload
+    monkeypatch.setenv("CHATWOOT_INBOX_ID", "7")
+    with patch("app.main.rescue_incoming_attachment", new_callable=AsyncMock) as rescue, \
+         patch("app.main.buffer_push", new_callable=AsyncMock), \
+         patch("app.main.save_message", new_callable=AsyncMock), \
+         patch("app.main._process_chatwoot_attachments", new_callable=AsyncMock, return_value=process_result):
+        await _handle_chatwoot_payload(payload)
+        await _handle_chatwoot_payload(payload) if payload.pop("_twice", False) else None
+        await asyncio.sleep(0.05)
+    return rescue
+
+
+async def test_schedules_rescue_when_arrival_read_fails(monkeypatch):
+    rescue = await _run_rescue_payload(_rescue_payload(attachment_id=9101), monkeypatch)
+    rescue.assert_called_once()
+    kwargs = rescue.call_args.kwargs
+    assert kwargs["attachment_id"] == 9101 and kwargs["conversation_id"] == 542
+    assert kwargs["data_url"] == "https://storage.example.com/comp.jpg"
+    assert kwargs["created_at"] == 1763560000
+
+
+async def test_no_rescue_for_other_inbox(monkeypatch):
+    rescue = await _run_rescue_payload(_rescue_payload(attachment_id=9102, inbox_id=99), monkeypatch)
+    rescue.assert_not_called()
+
+
+async def test_no_double_schedule_same_attachment(monkeypatch):
+    payload = _rescue_payload(attachment_id=9103)
+    payload["_twice"] = True
+    rescue = await _run_rescue_payload(payload, monkeypatch)
+    assert rescue.call_count == 1
+
+
+async def test_no_rescue_when_not_message_created(monkeypatch):
+    rescue = await _run_rescue_payload(
+        _rescue_payload(attachment_id=9104, event="message_updated"), monkeypatch
+    )
+    rescue.assert_not_called()
+
+
+async def test_no_rescue_when_download_ok_but_image_handled_or_ignored(monkeypatch):
+    """Download deu certo e a imagem foi ignorada/tratada (describe devolveu None):
+    nada a resgatar, senão cada imagem irrelevante re-roda o Vision."""
+    rescue = await _run_rescue_payload(
+        _rescue_payload(attachment_id=9105), monkeypatch, process_result=(None, False)
+    )
+    rescue.assert_not_called()
+
+
+async def test_process_attachments_flags_download_failure():
+    from app.main import _process_chatwoot_attachments
+    attachments = [{"file_type": "image", "data_url": "https://storage.example.com/x.jpg"}]
+    with patch("httpx.AsyncClient") as mock_client_cls:
+        mock_client = mock_client_cls.return_value.__aenter__.return_value
+        mock_client.get = AsyncMock(side_effect=RuntimeError("404"))
+        result = await _process_chatwoot_attachments(attachments, phone="5511999999999@s.whatsapp.net")
+    assert result == (None, True)
+
+
+async def test_process_attachments_download_ok_describe_none_not_failed():
+    from app.main import _process_chatwoot_attachments
+    attachments = [{"file_type": "image", "data_url": "https://storage.example.com/x.jpg"}]
+    with patch("httpx.AsyncClient") as mock_client_cls, \
+         patch("app.media.describe_image_bytes", new_callable=AsyncMock, return_value=None):
+        mock_resp = AsyncMock()
+        mock_resp.raise_for_status = lambda: None
+        mock_resp.content = b"img"
+        mock_client = mock_client_cls.return_value.__aenter__.return_value
+        mock_client.get = AsyncMock(return_value=mock_resp)
+        result = await _process_chatwoot_attachments(attachments, phone="5511999999999@s.whatsapp.net")
+    assert result == (None, False)
