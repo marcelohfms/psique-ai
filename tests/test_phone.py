@@ -37,3 +37,35 @@ def test_database_usa_o_strip_phone_compartilhado():
     from app import database, phone
 
     assert database._strip_phone is phone._strip_phone
+
+
+# ── Blocklist total (is_blocked_number) ───────────────────────────────────────
+
+def test_is_blocked_number_matches_canonical_form():
+    from app.phone import is_blocked_number
+    assert is_blocked_number("5581991812399") is True
+
+
+def test_is_blocked_number_matches_12_digit_without_ninth():
+    """Meta entrega o número da Affectus sem o 9 (558191812399)."""
+    from app.phone import is_blocked_number
+    assert is_blocked_number("558191812399") is True
+
+
+def test_is_blocked_number_matches_with_plus_and_suffix():
+    from app.phone import is_blocked_number
+    assert is_blocked_number("+5581991812399") is True
+    assert is_blocked_number("5581991812399@s.whatsapp.net") is True
+    assert is_blocked_number("558191812399@s.whatsapp.net") is True
+
+
+def test_is_blocked_number_false_for_legitimate_number():
+    from app.phone import is_blocked_number
+    assert is_blocked_number("5583999999999") is False
+    assert is_blocked_number("5581991812398@s.whatsapp.net") is False
+
+
+def test_is_blocked_number_handles_empty_and_junk():
+    from app.phone import is_blocked_number
+    assert is_blocked_number("") is False
+    assert is_blocked_number(None) is False

@@ -21,7 +21,7 @@ from app.chatwoot import list_recent_incoming_attachments
 from app.database import get_supabase, log_event
 from app.email_sender import send_clinic_notification_email
 from app.media import classify_image_raw, describe_image_bytes
-from app.phone import _phone_variants
+from app.phone import _phone_variants, is_blocked_number
 
 logger = logging.getLogger(__name__)
 
@@ -225,6 +225,10 @@ async def reconcile(now: datetime, *, floor_min: int = 10, window_min: int = 60)
             phone = cand.get("phone", "")
             if not phone:
                 logger.warning("RECONCILE_SKIP_NO_PHONE attachment_id=%s", aid)
+                continue
+            # Blocklist total: buraco negro — nem baixa, nem classifica, nem alerta.
+            if is_blocked_number(phone):
+                logger.info("RECONCILE_SKIP_BLOCKED attachment_id=%s phone=%s", aid, phone)
                 continue
             if await already_alerted(aid):
                 continue
