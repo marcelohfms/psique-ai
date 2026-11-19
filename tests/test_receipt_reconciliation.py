@@ -223,7 +223,8 @@ async def test_replay_registers_and_notifies():
          patch("app.receipt_reconciliation.log_event", new_callable=AsyncMock) as logev, \
          patch("app.receipt_reconciliation._alert_clinic", new_callable=AsyncMock) as alert, \
          patch("app.main.save_message", new_callable=AsyncMock) as save, \
-         patch("app.main.process_message", new_callable=AsyncMock) as proc:
+         patch("app.main.process_message", new_callable=AsyncMock) as proc, \
+         patch("app.main._eva_paused_for_phone", new_callable=AsyncMock, return_value=False):
         ok = await replay_dropped_receipt(_cand(), b"img")
 
     assert ok is True
@@ -250,7 +251,8 @@ async def test_replay_falls_back_to_alert_when_not_a_receipt():
          patch("app.receipt_reconciliation.log_event", new_callable=AsyncMock) as logev, \
          patch("app.receipt_reconciliation._alert_clinic", new_callable=AsyncMock) as alert, \
          patch("app.main.save_message", new_callable=AsyncMock) as save, \
-         patch("app.main.process_message", new_callable=AsyncMock) as proc:
+         patch("app.main.process_message", new_callable=AsyncMock) as proc, \
+         patch("app.main._eva_paused_for_phone", new_callable=AsyncMock, return_value=False):
         ok = await replay_dropped_receipt(cand, b"img")
 
     assert ok is False
@@ -260,29 +262,33 @@ async def test_replay_falls_back_to_alert_when_not_a_receipt():
     proc.assert_not_awaited()
 
 
-async def test_replay_in_manual_hold_passes_through_pause_gate():
-    """(b) Contato em pausa/manual_hold: o process_message REAL deixa o replay passar
-    pelo portão da pausa (bypass_pause=True) e chega no grafo, em vez de calar."""
-    import app.graph.graph as gg
+async def test_replay_in_manual_hold_alerts_clinic_and_stays_silent():
+    """Contato deliberadamente pausado (manual_hold / active=False): a Eva fica em
+    silêncio total, inclusive para comprovante reinjetado. O replay NÃO roda a Eva —
+    avisa a clínica por e-mail (ela trata pelo painel). Caso Clínica Affectus
+    (5581991812399), 18/11/2026: a Eva reabria a conversa a cada comprovante mesmo
+    desligada, porque o bypass_pause atropelava o portão de pausa."""
     from app.receipt_reconciliation import replay_dropped_receipt
 
-    chatbot = MagicMock()
-    chatbot.aget_state = AsyncMock(side_effect=RuntimeError("passou do portao"))
-    original = gg.chatbot
-    gg.chatbot = chatbot
-    try:
-        with patch("app.receipt_reconciliation.describe_image_bytes",
-                   new_callable=AsyncMock, return_value="COMPROVANTE DE PAGAMENTO: R$ 100"), \
-             patch("app.receipt_reconciliation.log_event", new_callable=AsyncMock), \
-             patch("app.main.save_message", new_callable=AsyncMock), \
-             patch("app.main._eva_paused_for_phone", new_callable=AsyncMock, return_value=True), \
-             patch("app.main.get_user_by_phone", new_callable=AsyncMock, return_value=None), \
-             patch("app.main.get_users_by_phone", new_callable=AsyncMock, return_value=[]):
-            with pytest.raises(RuntimeError, match="passou do portao"):
-                await replay_dropped_receipt(_cand(), b"img")
-        chatbot.aget_state.assert_called()
-    finally:
-        gg.chatbot = original
+    cand = _cand()
+    with patch("app.receipt_reconciliation.describe_image_bytes",
+               new_callable=AsyncMock, return_value="COMPROVANTE DE PAGAMENTO: R$ 100") as desc, \
+         patch("app.receipt_reconciliation.log_event", new_callable=AsyncMock) as logev, \
+         patch("app.receipt_reconciliation._alert_clinic", new_callable=AsyncMock) as alert, \
+         patch("app.main.save_message", new_callable=AsyncMock) as save, \
+         patch("app.main.process_message", new_callable=AsyncMock) as proc, \
+         patch("app.main._eva_paused_for_phone", new_callable=AsyncMock, return_value=True) as paused:
+        ok = await replay_dropped_receipt(cand, b"img")
+
+    assert ok is False
+    canon = "5581971052827@s.whatsapp.net"
+    paused.assert_awaited_once_with(canon)
+    alert.assert_awaited_once_with(cand, "payment")
+    proc.assert_not_awaited()
+    save.assert_not_awaited()
+    logev.assert_not_awaited()
+    # Pausa é checada antes de qualquer efeito caro (Vision/Drive).
+    desc.assert_not_awaited()
 
 
 async def test_replay_phone_without_ninth_digit_is_normalized():
@@ -295,7 +301,8 @@ async def test_replay_phone_without_ninth_digit_is_normalized():
                new_callable=AsyncMock, return_value=texto) as desc, \
          patch("app.receipt_reconciliation.log_event", new_callable=AsyncMock) as logev, \
          patch("app.main.save_message", new_callable=AsyncMock) as save, \
-         patch("app.main.process_message", new_callable=AsyncMock) as proc:
+         patch("app.main.process_message", new_callable=AsyncMock) as proc, \
+         patch("app.main._eva_paused_for_phone", new_callable=AsyncMock, return_value=False):
         await replay_dropped_receipt(_cand(phone="558171052827"), b"img")
 
     canon = "5581971052827@s.whatsapp.net"
