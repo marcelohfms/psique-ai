@@ -1168,11 +1168,17 @@ def _attachment_is_pdf(att: dict) -> bool:
     return (att.get("data_url") or "").lower().endswith(".pdf")
 
 
-async def _process_chatwoot_attachments(attachments: list, phone: str = "") -> str | None:
-    """Download and process the first recognisable attachment (audio or image)."""
+async def _process_chatwoot_attachments(attachments: list, phone: str = "") -> tuple[str | None, bool]:
+    """Download and process the first recognisable attachment (audio or image).
+
+    Retorna (texto, download_failed). `download_failed` só é True quando o
+    download/processamento de algum anexo levantou exceção; texto vazio com
+    download ok significa imagem ignorada ou documento já tratado.
+    """
     import httpx
     from app.media import describe_image_bytes, describe_pdf_bytes
 
+    download_failed = False
     for att in attachments:
         file_type = (att.get("file_type") or "").lower()
         data_url = att.get("data_url") or att.get("thumb_url") or ""
@@ -1184,16 +1190,17 @@ async def _process_chatwoot_attachments(attachments: list, phone: str = "") -> s
                 resp.raise_for_status()
                 media_bytes = resp.content
             if file_type == "audio":
-                return "[audio-nao-suportado]"
+                return "[audio-nao-suportado]", False
             if file_type == "image":
-                return await describe_image_bytes(media_bytes, phone=phone)
+                return await describe_image_bytes(media_bytes, phone=phone), False
             if file_type == "file":
                 if _attachment_is_pdf(att):
-                    return await describe_pdf_bytes(media_bytes, phone=phone)
-                return "[pdf-recebido]"
+                    return await describe_pdf_bytes(media_bytes, phone=phone), False
+                return "[pdf-recebido]", False
         except Exception:
+            download_failed = True
             logger.exception("Failed to process Chatwoot attachment type=%s url=%.80s", file_type, data_url)
-    return None
+    return None, download_failed
 
 
 _EVA_INACTIVE_LABEL = "eva-inativa"
@@ -1456,7 +1463,7 @@ async def _apply_eva_label_action(payload: dict, added: set, removed: set) -> bo
                     with contextlib.ExitStack() as stack:
                         if attachments:
                             stack.enter_context(buffer_hold(phone))
-                            attachment_text = await _process_chatwoot_attachments(attachments, phone=phone)
+                            attachment_text, _ = await _process_chatwoot_attachments(attachments, phone=phone)
                             if attachment_text and attachment_text != "[audio-nao-suportado]":
                                 text = f"{text}\n{attachment_text}" if text else attachment_text
                         if text:
@@ -1936,7 +1943,7 @@ async def _handle_chatwoot_payload(payload: dict) -> None:
                 # comprovante/document sent WITH a caption had its attachment silently
                 # dropped and only the caption text reached Eva.
                 caption = text
-                attachment_text = await _process_chatwoot_attachments(attachments, phone=phone)
+                attachment_text, download_failed = await _process_chatwoot_attachments(attachments, phone=phone)
                 if attachment_text == "[audio-nao-suportado]":
                     await _send_audio_not_supported(phone)
                     return
@@ -1947,7 +1954,10 @@ async def _handle_chatwoot_payload(payload: dict) -> None:
                     # (medical document: thank-you + clinic notification sent directly, or
                     # an irrelevant image) — fall back to the caption so it isn't lost,
                     # mirroring the Meta webhook's image-handling behavior.
-                    _schedule_attachment_rescue(payload, phone, conversation_id, attachments)
+                    # O resgate só vale se o download falhou; download ok com texto
+                    # vazio é imagem ignorada/documento tratado (sem re-rodar o Vision).
+                    if download_failed:
+                        _schedule_attachment_rescue(payload, phone, conversation_id, attachments)
                     text = caption
             if text is None:
                 return

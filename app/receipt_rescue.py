@@ -41,7 +41,7 @@ async def rescue_incoming_attachment(
     conversation_id: int,
     attachment_id: int,
     data_url: str,
-    created_at: int,
+    created_at: float,
     sleep=asyncio.sleep,
 ) -> bool:
     """Baixa o anexo insistindo e o reinjeta na Eva. True se reinjetou."""
