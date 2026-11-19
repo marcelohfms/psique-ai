@@ -95,3 +95,13 @@ async def test_skips_when_traced_after_download():
     assert ok is False
     m["describe"].assert_not_awaited()
     m["process"].assert_not_awaited()
+
+
+async def test_total_wait_is_about_60s():
+    from app.receipt_rescue import RESCUE_DOWNLOAD_DELAYS, rescue_incoming_attachment
+    assert sum(RESCUE_DOWNLOAD_DELAYS) == 60
+    stack, m = _env(download=httpx.ConnectError("boom"))
+    sleep = AsyncMock()
+    with stack:
+        await rescue_incoming_attachment(**KW, sleep=sleep)
+    assert sum(c.args[0] for c in sleep.await_args_list) == 60

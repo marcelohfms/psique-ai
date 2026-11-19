@@ -23,8 +23,8 @@ from app.receipt_reconciliation import (
 
 logger = logging.getLogger(__name__)
 
-# Espera (s) antes de cada tentativa de download; soma ~91s no pior caso.
-RESCUE_DOWNLOAD_DELAYS: tuple[int, ...] = (3, 8, 15, 25, 40, 60)
+# Espera (s) antes de cada tentativa de download; soma 60s no pior caso.
+RESCUE_DOWNLOAD_DELAYS: tuple[int, ...] = (3, 7, 12, 18, 20)
 RESCUED_EVENT = "receipt_rescued_on_arrival"
 
 
