@@ -33,6 +33,7 @@ from app.auth import router as auth_router
 from app import whatsapp
 from app.whatsapp import send_text
 from app.auto_reply import is_auto_reply
+from app.receipt_rescue import rescue_incoming_attachment
 
 logger = logging.getLogger(__name__)
 
@@ -1228,6 +1229,71 @@ def _already_synced_outgoing(message_id) -> bool:
     return False
 
 
+# Anexos cujo resgate já foi agendado. A mesma message_created chega mais de uma vez
+# (webhook da conta + outgoing_url do agent bot), e sem isto cada entrega agendaria
+# um resgate novo para o mesmo comprovante.
+_scheduled_rescue_ids: OrderedDict[int, None] = OrderedDict()
+_SCHEDULED_RESCUE_MAX = 2000
+
+
+def _payload_inbox_id(payload: dict) -> int | None:
+    """Inbox do payload do Chatwoot, pelo campo `inbox` ou por `conversation.inbox_id`."""
+    for raw in ((payload.get("inbox") or {}).get("id"),
+                (payload.get("conversation") or {}).get("inbox_id")):
+        if raw is not None:
+            try:
+                return int(raw)
+            except (TypeError, ValueError):
+                return None
+    return None
+
+
+def _message_created_epoch(payload: dict) -> float:
+    raw = payload.get("created_at")
+    if isinstance(raw, (int, float)):
+        return float(raw)
+    if isinstance(raw, str) and raw:
+        try:
+            return float(raw)
+        except ValueError:
+            with contextlib.suppress(ValueError):
+                from datetime import datetime
+                return datetime.fromisoformat(raw.replace("Z", "+00:00")).timestamp()
+    return time.time()
+
+
+def _schedule_attachment_rescue(payload: dict, phone: str, conversation_id: int, attachments: list) -> None:
+    """Agenda o resgate em segundo plano de um anexo que não pôde ser lido na chegada."""
+    from app.chatwoot import _inbox_id
+    if payload.get("event") != "message_created":
+        return
+    inbox = _payload_inbox_id(payload)
+    if inbox is None or inbox != _inbox_id():
+        return
+    att = next(
+        (a for a in attachments
+         if a.get("file_type") in ("image", "file") and a.get("data_url")),
+        None,
+    )
+    if att is None:
+        return
+    attachment_id = att.get("id")
+    if attachment_id is None:
+        return
+    if attachment_id in _scheduled_rescue_ids:
+        return
+    _scheduled_rescue_ids[attachment_id] = None
+    while len(_scheduled_rescue_ids) > _SCHEDULED_RESCUE_MAX:
+        _scheduled_rescue_ids.popitem(last=False)
+    asyncio.create_task(rescue_incoming_attachment(
+        phone=phone,
+        conversation_id=conversation_id,
+        attachment_id=attachment_id,
+        data_url=att["data_url"],
+        created_at=_message_created_epoch(payload),
+    ))
+
+
 def _extract_phone_from_payload(payload: dict) -> str | None:
     """Extract the patient phone from any Chatwoot payload."""
     conversation = payload.get("conversation", {})
@@ -1881,6 +1947,7 @@ async def _handle_chatwoot_payload(payload: dict) -> None:
                     # (medical document: thank-you + clinic notification sent directly, or
                     # an irrelevant image) — fall back to the caption so it isn't lost,
                     # mirroring the Meta webhook's image-handling behavior.
+                    _schedule_attachment_rescue(payload, phone, conversation_id, attachments)
                     text = caption
             if text is None:
                 return

@@ -2538,3 +2538,57 @@ async def test_image_only_drop_is_logged(caplog):
         "IMAGE_ONLY_DROPPED" in r.getMessage() and "media-456" in r.getMessage()
         for r in caplog.records
     )
+
+
+# ── Resgate do comprovante na chegada (Chatwoot) ──────────────────────────────
+
+def _rescue_payload(attachment_id: int = 2242, inbox_id: int = 7, event: str = "message_created") -> dict:
+    payload = _chatwoot_payload(content="", conversation_id=542)
+    payload["event"] = event
+    payload["inbox"] = {"id": inbox_id}
+    payload["created_at"] = 1763560000
+    payload["attachments"] = [
+        {"id": attachment_id, "file_type": "image", "data_url": "https://storage.example.com/comp.jpg"}
+    ]
+    return payload
+
+
+async def _run_rescue_payload(payload: dict, monkeypatch) -> AsyncMock:
+    from app.main import _handle_chatwoot_payload
+    monkeypatch.setenv("CHATWOOT_INBOX_ID", "7")
+    with patch("app.main.rescue_incoming_attachment", new_callable=AsyncMock) as rescue, \
+         patch("app.main.buffer_push", new_callable=AsyncMock), \
+         patch("app.main.save_message", new_callable=AsyncMock), \
+         patch("app.main._process_chatwoot_attachments", new_callable=AsyncMock, return_value=None):
+        await _handle_chatwoot_payload(payload)
+        await _handle_chatwoot_payload(payload) if payload.pop("_twice", False) else None
+        await asyncio.sleep(0.05)
+    return rescue
+
+
+async def test_schedules_rescue_when_arrival_read_fails(monkeypatch):
+    rescue = await _run_rescue_payload(_rescue_payload(attachment_id=9101), monkeypatch)
+    rescue.assert_called_once()
+    kwargs = rescue.call_args.kwargs
+    assert kwargs["attachment_id"] == 9101 and kwargs["conversation_id"] == 542
+    assert kwargs["data_url"] == "https://storage.example.com/comp.jpg"
+    assert kwargs["created_at"] == 1763560000
+
+
+async def test_no_rescue_for_other_inbox(monkeypatch):
+    rescue = await _run_rescue_payload(_rescue_payload(attachment_id=9102, inbox_id=99), monkeypatch)
+    rescue.assert_not_called()
+
+
+async def test_no_double_schedule_same_attachment(monkeypatch):
+    payload = _rescue_payload(attachment_id=9103)
+    payload["_twice"] = True
+    rescue = await _run_rescue_payload(payload, monkeypatch)
+    assert rescue.call_count == 1
+
+
+async def test_no_rescue_when_not_message_created(monkeypatch):
+    rescue = await _run_rescue_payload(
+        _rescue_payload(attachment_id=9104, event="message_updated"), monkeypatch
+    )
+    rescue.assert_not_called()
