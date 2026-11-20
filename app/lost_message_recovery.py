@@ -61,3 +61,70 @@ def pick_candidates(rows: list[dict], now: datetime, floor_min: float) -> list[d
             continue
         candidates.append({"phone": phone, "content": content, "created_at": row["created_at"]})
     return candidates
+
+
+async def _already_replayed(full_phone: str, message_created_at: str) -> bool:
+    """True se já reprocessamos esta (ou uma posterior) mensagem deste telefone —
+    evita reempurrar duas vezes antes de a resposta cair. Confere se existe evento
+    `lost_message_replayed` para o telefone com `created_at >= message_created_at`."""
+    from app.database import get_supabase
+
+    client = await get_supabase()
+    r = (
+        await client.from_("events").select("id")
+        .eq("phone", full_phone).eq("event_type", REPLAY_EVENT)
+        .gte("created_at", message_created_at)
+        .limit(1).execute()
+    )
+    return bool(r.data)
+
+
+async def sweep(
+    now: datetime,
+    *,
+    floor_min: float = LOST_MSG_SWEEP_FLOOR_MIN,
+    window_min: float = LOST_MSG_SWEEP_WINDOW_MIN,
+) -> int:
+    """Reprocessa a última mensagem de paciente sem resposta de cada telefone na
+    janela `[now - window_min, now]` e mais velha que `floor_min`. Reusa as travas
+    do `process_message` (portão de pausa + dedup de checkpoint), então conversa
+    pausada/transferida ou mensagem já respondida viram no-op. Retorna quantas
+    reprocessou."""
+    # Import local: app.main importa este módulo indiretamente (evita ciclo).
+    from app.database import get_supabase, log_event
+    from app.main import process_message
+
+    lower = (now - timedelta(minutes=window_min)).isoformat()
+    upper = now.isoformat()
+    client = await get_supabase()
+    res = (
+        await client.from_("messages").select("phone, role, content, created_at")
+        .gte("created_at", lower).lte("created_at", upper)
+        .order("created_at").execute()
+    )
+    candidates = pick_candidates(res.data or [], now, floor_min)
+
+    replayed = 0
+    for cand in candidates:
+        # Um candidato ruim nunca pode derrubar a rodada e perder os demais.
+        try:
+            full_phone = f"{cand['phone']}@s.whatsapp.net"
+            if await _already_replayed(full_phone, cand["created_at"]):
+                continue
+            logger.warning(
+                "LOST_MSG_SWEEP reprocessing unanswered message for %s (sent %s): %.60s",
+                full_phone, cand["created_at"], cand["content"],
+            )
+            await process_message(full_phone, cand["content"])
+            await log_event(REPLAY_EVENT, full_phone, {
+                "message_created_at": cand["created_at"],
+                "preview": cand["content"][:80],
+            })
+            replayed += 1
+        except Exception:
+            logger.exception("LOST_MSG_SWEEP_CANDIDATE_FAILED phone=%s", cand.get("phone"))
+            continue
+
+    if replayed:
+        logger.warning("LOST_MSG_SWEEP done candidates=%d replayed=%d", len(candidates), replayed)
+    return replayed
