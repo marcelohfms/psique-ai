@@ -2,7 +2,7 @@
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
-from app.booking_texts import confirmation_text, format_appt_line
+from app.booking_texts import appt_when, confirmation_text, format_appt_line
 
 TZ = ZoneInfo("America/Recife")
 
@@ -72,3 +72,14 @@ def test_cancel_text_no_fee_mention_when_retained_or_none():
         t = cancel_text("patient", "Carla", ["l1"], action)
         assert "taxa" not in t
         assert t.endswith("Se quiser marcar uma nova data, é só responder aqui.")
+
+
+def test_appt_when_weekday_and_datetime_no_doctor():
+    start = datetime(2026, 11, 12, 9, 0, tzinfo=TZ)  # quinta
+    assert appt_when(start) == "quinta-feira, 12/11/2026 às 09:00"
+
+
+def test_format_appt_line_still_prefixes_doctor_and_note():
+    start = datetime(2026, 11, 12, 9, 0, tzinfo=TZ)
+    assert format_appt_line("julio", start, "Domiciliar") == \
+        "Dr. Júlio — quinta-feira, 12/11/2026 às 09:00 (Domiciliar)"

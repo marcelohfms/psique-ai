@@ -1073,3 +1073,156 @@ async def test_refund_message_fora_janela_nao_envia():
     m["send_text"].assert_not_awaited()
     m["attach"].assert_not_awaited()
     m["save"].assert_not_awaited()
+
+
+_REFUND_PARAMS = {"1": "Carla", "2": "R$ 100,00", "3": "Nina"}
+
+
+@pytest.mark.asyncio
+async def test_refund_message_fora_janela_com_template_envia_template():
+    stack, m = _refund_patches(window=False)
+    with stack:
+        status, payload = await pb.send_refund_message(
+            {**_REFUND_BODY, "template": "reembolso_taxa_reserva", "params": _REFUND_PARAMS})
+    assert (status, payload) == (200, {"sent": True, "via": "template", "anexo_entregue": True})
+    m["tpl"].assert_awaited_once_with(
+        107, "reembolso_taxa_reserva", "pt_BR", "UTILITY", _REFUND_PARAMS, "Reembolso feito.")
+    m["send_text"].assert_not_awaited()
+    m["attach"].assert_not_awaited()
+    m["save"].assert_awaited_once_with("5581999713131@s.whatsapp.net", "assistant", "Reembolso feito.")
+    m["graph"].chatbot.aupdate_state.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_refund_message_fora_janela_com_anexo_e_template_sinaliza_anexo_nao_entregue():
+    stack, m = _refund_patches(window=False)
+    with stack:
+        status, payload = await pb.send_refund_message(
+            {**_REFUND_BODY, "media": _REFUND_MEDIA,
+             "template": "reembolso_taxa_reserva", "params": _REFUND_PARAMS})
+    assert (status, payload) == (200, {"sent": True, "via": "template", "anexo_entregue": False})
+    m["tpl"].assert_awaited_once()
+    m["attach"].assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_refund_message_template_nao_aprovado_e_recusado():
+    stack, m = _refund_patches(window=False)
+    with stack, pytest.raises(pb.PanelInputError):
+        await pb.send_refund_message({**_REFUND_BODY, "template": "qualquer_outro"})
+    m["tpl"].assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_refund_message_dentro_janela_ignora_template():
+    stack, m = _refund_patches(window=True)
+    with stack:
+        status, payload = await pb.send_refund_message(
+            {**_REFUND_BODY, "template": "reembolso_taxa_reserva", "params": _REFUND_PARAMS})
+    assert (status, payload) == (200, {"sent": True, "via": "texto"})
+    m["tpl"].assert_not_awaited()
+
+
+async def _closed_window_send(recips, kind="normal", lines=None, pending_part2=False, **kw):
+    chatbot = MagicMock()
+    chatbot.aget_state = AsyncMock(return_value=MagicMock(values={"stage": "patient_agent"}))
+    chatbot.aupdate_state = AsyncMock()
+    with patch("app.panel_booking.consultation_reminder_contacts", new_callable=AsyncMock, return_value=recips), \
+         patch("app.panel_booking._linked_contacts_with_marker", new_callable=AsyncMock, return_value=[]), \
+         patch("app.panel_booking._window_open", new_callable=AsyncMock, return_value=False), \
+         patch("app.panel_booking.send_text", new_callable=AsyncMock) as mock_text, \
+         patch("app.panel_booking.save_message", new_callable=AsyncMock) as mock_save, \
+         patch("app.chatwoot.find_or_create_conversation", new_callable=AsyncMock, return_value=77), \
+         patch("app.chatwoot.send_template_message", new_callable=AsyncMock) as mock_tmpl, \
+         patch("app.graph.graph.chatbot", chatbot):
+        out = await pb.send_booking_message(
+            "p1", "c1", kind, lines or ["Dr. Júlio — x"], pending_part2, "Nina", "julio", **kw)
+    return out, mock_tmpl, mock_text, mock_save, chatbot
+
+
+_WHEN = "quinta-feira, 12/11/2026 às 09:00"
+
+
+@pytest.mark.asyncio
+async def test_booking_template_param2_sem_quebra_de_linha_nem_espaco_duplo():
+    chatbot = MagicMock()
+    chatbot.aget_state = AsyncMock(return_value=MagicMock(values={"stage": "patient_agent"}))
+    chatbot.aupdate_state = AsyncMock()
+    recips = [{"id": "c1", "phone": "5581999998888", "name": "Carla Menezes"}]
+    with patch("app.panel_booking.consultation_reminder_contacts", new_callable=AsyncMock, return_value=recips), \
+         patch("app.panel_booking._linked_contacts_with_marker", new_callable=AsyncMock, return_value=[]), \
+         patch("app.panel_booking._window_open", new_callable=AsyncMock, return_value=False), \
+         patch("app.panel_booking.save_message", new_callable=AsyncMock), \
+         patch("app.chatwoot.find_or_create_conversation", new_callable=AsyncMock, return_value=77), \
+         patch("app.chatwoot.send_template_message", new_callable=AsyncMock) as tmpl, \
+         patch("app.graph.graph.chatbot", chatbot):
+        await pb.send_booking_message("p1", "c1", "normal", ["Dr. Júlio — x"], False,
+                                      "Nina\n (Ni  Ni)\t", "julio", when=_WHEN)
+    assert tmpl.call_args[0][4]["2"] == "Nina (Ni Ni)"
+
+
+@pytest.mark.asyncio
+async def test_booking_closed_window_single_slot_sends_template():
+    out, tmpl, text, save, chatbot = await _closed_window_send(
+        [{"id": "c1", "phone": "5581999998888", "name": "Carla Menezes"}], when=_WHEN)
+    text.assert_not_awaited()
+    tmpl.assert_awaited_once()
+    args = tmpl.call_args[0]
+    assert args[0] == 77 and args[1] == "consulta_agendada_taxa"
+    assert args[2] == "pt_BR" and args[3] == "UTILITY"
+    assert args[4] == {"1": "Carla", "2": "Nina", "3": "Dr. Júlio", "4": _WHEN}
+    assert args[5] == pb._text_for({"id": "c1", "phone": "5581999998888", "name": "Carla Menezes"},
+                                   "normal", ["Dr. Júlio — x"], False)
+    save.assert_awaited_once()
+    chatbot.aupdate_state.assert_awaited_once()
+    assert out["sent"] == ["Carla Menezes"] and out["not_delivered"] == []
+
+
+@pytest.mark.asyncio
+async def test_booking_closed_window_confirmada_template_for_paid_kind():
+    _, tmpl, *_ = await _closed_window_send(
+        [{"id": "c1", "phone": "5581999998888", "name": "Carla"}], kind="taxa_paga", when=_WHEN)
+    assert tmpl.call_args[0][1] == "consulta_agendada_confirmada"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("kw", [
+    {"when": None},
+    {"when": _WHEN, "lines": ["a", "b"]},
+    {"when": _WHEN, "pending_part2": True},
+])
+async def test_booking_closed_window_split_stays_not_delivered(kw):
+    out, tmpl, *_ = await _closed_window_send(
+        [{"id": "c1", "phone": "5581999998888", "name": "Carla"}], **kw)
+    tmpl.assert_not_awaited()
+    assert out["not_delivered"] == ["Carla"] and out["sent"] == []
+
+
+@pytest.mark.asyncio
+async def test_booking_closed_window_empty_contact_name_uses_fallback():
+    _, tmpl, *_ = await _closed_window_send(
+        [{"id": "c1", "phone": "5581999998888", "name": ""}], when=_WHEN)
+    assert tmpl.call_args[0][4]["1"] == "tudo bem"
+
+
+def test_booking_template_mapping():
+    assert pb._booking_template("normal") == "consulta_agendada_taxa"
+    for k in ("taxa_paga", "taxa_isenta", "cortesia"):
+        assert pb._booking_template(k) == "consulta_agendada_confirmada"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("appts,pending,expected", [
+    ([{"start": "2026-11-12T09:00:00-03:00"}], False, "quinta-feira, 12/11/2026 às 09:00"),
+    ([{"start": "2026-11-12T09:00:00-03:00"}], True, None),
+    ([{"start": "2026-11-12T09:00:00-03:00"}, {"start": "2026-11-12T10:00:00-03:00"}], False, None),
+])
+async def test_handle_passes_when_only_for_single_slot(appts, pending, expected):
+    req = {"patient": {"id": "p1", "name": "Nina"}, "contact_id": "c1", "doctor": "julio", "parts": []}
+    created = {"kind": "normal", "lines": ["x"], "pending_part2": pending, "appointments": appts}
+    with patch("app.panel_booking.build_request", new_callable=AsyncMock, return_value=req), \
+         patch("app.panel_booking.create_appointments", new_callable=AsyncMock, return_value=created), \
+         patch("app.panel_booking.send_booking_message", new_callable=AsyncMock, return_value={}) as mock_send:
+        status, _ = await pb.handle({})
+    assert status == 200
+    assert mock_send.call_args[0][-1] == expected

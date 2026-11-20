@@ -10,7 +10,7 @@ import logging
 from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
-from app.booking_texts import DOCTOR_LABELS, confirmation_text, format_appt_line
+from app.booking_texts import DOCTOR_LABELS, appt_when, confirmation_text, format_appt_line
 from app.database import DOCTOR_IDS, get_supabase, log_event, save_message
 from app.dates import is_born_confirmed
 from app.google_calendar import grid_violation
@@ -430,11 +430,27 @@ async def _paused_window_open(phone: str) -> bool:
     return datetime.fromtimestamp(last, timezone.utc) >= cutoff
 
 
-async def deliver_message(patient_id: str, contact_id: str, text_for, patient_name: str, doctor: str) -> dict:
+_BOOKING_TEMPLATE_BY_KIND = {
+    "normal": "consulta_agendada_taxa",
+    "taxa_paga": "consulta_agendada_confirmada",
+    "taxa_isenta": "consulta_agendada_confirmada",
+    "cortesia": "consulta_agendada_confirmada",
+}
+
+
+def _booking_template(kind: str) -> str:
+    return _BOOKING_TEMPLATE_BY_KIND[kind]
+
+
+async def deliver_message(patient_id: str, contact_id: str, text_for, patient_name: str, doctor: str,
+                          template_for=None) -> dict:
     """Manda a mensagem aos destinatários com janela aberta e grava tudo que a Eva
     precisa saber depois: `messages` (auditoria/lembretes) e o checkpoint do
     LangGraph (senão o paciente responde "ok" e a Eva reconfirma um
-    `pending_appointment` velho — ver nodes.py _PENDING_AFFIRMATIVE)."""
+    `pending_appointment` velho — ver nodes.py _PENDING_AFFIRMATIVE).
+
+    Com a janela fechada, `template_for(contato)` pode devolver (template, params)
+    para entregar por template aprovado; se não houver, o contato fica em not_delivered."""
     from langchain_core.messages import AIMessage
     from app.graph import graph as graph_module
 
@@ -443,15 +459,27 @@ async def deliver_message(patient_id: str, contact_id: str, text_for, patient_na
     for c in recips:
         name = c.get("name") or "sem nome"
         phone = (c.get("phone") or "").lstrip("+")
+        spec = None
         if not phone or not await _window_open(phone):
-            not_delivered.append(name)
-            continue
+            spec = template_for(c) if (phone and template_for) else None
+            if spec is None:
+                not_delivered.append(name)
+                continue
         text = text_for(c)
         thread = _thread(phone)
         try:
-            await send_text(thread, text)
+            if spec is None:
+                await send_text(thread, text)
+            else:
+                from app.chatwoot import find_or_create_conversation, send_template_message
+                tmpl, params = spec
+                conversation_id = await find_or_create_conversation(thread)
+                await send_template_message(
+                    conversation_id, tmpl, "pt_BR", "UTILITY",
+                    {str(k): str(v) for k, v in params.items()}, text,
+                )
         except Exception:
-            _logger.exception("panel send_text falhou phone=%s", phone)
+            _logger.exception("panel envio falhou phone=%s", phone)
             not_delivered.append(name)
             continue
         await save_message(thread, "assistant", text)
@@ -483,10 +511,21 @@ async def deliver_message(patient_id: str, contact_id: str, text_for, patient_na
 
 
 async def send_booking_message(patient_id: str, contact_id: str, kind: str, lines: list[str],
-                               pending_part2: bool, patient_name: str, doctor: str) -> dict:
+                               pending_part2: bool, patient_name: str, doctor: str,
+                               when: str | None = None) -> dict:
+    template_for = None
+    if when is not None and len(lines) == 1 and not pending_part2:
+        template = _booking_template(kind)
+        doctor_label = DOCTOR_LABELS.get(doctor, doctor)
+        # A Meta rejeita parâmetro com \n, \t ou espaço duplo.
+        clean_name = " ".join(patient_name.split())
+
+        def template_for(c):
+            return template, {"1": contact_first_name(c) or "tudo bem", "2": clean_name,
+                              "3": doctor_label, "4": when}
     return await deliver_message(patient_id, contact_id,
                                  lambda c: _text_for(c, kind, lines, pending_part2),
-                                 patient_name, doctor)
+                                 patient_name, doctor, template_for)
 
 
 class PanelInputError(ValueError):
@@ -624,13 +663,17 @@ async def handle(body: dict) -> tuple[int, dict]:
     created = await create_appointments(req)
     name = req["patient"].get("name") or ""
     display_patient_name = f"{name} ({req['patient']['social_name']})" if req["patient"].get("social_name") else name
+    appts = created["appointments"]
+    when = (appt_when(datetime.fromisoformat(appts[0]["start"]))
+            if len(appts) == 1 and not created["pending_part2"] else None)
     msg = await send_booking_message(
         req["patient"]["id"], req["contact_id"], created["kind"], created["lines"], created["pending_part2"],
-        display_patient_name, req["doctor"],
+        display_patient_name, req["doctor"], when,
     )
     return 200, {"appointments": created["appointments"], "message": msg}
 
 
+_REFUND_TEMPLATE = "reembolso_taxa_reserva"
 _PAYMENT_TEMPLATES = {"pagamento_taxa_recebido", "pagamento_consulta_recebido", "isencao_taxa_reserva"}
 
 
@@ -689,17 +732,20 @@ async def send_payment_confirmation(body: dict) -> tuple[int, dict]:
 async def send_refund_message(body: dict) -> tuple[int, dict]:
     """Mensagem de reembolso da taxa de reserva (texto, com comprovante opcional em anexo).
 
-    Só dentro da janela de 24h: não existe template aprovado de reembolso e texto livre
-    fora da janela seria descartado pela Meta em silêncio. Fora dela, não envia e devolve
-    sent=False para o painel avisar a atendente.
+    Dentro da janela de 24h vai o texto livre (ou o anexo). Fora dela, o template
+    aprovado `reembolso_taxa_reserva`, que não carrega anexo: o retorno traz
+    anexo_entregue=False para o painel avisar a atendente. Sem template e fora da
+    janela, não envia e devolve sent=False (texto livre seria descartado pela Meta).
     """
     import base64
 
     phone = (body.get("phone") or "").strip()
     text = (body.get("text") or "").strip()
     media = body.get("media") or None
-    if not phone or not text:
-        raise PanelInputError("phone e text são obrigatórios")
+    template = body.get("template") or ""
+    params = body.get("params") or {}
+    if not phone or not text or not isinstance(params, dict) or (template and template != _REFUND_TEMPLATE):
+        raise PanelInputError("phone e text são obrigatórios; template, se vier, tem que ser aprovado")
     file_bytes = b""
     if media:
         try:
@@ -710,9 +756,19 @@ async def send_refund_message(body: dict) -> tuple[int, dict]:
             raise PanelInputError("media precisa de b64, filename e content_type")
 
     thread = _thread(phone)
+    extra: dict = {}
     if not await _window_open(phone):
-        return 200, {"sent": False, "motivo": "janela_fechada"}
-    if media:
+        if not template:
+            return 200, {"sent": False, "motivo": "janela_fechada"}
+        from app.chatwoot import find_or_create_conversation, send_template_message
+        conversation_id = await find_or_create_conversation(thread)
+        await send_template_message(
+            conversation_id, template, "pt_BR", "UTILITY",
+            {str(k): str(v) for k, v in params.items()}, text,
+        )
+        via = "template"
+        extra = {"anexo_entregue": media is None}
+    elif media:
         from app.chatwoot import find_or_create_conversation, send_message_with_attachment
         conversation_id = await find_or_create_conversation(thread)
         await send_message_with_attachment(
@@ -737,4 +793,4 @@ async def send_refund_message(body: dict) -> tuple[int, dict]:
             )
     except Exception:
         _logger.exception("panel refund message checkpoint falhou phone=%s", phone)
-    return 200, {"sent": True, "via": via}
+    return 200, {"sent": True, "via": via, **extra}

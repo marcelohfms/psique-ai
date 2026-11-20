@@ -1458,12 +1458,32 @@ def test_reembolso_com_comprovante_e_mensagem(client, reembolso_fakes):
     path, body = reembolso_fakes["sent"][0]
     assert path == "/admin/panel/refund-message"
     assert body["phone"] == "5581999713131"
-    assert "Segue o comprovante do seu reembolso" in body["text"]
+    assert "Segue o comprovante" not in body["text"]
+    assert "foi realizado" in body["text"]
     assert body["text"].startswith("Olá, Maria!")
     assert body["media"]["filename"] == "Reembolso_Bento.pdf"
     assert body["media"]["content_type"] == "application/pdf"
     import base64
     assert base64.b64decode(body["media"]["b64"]) == b"pdf"
+
+
+def test_reembolso_valor_editavel_vira_param_do_template(client, reembolso_fakes):
+    r = _reembolso(client, enviar=True, extra={"valor": "250"})
+    assert r.status_code == 200
+    _, body = reembolso_fakes["sent"][0]
+    assert body["template"] == "reembolso_taxa_reserva"
+    assert body["params"] == {"1": "Maria", "2": "R$ 250,00", "3": "Bento"}
+
+
+def test_reembolso_com_anexo_texto_nao_alega_comprovante_enviado(client, reembolso_fakes):
+    """Fora da janela o texto vira o conteudo do template (sem anexo): nao pode
+    dizer que o comprovante seguiu junto."""
+    r = _reembolso(client, enviar=True, with_file=True, extra={"valor": "250"})
+    assert r.status_code == 200
+    _, body = reembolso_fakes["sent"][0]
+    assert body["media"] is not None
+    assert body["params"]["2"] == "R$ 250,00"
+    assert "Segue o comprovante" not in body["text"]
 
 
 def test_reembolso_sem_comprovante_texto_adaptado(client, reembolso_fakes):

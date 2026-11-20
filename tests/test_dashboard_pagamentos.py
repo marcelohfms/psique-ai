@@ -376,3 +376,33 @@ async def test_painel_consulta_seta_acumulado_e_paid_at(mock_supabase):
     payload = mock_supabase.from_.return_value.update.call_args[0][0]
     assert "paid_at" in payload
     rpc.assert_called_once_with("set_amount_paid", {"p_appointment_id": "appt-1", "p_reais": 650})
+
+
+def test_refund_confirmation_params_e_template():
+    from attendant_routes import refund_confirmation
+    tmpl, params, text = refund_confirmation("Carla", 100, "Nina")
+    assert tmpl == "reembolso_taxa_reserva"
+    assert params == {"1": "Carla", "2": "R$ 100,00", "3": "Nina"}
+    assert "Carla" in text and "reembolso" in text
+    assert all("\n" not in v and "\t" not in v and "  " not in v for v in params.values())
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("payload,esperado", [
+    ({"sent": True, "via": "texto"}, "enviada"),
+    ({"sent": True, "via": "template", "anexo_entregue": True}, "enviada"),
+    ({"sent": True, "via": "template", "anexo_entregue": False}, "enviada_sem_anexo"),
+    ({"sent": False, "motivo": "janela_fechada"}, "fora_da_janela"),
+])
+async def test_send_refund_message_repassa_template_e_traduz_retorno(payload, esperado):
+    import attendant_routes
+    params = {"1": "Carla", "2": "R$ 100,00", "3": "Nina"}
+    with patch.object(attendant_routes.eva_client, "post", new_callable=AsyncMock,
+                      return_value=(200, payload)) as post:
+        out = await attendant_routes._send_refund_message(
+            "5581999713131", "txt", None, "reembolso_taxa_reserva", params)
+    assert out == esperado
+    post.assert_awaited_once_with("/admin/panel/refund-message", {
+        "phone": "5581999713131", "text": "txt", "media": None,
+        "template": "reembolso_taxa_reserva", "params": params,
+    })
