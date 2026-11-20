@@ -8142,6 +8142,151 @@ async def test_prompt_mostra_saldo_real_com_parcial():
     assert kwargs["price_override"] == 650
 
 
+# ── Guard: registro silencioso de receita pedida junto com dúvida de dose ──────
+# Caso Luiz Carlos Rozendo (5581986539358, 16/11/2026): "seria possível enviar
+# uma receita com Escitalopram de 20mg? a de 10mg é muito baixa pro meu estado".
+# A Eva segue a regra clínica (não mexe em dose) e orienta a falar com a médica
+# por e-mail — resposta só texto, sem tool. Nada ficava registrado. O guard
+# registra a receita por baixo (register_document_request) mantendo a mensagem da
+# Eva intacta. Ver pergunta-clinica-ao-medico-nao-vira-registro.md.
+
+_DOSE_RECEITA_MSG = (
+    "muito obrigado 🙏 seria possível enviar uma receita com Escitalopram de 20mg? "
+    "a dosagem de 10mg é muito baixa pro meu estado atual"
+)
+_EVA_DOSE_REDIRECT = (
+    "Entendi. Sobre ajustar a dose e emitir receita de Escitalopram 20 mg, eu não "
+    "consigo orientar nem alterar medicação por aqui. Como você é paciente de Dra. "
+    "Bruna, mande um e-mail direto para ela: brunalima.psiquiatra@gmail.com"
+)
+
+
+async def test_guard_silent_registra_receita_com_dose():
+    """Pedido de emissão embrulhado numa dúvida de dose, resposta só texto: o guard
+    chama register_document_request por baixo com a mensagem do paciente como nota,
+    e o texto da Eva (que redireciona a dose pra médica) vai ao paciente intacto."""
+    state = _make_patient_agent_state(
+        patient_email="luiz@email.com",
+        messages=[HumanMessage(content=_DOSE_RECEITA_MSG)],
+    )
+    ai_response = AIMessage(content=_EVA_DOSE_REDIRECT)
+
+    with patch("app.graph.tools.register_document_request", new_callable=AsyncMock) as mock_reg:
+        result, mock_send = await _run_agent_with_response(state, ai_response)
+
+    assert mock_reg.await_count == 1, "guard não registrou a receita em silêncio"
+    kwargs = mock_reg.await_args.kwargs
+    assert kwargs["document_type"] == "receita"
+    assert kwargs["patient_email"] == "luiz@email.com"
+    assert kwargs["medication_note"] == _DOSE_RECEITA_MSG
+    # Silêncio ao paciente: a mensagem da Eva é preservada (nada de "registrei").
+    mock_send.assert_awaited()
+    assert not _request_document_calls(result), "não deve injetar tool (seria confirmação, não silêncio)"
+
+
+async def test_guard_silent_ignora_reclamacao_clinica():
+    """Reclamação clínica pura, sem palavra de documento: o detector não reconhece
+    como pedido de emissão e nada é registrado."""
+    state = _make_patient_agent_state(
+        patient_email="luiz@email.com",
+        messages=[HumanMessage(content="o remédio tá me dando muito enjoo, é normal?")],
+    )
+    ai_response = AIMessage(content=(
+        "Sinto muito que você esteja assim. Como é uma questão clínica, mande um "
+        "e-mail para a Dra. Bruna: brunalima.psiquiatra@gmail.com"
+    ))
+
+    with patch("app.graph.tools.register_document_request", new_callable=AsyncMock) as mock_reg:
+        result, mock_send = await _run_agent_with_response(state, ai_response)
+
+    assert mock_reg.await_count == 0
+    mock_send.assert_awaited()
+
+
+async def test_guard_silent_nao_regrava_se_tool_chamada():
+    """Se o modelo já chamou request_document no turno, o guard silencioso não
+    registra de novo (o caminho normal cuida do registro)."""
+    state = _make_patient_agent_state(
+        patient_email="luiz@email.com",
+        messages=[HumanMessage(content=_DOSE_RECEITA_MSG)],
+    )
+    ai_response = AIMessage(content="", tool_calls=[{
+        "name": "request_document",
+        "args": {"document_type": "receita", "patient_email": "luiz@email.com",
+                 "medication_note": "Escitalopram 20mg"},
+        "id": "call_doc", "type": "tool_call",
+    }])
+
+    with patch("app.graph.tools.register_document_request", new_callable=AsyncMock) as mock_reg:
+        await _run_agent_with_response(state, ai_response)
+
+    assert mock_reg.await_count == 0, "guard silencioso duplicou um registro já feito pela tool"
+
+
+async def test_guard_silent_pula_handoff():
+    """Turno de handoff com pedido de emissão: quem registra é o GUARD_DOC_PROMISE
+    (injetando a tool). O guard silencioso NÃO chama register_document_request
+    direto, para não gravar duas vezes."""
+    state = _make_patient_agent_state(
+        patient_email="luiz@email.com",
+        messages=[HumanMessage(content="preciso que emitam a receita, podem transferir?")],
+    )
+    ai_response = AIMessage(content="Vou transferir você para a atendente. Um momento!",
+        tool_calls=[{
+            "name": "transfer_to_human",
+            "args": {"reason": "Paciente pede emissão de receita."},
+            "id": "call_transfer", "type": "tool_call",
+        }])
+
+    with patch("app.graph.tools.register_document_request", new_callable=AsyncMock) as mock_reg:
+        result, _ = await _run_agent_with_response(state, ai_response)
+
+    assert mock_reg.await_count == 0, "guard silencioso disparou num turno de handoff"
+    # O caminho de handoff continua registrando via injeção de tool.
+    assert len(_request_document_calls(result)) == 1
+
+
+async def test_guard_silent_sem_email_nao_registra():
+    """Sem e-mail no cadastro, registrar gravaria um pedido que não chega ao
+    paciente — o guard não registra (igual ao GUARD_DOC_PROMISE)."""
+    state = _make_patient_agent_state(
+        patient_email=None,
+        messages=[HumanMessage(content=_DOSE_RECEITA_MSG)],
+    )
+    ai_response = AIMessage(content=_EVA_DOSE_REDIRECT)
+
+    with patch("app.graph.tools.register_document_request", new_callable=AsyncMock) as mock_reg:
+        await _run_agent_with_response(state, ai_response)
+
+    assert mock_reg.await_count == 0
+
+
+def test_detect_document_emission_request_enviar_receita():
+    """Verbo de envio ('enviar/mandar') conta como pedido de emissão quando há um
+    tipo de documento e nenhum marcador de retirada — pega o fraseado educado do
+    caso Luiz, sem firar numa retirada de documento já pronto nem no passado."""
+    from app.graph.nodes import _detect_document_emission_request
+    assert _detect_document_emission_request(_DOSE_RECEITA_MSG) == "receita"
+    assert _detect_document_emission_request("pode me mandar a receita?") == "receita"
+    # Retirada de documento pronto: não dispara.
+    assert _detect_document_emission_request("pode enviar a receita que já ficou pronta?") is None
+    # Pergunta de status no passado: não dispara.
+    assert _detect_document_emission_request("a Dra já enviou a receita por e-mail?") is None
+
+
+def test_detect_document_emission_request_ignora_status_e_passado():
+    """Regressão (review finding #1): formas no passado/plural e perguntas de
+    'quando vão mandar' NÃO são pedido de emissão — não podem gerar registro
+    silencioso espúrio. Os verbos de envio só valem em forma de pedido."""
+    from app.graph.nodes import _detect_document_emission_request
+    assert _detect_document_emission_request("vocês já me enviaram a receita por email?") is None
+    assert _detect_document_emission_request("a receita que vocês mandaram veio errada") is None
+    assert _detect_document_emission_request("quando vão mandar minha receita?") is None
+    # Positivos continuam valendo (não pode regredir o caso Luiz):
+    assert _detect_document_emission_request(_DOSE_RECEITA_MSG) == "receita"
+    assert _detect_document_emission_request("pode me mandar a receita?") == "receita"
+
+
 async def test_blocked_number_never_reaches_graph():
     """Número na blocklist total (ex.: Clínica Affectus): process_message retorna sem
     tocar o grafo nem gravar nada — buraco negro, backstop de defesa em profundidade."""

@@ -9206,3 +9206,43 @@ async def test_rpc_falha_e_persistencia_falha_degrada_sem_quitar():
         fields.update(c.args[0])
     assert "paid_at" not in fields
     notify.assert_awaited()
+
+
+# ── register_document_request (refactor) ──────────────────────────────────────
+
+async def test_request_document_delega_para_register_document_request():
+    """request_document é um wrapper fino: delega todo o trabalho para
+    register_document_request e devolve o retorno dela sem alterar. Isso é o que
+    permite ao guard de registro silencioso chamar o mesmo miolo por baixo."""
+    from app.graph import tools as tools_mod
+    captured = {}
+
+    async def _stub(document_type, patient_email, state, config,
+                    medication_note="", financial_name="", financial_cpf="",
+                    financial_email="", patient_name_override=""):
+        captured["document_type"] = document_type
+        captured["patient_email"] = patient_email
+        captured["state"] = state
+        captured["config"] = config
+        captured["medication_note"] = medication_note
+        captured["patient_name_override"] = patient_name_override
+        return "OK_STUB"
+
+    _state = _make_state()
+    with patch.object(tools_mod, "register_document_request", _stub):
+        result = await tools_mod.request_document.coroutine(
+            document_type="receita",
+            patient_email="luiz@example.com",
+            state=_state,
+            config=CONFIG,
+            medication_note="Escitalopram 20mg",
+            patient_name_override="Luiz",
+        )
+
+    assert result == "OK_STUB"
+    assert captured["document_type"] == "receita"
+    assert captured["patient_email"] == "luiz@example.com"
+    assert captured["state"] is _state
+    assert captured["config"] is CONFIG
+    assert captured["medication_note"] == "Escitalopram 20mg"
+    assert captured["patient_name_override"] == "Luiz"
