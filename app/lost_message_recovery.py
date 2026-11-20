@@ -18,6 +18,8 @@ checkpoint e portão de pausa), então aqui só reempurramos.
 Complementa `_recover_messages_lost_to_restart` (só no boot, 10 min) e o drain de
 shutdown; esta roda o tempo todo e pega a perda de qualquer causa.
 """
+import asyncio
+import contextlib
 import logging
 import os
 from datetime import datetime, timedelta, timezone
@@ -128,3 +130,39 @@ async def sweep(
     if replayed:
         logger.warning("LOST_MSG_SWEEP done candidates=%d replayed=%d", len(candidates), replayed)
     return replayed
+
+
+async def sweep_loop(
+    interval_min: float = LOST_MSG_SWEEP_INTERVAL_MIN,
+    *,
+    _sleep=asyncio.sleep,
+) -> None:
+    """Laço da tarefa de fundo: varre, dorme, repete. Uma exceção do `sweep` nunca
+    derruba o laço (fica logada); só o cancelamento (shutdown) encerra."""
+    while True:
+        try:
+            await sweep(datetime.now(timezone.utc))
+        except Exception:
+            logger.exception("LOST_MSG_SWEEP round failed")
+        await _sleep(interval_min * 60)
+
+
+def start_lost_message_sweep() -> "asyncio.Task | None":
+    """Inicia a tarefa de fundo da varredura, a menos que o agendador esteja
+    desligado (mesmo gate do cron interno). Devolve a Task, ou None."""
+    from app.scheduler import SCHEDULER_LIVE
+
+    if not SCHEDULER_LIVE:
+        logger.info("Lost-message sweep disabled (SCHEDULER_LIVE off)")
+        return None
+    logger.info("Starting lost-message sweep (every %.0f min)", LOST_MSG_SWEEP_INTERVAL_MIN)
+    return asyncio.create_task(sweep_loop())
+
+
+async def stop_lost_message_sweep(task: "asyncio.Task | None") -> None:
+    """Cancela e aguarda a tarefa de fundo no shutdown. Tolera já estar parada."""
+    if task is None:
+        return
+    task.cancel()
+    with contextlib.suppress(asyncio.CancelledError):
+        await task

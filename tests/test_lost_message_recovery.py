@@ -1,8 +1,17 @@
 """Tests for app/lost_message_recovery.py — varredura de mensagem perdida no buffer."""
+import asyncio
 from datetime import datetime, timezone
 from unittest.mock import AsyncMock, MagicMock, patch
 
-from app.lost_message_recovery import pick_candidates, sweep
+import pytest
+
+import app.lost_message_recovery as lmr
+from app.lost_message_recovery import (
+    pick_candidates,
+    start_lost_message_sweep,
+    sweep,
+    sweep_loop,
+)
 
 
 def _chainable(data):
@@ -122,3 +131,27 @@ async def test_sweep_isolates_failing_candidate():
 
     assert pm.await_count == 2        # o 2º ainda roda apesar do 1º estourar
     assert n == 1                     # só o que teve sucesso conta
+
+
+# ── sweep_loop / start ───────────────────────────────────────────────────────────
+
+async def test_sweep_loop_runs_and_swallows_errors():
+    calls = []
+
+    async def fake_sweep(now):
+        calls.append(now)
+        raise RuntimeError("boom")  # erro do sweep não pode quebrar o loop
+
+    async def fake_sleep(_s):
+        raise asyncio.CancelledError()  # encerra o loop após a 1ª volta
+
+    with patch("app.lost_message_recovery.sweep", fake_sweep):
+        with pytest.raises(asyncio.CancelledError):
+            await sweep_loop(interval_min=0.01, _sleep=fake_sleep)
+
+    assert len(calls) == 1
+
+
+def test_start_returns_none_when_scheduler_off():
+    with patch("app.scheduler.SCHEDULER_LIVE", False):
+        assert start_lost_message_sweep() is None
