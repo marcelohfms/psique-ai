@@ -18,8 +18,8 @@ Idempotente: só toca linhas com amount_paid = 0 e só grava se o alvo for
 maior que 0. Rodar duas vezes não muda nada na segunda.
 
 Uso:
-  uv run python -m scripts._backfill_amount_paid_oneoff --dry-run
-  uv run python -m scripts._backfill_amount_paid_oneoff
+  uv run python -m scripts._backfill_amount_paid_cents_oneoff --dry-run
+  uv run python -m scripts._backfill_amount_paid_cents_oneoff
 """
 import asyncio
 import sys
