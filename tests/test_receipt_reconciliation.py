@@ -501,3 +501,60 @@ async def test_reconcile_skips_blocked_number_entirely():
     for m in (replay, alert):
         for c in m.await_args_list:
             assert c.args[0].get("phone") != "5581991812399"
+
+
+# --- PDF: a varredura reconhece e lê comprovante em PDF -------------------------------
+
+PDF_BYTES = b"%PDF-1.4 fake"
+
+
+async def test_reconcile_renders_pdf_before_classifying():
+    from contextlib import ExitStack
+    from app.receipt_reconciliation import reconcile
+    with ExitStack() as st:
+        rep, mail, logev = _reconcile_ctx(st, [_cand(data_url="https://cw/a.pdf")])
+        st.enter_context(patch("app.receipt_reconciliation._download_bytes",
+                               new_callable=AsyncMock, return_value=PDF_BYTES))
+        render = st.enter_context(patch(
+            "app.receipt_reconciliation.pdf_first_page_to_image_bytes", return_value=b"IMG"))
+        cls = st.enter_context(patch("app.receipt_reconciliation.classify_image_raw",
+                                     new_callable=AsyncMock, return_value=("payment", "t")))
+        await reconcile(NOW)
+    render.assert_called_once_with(PDF_BYTES)
+    assert cls.await_args.args[0] == b"IMG"
+    rep.assert_awaited_once()
+    assert rep.await_args.args[1] == PDF_BYTES
+
+
+async def test_reconcile_image_candidate_unchanged():
+    from contextlib import ExitStack
+    from app.receipt_reconciliation import reconcile
+    with ExitStack() as st:
+        rep, mail, logev = _reconcile_ctx(st, [_cand()])
+        render = st.enter_context(patch(
+            "app.receipt_reconciliation.pdf_first_page_to_image_bytes"))
+        cls = st.enter_context(patch("app.receipt_reconciliation.classify_image_raw",
+                                     new_callable=AsyncMock, return_value=("payment", "t")))
+        await reconcile(NOW)
+    render.assert_not_called()
+    assert cls.await_args.args[0] == b"img"
+    assert rep.await_args.args[1] == b"img"
+
+
+async def test_replay_uses_pdf_reader_for_pdf_bytes():
+    from app.receipt_reconciliation import replay_dropped_receipt
+    texto = "COMPROVANTE DE PAGAMENTO: R$ 100 [drive_link:https://d/x]"
+    with patch("app.receipt_reconciliation.describe_pdf_bytes",
+               new_callable=AsyncMock, return_value=texto) as dpdf, \
+         patch("app.receipt_reconciliation.describe_image_bytes",
+               new_callable=AsyncMock) as dimg, \
+         patch("app.receipt_reconciliation.log_event", new_callable=AsyncMock), \
+         patch("app.receipt_reconciliation._alert_clinic", new_callable=AsyncMock), \
+         patch("app.main.save_message", new_callable=AsyncMock), \
+         patch("app.main.process_message", new_callable=AsyncMock), \
+         patch("app.main._eva_paused_for_phone", new_callable=AsyncMock, return_value=False):
+        ok = await replay_dropped_receipt(_cand(), PDF_BYTES)
+    assert ok is True
+    assert dpdf.await_args.kwargs["payment_only"] is True
+    assert dpdf.await_args.args[0] == PDF_BYTES
+    dimg.assert_not_awaited()
