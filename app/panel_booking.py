@@ -671,6 +671,7 @@ async def handle(body: dict) -> tuple[int, dict]:
     return 200, {"appointments": created["appointments"], "message": msg}
 
 
+_REFUND_TEMPLATE = "reembolso_taxa_reserva"
 _PAYMENT_TEMPLATES = {"pagamento_taxa_recebido", "pagamento_consulta_recebido", "isencao_taxa_reserva"}
 
 
@@ -729,17 +730,20 @@ async def send_payment_confirmation(body: dict) -> tuple[int, dict]:
 async def send_refund_message(body: dict) -> tuple[int, dict]:
     """Mensagem de reembolso da taxa de reserva (texto, com comprovante opcional em anexo).
 
-    Só dentro da janela de 24h: não existe template aprovado de reembolso e texto livre
-    fora da janela seria descartado pela Meta em silêncio. Fora dela, não envia e devolve
-    sent=False para o painel avisar a atendente.
+    Dentro da janela de 24h vai o texto livre (ou o anexo). Fora dela, o template
+    aprovado `reembolso_taxa_reserva`, que não carrega anexo: o retorno traz
+    anexo_entregue=False para o painel avisar a atendente. Sem template e fora da
+    janela, não envia e devolve sent=False (texto livre seria descartado pela Meta).
     """
     import base64
 
     phone = (body.get("phone") or "").strip()
     text = (body.get("text") or "").strip()
     media = body.get("media") or None
-    if not phone or not text:
-        raise PanelInputError("phone e text são obrigatórios")
+    template = body.get("template") or ""
+    params = body.get("params") or {}
+    if not phone or not text or not isinstance(params, dict) or (template and template != _REFUND_TEMPLATE):
+        raise PanelInputError("phone e text são obrigatórios; template, se vier, tem que ser aprovado")
     file_bytes = b""
     if media:
         try:
@@ -750,9 +754,19 @@ async def send_refund_message(body: dict) -> tuple[int, dict]:
             raise PanelInputError("media precisa de b64, filename e content_type")
 
     thread = _thread(phone)
+    extra: dict = {}
     if not await _window_open(phone):
-        return 200, {"sent": False, "motivo": "janela_fechada"}
-    if media:
+        if not template:
+            return 200, {"sent": False, "motivo": "janela_fechada"}
+        from app.chatwoot import find_or_create_conversation, send_template_message
+        conversation_id = await find_or_create_conversation(thread)
+        await send_template_message(
+            conversation_id, template, "pt_BR", "UTILITY",
+            {str(k): str(v) for k, v in params.items()}, text,
+        )
+        via = "template"
+        extra = {"anexo_entregue": media is None}
+    elif media:
         from app.chatwoot import find_or_create_conversation, send_message_with_attachment
         conversation_id = await find_or_create_conversation(thread)
         await send_message_with_attachment(
@@ -777,4 +791,4 @@ async def send_refund_message(body: dict) -> tuple[int, dict]:
             )
     except Exception:
         _logger.exception("panel refund message checkpoint falhou phone=%s", phone)
-    return 200, {"sent": True, "via": via}
+    return 200, {"sent": True, "via": via, **extra}

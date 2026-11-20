@@ -592,11 +592,23 @@ def refund_message(contact_first: str, has_comprovante: bool) -> str:
     )
 
 
-async def _send_refund_message(phone: str, text: str, media: dict | None) -> str:
-    """Manda o aviso de reembolso pela Eva. Devolve "enviada", "fora_da_janela" ou "falhou"."""
+def refund_confirmation(contact_first: str, valor: int,
+                        patient_first: str) -> tuple[str, dict[str, str], str]:
+    """(nome do template, body_params, texto) do aviso de reembolso da taxa.
+
+    Variáveis do template: {{1}} nome do contato, {{2}} valor, {{3}} paciente."""
+    params = {"1": contact_first, "2": _format_brl(valor), "3": patient_first}
+    return "reembolso_taxa_reserva", params, refund_message(contact_first, has_comprovante=False)
+
+
+async def _send_refund_message(phone: str, text: str, media: dict | None,
+                               template: str = "", params: dict | None = None) -> str:
+    """Manda o aviso de reembolso pela Eva. Devolve "enviada", "enviada_sem_anexo"
+    (template fora da janela: o comprovante não foi junto), "fora_da_janela" ou "falhou"."""
     try:
         status_code, payload = await eva_client.post("/admin/panel/refund-message", {
             "phone": phone, "text": text, "media": media,
+            "template": template, "params": params or {},
         })
     except Exception:
         logger.exception("REFUND_MSG_FAILED phone=%s", phone)
@@ -604,7 +616,9 @@ async def _send_refund_message(phone: str, text: str, media: dict | None) -> str
     if status_code != 200:
         logger.error("REFUND_MSG_FAILED phone=%s status=%s payload=%s", phone, status_code, payload)
         return "falhou"
-    return "enviada" if payload.get("sent") else "fora_da_janela"
+    if not payload.get("sent"):
+        return "fora_da_janela"
+    return "enviada_sem_anexo" if payload.get("anexo_entregue") is False else "enviada"
 
 
 @router.post("/pagamentos/{appointment_id}/reembolso")
@@ -615,6 +629,7 @@ async def reembolso(
     data_hora: str = Form(...),
     phone: str = Form(...),
     enviar_mensagem: bool = Form(default=False),
+    valor: int = Form(default=100),
     conversation_id: int | None = Form(default=None),
     file: UploadFile | None = File(default=None),
     confirmar_duplicado: bool = Form(default=False),
@@ -661,7 +676,7 @@ async def reembolso(
     confirmacao = ""
     if baixou and enviar_mensagem:
         try:
-            contact_first, _patient_first = await _confirmation_names(phone, paciente)
+            contact_first, _pf = await _confirmation_names(phone, paciente)
             media = None
             if content is not None:
                 media = {
@@ -669,8 +684,11 @@ async def reembolso(
                     "filename": receipt_filename or file.filename,
                     "content_type": mimetype,
                 }
-            text = refund_message(contact_first, has_comprovante=media is not None)
-            confirmacao = await _send_refund_message(phone, text, media)
+            template, params, text = refund_confirmation(contact_first, valor, _first_name(paciente))
+            if media is not None:
+                # Dentro da janela o comprovante vai junto; o texto cita o anexo.
+                text = refund_message(contact_first, has_comprovante=True)
+            confirmacao = await _send_refund_message(phone, text, media, template, params)
         except Exception:
             confirmacao = "falhou"
             logger.exception("REFUND_MSG_FAILED appt=%s phone=%s", appointment_id, phone)

@@ -1048,6 +1048,10 @@ function reembolsoCard(p) {
     </div>
     <span class="font-medium num" style="font-size: 18px; color: var(--danger)">-R$ 100,00</span>
     <label class="chk"><input type="checkbox" class="avisar-input" checked> Avisar o paciente</label>
+    <label class="text-sm inline-flex items-center gap-2" style="color: var(--muted)">
+      Valor devolvido (R$)
+      <input type="number" class="valor-reembolso-input num" value="100" min="0" step="1" inputmode="numeric" style="width: 90px">
+    </label>
     <div class="flex items-center gap-2 flex-wrap" style="min-width: 0">
       <label class="link comprovante-label inline-flex items-center gap-1" style="cursor: pointer">
         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m21 11-8.5 8.5a5 5 0 0 1-7-7L14 4a3.5 3.5 0 0 1 5 5l-8.5 8.5a2 2 0 0 1-3-3L15 7"/></svg>
@@ -1186,8 +1190,16 @@ async function registrarReembolso(btn) {
   btn.textContent = "Registrando…";
   const restore = () => { btn.disabled = false; btn.textContent = label; };
 
+  const valor = Number(card.querySelector(".valor-reembolso-input").value);
+  if (!Number.isInteger(valor) || valor < 0) {
+    alert("Informe o valor devolvido em reais, como número inteiro (ex.: 100).");
+    restore();
+    return;
+  }
+
   const form = new FormData();
   form.append("enviar_mensagem", card.querySelector(".avisar-input").checked ? "true" : "false");
+  form.append("valor", String(valor));
   form.append("paciente", card.dataset.paciente);
   form.append("medico", card.dataset.medico);
   form.append("data_hora", card.dataset.dataHora);
@@ -1224,6 +1236,8 @@ async function registrarReembolso(btn) {
   const feito = "Devolução registrada ✅";
   if (res.confirmacao === "enviada") {
     alert(`${feito} Mensagem enviada ao paciente.`);
+  } else if (res.confirmacao === "enviada_sem_anexo") {
+    alert(`${feito} Aviso enviado ao paciente, mas o comprovante NÃO foi junto (a conversa está fora da janela de 24h). Envie o comprovante na mão.`);
   } else if (res.confirmacao === "fora_da_janela" || res.confirmacao === "falhou") {
     alert(`${feito}\n\nMas a mensagem não saiu; envie o comprovante ao paciente na mão.`);
   } else {

@@ -1075,6 +1075,54 @@ async def test_refund_message_fora_janela_nao_envia():
     m["save"].assert_not_awaited()
 
 
+_REFUND_PARAMS = {"1": "Carla", "2": "R$ 100,00", "3": "Nina"}
+
+
+@pytest.mark.asyncio
+async def test_refund_message_fora_janela_com_template_envia_template():
+    stack, m = _refund_patches(window=False)
+    with stack:
+        status, payload = await pb.send_refund_message(
+            {**_REFUND_BODY, "template": "reembolso_taxa_reserva", "params": _REFUND_PARAMS})
+    assert (status, payload) == (200, {"sent": True, "via": "template", "anexo_entregue": True})
+    m["tpl"].assert_awaited_once_with(
+        107, "reembolso_taxa_reserva", "pt_BR", "UTILITY", _REFUND_PARAMS, "Reembolso feito.")
+    m["send_text"].assert_not_awaited()
+    m["attach"].assert_not_awaited()
+    m["save"].assert_awaited_once_with("5581999713131@s.whatsapp.net", "assistant", "Reembolso feito.")
+    m["graph"].chatbot.aupdate_state.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_refund_message_fora_janela_com_anexo_e_template_sinaliza_anexo_nao_entregue():
+    stack, m = _refund_patches(window=False)
+    with stack:
+        status, payload = await pb.send_refund_message(
+            {**_REFUND_BODY, "media": _REFUND_MEDIA,
+             "template": "reembolso_taxa_reserva", "params": _REFUND_PARAMS})
+    assert (status, payload) == (200, {"sent": True, "via": "template", "anexo_entregue": False})
+    m["tpl"].assert_awaited_once()
+    m["attach"].assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_refund_message_template_nao_aprovado_e_recusado():
+    stack, m = _refund_patches(window=False)
+    with stack, pytest.raises(pb.PanelInputError):
+        await pb.send_refund_message({**_REFUND_BODY, "template": "qualquer_outro"})
+    m["tpl"].assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_refund_message_dentro_janela_ignora_template():
+    stack, m = _refund_patches(window=True)
+    with stack:
+        status, payload = await pb.send_refund_message(
+            {**_REFUND_BODY, "template": "reembolso_taxa_reserva", "params": _REFUND_PARAMS})
+    assert (status, payload) == (200, {"sent": True, "via": "texto"})
+    m["tpl"].assert_not_awaited()
+
+
 async def _closed_window_send(recips, kind="normal", lines=None, pending_part2=False, **kw):
     chatbot = MagicMock()
     chatbot.aget_state = AsyncMock(return_value=MagicMock(values={"stage": "patient_agent"}))
