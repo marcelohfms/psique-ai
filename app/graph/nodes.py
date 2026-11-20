@@ -281,6 +281,13 @@ _EMISSION_STRONG_MARKERS = (
 _EMISSION_WEAK_MARKERS = (
     "preciso", "precisa", "queria", "gostaria", "pode fazer", "podem fazer",
     "pode emitir", "podem emitir",
+    # Verbos de ENVIO: "enviar/mandar uma receita" é emissão quando acompanhado de
+    # um tipo de documento. Fracos de propósito — não disparam junto de um
+    # marcador de retirada ("enviar a receita pronta") e os infinitivos/imperativos
+    # não casam o passado ("enviou/mandou", pergunta de status). Caso Luiz Rozendo
+    # (16/11/2026): "seria possível enviar uma receita com Escitalopram de 20mg".
+    "enviar", "envie", "mandar", "mande", "me manda", "pode enviar",
+    "podem enviar", "pode mandar", "podem mandar",
 )
 
 # Retirada de documento JÁ pronto — sem verbo forte de emissão, isto NÃO é pedido
@@ -3723,6 +3730,68 @@ async def patient_agent_node(state: ConversationState, config: RunnableConfig) -
                 content=response.content if _kept_doc_tcs else "",
                 tool_calls=_kept_doc_tcs + [_forced_doc],
             )
+
+    # ── Guard: registro silencioso de documento pedido junto de questão clínica ─
+    # Caso Luiz Rozendo (5581986539358, 16/11/2026): o paciente pede a EMISSÃO de
+    # uma receita embrulhada numa mudança de dose ("seria possível enviar uma
+    # receita de 20mg? a de 10mg é baixa"). A regra clínica manda a Eva NÃO mexer
+    # em dose e orientar o e-mail da médica — resposta só texto, sem tool — então
+    # o pedido não ficava registrado em lugar nenhum
+    # (pergunta-clinica-ao-medico-nao-vira-registro.md). Diferente do
+    # GUARD_DOC_PROMISE: a Eva não promete emitir (ela recusa), e não há handoff,
+    # então nem o guard de promessa nem o de handoff disparam. Aqui o sinal vem da
+    # MENSAGEM DO PACIENTE (_detect_document_emission_request) e registramos por
+    # baixo via register_document_request, SEM tocar na resposta: o paciente
+    # continua vendo o redirecionamento da dose (registro silencioso, decisão da
+    # clínica) e a médica recebe o pedido na worklist. Pula em silent_mode.
+    _doc_acted_now = any(
+        tc.get("name") in ("request_document", "nudge_doctor_document")
+        for tc in (response.tool_calls or [])
+    )
+    _handoff_now = any(
+        tc.get("name") == "transfer_to_human" for tc in (response.tool_calls or [])
+    )
+    if (
+        _last_h_idx is not None
+        and not state.get("silent_mode")
+        and not _doc_acted_now
+        and not _handoff_now
+    ):
+        _emission_msg = str(getattr(clean_messages[_last_h_idx], "content", "") or "")
+        _emission_type = _detect_document_emission_request(_emission_msg)
+        _emission_ran = any(
+            (getattr(m, "type", "") == "tool"
+             and getattr(m, "name", "") in ("request_document", "nudge_doctor_document"))
+            or any(
+                tc.get("name") in ("request_document", "nudge_doctor_document")
+                for tc in (getattr(m, "tool_calls", None) or [])
+            )
+            for m in clean_messages[_last_h_idx + 1:]
+        )
+        _emission_email = (state.get("patient_email") or "").strip()
+        if _emission_type and _emission_email and not _emission_ran:
+            from app.graph.tools import register_document_request
+            try:
+                await register_document_request(
+                    document_type=_emission_type,
+                    patient_email=_emission_email,
+                    state=state,
+                    config=config,
+                    # Para receita, a nota é a própria mensagem do paciente — captura
+                    # a dose pedida e aciona a detecção de medicação controlada.
+                    medication_note=_emission_msg if _emission_type == "receita" else "",
+                )
+                _logger.warning(
+                    "GUARD_DOC_EMISSION_SILENT: registrou %s em silêncio (pedido na "
+                    "mensagem do paciente, resposta sem tool nem handoff) phone=%s",
+                    _emission_type, state.get("phone"),
+                )
+            except Exception:
+                _logger.exception(
+                    "GUARD_DOC_EMISSION_SILENT: falha ao registrar %s phone=%s",
+                    _emission_type, state.get("phone"),
+                )
+        # response permanece inalterada: silêncio ao paciente.
 
     # ── Guard: block premature confirm_appointment ────────────────────────────
     # If the LLM is trying to call confirm_appointment but the patient has NOT
