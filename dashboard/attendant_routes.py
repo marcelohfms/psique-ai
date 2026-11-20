@@ -685,9 +685,9 @@ async def reembolso(
                     "content_type": mimetype,
                 }
             template, params, text = refund_confirmation(contact_first, valor, _first_name(paciente))
-            if media is not None:
-                # Dentro da janela o comprovante vai junto; o texto cita o anexo.
-                text = refund_message(contact_first, has_comprovante=True)
+            # Texto neutro em todos os caminhos: fora da janela o template não leva
+            # anexo e o texto vira o registro do que foi entregue, então não pode
+            # alegar "segue o comprovante". Dentro da janela o arquivo é o próprio anexo.
             confirmacao = await _send_refund_message(phone, text, media, template, params)
         except Exception:
             confirmacao = "falhou"

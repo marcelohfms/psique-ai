@@ -517,9 +517,11 @@ async def send_booking_message(patient_id: str, contact_id: str, kind: str, line
     if when is not None and len(lines) == 1 and not pending_part2:
         template = _booking_template(kind)
         doctor_label = DOCTOR_LABELS.get(doctor, doctor)
+        # A Meta rejeita parâmetro com \n, \t ou espaço duplo.
+        clean_name = " ".join(patient_name.split())
 
         def template_for(c):
-            return template, {"1": contact_first_name(c) or "tudo bem", "2": patient_name,
+            return template, {"1": contact_first_name(c) or "tudo bem", "2": clean_name,
                               "3": doctor_label, "4": when}
     return await deliver_message(patient_id, contact_id,
                                  lambda c: _text_for(c, kind, lines, pending_part2),

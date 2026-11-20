@@ -58,6 +58,7 @@ def _run_release(monkeypatch, *, window_open, send_template=None):
     sb.from_.return_value = sb_table
 
     send = AsyncMock()
+    cancel = AsyncMock()
     tmpl = send_template or AsyncMock()
     with patch("supabase.acreate_client", new_callable=AsyncMock, return_value=client), \
          patch("app.database.get_supabase", new_callable=AsyncMock, return_value=sb), \
@@ -65,14 +66,14 @@ def _run_release(monkeypatch, *, window_open, send_template=None):
          patch.object(rel, "get_contact_by_phone", new_callable=AsyncMock, return_value={}), \
          patch.object(rel, "_window_open", new_callable=AsyncMock, return_value=window_open), \
          patch.object(rel, "_send_template", tmpl), \
-         patch.object(rel, "cancel_calendar_event", new_callable=AsyncMock), \
+         patch.object(rel, "cancel_calendar_event", cancel), \
          patch.object(rel, "send_whatsapp", send):
         asyncio.run(rel.main())
-    return send, tmpl, table
+    return send, tmpl, table, cancel
 
 
 def test_release_closed_window_sends_template_and_releases(monkeypatch):
-    send, tmpl, table = _run_release(monkeypatch, window_open=False)
+    send, tmpl, table, cancel = _run_release(monkeypatch, window_open=False)
 
     send.assert_not_awaited()
     tmpl.assert_awaited_once()
@@ -85,16 +86,19 @@ def test_release_closed_window_sends_template_and_releases(monkeypatch):
 
 
 def test_release_open_window_sends_free_text(monkeypatch):
-    send, tmpl, table = _run_release(monkeypatch, window_open=True)
+    send, tmpl, table, cancel = _run_release(monkeypatch, window_open=True)
 
     send.assert_awaited_once()
+    assert send.await_args.args[0] == "5581999"
+    assert "liberamos a vaga" in send.await_args.args[1]
     tmpl.assert_not_awaited()
     assert table.update.call_args.args[0]["status"] == "pending_reschedule"
 
 
 def test_release_template_failure_does_not_release_slot(monkeypatch):
     tmpl = AsyncMock(side_effect=RuntimeError("meta recusou"))
-    send, tmpl, table = _run_release(monkeypatch, window_open=False, send_template=tmpl)
+    send, tmpl, table, cancel = _run_release(monkeypatch, window_open=False, send_template=tmpl)
 
     tmpl.assert_awaited_once()
     table.update.assert_not_called()
+    cancel.assert_not_awaited()

@@ -1144,6 +1144,24 @@ _WHEN = "quinta-feira, 12/11/2026 às 09:00"
 
 
 @pytest.mark.asyncio
+async def test_booking_template_param2_sem_quebra_de_linha_nem_espaco_duplo():
+    chatbot = MagicMock()
+    chatbot.aget_state = AsyncMock(return_value=MagicMock(values={"stage": "patient_agent"}))
+    chatbot.aupdate_state = AsyncMock()
+    recips = [{"id": "c1", "phone": "5581999998888", "name": "Carla Menezes"}]
+    with patch("app.panel_booking.consultation_reminder_contacts", new_callable=AsyncMock, return_value=recips), \
+         patch("app.panel_booking._linked_contacts_with_marker", new_callable=AsyncMock, return_value=[]), \
+         patch("app.panel_booking._window_open", new_callable=AsyncMock, return_value=False), \
+         patch("app.panel_booking.save_message", new_callable=AsyncMock), \
+         patch("app.chatwoot.find_or_create_conversation", new_callable=AsyncMock, return_value=77), \
+         patch("app.chatwoot.send_template_message", new_callable=AsyncMock) as tmpl, \
+         patch("app.graph.graph.chatbot", chatbot):
+        await pb.send_booking_message("p1", "c1", "normal", ["Dr. Júlio — x"], False,
+                                      "Nina\n (Ni  Ni)\t", "julio", when=_WHEN)
+    assert tmpl.call_args[0][4]["2"] == "Nina (Ni Ni)"
+
+
+@pytest.mark.asyncio
 async def test_booking_closed_window_single_slot_sends_template():
     out, tmpl, text, save, chatbot = await _closed_window_send(
         [{"id": "c1", "phone": "5581999998888", "name": "Carla Menezes"}], when=_WHEN)
