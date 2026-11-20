@@ -19,6 +19,8 @@ def _env(*, download=None, describe="[imagem]: COMPROVANTE DE PAGAMENTO: R$ 100"
         side_effect=download if download is not None else [b"img"]))
     m["describe"] = stack.enter_context(patch(
         "app.receipt_rescue.describe_image_bytes", new_callable=AsyncMock, return_value=describe))
+    m["describe_pdf"] = stack.enter_context(patch(
+        "app.receipt_rescue.describe_pdf_bytes", new_callable=AsyncMock, return_value=describe))
     m["log_event"] = stack.enter_context(patch("app.receipt_rescue.log_event", new_callable=AsyncMock))
     m["has_trace"] = stack.enter_context(patch(
         "app.receipt_rescue.has_trace", new_callable=AsyncMock, return_value=trace))
@@ -105,3 +107,24 @@ async def test_total_wait_is_about_60s():
     with stack:
         await rescue_incoming_attachment(**KW, sleep=sleep)
     assert sum(c.args[0] for c in sleep.await_args_list) == 60
+
+
+async def test_rescue_reads_pdf_with_pdf_path():
+    from app.receipt_rescue import rescue_incoming_attachment
+    stack, m = _env(download=[b"%PDF-1.4 fake"])
+    with stack:
+        ok = await rescue_incoming_attachment(**KW, sleep=AsyncMock())
+    assert ok is True
+    m["describe_pdf"].assert_awaited_once()
+    m["describe"].assert_not_awaited()
+    m["save"].assert_awaited_once()
+
+
+async def test_rescue_reads_image_with_image_path():
+    from app.receipt_rescue import rescue_incoming_attachment
+    stack, m = _env(download=[b"\xff\xd8\xff\xe0jpeg"])
+    with stack:
+        ok = await rescue_incoming_attachment(**KW, sleep=AsyncMock())
+    assert ok is True
+    m["describe"].assert_awaited_once()
+    m["describe_pdf"].assert_not_awaited()
