@@ -15,12 +15,16 @@ _WEEKDAYS = {
 }
 
 
+def appt_when(start: datetime) -> str:
+    """'segunda-feira, 05/10/2026 às 14:00'. `start` já em Recife."""
+    return f"{_WEEKDAYS[start.weekday()]}, {start.strftime('%d/%m/%Y às %H:%M')}"
+
+
 def format_appt_line(doctor: str, start: datetime, session_note: str = "") -> str:
     """'Dr. Júlio — segunda-feira, 05/10/2026 às 14:00 (nota)'. `start` já em Recife."""
     label = DOCTOR_LABELS.get(doctor, doctor)
-    when = f"{_WEEKDAYS[start.weekday()]}, {start.strftime('%d/%m/%Y às %H:%M')}"
     note = f" ({session_note})" if session_note else ""
-    return f"{label} — {when}{note}"
+    return f"{label} — {appt_when(start)}{note}"
 
 
 def confirmation_text(kind: str, appt_line: str, contact_name: str) -> str:
