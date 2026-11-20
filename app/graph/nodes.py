@@ -281,14 +281,19 @@ _EMISSION_STRONG_MARKERS = (
 _EMISSION_WEAK_MARKERS = (
     "preciso", "precisa", "queria", "gostaria", "pode fazer", "podem fazer",
     "pode emitir", "podem emitir",
-    # Verbos de ENVIO: "enviar/mandar uma receita" é emissão quando acompanhado de
-    # um tipo de documento. Fracos de propósito — não disparam junto de um
-    # marcador de retirada ("enviar a receita pronta") e os infinitivos/imperativos
-    # não casam o passado ("enviou/mandou", pergunta de status). Caso Luiz Rozendo
-    # (16/11/2026): "seria possível enviar uma receita com Escitalopram de 20mg".
-    "enviar", "envie", "mandar", "mande", "me manda", "pode enviar",
-    "podem enviar", "pode mandar", "podem mandar",
 )
+
+# Verbos de ENVIO: "enviar/mandar uma receita" é emissão quando acompanhado de um
+# tipo de documento. Fracos de propósito — não disparam junto de um marcador de
+# retirada ("enviar a receita pronta"). Casam por FRONTEIRA DE PALAVRA (\b) para
+# NÃO pegar o passado/plural "enviaram/mandaram/enviaria" (perguntas de status),
+# que o substring pegava (review finding #1). Caso Luiz Rozendo (16/11/2026):
+# "seria possível enviar uma receita com Escitalopram de 20mg".
+_EMISSION_SEND_VERB_RE = _re_mod.compile(r"\b(enviar|envie|envia|mandar|mande|manda)\b")
+
+# "quando/quais horas vão mandar" é pergunta de status/timing, não pedido novo —
+# o verbo de envio não conta como emissão quando a mensagem é uma pergunta dessas.
+_EMISSION_SEND_STATUS_MARKERS = ("quando", "que horas", "que dia")
 
 # Retirada de documento JÁ pronto — sem verbo forte de emissão, isto NÃO é pedido
 # de emissão (o registro seria espúrio). Ex.: "vim buscar minha receita pronta".
@@ -318,7 +323,11 @@ def _detect_document_emission_request(text: str) -> str | None:
     if not doc_type:
         return None
     has_strong = any(m in low for m in _EMISSION_STRONG_MARKERS)
-    has_weak = any(m in low for m in _EMISSION_WEAK_MARKERS)
+    has_send = (
+        bool(_EMISSION_SEND_VERB_RE.search(low))
+        and not any(m in low for m in _EMISSION_SEND_STATUS_MARKERS)
+    )
+    has_weak = any(m in low for m in _EMISSION_WEAK_MARKERS) or has_send
     has_retrieval = any(m in low for m in _EMISSION_RETRIEVAL_MARKERS)
     if has_strong or (has_weak and not has_retrieval):
         return doc_type

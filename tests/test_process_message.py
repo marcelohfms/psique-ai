@@ -8272,3 +8272,16 @@ def test_detect_document_emission_request_enviar_receita():
     assert _detect_document_emission_request("pode enviar a receita que já ficou pronta?") is None
     # Pergunta de status no passado: não dispara.
     assert _detect_document_emission_request("a Dra já enviou a receita por e-mail?") is None
+
+
+def test_detect_document_emission_request_ignora_status_e_passado():
+    """Regressão (review finding #1): formas no passado/plural e perguntas de
+    'quando vão mandar' NÃO são pedido de emissão — não podem gerar registro
+    silencioso espúrio. Os verbos de envio só valem em forma de pedido."""
+    from app.graph.nodes import _detect_document_emission_request
+    assert _detect_document_emission_request("vocês já me enviaram a receita por email?") is None
+    assert _detect_document_emission_request("a receita que vocês mandaram veio errada") is None
+    assert _detect_document_emission_request("quando vão mandar minha receita?") is None
+    # Positivos continuam valendo (não pode regredir o caso Luiz):
+    assert _detect_document_emission_request(_DOSE_RECEITA_MSG) == "receita"
+    assert _detect_document_emission_request("pode me mandar a receita?") == "receita"
