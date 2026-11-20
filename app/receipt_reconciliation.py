@@ -20,7 +20,13 @@ import httpx
 from app.chatwoot import list_recent_incoming_attachments
 from app.database import get_supabase, log_event
 from app.email_sender import send_clinic_notification_email
-from app.media import classify_image_raw, describe_image_bytes
+from app.media import (
+    _looks_like_pdf,
+    classify_image_raw,
+    describe_image_bytes,
+    describe_pdf_bytes,
+    pdf_first_page_to_image_bytes,
+)
 from app.phone import _phone_variants, is_blocked_number
 
 logger = logging.getLogger(__name__)
@@ -187,7 +193,10 @@ async def replay_dropped_receipt(cand: dict, img: bytes) -> bool:
         await _alert_clinic(cand, "payment")
         return False
 
-    texto = await describe_image_bytes(img, phone=canonico, payment_only=True)
+    if _looks_like_pdf(img):
+        texto = await describe_pdf_bytes(img, phone=canonico, payment_only=True)
+    else:
+        texto = await describe_image_bytes(img, phone=canonico, payment_only=True)
     if not texto:
         await _alert_clinic(cand, "payment")
         return False
@@ -235,7 +244,26 @@ async def reconcile(now: datetime, *, floor_min: int = 10, window_min: int = 60)
             if await has_trace(phone, cand.get("created_at", 0)):
                 continue
             img = await _download_bytes(cand.get("data_url", ""))
-            kind, _canonical = await classify_image_raw(img, phone)
+            # PDF não vai ao classificador de imagem: renderiza a 1ª página. O replay
+            # continua recebendo os bytes crus (o leitor de PDF precisa do arquivo).
+            if _looks_like_pdf(img):
+                try:
+                    classify_src = pdf_first_page_to_image_bytes(img)
+                except Exception:
+                    # PDF que não renderiza (criptografado, corrompido): alerta a
+                    # clínica e marca, em vez de sumir em silêncio.
+                    logger.exception("RECONCILE_PDF_RENDER_FAILED attachment_id=%s", aid)
+                    await _alert_clinic(cand, "payment")
+                    await log_event(RECEIPT_DROP_EVENT, phone, {
+                        "attachment_id": aid,
+                        "conversation_id": cand.get("conversation_id"),
+                        "kind": "payment",
+                    })
+                    alerts += 1
+                    continue
+            else:
+                classify_src = img
+            kind, _canonical = await classify_image_raw(classify_src, phone)
             if kind not in ("payment", "document"):
                 continue
             if kind == "payment":
