@@ -10,6 +10,28 @@ def _strip_phone(phone: str) -> str:
     return phone.replace("@s.whatsapp.net", "")
 
 
+# Números TOTALMENTE bloqueados: nenhuma mensagem deles é processada pela Eva —
+# nem webhook, nem cron, nem e-mail, nem gravação. Diferente do manual_hold, que
+# silencia a Eva no recebimento mas ainda reinjeta comprovante perdido e avisa a
+# clínica por e-mail. Use a forma canônica COM o 9 (55 + DDD + 9XXXXXXXX).
+# Ver docs/superpowers/specs/2026-11-19-blocklist-numero-total-design.md
+#   5581991812399 — WhatsApp da Clínica Affectus, manda comprovante de terceiros
+#                   como imagem sem legenda; não é paciente (19/11/2026).
+BLOCKED_NUMBERS = frozenset({
+    "5581991812399",
+})
+
+
+def is_blocked_number(phone: str) -> bool:
+    """True se o número está na blocklist total, em qualquer variante: com ou sem o
+    9, com ou sem `+` ou sufixo `@s.whatsapp.net`. Função pura, usável em todos os
+    canos de entrada (webhook Meta, webhook Chatwoot, cron, process_message)."""
+    if not phone:
+        return False
+    cleaned = _strip_phone(phone).lstrip("+").strip()
+    return any(v in BLOCKED_NUMBERS for v in _phone_variants(cleaned))
+
+
 def _phone_variants(phone: str) -> list[str]:
     """Return both the 9-digit and 8-digit variants of a Brazilian mobile number.
 

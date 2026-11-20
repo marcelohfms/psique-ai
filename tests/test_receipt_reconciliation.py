@@ -223,7 +223,8 @@ async def test_replay_registers_and_notifies():
          patch("app.receipt_reconciliation.log_event", new_callable=AsyncMock) as logev, \
          patch("app.receipt_reconciliation._alert_clinic", new_callable=AsyncMock) as alert, \
          patch("app.main.save_message", new_callable=AsyncMock) as save, \
-         patch("app.main.process_message", new_callable=AsyncMock) as proc:
+         patch("app.main.process_message", new_callable=AsyncMock) as proc, \
+         patch("app.main._eva_paused_for_phone", new_callable=AsyncMock, return_value=False):
         ok = await replay_dropped_receipt(_cand(), b"img")
 
     assert ok is True
@@ -250,7 +251,8 @@ async def test_replay_falls_back_to_alert_when_not_a_receipt():
          patch("app.receipt_reconciliation.log_event", new_callable=AsyncMock) as logev, \
          patch("app.receipt_reconciliation._alert_clinic", new_callable=AsyncMock) as alert, \
          patch("app.main.save_message", new_callable=AsyncMock) as save, \
-         patch("app.main.process_message", new_callable=AsyncMock) as proc:
+         patch("app.main.process_message", new_callable=AsyncMock) as proc, \
+         patch("app.main._eva_paused_for_phone", new_callable=AsyncMock, return_value=False):
         ok = await replay_dropped_receipt(cand, b"img")
 
     assert ok is False
@@ -260,29 +262,33 @@ async def test_replay_falls_back_to_alert_when_not_a_receipt():
     proc.assert_not_awaited()
 
 
-async def test_replay_in_manual_hold_passes_through_pause_gate():
-    """(b) Contato em pausa/manual_hold: o process_message REAL deixa o replay passar
-    pelo portão da pausa (bypass_pause=True) e chega no grafo, em vez de calar."""
-    import app.graph.graph as gg
+async def test_replay_in_manual_hold_alerts_clinic_and_stays_silent():
+    """Contato deliberadamente pausado (manual_hold / active=False): a Eva fica em
+    silêncio total, inclusive para comprovante reinjetado. O replay NÃO roda a Eva —
+    avisa a clínica por e-mail (ela trata pelo painel). Caso Clínica Affectus
+    (5581991812399), 18/11/2026: a Eva reabria a conversa a cada comprovante mesmo
+    desligada, porque o bypass_pause atropelava o portão de pausa."""
     from app.receipt_reconciliation import replay_dropped_receipt
 
-    chatbot = MagicMock()
-    chatbot.aget_state = AsyncMock(side_effect=RuntimeError("passou do portao"))
-    original = gg.chatbot
-    gg.chatbot = chatbot
-    try:
-        with patch("app.receipt_reconciliation.describe_image_bytes",
-                   new_callable=AsyncMock, return_value="COMPROVANTE DE PAGAMENTO: R$ 100"), \
-             patch("app.receipt_reconciliation.log_event", new_callable=AsyncMock), \
-             patch("app.main.save_message", new_callable=AsyncMock), \
-             patch("app.main._eva_paused_for_phone", new_callable=AsyncMock, return_value=True), \
-             patch("app.main.get_user_by_phone", new_callable=AsyncMock, return_value=None), \
-             patch("app.main.get_users_by_phone", new_callable=AsyncMock, return_value=[]):
-            with pytest.raises(RuntimeError, match="passou do portao"):
-                await replay_dropped_receipt(_cand(), b"img")
-        chatbot.aget_state.assert_called()
-    finally:
-        gg.chatbot = original
+    cand = _cand()
+    with patch("app.receipt_reconciliation.describe_image_bytes",
+               new_callable=AsyncMock, return_value="COMPROVANTE DE PAGAMENTO: R$ 100") as desc, \
+         patch("app.receipt_reconciliation.log_event", new_callable=AsyncMock) as logev, \
+         patch("app.receipt_reconciliation._alert_clinic", new_callable=AsyncMock) as alert, \
+         patch("app.main.save_message", new_callable=AsyncMock) as save, \
+         patch("app.main.process_message", new_callable=AsyncMock) as proc, \
+         patch("app.main._eva_paused_for_phone", new_callable=AsyncMock, return_value=True) as paused:
+        ok = await replay_dropped_receipt(cand, b"img")
+
+    assert ok is False
+    canon = "5581971052827@s.whatsapp.net"
+    paused.assert_awaited_once_with(canon)
+    alert.assert_awaited_once_with(cand, "payment")
+    proc.assert_not_awaited()
+    save.assert_not_awaited()
+    logev.assert_not_awaited()
+    # Pausa é checada antes de qualquer efeito caro (Vision/Drive).
+    desc.assert_not_awaited()
 
 
 async def test_replay_phone_without_ninth_digit_is_normalized():
@@ -295,7 +301,8 @@ async def test_replay_phone_without_ninth_digit_is_normalized():
                new_callable=AsyncMock, return_value=texto) as desc, \
          patch("app.receipt_reconciliation.log_event", new_callable=AsyncMock) as logev, \
          patch("app.main.save_message", new_callable=AsyncMock) as save, \
-         patch("app.main.process_message", new_callable=AsyncMock) as proc:
+         patch("app.main.process_message", new_callable=AsyncMock) as proc, \
+         patch("app.main._eva_paused_for_phone", new_callable=AsyncMock, return_value=False):
         await replay_dropped_receipt(_cand(phone="558171052827"), b"img")
 
     canon = "5581971052827@s.whatsapp.net"
@@ -463,3 +470,112 @@ async def test_reconcile_replay_false_marks_alerted_without_own_email():
     mail.assert_not_awaited()
     logev.assert_awaited_once()
     assert logev.await_args.args[0] == "receipt_drop_alerted"
+
+
+async def test_reconcile_skips_blocked_number_entirely():
+    """Número na blocklist total: o cron nem baixa, nem classifica, nem alerta —
+    buraco negro (caso Clínica Affectus 5581991812399)."""
+    from app.receipt_reconciliation import reconcile
+
+    cands = [_cand(phone="5581991812399", attachment_id=1),
+             _cand(phone="5583999999999", attachment_id=2)]
+    with patch("app.receipt_reconciliation.list_recent_incoming_attachments",
+               new_callable=AsyncMock, return_value=cands), \
+         patch("app.receipt_reconciliation.already_alerted", new_callable=AsyncMock, return_value=False), \
+         patch("app.receipt_reconciliation.has_trace", new_callable=AsyncMock, return_value=False), \
+         patch("app.receipt_reconciliation._download_bytes", new_callable=AsyncMock, return_value=b"img") as dl, \
+         patch("app.receipt_reconciliation.classify_image_raw", new_callable=AsyncMock,
+               return_value=("payment", "t")), \
+         patch("app.receipt_reconciliation.has_payment_trace_until_now",
+               new_callable=AsyncMock, return_value=False), \
+         patch("app.receipt_reconciliation.already_replayed", new_callable=AsyncMock, return_value=False), \
+         patch("app.receipt_reconciliation.replay_dropped_receipt", new_callable=AsyncMock, return_value=True) as replay, \
+         patch("app.receipt_reconciliation._alert_clinic", new_callable=AsyncMock) as alert, \
+         patch("app.receipt_reconciliation.log_event", new_callable=AsyncMock):
+        await reconcile(NOW)
+
+    # O número bloqueado nunca é baixado nem alertado nem reinjetado.
+    blocked_urls = [c.args[0] for c in dl.await_args_list]
+    assert all("blocked" not in u for u in blocked_urls)
+    assert dl.await_count == 1  # só o número legítimo foi baixado
+    for m in (replay, alert):
+        for c in m.await_args_list:
+            assert c.args[0].get("phone") != "5581991812399"
+
+
+# --- PDF: a varredura reconhece e lê comprovante em PDF -------------------------------
+
+PDF_BYTES = b"%PDF-1.4 fake"
+
+
+async def test_reconcile_renders_pdf_before_classifying():
+    from contextlib import ExitStack
+    from app.receipt_reconciliation import reconcile
+    with ExitStack() as st:
+        rep, mail, logev = _reconcile_ctx(st, [_cand(data_url="https://cw/a.pdf")])
+        st.enter_context(patch("app.receipt_reconciliation._download_bytes",
+                               new_callable=AsyncMock, return_value=PDF_BYTES))
+        render = st.enter_context(patch(
+            "app.receipt_reconciliation.pdf_first_page_to_image_bytes", return_value=b"IMG"))
+        cls = st.enter_context(patch("app.receipt_reconciliation.classify_image_raw",
+                                     new_callable=AsyncMock, return_value=("payment", "t")))
+        await reconcile(NOW)
+    render.assert_called_once_with(PDF_BYTES)
+    assert cls.await_args.args[0] == b"IMG"
+    rep.assert_awaited_once()
+    assert rep.await_args.args[1] == PDF_BYTES
+
+
+async def test_reconcile_image_candidate_unchanged():
+    from contextlib import ExitStack
+    from app.receipt_reconciliation import reconcile
+    with ExitStack() as st:
+        rep, mail, logev = _reconcile_ctx(st, [_cand()])
+        render = st.enter_context(patch(
+            "app.receipt_reconciliation.pdf_first_page_to_image_bytes"))
+        cls = st.enter_context(patch("app.receipt_reconciliation.classify_image_raw",
+                                     new_callable=AsyncMock, return_value=("payment", "t")))
+        await reconcile(NOW)
+    render.assert_not_called()
+    assert cls.await_args.args[0] == b"img"
+    assert rep.await_args.args[1] == b"img"
+
+
+async def test_replay_uses_pdf_reader_for_pdf_bytes():
+    from app.receipt_reconciliation import replay_dropped_receipt
+    texto = "COMPROVANTE DE PAGAMENTO: R$ 100 [drive_link:https://d/x]"
+    with patch("app.receipt_reconciliation.describe_pdf_bytes",
+               new_callable=AsyncMock, return_value=texto) as dpdf, \
+         patch("app.receipt_reconciliation.describe_image_bytes",
+               new_callable=AsyncMock) as dimg, \
+         patch("app.receipt_reconciliation.log_event", new_callable=AsyncMock), \
+         patch("app.receipt_reconciliation._alert_clinic", new_callable=AsyncMock), \
+         patch("app.main.save_message", new_callable=AsyncMock), \
+         patch("app.main.process_message", new_callable=AsyncMock), \
+         patch("app.main._eva_paused_for_phone", new_callable=AsyncMock, return_value=False):
+        ok = await replay_dropped_receipt(_cand(), PDF_BYTES)
+    assert ok is True
+    assert dpdf.await_args.kwargs["payment_only"] is True
+    assert dpdf.await_args.args[0] == PDF_BYTES
+    dimg.assert_not_awaited()
+
+
+async def test_reconcile_pdf_render_failure_alerts_and_marks():
+    """PDF que não renderiza (criptografado, corrompido): alerta a clínica e grava o
+    marcador, nunca some em silêncio."""
+    from contextlib import ExitStack
+    from app.receipt_reconciliation import reconcile
+    with ExitStack() as st:
+        rep, mail, logev = _reconcile_ctx(st, [_cand(data_url="https://cw/a.pdf")])
+        st.enter_context(patch("app.receipt_reconciliation._download_bytes",
+                               new_callable=AsyncMock, return_value=PDF_BYTES))
+        st.enter_context(patch("app.receipt_reconciliation.pdf_first_page_to_image_bytes",
+                               side_effect=RuntimeError("encrypted")))
+        n = await reconcile(NOW)
+    assert n == 1
+    mail.assert_awaited_once()
+    assert "comprovante de pagamento" in str(mail.await_args)
+    logev.assert_awaited_once()
+    assert logev.await_args.args[0] == "receipt_drop_alerted"
+    assert logev.await_args.args[2]["attachment_id"] == 999
+    rep.assert_not_awaited()

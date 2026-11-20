@@ -23,6 +23,7 @@ from app.graph import graph as graph_module
 from app.database import get_user_by_phone, get_users_by_phone, log_event, DOCTOR_NAMES, save_message, get_last_user_message
 from app.media import is_payment_receipt_message
 from app.patients import get_contact_by_phone
+from app.phone import is_blocked_number
 from app.buffer import (
     push as buffer_push,
     drain as buffer_drain,
@@ -33,6 +34,7 @@ from app.auth import router as auth_router
 from app import whatsapp
 from app.whatsapp import send_text
 from app.auto_reply import is_auto_reply
+from app.receipt_rescue import rescue_incoming_attachment
 
 logger = logging.getLogger(__name__)
 
@@ -779,6 +781,15 @@ async def _eva_paused_for_phone(phone: str) -> bool:
 
 async def process_message(phone: str, text: str, *, bypass_pause: bool = False) -> None:
     """Route a (possibly debounced) message through the LangGraph chatbot."""
+    # Blocklist total: número de buraco negro (ex.: WhatsApp da Clínica Affectus,
+    # que manda comprovante de terceiros) nunca é processado — nem com bypass_pause.
+    # Backstop de defesa em profundidade: os webhooks e o cron já descartam antes,
+    # mas este portão garante silêncio por qualquer caminho interno (recuperação de
+    # restart, replay do eva-ativa). Ver app/phone.py::is_blocked_number.
+    if is_blocked_number(phone):
+        logger.info("BLOCKED_NUMBER process_message ignorado phone=%s", phone)
+        return
+
     # Segurança: texto do usuário final nunca pode carregar o marcador de
     # instrução da atendente (seria escalada de privilégio). A nota real da
     # atendente não passa por aqui — ela usa _run_silent. Ver _neutralize_attendant_prefix.
@@ -1038,6 +1049,16 @@ async def _handle_payload(payload: dict) -> None:
         except (KeyError, IndexError):
             pass  # status/reaction payloads have no message id — let extract_message filter them
 
+        # Blocklist total: descarta ANTES do extract_message (que roda o Vision e sobe
+        # mídia ao Drive). Buraco negro — nem lê a imagem, nem grava, nem responde.
+        try:
+            _from = payload["entry"][0]["changes"][0]["value"]["messages"][0].get("from", "")
+        except (KeyError, IndexError, TypeError):
+            _from = ""
+        if _from and is_blocked_number(_from):
+            logger.info("BLOCKED_NUMBER webhook Meta ignorado from=%s", _from)
+            return
+
         # Segura o buffer enquanto o Vision lê a mídia: sem isso, um texto enviado
         # segundos antes do comprovante dispara sozinho e a Eva responde cobrando
         # um pagamento que já está na mão dela (caso 5581991320003, 03/08/2026).
@@ -1167,11 +1188,17 @@ def _attachment_is_pdf(att: dict) -> bool:
     return (att.get("data_url") or "").lower().endswith(".pdf")
 
 
-async def _process_chatwoot_attachments(attachments: list, phone: str = "") -> str | None:
-    """Download and process the first recognisable attachment (audio or image)."""
+async def _process_chatwoot_attachments(attachments: list, phone: str = "") -> tuple[str | None, bool]:
+    """Download and process the first recognisable attachment (audio or image).
+
+    Retorna (texto, download_failed). `download_failed` só é True quando o
+    download/processamento de algum anexo levantou exceção; texto vazio com
+    download ok significa imagem ignorada ou documento já tratado.
+    """
     import httpx
     from app.media import describe_image_bytes, describe_pdf_bytes
 
+    download_failed = False
     for att in attachments:
         file_type = (att.get("file_type") or "").lower()
         data_url = att.get("data_url") or att.get("thumb_url") or ""
@@ -1183,16 +1210,17 @@ async def _process_chatwoot_attachments(attachments: list, phone: str = "") -> s
                 resp.raise_for_status()
                 media_bytes = resp.content
             if file_type == "audio":
-                return "[audio-nao-suportado]"
+                return "[audio-nao-suportado]", False
             if file_type == "image":
-                return await describe_image_bytes(media_bytes, phone=phone)
+                return await describe_image_bytes(media_bytes, phone=phone), False
             if file_type == "file":
                 if _attachment_is_pdf(att):
-                    return await describe_pdf_bytes(media_bytes, phone=phone)
-                return "[pdf-recebido]"
+                    return await describe_pdf_bytes(media_bytes, phone=phone), False
+                return "[pdf-recebido]", False
         except Exception:
+            download_failed = True
             logger.exception("Failed to process Chatwoot attachment type=%s url=%.80s", file_type, data_url)
-    return None
+    return None, download_failed
 
 
 _EVA_INACTIVE_LABEL = "eva-inativa"
@@ -1226,6 +1254,71 @@ def _already_synced_outgoing(message_id) -> bool:
     while len(_synced_outgoing_ids) > _SYNCED_OUTGOING_MAX:
         _synced_outgoing_ids.popitem(last=False)
     return False
+
+
+# Anexos cujo resgate já foi agendado. A mesma message_created chega mais de uma vez
+# (webhook da conta + outgoing_url do agent bot), e sem isto cada entrega agendaria
+# um resgate novo para o mesmo comprovante.
+_scheduled_rescue_ids: OrderedDict[int, None] = OrderedDict()
+_SCHEDULED_RESCUE_MAX = 2000
+
+
+def _payload_inbox_id(payload: dict) -> int | None:
+    """Inbox do payload do Chatwoot, pelo campo `inbox` ou por `conversation.inbox_id`."""
+    for raw in ((payload.get("inbox") or {}).get("id"),
+                (payload.get("conversation") or {}).get("inbox_id")):
+        if raw is not None:
+            try:
+                return int(raw)
+            except (TypeError, ValueError):
+                return None
+    return None
+
+
+def _message_created_epoch(payload: dict) -> float:
+    raw = payload.get("created_at")
+    if isinstance(raw, (int, float)):
+        return float(raw)
+    if isinstance(raw, str) and raw:
+        try:
+            return float(raw)
+        except ValueError:
+            with contextlib.suppress(ValueError):
+                from datetime import datetime
+                return datetime.fromisoformat(raw.replace("Z", "+00:00")).timestamp()
+    return time.time()
+
+
+def _schedule_attachment_rescue(payload: dict, phone: str, conversation_id: int, attachments: list) -> None:
+    """Agenda o resgate em segundo plano de um anexo que não pôde ser lido na chegada."""
+    from app.chatwoot import _inbox_id
+    if payload.get("event") != "message_created":
+        return
+    inbox = _payload_inbox_id(payload)
+    if inbox is None or inbox != _inbox_id():
+        return
+    att = next(
+        (a for a in attachments
+         if a.get("file_type") in ("image", "file") and a.get("data_url")),
+        None,
+    )
+    if att is None:
+        return
+    attachment_id = att.get("id")
+    if attachment_id is None:
+        return
+    if attachment_id in _scheduled_rescue_ids:
+        return
+    _scheduled_rescue_ids[attachment_id] = None
+    while len(_scheduled_rescue_ids) > _SCHEDULED_RESCUE_MAX:
+        _scheduled_rescue_ids.popitem(last=False)
+    asyncio.create_task(rescue_incoming_attachment(
+        phone=phone,
+        conversation_id=conversation_id,
+        attachment_id=attachment_id,
+        data_url=att["data_url"],
+        created_at=_message_created_epoch(payload),
+    ))
 
 
 def _extract_phone_from_payload(payload: dict) -> str | None:
@@ -1390,7 +1483,7 @@ async def _apply_eva_label_action(payload: dict, added: set, removed: set) -> bo
                     with contextlib.ExitStack() as stack:
                         if attachments:
                             stack.enter_context(buffer_hold(phone))
-                            attachment_text = await _process_chatwoot_attachments(attachments, phone=phone)
+                            attachment_text, _ = await _process_chatwoot_attachments(attachments, phone=phone)
                             if attachment_text and attachment_text != "[audio-nao-suportado]":
                                 text = f"{text}\n{attachment_text}" if text else attachment_text
                         if text:
@@ -1826,6 +1919,12 @@ async def _handle_chatwoot_payload(payload: dict) -> None:
             return
         phone, text, conversation_id = result
 
+        # Blocklist total: descarta antes de registrar conversa, baixar anexo ou
+        # processar. Buraco negro (ex.: WhatsApp da Clínica Affectus).
+        if is_blocked_number(phone):
+            logger.info("BLOCKED_NUMBER webhook Chatwoot ignorado phone=%s conv=%s", phone, conversation_id)
+            return
+
         from app.chatwoot import register_conversation, reopen_conversation
         register_conversation(phone, conversation_id)
 
@@ -1870,7 +1969,7 @@ async def _handle_chatwoot_payload(payload: dict) -> None:
                 # comprovante/document sent WITH a caption had its attachment silently
                 # dropped and only the caption text reached Eva.
                 caption = text
-                attachment_text = await _process_chatwoot_attachments(attachments, phone=phone)
+                attachment_text, download_failed = await _process_chatwoot_attachments(attachments, phone=phone)
                 if attachment_text == "[audio-nao-suportado]":
                     await _send_audio_not_supported(phone)
                     return
@@ -1881,6 +1980,10 @@ async def _handle_chatwoot_payload(payload: dict) -> None:
                     # (medical document: thank-you + clinic notification sent directly, or
                     # an irrelevant image) — fall back to the caption so it isn't lost,
                     # mirroring the Meta webhook's image-handling behavior.
+                    # O resgate só vale se o download falhou; download ok com texto
+                    # vazio é imagem ignorada/documento tratado (sem re-rodar o Vision).
+                    if download_failed:
+                        _schedule_attachment_rescue(payload, phone, conversation_id, attachments)
                     text = caption
             if text is None:
                 return

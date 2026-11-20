@@ -20,8 +20,14 @@ import httpx
 from app.chatwoot import list_recent_incoming_attachments
 from app.database import get_supabase, log_event
 from app.email_sender import send_clinic_notification_email
-from app.media import classify_image_raw, describe_image_bytes
-from app.phone import _phone_variants
+from app.media import (
+    _looks_like_pdf,
+    classify_image_raw,
+    describe_image_bytes,
+    describe_pdf_bytes,
+    pdf_first_page_to_image_bytes,
+)
+from app.phone import _phone_variants, is_blocked_number
 
 logger = logging.getLogger(__name__)
 
@@ -164,13 +170,33 @@ async def replay_dropped_receipt(cand: dict, img: bytes) -> bool:
     Se não for comprovante (virou documento/irrelevante), cai no alerta por e-mail.
     Retorna True se reinjetou, False se caiu no alerta."""
     # Import local: app.main importa este módulo indiretamente (evita ciclo).
-    from app.main import process_message, save_message
+    from app.main import process_message, save_message, _eva_paused_for_phone
 
     raw = cand.get("phone", "")
     variants = _phone_variants(raw)
     canonico = (variants[0] if variants else raw) + "@s.whatsapp.net"
 
-    texto = await describe_image_bytes(img, phone=canonico, payment_only=True)
+    # Contato deliberadamente pausado (manual_hold ou active=False): a Eva fica em
+    # silêncio TOTAL, inclusive para comprovante reinjetado. O bypass_pass=True do
+    # replay existe para a conversa só temporariamente eva-inativa, não para um
+    # desligamento definitivo — sem este guard, cada comprovante dropado reabria a
+    # conversa e a Eva voltava a falar (caso Clínica Affectus 5581991812399, parada
+    # desde 12/11/2026 e ainda respondendo em 18/11). Em vez de rodar a Eva, avisa a
+    # clínica por e-mail, no mesmo molde do design original ("comprovantes mudos" era
+    # só e-mail, sem auto-registro). A checagem vem ANTES do describe_image_bytes para
+    # não gastar Vision nem subir nada ao Drive de um contato calado.
+    if await _eva_paused_for_phone(canonico):
+        logger.info(
+            "REPLAY_SKIP_PAUSED phone=%s — contato em pausa, alertando a clínica por e-mail",
+            canonico,
+        )
+        await _alert_clinic(cand, "payment")
+        return False
+
+    if _looks_like_pdf(img):
+        texto = await describe_pdf_bytes(img, phone=canonico, payment_only=True)
+    else:
+        texto = await describe_image_bytes(img, phone=canonico, payment_only=True)
     if not texto:
         await _alert_clinic(cand, "payment")
         return False
@@ -209,12 +235,35 @@ async def reconcile(now: datetime, *, floor_min: int = 10, window_min: int = 60)
             if not phone:
                 logger.warning("RECONCILE_SKIP_NO_PHONE attachment_id=%s", aid)
                 continue
+            # Blocklist total: buraco negro — nem baixa, nem classifica, nem alerta.
+            if is_blocked_number(phone):
+                logger.info("RECONCILE_SKIP_BLOCKED attachment_id=%s phone=%s", aid, phone)
+                continue
             if await already_alerted(aid):
                 continue
             if await has_trace(phone, cand.get("created_at", 0)):
                 continue
             img = await _download_bytes(cand.get("data_url", ""))
-            kind, _canonical = await classify_image_raw(img, phone)
+            # PDF não vai ao classificador de imagem: renderiza a 1ª página. O replay
+            # continua recebendo os bytes crus (o leitor de PDF precisa do arquivo).
+            if _looks_like_pdf(img):
+                try:
+                    classify_src = pdf_first_page_to_image_bytes(img)
+                except Exception:
+                    # PDF que não renderiza (criptografado, corrompido): alerta a
+                    # clínica e marca, em vez de sumir em silêncio.
+                    logger.exception("RECONCILE_PDF_RENDER_FAILED attachment_id=%s", aid)
+                    await _alert_clinic(cand, "payment")
+                    await log_event(RECEIPT_DROP_EVENT, phone, {
+                        "attachment_id": aid,
+                        "conversation_id": cand.get("conversation_id"),
+                        "kind": "payment",
+                    })
+                    alerts += 1
+                    continue
+            else:
+                classify_src = img
+            kind, _canonical = await classify_image_raw(classify_src, phone)
             if kind not in ("payment", "document"):
                 continue
             if kind == "payment":

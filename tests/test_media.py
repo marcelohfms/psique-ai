@@ -127,13 +127,53 @@ async def test_process_media_notifies_clinic_when_image_fails():
     """Falha REAL ao processar imagem (download ou classificação lança exceção) não
     pode sumir calada, como aconteceu no caso Virgínia/Lara (14/10/2026): a imagem só
     aparecia no Chatwoot e ninguém era avisado. Agora o caminho de imagem avisa a
-    clínica, igual o de documento (_notify_document_processing_failure)."""
-    from app.media import process_media
-    with patch("app.media.describe_image", new_callable=AsyncMock, side_effect=RuntimeError("boom")), \
+    clínica, igual o de documento (_notify_document_processing_failure).
+
+    A falha só é declarada depois de esgotar as tentativas inline (IMAGE_READ_MAX_ATTEMPTS):
+    aqui todas lançam, então a leitura é tentada o número máximo de vezes e só então avisa."""
+    from app.media import process_media, IMAGE_READ_MAX_ATTEMPTS
+    with patch("app.media.describe_image", new_callable=AsyncMock, side_effect=RuntimeError("boom")) as mock_read, \
+         patch("app.media.asyncio.sleep", new_callable=AsyncMock), \
          patch("app.email_sender.send_clinic_notification_email", new_callable=AsyncMock) as mock_notify:
         result = await process_media("media-456", "image", phone="5581999736464@s.whatsapp.net")
     assert result is None
+    assert mock_read.await_count == IMAGE_READ_MAX_ATTEMPTS
     mock_notify.assert_awaited_once()
+
+
+async def test_process_media_retries_image_read_on_transient_failure():
+    """Comprovante mudo (caso Júlia/Irlanda, 18/11/2026): a imagem CHEGA, mas a leitura
+    inline (download da Meta + visão da OpenAI) às vezes falha por timeout/erro de rede
+    na primeira. Antes, uma única falha já descartava a mensagem — sem linha em
+    `messages`, sem evento — e só o cron reconcile_dropped_receipts resgatava ~30 min
+    depois. Agora process_media repete a leitura na hora; uma falha passageira seguida
+    de sucesso devolve o comprovante e NÃO aciona o aviso de falha à clínica."""
+    from app.media import process_media
+    descricao = "[imagem]: COMPROVANTE DE PAGAMENTO: Valor R$ 100,00 [drive_link:x]"
+    mock_read = AsyncMock(side_effect=[RuntimeError("timeout"), descricao])
+    with patch("app.media.describe_image", mock_read), \
+         patch("app.media.asyncio.sleep", new_callable=AsyncMock) as mock_sleep, \
+         patch("app.email_sender.send_clinic_notification_email", new_callable=AsyncMock) as mock_notify:
+        result = await process_media("media-777", "image", phone="5581999736464@s.whatsapp.net")
+    assert result == descricao
+    assert mock_read.await_count == 2
+    mock_sleep.assert_awaited()  # houve espera entre a 1ª e a 2ª tentativa
+    mock_notify.assert_not_awaited()
+
+
+async def test_process_media_does_not_retry_when_read_returns_none():
+    """None SEM exceção é decisão legítima (documento médico ou imagem irrelevante já
+    tratados dentro de describe_image_bytes). Não pode ser retentado — senão o
+    thank-you/e-mail da clínica sairia em duplicata. Uma chamada só, sem aviso de falha."""
+    from app.media import process_media
+    mock_read = AsyncMock(return_value=None)
+    with patch("app.media.describe_image", mock_read), \
+         patch("app.media.asyncio.sleep", new_callable=AsyncMock), \
+         patch("app.email_sender.send_clinic_notification_email", new_callable=AsyncMock) as mock_notify:
+        result = await process_media("media-888", "image", phone="5581999736464@s.whatsapp.net")
+    assert result is None
+    assert mock_read.await_count == 1
+    mock_notify.assert_not_awaited()
 
 
 async def test_process_media_no_clinic_notify_when_image_handled_as_none():
@@ -677,3 +717,53 @@ async def test_classifier_prompt_explains_origem_e_destino_direction():
     assert "origem e destino" in prompt_text
     assert "remetente" in prompt_text
     assert "destinatário" in prompt_text
+
+
+# ── helpers de PDF ────────────────────────────────────────────────────────────
+
+def _fake_fitz_doc(img: bytes = b"IMG"):
+    page = MagicMock()
+    page.get_pixmap.return_value.tobytes.return_value = img
+    doc = MagicMock()
+    doc.__getitem__.return_value = page
+    return doc, page
+
+
+async def test_looks_like_pdf_true_for_pdf_magic():
+    from app.media import _looks_like_pdf
+    assert _looks_like_pdf(b"%PDF-1.7\n...") is True
+
+
+async def test_looks_like_pdf_false_for_image_bytes():
+    from app.media import _looks_like_pdf
+    assert _looks_like_pdf(b"\xff\xd8\xff\xe0JFIF...") is False
+
+
+@pytest.mark.asyncio
+async def test_looks_like_pdf_is_anchored_at_start():
+    from app.media import _looks_like_pdf
+    assert _looks_like_pdf(b"\xff\xd8\xff\xe0JFIF....%PDF-1.4....") is False
+    assert _looks_like_pdf(b"\n  %PDF-1.4\n") is True
+    assert _looks_like_pdf(b"\xef\xbb\xbf%PDF-1.7") is True
+
+
+async def test_pdf_first_page_to_image_bytes_renders_first_page():
+    from app.media import pdf_first_page_to_image_bytes
+    doc, page = _fake_fitz_doc(b"IMG")
+    with patch("fitz.open", return_value=doc):
+        assert pdf_first_page_to_image_bytes(b"%PDF-x") == b"IMG"
+    doc.__getitem__.assert_called_with(0)
+    page.get_pixmap.assert_called_once_with(dpi=150)
+    doc.close.assert_called_once()
+
+
+async def test_describe_pdf_bytes_passes_payment_only_through():
+    from app.media import describe_pdf_bytes
+    doc, _ = _fake_fitz_doc(b"IMG")
+    with patch("fitz.open", return_value=doc), \
+         patch("app.media.describe_image_bytes", new_callable=AsyncMock, return_value="ok") as m:
+        out = await describe_pdf_bytes(b"%PDF-x", "5581", payment_only=True)
+    assert out == "ok"
+    m.assert_awaited_once_with(
+        b"IMG", "5581", source_bytes=b"%PDF-x", source_ext="pdf", payment_only=True
+    )

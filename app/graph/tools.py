@@ -2193,14 +2193,16 @@ async def _mark_reschedule_in_progress_impl(
                 + (_CLINIC_SWAP_HINT if _has_recent_attendant_note(state) else "")
             )
 
-    # Política de reagendamento: paciente pode reagendar apenas 1x.
+    # Política de reagendamento: cada CONSULTA pode ser reagendada apenas 1x
+    # (a taxa transfere uma vez por consulta, não por paciente/telefone).
     # A partir do 2º reagendamento iniciado pelo paciente, é necessário
     # solicitar uma nova consulta com nova taxa de reserva.
     # Reagendamentos iniciados pela atendente/médico (silent_mode ou troca proposta
     # pela clínica e confirmada pelo paciente) são isentos.
     patient_reschedule_count = 0
     if not clinic_exempt:
-        phone_clean = phone.replace("@s.whatsapp.net", "")
+        # Conta por CONSULTA (metadata.appointment_id), não por telefone: a remarcação
+        # de OUTRA consulta do mesmo paciente não consome esta (caso Diego Pita).
         # Reagendamentos marcados como iniciativa da clínica (reschedule_initiated_by
         # = "clinic") não contam aqui — eventos antigos sem essa marcação são
         # tratados como remarcação do paciente (era o único fluxo antes desta mudança).
@@ -2209,7 +2211,7 @@ async def _mark_reschedule_in_progress_impl(
         # 5581988788701). Eventos antigos sem fee_paid (nulo) continuam contando como
         # antes desta mudança, para não liberar remarcações extras sem querer.
         count_res = await client.from_("events").select("id", count="exact") \
-            .eq("phone", phone_clean).eq("event_type", "appointment_rescheduled") \
+            .eq("metadata->>appointment_id", appointment_id).eq("event_type", "appointment_rescheduled") \
             .or_("metadata->>initiated_by.is.null,metadata->>initiated_by.eq.patient") \
             .or_("metadata->>fee_paid.is.null,metadata->>fee_paid.eq.true").execute()
         patient_reschedule_count = count_res.count or 0
@@ -2766,7 +2768,8 @@ async def reschedule_appointment(
     # 03/11/2026). Mesmo escopo da trava das 24h: só paciente (silent_mode/clínica
     # isentos), só movimento real de horário e só com a consulta ainda scheduled
     # (em pending_reschedule o mark já validou a política). A contagem usa o mesmo
-    # filtro do mark (linha ~2180): remarcações do paciente com a taxa paga.
+    # filtro do mark (linha ~2180): remarcações do paciente com a taxa paga, escopo
+    # por CONSULTA (metadata.appointment_id), não por telefone.
     if (
         not state.get("silent_mode")
         and not clinic_swap
@@ -2777,7 +2780,7 @@ async def reschedule_appointment(
         and bool(appt_result.data.get("booking_fee_paid_at") or appt_result.data.get("booking_fee_waived"))
     ):
         _prev_resched = await client.from_("events").select("id", count="exact") \
-            .eq("phone", _phone_clean).eq("event_type", "appointment_rescheduled") \
+            .eq("metadata->>appointment_id", appointment_id).eq("event_type", "appointment_rescheduled") \
             .or_("metadata->>initiated_by.is.null,metadata->>initiated_by.eq.patient") \
             .or_("metadata->>fee_paid.is.null,metadata->>fee_paid.eq.true").execute()
         if (_prev_resched.count or 0) >= 1:
