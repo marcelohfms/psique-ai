@@ -3030,6 +3030,37 @@ async def request_document(
     Mapeamento de termos: 'recibo saúde' ou 'recibo para plano de saúde' → nota_fiscal.
     'recibo' simples (de consulta, de pagamento) → recibo.
     """
+    return await register_document_request(
+        document_type,
+        patient_email,
+        state,
+        config,
+        medication_note=medication_note,
+        financial_name=financial_name,
+        financial_cpf=financial_cpf,
+        financial_email=financial_email,
+        patient_name_override=patient_name_override,
+    )
+
+
+async def register_document_request(
+    document_type: str,
+    patient_email: str,
+    state: dict,
+    config: RunnableConfig,
+    medication_note: str = "",
+    financial_name: str = "",
+    financial_cpf: str = "",
+    financial_email: str = "",
+    patient_name_override: str = "",
+) -> str:
+    """Miolo de request_document: registra a solicitação de documento (documents +
+    evento + planilha + e-mails) e devolve a mensagem de sucesso/instrução.
+
+    Fatorado para fora da tool para que um guard possa registrar o documento por
+    baixo (em silêncio) sem passar pela LLM — ver GUARD_DOC_EMISSION_SILENT em
+    app/graph/nodes.py. O comportamento da tool request_document é idêntico ao de
+    antes: ela só delega para cá."""
     import logging as _log
     _log.getLogger(__name__).warning("REQUEST_DOC_CALLED type=%s email=%s", document_type, patient_email)
 
