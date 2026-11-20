@@ -152,6 +152,37 @@ async def test_sweep_loop_runs_and_swallows_errors():
     assert len(calls) == 1
 
 
-def test_start_returns_none_when_scheduler_off():
-    with patch("app.scheduler.SCHEDULER_LIVE", False):
-        assert start_lost_message_sweep() is None
+def test_start_returns_none_when_scheduler_disabled(monkeypatch):
+    # Em dev (SCHEDULER_ENABLED != "1") a varredura NÃO pode iniciar — senão a Eva
+    # responde paciente de verdade a partir da máquina de dev (uvicorn --reload).
+    monkeypatch.delenv("SCHEDULER_ENABLED", raising=False)
+    assert start_lost_message_sweep() is None
+
+
+async def test_start_creates_task_when_scheduler_enabled(monkeypatch):
+    monkeypatch.setenv("SCHEDULER_ENABLED", "1")
+    task = start_lost_message_sweep()
+    assert task is not None
+    task.cancel()
+
+
+async def test_already_replayed_queries_stored_phone_form():
+    # log_event grava _strip_phone(phone) (dígitos puros); a guarda tem que consultar
+    # eventos com a MESMA forma, senão nunca casa e vira código morto.
+    captured = {}
+    evs = MagicMock()
+    for m in ("select", "gte", "limit"):
+        getattr(evs, m).return_value = evs
+
+    def _eq(col, val):
+        if col == "phone":
+            captured["phone"] = val
+        return evs
+
+    evs.eq.side_effect = _eq
+    evs.execute = AsyncMock(return_value=MagicMock(data=[]))
+    client = MagicMock()
+    client.from_.return_value = evs
+    with patch("app.database.get_supabase", AsyncMock(return_value=client)):
+        await lmr._already_replayed("551100000001@s.whatsapp.net", "2026-11-19T14:50:00+00:00")
+    assert captured["phone"] == "551100000001"

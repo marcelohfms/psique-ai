@@ -70,11 +70,14 @@ async def _already_replayed(full_phone: str, message_created_at: str) -> bool:
     evita reempurrar duas vezes antes de a resposta cair. Confere se existe evento
     `lost_message_replayed` para o telefone com `created_at >= message_created_at`."""
     from app.database import get_supabase
+    from app.phone import _strip_phone
 
     client = await get_supabase()
     r = (
         await client.from_("events").select("id")
-        .eq("phone", full_phone).eq("event_type", REPLAY_EVENT)
+        # log_event grava _strip_phone(phone); consultar com a mesma forma (dígitos
+        # puros), senão o filtro nunca casa e a guarda vira código morto.
+        .eq("phone", _strip_phone(full_phone)).eq("event_type", REPLAY_EVENT)
         .gte("created_at", message_created_at)
         .limit(1).execute()
     )
@@ -148,12 +151,12 @@ async def sweep_loop(
 
 
 def start_lost_message_sweep() -> "asyncio.Task | None":
-    """Inicia a tarefa de fundo da varredura, a menos que o agendador esteja
-    desligado (mesmo gate do cron interno). Devolve a Task, ou None."""
-    from app.scheduler import SCHEDULER_LIVE
-
-    if not SCHEDULER_LIVE:
-        logger.info("Lost-message sweep disabled (SCHEDULER_LIVE off)")
+    """Inicia a tarefa de fundo da varredura, só em produção. Usa o MESMO gate do
+    cron interno (`SCHEDULER_ENABLED=1`, definido no Dockerfile), para não disparar
+    em dev/`uvicorn --reload` e sair respondendo paciente da máquina local. Devolve
+    a Task, ou None."""
+    if os.getenv("SCHEDULER_ENABLED") != "1":
+        logger.info("Lost-message sweep disabled (SCHEDULER_ENABLED != 1)")
         return None
     logger.info("Starting lost-message sweep (every %.0f min)", LOST_MSG_SWEEP_INTERVAL_MIN)
     return asyncio.create_task(sweep_loop())
