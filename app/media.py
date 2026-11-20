@@ -500,19 +500,34 @@ async def describe_image_bytes(
     return None
 
 
-async def describe_pdf_bytes(pdf_bytes: bytes, phone: str = "") -> str:
-    """Convert first page of PDF to image for classification, but upload the original PDF."""
+def _looks_like_pdf(raw: bytes) -> bool:
+    """True when the bytes carry the %PDF magic near the start (detection by bytes only)."""
+    return b"%PDF" in (raw or b"")[:1024]
+
+
+def pdf_first_page_to_image_bytes(pdf_bytes: bytes) -> bytes:
+    """Render the first page of a PDF to JPEG bytes. No side effects."""
     import fitz  # pymupdf
     doc = fitz.open(stream=pdf_bytes, filetype="pdf")
-    page = doc[0]
-    pix = page.get_pixmap(dpi=150)
-    image_bytes = pix.tobytes("jpeg")
-    doc.close()
+    try:
+        page = doc[0]
+        pix = page.get_pixmap(dpi=150)
+        return pix.tobytes("jpeg")
+    finally:
+        doc.close()
+
+
+async def describe_pdf_bytes(
+    pdf_bytes: bytes, phone: str = "", *, payment_only: bool = False
+) -> str | None:
+    """Convert first page of PDF to image for classification, but upload the original PDF."""
+    image_bytes = pdf_first_page_to_image_bytes(pdf_bytes)
     return await describe_image_bytes(
         image_bytes,
         phone,
         source_bytes=pdf_bytes,
         source_ext="pdf",
+        payment_only=payment_only,
     )
 
 

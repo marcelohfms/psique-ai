@@ -717,3 +717,45 @@ async def test_classifier_prompt_explains_origem_e_destino_direction():
     assert "origem e destino" in prompt_text
     assert "remetente" in prompt_text
     assert "destinatário" in prompt_text
+
+
+# ── helpers de PDF ────────────────────────────────────────────────────────────
+
+def _fake_fitz_doc(img: bytes = b"IMG"):
+    page = MagicMock()
+    page.get_pixmap.return_value.tobytes.return_value = img
+    doc = MagicMock()
+    doc.__getitem__.return_value = page
+    return doc, page
+
+
+async def test_looks_like_pdf_true_for_pdf_magic():
+    from app.media import _looks_like_pdf
+    assert _looks_like_pdf(b"%PDF-1.7\n...") is True
+
+
+async def test_looks_like_pdf_false_for_image_bytes():
+    from app.media import _looks_like_pdf
+    assert _looks_like_pdf(b"\xff\xd8\xff\xe0JFIF...") is False
+
+
+async def test_pdf_first_page_to_image_bytes_renders_first_page():
+    from app.media import pdf_first_page_to_image_bytes
+    doc, page = _fake_fitz_doc(b"IMG")
+    with patch("fitz.open", return_value=doc):
+        assert pdf_first_page_to_image_bytes(b"%PDF-x") == b"IMG"
+    doc.__getitem__.assert_called_with(0)
+    page.get_pixmap.assert_called_once_with(dpi=150)
+    doc.close.assert_called_once()
+
+
+async def test_describe_pdf_bytes_passes_payment_only_through():
+    from app.media import describe_pdf_bytes
+    doc, _ = _fake_fitz_doc(b"IMG")
+    with patch("fitz.open", return_value=doc), \
+         patch("app.media.describe_image_bytes", new_callable=AsyncMock, return_value="ok") as m:
+        out = await describe_pdf_bytes(b"%PDF-x", "5581", payment_only=True)
+    assert out == "ok"
+    m.assert_awaited_once_with(
+        b"IMG", "5581", source_bytes=b"%PDF-x", source_ext="pdf", payment_only=True
+    )
