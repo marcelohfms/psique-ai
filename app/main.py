@@ -231,12 +231,21 @@ def _checkpointer_pool(conn_string: str):
 async def lifespan(app: FastAPI):
     """Checkpointer da Eva + agendador interno das rotinas (app/scheduler.py)."""
     from app.scheduler import start_scheduler, stop_scheduler
+    from app.lost_message_recovery import (
+        start_lost_message_sweep,
+        stop_lost_message_sweep,
+    )
 
     async with _graph_lifespan(app):
         await start_scheduler()
+        # Rede de segurança contra mensagem muda perdida no buffer. In-process: a
+        # varredura reprocessa via process_message, que depende do grafo (com o
+        # checkpointer já montado acima) e dos locks em memória.
+        sweep_task = start_lost_message_sweep()
         try:
             yield
         finally:
+            await stop_lost_message_sweep(sweep_task)
             await stop_scheduler()
 
 
