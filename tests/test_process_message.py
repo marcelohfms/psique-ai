@@ -8119,7 +8119,7 @@ async def test_prompt_mostra_saldo_real_com_parcial():
         "booking_fee_paid_at": "2026-11-01T10:00:00+00:00",
         "paid_at": None,
         "modality": "presencial",
-        "amount_paid_cents": 40000,
+        "amount_paid": 400,
         "doctor_id": DOCTOR_IDS["bruna"],
         "consultation_type": "primeira_consulta",
         "patient_birth_date": "10/05/2016",

@@ -8991,9 +8991,9 @@ def test_is_unique_violation_detects_code_and_text():
 
 # ── register_payment: PIX complementares somam e quitam pelo valor rígido ─────
 
-async def _run_pix(amount, acc_cents, *, client=None, md5_prev=False, expected=600):
+async def _run_pix(amount, acc, *, client=None, md5_prev=False, expected=600):
     """Roda register_payment com _increment_amount_paid mockado devolvendo
-    `acc_cents` (acumulado após a parcela). Devolve (result, ctx)."""
+    `acc` (acumulado após a parcela). Devolve (result, ctx)."""
     from app.graph.tools import register_payment
     if client is None:
         client, table, _ = _make_supabase_client_with_appointment(
@@ -9011,7 +9011,7 @@ async def _run_pix(amount, acc_cents, *, client=None, md5_prev=False, expected=6
          patch("app.google_drive.rename_file", new_callable=AsyncMock), \
          patch("app.graph.tools._find_previous_receipt", new_callable=AsyncMock,
                return_value=({"metadata": {"drive_link": "https://x/antigo"}} if md5_prev else None)), \
-         patch("app.graph.tools._increment_amount_paid", new_callable=AsyncMock, return_value=acc_cents) as mock_inc, \
+         patch("app.graph.tools._increment_amount_paid", new_callable=AsyncMock, return_value=acc) as mock_inc, \
          patch("app.google_sheets.append_payment_receipt", new_callable=AsyncMock) as mock_sheets, \
          patch("app.graph.tools._notify_clinic", new_callable=AsyncMock) as mock_notify, \
          patch("app.graph.tools.send_text", new_callable=AsyncMock):
@@ -9033,23 +9033,23 @@ def _updated_fields(table):
 
 
 async def test_segundo_pix_complementar_quita_a_consulta():
-    result, ctx = await _run_pix("200,00", 60000)
+    result, ctx = await _run_pix("200,00", 600)
     assert "QUITADA" in result
     assert _updated_fields(ctx["table"]).get("paid_at") is not None
     assert ctx["sheets"].call_args.kwargs["payment_type"] == "Consulta"
     ctx["inc"].assert_awaited_once()
-    assert ctx["inc"].await_args.args[2] == 20000
+    assert ctx["inc"].await_args.args[2] == 200
 
 
 async def test_parcela_intermediaria_mostra_saldo_real():
-    result, ctx = await _run_pix("200,00", 40000)
+    result, ctx = await _run_pix("200,00", 400)
     assert ctx["sheets"].call_args.kwargs["payment_type"] == "Pagamento Parcial"
     assert "200" in result
     assert "paid_at" not in _updated_fields(ctx["table"])
 
 
 async def test_pagamento_a_mais_quita_e_avisa_clinica():
-    result, ctx = await _run_pix("300,00", 70000)
+    result, ctx = await _run_pix("300,00", 700)
     assert ctx["sheets"].call_args.kwargs["payment_type"] == "Consulta"
     assert _updated_fields(ctx["table"]).get("paid_at") is not None
     assert "-" not in result.split("Valor pago")[-1].replace("—", "")
@@ -9059,7 +9059,7 @@ async def test_pagamento_a_mais_quita_e_avisa_clinica():
 
 
 async def test_reenvio_md5_repetido_nao_soma():
-    result, ctx = await _run_pix("200,00", 60000, md5_prev=True)
+    result, ctx = await _run_pix("200,00", 600, md5_prev=True)
     ctx["inc"].assert_not_awaited()
     ctx["sheets"].assert_not_called()
 
@@ -9080,9 +9080,9 @@ async def test_primeira_consulta_dividida_soma_igual_nas_duas_linhas():
             ])
         return r
     execute.side_effect = _se
-    result, ctx = await _run_pix("300,00", 30000, client=client)
+    result, ctx = await _run_pix("300,00", 300, client=client)
     assert set(ctx["inc"].await_args.args[1]) == {"id_parte1", "id_parte2"}
-    assert ctx["inc"].await_args.args[2] == 30000
+    assert ctx["inc"].await_args.args[2] == 300
 
 
 # ── register_payment: pagamentos da atendente alimentam o acumulado ───────────
@@ -9116,7 +9116,7 @@ async def test_pagamento_link_seta_acumulado_cheio():
             config=CONFIG,
         )
     assert "QUITADA" in result
-    rpc.assert_any_call("set_amount_paid", {"p_appointment_id": "apt-1", "p_cents": 60000})
+    rpc.assert_any_call("set_amount_paid", {"p_appointment_id": "apt-1", "p_reais": 600})
 
 
 async def test_cortesia_nao_fica_com_saldo_pendente():
@@ -9138,12 +9138,12 @@ async def test_cortesia_nao_fica_com_saldo_pendente():
             config=CONFIG,
         )
     assert "QUITADA" in result
-    rpc.assert_any_call("set_amount_paid", {"p_appointment_id": "apt-wv", "p_cents": 0})
+    rpc.assert_any_call("set_amount_paid", {"p_appointment_id": "apt-wv", "p_reais": 0})
 
 
 # ── register_payment: rpc de acumulado falha (fail-open corrigido) ────────────
 
-async def _run_pix_rpc_falha(amount, prev_cents, *, update_falha=False, expected=600):
+async def _run_pix_rpc_falha(amount, prev_reais, *, update_falha=False, expected=600):
     from app.graph.tools import register_payment
     client, table, execute = _make_supabase_client_with_appointment(
         start_time=(datetime.now(TZ) + timedelta(days=30)).isoformat(),
@@ -9159,7 +9159,7 @@ async def _run_pix_rpc_falha(amount, prev_cents, *, update_falha=False, expected
         if isinstance(data, list):
             for row in data:
                 if isinstance(row, dict) and "paid_at" in row:
-                    row["amount_paid_cents"] = prev_cents
+                    row["amount_paid"] = prev_reais
         return res
     execute.side_effect = _wrapped
     with patch("app.graph.tools.get_supabase", new_callable=AsyncMock, return_value=client), \
@@ -9182,18 +9182,18 @@ async def _run_pix_rpc_falha(amount, prev_cents, *, update_falha=False, expected
     return result, table, mock_notify
 
 
-def test_register_payment_select_inclui_amount_paid_cents():
+def test_register_payment_select_inclui_amount_paid():
     import inspect
     from app.graph import tools
     src = inspect.getsource(tools.register_payment.coroutine)
-    assert '"amount_paid_cents"' in src.split("_appt_fields = (")[1].split(")")[0]
+    assert '"amount_paid"' in src.split("_appt_fields = (")[1].split(")")[0]
 
 
 async def test_rpc_falha_persiste_acumulado_real_e_nao_quita_errado():
-    # prévio 40000 (taxa + parcial), nova parcela 100 => 50000 < 60000: nada de QUITADA
-    result, table, notify = await _run_pix_rpc_falha("100,00", 40000)
-    persisted = [c.args[0] for c in table.update.call_args_list if "amount_paid_cents" in c.args[0]]
-    assert persisted and persisted[-1]["amount_paid_cents"] == 50000  # le o 40000 real
+    # prévio 400 (taxa + parcial), nova parcela 100 => 500 < 600: nada de QUITADA
+    result, table, notify = await _run_pix_rpc_falha("100,00", 400)
+    persisted = [c.args[0] for c in table.update.call_args_list if "amount_paid" in c.args[0]]
+    assert persisted and persisted[-1]["amount_paid"] == 500  # le o 400 real
     assert "QUITADA" not in result
 
 

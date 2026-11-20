@@ -320,7 +320,7 @@ async def test_painel_taxa_soma_cem(mock_supabase):
                 headers=HEADERS,
             )
     assert resp.status_code == 200
-    rpc.assert_called_once_with("increment_amount_paid", {"p_appointment_id": "appt-1", "p_cents": 10000})
+    rpc.assert_called_once_with("increment_amount_paid", {"p_appointment_id": "appt-1", "p_reais": 100})
 
 
 def _fee_state(mock_supabase, fee_paid_at):
@@ -356,7 +356,7 @@ async def test_painel_taxa_nula_incrementa(mock_supabase):
     _fee_state(mock_supabase, None)
     resp = await _pagar_taxa(mock_supabase)
     assert resp.status_code == 200
-    rpc.assert_called_once_with("increment_amount_paid", {"p_appointment_id": "appt-1", "p_cents": 10000})
+    rpc.assert_called_once_with("increment_amount_paid", {"p_appointment_id": "appt-1", "p_reais": 100})
 
 
 @pytest.mark.asyncio
@@ -375,4 +375,4 @@ async def test_painel_consulta_seta_acumulado_e_paid_at(mock_supabase):
     assert resp.status_code == 200
     payload = mock_supabase.from_.return_value.update.call_args[0][0]
     assert "paid_at" in payload
-    rpc.assert_called_once_with("set_amount_paid", {"p_appointment_id": "appt-1", "p_cents": 65000})
+    rpc.assert_called_once_with("set_amount_paid", {"p_appointment_id": "appt-1", "p_reais": 650})

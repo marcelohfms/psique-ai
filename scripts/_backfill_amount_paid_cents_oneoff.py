@@ -1,20 +1,20 @@
-"""One-off: preenche appointments.amount_paid_cents dos registros antigos.
+"""One-off: preenche appointments.amount_paid dos registros antigos.
 
 A coluna nasceu com DEFAULT 0. Consultas pagas pelo código antigo ficaram com 0,
 e sem este preenchimento quem já pagou a taxa e depois paga o saldo nunca
 chegaria ao valor esperado.
 
 Regras (valores absolutos, nunca incrementos):
-  - paid_at preenchido: amount_paid_cents = valor cheio esperado (mesma regra de
-    preço do register_payment) em centavos.
-  - booking_fee_paid_at preenchido e paid_at vazio: 10000 (R$100, conservador).
+  - paid_at preenchido: amount_paid = valor cheio esperado (mesma regra de
+    preço do register_payment) em reais.
+  - booking_fee_paid_at preenchido e paid_at vazio: 100 (R$100, conservador).
   - demais linhas: ficam em 0.
 
 Linhas "so taxa" que tem indicio de parcial ja pago (evento Pagamento Parcial ou
-valor diferente de R$100 sem ser taxa) recebem 10000 mesmo assim, mas entram numa
+valor diferente de R$100 sem ser taxa) recebem 100 mesmo assim, mas entram numa
 lista de AVISO no fim para conferencia manual: o acumulado real pode ser maior.
 
-Idempotente: só toca linhas com amount_paid_cents = 0 e só grava se o alvo for
+Idempotente: só toca linhas com amount_paid = 0 e só grava se o alvo for
 maior que 0. Rodar duas vezes não muda nada na segunda.
 
 Uso:
@@ -31,12 +31,12 @@ from dotenv import load_dotenv
 load_dotenv()
 
 TZ = ZoneInfo("America/Recife")
-BOOKING_FEE_CENTS = 10000
+BOOKING_FEE_REAIS = 100
 PAGE = 1000
 
 
-def _target_cents(appt: dict, patient: dict | None) -> tuple[int, str]:
-    """Devolve (centavos, motivo) para uma consulta. 0 significa não mexer."""
+def _target_reais(appt: dict, patient: dict | None) -> tuple[int, str]:
+    """Devolve (reais, motivo) para uma consulta. 0 significa não mexer."""
     from app.database import DOCTOR_NAMES
     from app.dates import compute_age
     from app.graph.tools import _expected_consultation_amount
@@ -57,9 +57,9 @@ def _target_cents(appt: dict, patient: dict | None) -> tuple[int, str]:
             start,
             price_override=custom_price,
         )
-        return int(expected) * 100, f"paga (esperado R${expected})"
+        return int(expected), f"paga (esperado R${expected})"
     if appt.get("booking_fee_paid_at"):
-        return BOOKING_FEE_CENTS, "so taxa de reserva"
+        return BOOKING_FEE_REAIS, "so taxa de reserva"
     return 0, "sem pagamento"
 
 
@@ -113,9 +113,9 @@ async def main(dry_run: bool) -> None:
             await client.from_("appointments")
             .select(
                 "appointment_id,patient_id,doctor_id,start_time,consultation_type,"
-                "contact_id,is_courtesy,paid_at,booking_fee_paid_at,amount_paid_cents"
+                "contact_id,is_courtesy,paid_at,booking_fee_paid_at,amount_paid"
             )
-            .eq("amount_paid_cents", 0)
+            .eq("amount_paid", 0)
             .or_("paid_at.not.is.null,booking_fee_paid_at.not.is.null")
             .order("appointment_id")
             .range(offset, offset + PAGE - 1)
@@ -152,11 +152,11 @@ async def main(dry_run: bool) -> None:
     ) if cphone else set()
     warnings: list[str] = []
     for r in candidates:
-        cents, why = _target_cents(r, patients.get(r.get("patient_id")))
-        if cents <= 0:
+        reais, why = _target_reais(r, patients.get(r.get("patient_id")))
+        if reais <= 0:
             skipped += 1
             continue
-        print(f"{'[dry-run] ' if dry_run else ''}{r['appointment_id']} -> {cents} ({why})")
+        print(f"{'[dry-run] ' if dry_run else ''}{r['appointment_id']} -> {reais} ({why})")
         if (
             r.get("booking_fee_paid_at") and not r.get("paid_at")
             and cphone.get(r.get("contact_id")) in suspect_phones
@@ -164,16 +164,16 @@ async def main(dry_run: bool) -> None:
             warnings.append(r["appointment_id"])
         if not dry_run:
             await client.from_("appointments").update(
-                {"amount_paid_cents": cents}
+                {"amount_paid": reais}
             ).eq("appointment_id", r["appointment_id"]).eq(
-                "amount_paid_cents", 0
+                "amount_paid", 0
             ).execute()
         changed += 1
     print(f"{'Simulado' if dry_run else 'Atualizado'}: {changed} linhas; ignoradas: {skipped}")
     if warnings:
         print(
             f"\nAVISO: {len(warnings)} consulta(s) so-taxa com indicio de PARCIAL ja pago. "
-            "Receberam 10000, mas o acumulado real pode ser maior. Reconcilie a mao:"
+            "Receberam 100, mas o acumulado real pode ser maior. Reconcilie a mao:"
         )
         for aid in warnings:
             print(f"  - {aid}")
