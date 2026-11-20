@@ -1,0 +1,63 @@
+"""Rede de segurança contra mensagem muda perdida no buffer.
+
+O buffer (app/buffer.py) é em memória: a mensagem do paciente é gravada em
+`messages` no webhook, mas o processamento pelo grafo é agendado por um timer
+(`loop.call_later`). Se o processo reinicia ou o timer se perde nessa janela, o
+turno some — a mensagem fica no banco sem resposta, sem erro, sem evento, e a Eva
+só reage quando a clínica manda uma nota privada (caso Marina Leal Ribeiro,
++5581988197076, 12/11/2026; memory mensagem-perdida-buffer-nota-privada-destrava).
+
+Esta é a rede: uma tarefa de fundo (iniciada no lifespan) varre periodicamente as
+últimas mensagens de paciente sem resposta e reprocessa pelo caminho normal. É
+in-process de propósito — `process_message` depende do grafo com o checkpointer do
+Postgres (montado no lifespan) e dos locks de telefone em memória; num subprocesso
+a Eva trataria toda conversa como nova. As travas que impedem resposta dobrada e
+intromissão em conversa pausada já vivem dentro do `process_message` (dedup de
+checkpoint e portão de pausa), então aqui só reempurramos.
+
+Complementa `_recover_messages_lost_to_restart` (só no boot, 10 min) e o drain de
+shutdown; esta roda o tempo todo e pega a perda de qualquer causa.
+"""
+import logging
+import os
+from datetime import datetime, timedelta, timezone
+
+logger = logging.getLogger(__name__)
+
+LOST_MSG_SWEEP_FLOOR_MIN = float(os.getenv("LOST_MSG_SWEEP_FLOOR_MIN", "5"))
+LOST_MSG_SWEEP_INTERVAL_MIN = float(os.getenv("LOST_MSG_SWEEP_INTERVAL_MIN", "2"))
+LOST_MSG_SWEEP_WINDOW_MIN = float(os.getenv("LOST_MSG_SWEEP_WINDOW_MIN", "360"))
+
+REPLAY_EVENT = "lost_message_replayed"
+
+
+def pick_candidates(rows: list[dict], now: datetime, floor_min: float) -> list[dict]:
+    """Dentre as linhas de `messages`, devolve, por telefone, a ÚLTIMA linha quando
+    ela é uma mensagem do paciente sem resposta posterior e velha o bastante.
+
+    `rows`: linhas com `phone` (bare), `role`, `content`, `created_at` (ISO), em
+    qualquer ordem. Candidato = última linha do telefone com `role == 'user'`,
+    `content` não-vazio e `created_at <= now - floor_min`. Devolve
+    `{"phone", "content", "created_at"}` por candidato.
+    """
+    cutoff = now - timedelta(minutes=floor_min)
+    last_per_phone: dict[str, dict] = {}
+    for row in rows:
+        phone = row.get("phone")
+        if not phone:
+            continue
+        prev = last_per_phone.get(phone)
+        if prev is None or row["created_at"] > prev["created_at"]:
+            last_per_phone[phone] = row
+
+    candidates: list[dict] = []
+    for phone, row in last_per_phone.items():
+        if row.get("role") != "user":
+            continue
+        content = row.get("content")
+        if not content:
+            continue
+        if datetime.fromisoformat(row["created_at"]) > cutoff:
+            continue
+        candidates.append({"phone": phone, "content": content, "created_at": row["created_at"]})
+    return candidates
