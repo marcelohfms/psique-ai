@@ -3782,14 +3782,14 @@ def _expected_consultation_amount(
     return base - 50  # R$50 PIX/cash discount
 
 
-async def _increment_amount_paid(client, appointment_ids: list[str], cents: int) -> int:
-    """Soma `cents` ao acumulado pago de cada consulta (rpc atômica) e devolve o
+async def _increment_amount_paid(client, appointment_ids: list[str], reais: int) -> int:
+    """Soma `reais` ao acumulado pago de cada consulta (rpc atômica) e devolve o
     acumulado da PRIMEIRA linha. As linhas ligadas de uma 1ª consulta dividida
     recebem o mesmo valor, então ficam iguais entre si."""
     first = 0
     for idx, aid in enumerate(appointment_ids):
         res = await client.rpc(
-            "increment_amount_paid", {"p_appointment_id": aid, "p_cents": cents}
+            "increment_amount_paid", {"p_appointment_id": aid, "p_reais": reais}
         ).execute()
         data = getattr(res, "data", res)
         if isinstance(data, list):
@@ -3801,16 +3801,16 @@ async def _increment_amount_paid(client, appointment_ids: list[str], cents: int)
     return first
 
 
-async def _set_amount_paid(client, appointment_ids: list[str], cents: int) -> None:
+async def _set_amount_paid(client, appointment_ids: list[str], reais: int) -> None:
     """Fixa o acumulado pago (valor absoluto) de cada consulta, via rpc. Best-effort:
     falha só é logada, o pagamento da atendente já foi gravado."""
     for aid in appointment_ids:
         try:
             await client.rpc(
-                "set_amount_paid", {"p_appointment_id": aid, "p_cents": cents}
+                "set_amount_paid", {"p_appointment_id": aid, "p_reais": reais}
             ).execute()
         except Exception:
-            logger.exception("SET_AMOUNT_PAID FAILED appt=%s cents=%s", aid, cents)
+            logger.exception("SET_AMOUNT_PAID FAILED appt=%s reais=%s", aid, reais)
 
 
 def _parse_brl_amount(raw: str) -> float:
@@ -4567,7 +4567,7 @@ async def register_payment(
     _appt_fields = (
         "appointment_id, contact_id, start_time, end_time, doctor_id, paid_at, "
         "booking_fee_paid_at, status, consultation_type, booking_fee_waived, is_courtesy, "
-        "amount_paid_cents"
+        "amount_paid"
     )
 
     # No start_time window in the query: a patient may settle the saldo weeks or
@@ -4894,7 +4894,7 @@ async def register_payment(
     async def _set_acc_full() -> None:
         """Quitação por autoridade da atendente: acumulado = valor esperado."""
         ids = linked_appt_ids if linked_appt_ids else ([appt_id_to_pay] if appt_id_to_pay else [])
-        await _set_amount_paid(client, ids, int(round(expected * 100)))
+        await _set_amount_paid(client, ids, int(round(expected)))
 
     # ── Courtesy (custom_price == 0) — always QUITADA ────────────────────────
     if custom_price == 0:
@@ -5025,26 +5025,26 @@ async def register_payment(
     else:
         # Comprovante PIX: soma a parcela no acumulado da consulta e decide o tipo
         # pelo acumulado real contra o valor rígido da tabela (expected).
-        _cents = round(amount_float * 100)
+        _reais = int(round(amount_float))
         _ids = linked_appt_ids if linked_appt_ids else ([appt_id_to_pay] if appt_id_to_pay else [])
         if _ids:
             try:
-                _acc_cents = await _increment_amount_paid(client, _ids, _cents)
+                _acc = await _increment_amount_paid(client, _ids, _reais)
             except Exception:
                 _logger.exception("INCREMENT_AMOUNT_PAID FAILED patient=%s", patient_name)
-                # Fallback: lê o acumulado real (o select inclui amount_paid_cents) e
+                # Fallback: lê o acumulado real (o select inclui amount_paid) e
                 # PERSISTE o novo valor por update direto. Sem persistir, a próxima
                 # parcela recalcularia a partir do valor velho e perderia esta.
                 try:
-                    _prev_cents = int(appt_result.data[0].get("amount_paid_cents") or 0)
+                    _prev = int(appt_result.data[0].get("amount_paid") or 0)
                 except Exception:
-                    _prev_cents = 0
-                _acc_cents = _prev_cents + _cents
+                    _prev = 0
+                _acc = _prev + _reais
                 _persisted = True
                 try:
                     for _aid in _ids:
                         await client.from_("appointments").update(
-                            {"amount_paid_cents": _acc_cents}
+                            {"amount_paid": _acc}
                         ).eq("appointment_id", _aid).execute()
                 except Exception:
                     _persisted = False
@@ -5075,8 +5075,8 @@ async def register_payment(
                         "nem cobre valor; avise que a clínica confirma em breve."
                     )
         else:
-            _acc_cents = _cents
-        _acc_reais = _acc_cents / 100
+            _acc = _reais
+        _acc_reais = _acc
         saldo = max(0, expected - _acc_reais)
 
         if abs(amount_float - 100) < 1 and not booking_fee_already_paid:

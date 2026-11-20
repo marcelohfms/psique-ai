@@ -3292,8 +3292,8 @@ async def patient_agent_node(state: ConversationState, config: RunnableConfig) -
             # Saldo real quando já houve pagamento parcial: esperado - acumulado,
             # mesma conta do register_payment. Sem isso a Eva usa a tabela fixa
             # (preço menos R$ 100) e cobra a mais de quem já pagou um complemento.
-            _paid_cents = apt.get("amount_paid_cents") or 0
-            if _paid_cents > 0 and not apt.get("paid_at"):
+            _paid = apt.get("amount_paid") or 0
+            if _paid > 0 and not apt.get("paid_at"):
                 try:
                     from app.dates import compute_age as _ca
                     _apt_age = _ca(apt.get("patient_birth_date"), _now_recife.date())
@@ -3305,7 +3305,7 @@ async def patient_agent_node(state: ConversationState, config: RunnableConfig) -
                         now_dt,
                         price_override=_cp,
                     )
-                    _restante = max(0, _exp - _paid_cents // 100)
+                    _restante = max(0, _exp - _paid)
                     label += f" (saldo restante: R$ {_restante},00)"
                 except Exception:
                     __import__("logging").getLogger(__name__).exception("SALDO_REAL_FALHOU appt=%s", apt.get("appointment_id"))

@@ -807,7 +807,7 @@ async def mark_paid(
             continue
         try:
             fn = "increment_amount_paid" if tipo == "taxa" else "set_amount_paid"
-            await client.rpc(fn, {"p_appointment_id": aid, "p_cents": int(valor) * 100}).execute()
+            await client.rpc(fn, {"p_appointment_id": aid, "p_reais": int(valor)}).execute()
         except Exception:
             logger.exception("AMOUNT_PAID RPC FAILED appt=%s tipo=%s", aid, tipo)
 
