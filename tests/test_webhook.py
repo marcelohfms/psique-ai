@@ -2157,7 +2157,7 @@ _PANEL_PATIENT = {
 }
 _PANEL_CREATED = {
     "kind": "normal", "lines": ["l"], "pending_part2": False,
-    "appointments": [{"appointment_id": "e1"}],
+    "appointments": [{"appointment_id": "e1", "start": "2026-11-12T09:00:00-03:00"}],
 }
 _PANEL_SENT = {"sent": ["Ana"], "not_delivered": [], "held": []}
 # Relógio congelado antes de 2026-10-05: build_request recusa horário no passado.
@@ -2211,6 +2211,7 @@ def test_panel_send_booking_message_called_with_display_name_and_doctor(http_cli
     send_mock = mocks[4]
     send_mock.assert_awaited_once_with(
         "p1", "c1", "normal", ["l"], False, "Ana Souza", "julio",
+        "quinta-feira, 12/11/2026 às 09:00",
     )
 
 
