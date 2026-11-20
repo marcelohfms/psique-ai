@@ -70,10 +70,16 @@ async def rescue_incoming_attachment(
 
     variants = _phone_variants(phone)
     canonico = (variants[0] if variants else phone) + "@s.whatsapp.net"
-    if _looks_like_pdf(img):
-        texto = await describe_pdf_bytes(img, phone=canonico)
-    else:
-        texto = await describe_image_bytes(img, phone=canonico)
+    try:
+        if _looks_like_pdf(img):
+            texto = await describe_pdf_bytes(img, phone=canonico)
+        else:
+            texto = await describe_image_bytes(img, phone=canonico)
+    except Exception:
+        # Roda em background (create_task): não deixa a exceção escapar; a varredura
+        # de 10-15 min assume.
+        logger.exception("RESCUE_READ_FAILED attachment_id=%s", attachment_id)
+        return False
     if not texto:
         return False
 

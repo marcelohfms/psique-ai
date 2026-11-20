@@ -558,3 +558,24 @@ async def test_replay_uses_pdf_reader_for_pdf_bytes():
     assert dpdf.await_args.kwargs["payment_only"] is True
     assert dpdf.await_args.args[0] == PDF_BYTES
     dimg.assert_not_awaited()
+
+
+async def test_reconcile_pdf_render_failure_alerts_and_marks():
+    """PDF que não renderiza (criptografado, corrompido): alerta a clínica e grava o
+    marcador, nunca some em silêncio."""
+    from contextlib import ExitStack
+    from app.receipt_reconciliation import reconcile
+    with ExitStack() as st:
+        rep, mail, logev = _reconcile_ctx(st, [_cand(data_url="https://cw/a.pdf")])
+        st.enter_context(patch("app.receipt_reconciliation._download_bytes",
+                               new_callable=AsyncMock, return_value=PDF_BYTES))
+        st.enter_context(patch("app.receipt_reconciliation.pdf_first_page_to_image_bytes",
+                               side_effect=RuntimeError("encrypted")))
+        n = await reconcile(NOW)
+    assert n == 1
+    mail.assert_awaited_once()
+    assert "comprovante de pagamento" in str(mail.await_args)
+    logev.assert_awaited_once()
+    assert logev.await_args.args[0] == "receipt_drop_alerted"
+    assert logev.await_args.args[2]["attachment_id"] == 999
+    rep.assert_not_awaited()

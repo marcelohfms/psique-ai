@@ -128,3 +128,16 @@ async def test_rescue_reads_image_with_image_path():
     assert ok is True
     m["describe"].assert_awaited_once()
     m["describe_pdf"].assert_not_awaited()
+
+
+@pytest.mark.parametrize("raw,target", [(b"%PDF-1.4 fake", "describe_pdf"),
+                                        (b"\xff\xd8\xff\xe0jpeg", "describe")])
+async def test_rescue_returns_false_when_reader_raises(raw, target):
+    from app.receipt_rescue import rescue_incoming_attachment
+    stack, m = _env(download=[raw])
+    with stack:
+        m[target].side_effect = RuntimeError("render failed")
+        ok = await rescue_incoming_attachment(**KW, sleep=AsyncMock())
+    assert ok is False
+    m["save"].assert_not_awaited()
+    m["process"].assert_not_awaited()

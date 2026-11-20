@@ -739,6 +739,14 @@ async def test_looks_like_pdf_false_for_image_bytes():
     assert _looks_like_pdf(b"\xff\xd8\xff\xe0JFIF...") is False
 
 
+@pytest.mark.asyncio
+async def test_looks_like_pdf_is_anchored_at_start():
+    from app.media import _looks_like_pdf
+    assert _looks_like_pdf(b"\xff\xd8\xff\xe0JFIF....%PDF-1.4....") is False
+    assert _looks_like_pdf(b"\n  %PDF-1.4\n") is True
+    assert _looks_like_pdf(b"\xef\xbb\xbf%PDF-1.7") is True
+
+
 async def test_pdf_first_page_to_image_bytes_renders_first_page():
     from app.media import pdf_first_page_to_image_bytes
     doc, page = _fake_fitz_doc(b"IMG")

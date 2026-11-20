@@ -501,8 +501,11 @@ async def describe_image_bytes(
 
 
 def _looks_like_pdf(raw: bytes) -> bool:
-    """True when the bytes carry the %PDF magic near the start (detection by bytes only)."""
-    return b"%PDF" in (raw or b"")[:1024]
+    """True when the bytes start with the %PDF magic (leading whitespace/BOM allowed)."""
+    head = (raw or b"")[:1024]
+    if head.startswith(b"\xef\xbb\xbf"):
+        head = head[3:]
+    return head.lstrip().startswith(b"%PDF")
 
 
 def pdf_first_page_to_image_bytes(pdf_bytes: bytes) -> bytes:

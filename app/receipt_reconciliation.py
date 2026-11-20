@@ -246,7 +246,23 @@ async def reconcile(now: datetime, *, floor_min: int = 10, window_min: int = 60)
             img = await _download_bytes(cand.get("data_url", ""))
             # PDF não vai ao classificador de imagem: renderiza a 1ª página. O replay
             # continua recebendo os bytes crus (o leitor de PDF precisa do arquivo).
-            classify_src = pdf_first_page_to_image_bytes(img) if _looks_like_pdf(img) else img
+            if _looks_like_pdf(img):
+                try:
+                    classify_src = pdf_first_page_to_image_bytes(img)
+                except Exception:
+                    # PDF que não renderiza (criptografado, corrompido): alerta a
+                    # clínica e marca, em vez de sumir em silêncio.
+                    logger.exception("RECONCILE_PDF_RENDER_FAILED attachment_id=%s", aid)
+                    await _alert_clinic(cand, "payment")
+                    await log_event(RECEIPT_DROP_EVENT, phone, {
+                        "attachment_id": aid,
+                        "conversation_id": cand.get("conversation_id"),
+                        "kind": "payment",
+                    })
+                    alerts += 1
+                    continue
+            else:
+                classify_src = img
             kind, _canonical = await classify_image_raw(classify_src, phone)
             if kind not in ("payment", "document"):
                 continue
