@@ -24,6 +24,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 from app.patients import get_contact_by_phone
+from scripts.send_payment_reminders import _send_template, _window_open
 
 TZ = ZoneInfo("America/Recife")
 WINDOW_START = 7
@@ -140,9 +141,14 @@ async def main():
 
         # 1. Notifica paciente (obrigatório para liberar)
         msg = pending_reschedule_message(contact_first, doctor_label, date_str, patient_first)
+        body_params = {"1": contact_first, "2": patient_first or contact_first, "3": doctor_label}
         whatsapp_ok = False
         try:
-            await send_whatsapp(phone, msg)
+            # Dentro da janela de 24h vai texto livre; fora, só template (a Meta descarta texto livre).
+            if await _window_open(client, phone, now):
+                await send_whatsapp(phone, msg)
+            else:
+                await _send_template(phone, "vaga_liberada_remarcacao", body_params, msg)
             whatsapp_ok = True
             print(f"  ✅ Notificado: {patient_name or contact_name} ({phone})")
         except Exception as e:
