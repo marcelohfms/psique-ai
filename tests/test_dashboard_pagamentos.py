@@ -271,16 +271,24 @@ def test_dashboard_extend_table_grows_when_new_row_below():
     payments._extend_table_to_row(service, "sheet-123", "Pagamentos!A583:J583")
     batch = service.spreadsheets.return_value.batchUpdate
     batch.assert_called_once()
-    req = batch.call_args.kwargs["body"]["requests"][0]["updateTable"]
+    reqs = batch.call_args.kwargs["body"]["requests"]
+    assert [next(iter(r)) for r in reqs] == ["updateTable", "copyPaste"]
+    req = reqs[0]["updateTable"]
     assert req["table"]["range"]["endRowIndex"] == 583
     assert req["table"]["tableId"] == "T1"
 
 
-def test_dashboard_extend_table_noop_when_inside():
+def test_dashboard_extend_table_reformats_row_already_inside():
+    # Dentro da borda mas possivelmente "descentralizada": copia o formato da linha
+    # de cima, sem mexer na borda.
     import payments
     service = _service_with_table(end_row_index=600)
     payments._extend_table_to_row(service, "sheet-123", "Pagamentos!A583:J583")
-    service.spreadsheets.return_value.batchUpdate.assert_not_called()
+    batch = service.spreadsheets.return_value.batchUpdate
+    batch.assert_called_once()
+    reqs = batch.call_args.kwargs["body"]["requests"]
+    assert [next(iter(r)) for r in reqs] == ["copyPaste"]
+    assert reqs[0]["copyPaste"]["pasteType"] == "PASTE_FORMAT"
 
 
 def test_missing_smtp_vars_lista_apenas_ausentes():
