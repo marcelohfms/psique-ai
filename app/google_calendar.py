@@ -54,9 +54,9 @@ SCHEDULE_EXCEPTIONS: dict[str, dict[str, list[tuple[int, int, int, int, str]]]] 
         "2026-12-28": [],                                                       # Segunda: recesso de fim de ano
         "2026-12-30": [],                                                       # Quarta: recesso de fim de ano
         "2026-12-31": [],                                                       # Quinta: ponto facultativo Véspera de Ano Novo
-        "2027-01-04": [],                                                       # Segunda: recesso de fim de ano (volta 11/01)
-        "2027-01-06": [],                                                       # Quarta: recesso de fim de ano (volta 11/01)
-        "2027-01-07": [],                                                       # Quinta: recesso de fim de ano (volta 11/01)
+        # Dr. Júlio volta do recesso em 04/01/2027 (agenda liberada a partir dessa data)
+        "2027-01-06": [],                                                       # Quarta: sem atendimento (bloqueado)
+        "2027-01-20": [],                                                       # Quarta: sem atendimento (bloqueado)
     },
     "bruna": {
         "2026-05-22": [],  # Sexta: sem atendimento
