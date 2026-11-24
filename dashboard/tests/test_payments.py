@@ -21,6 +21,7 @@ def _appt(appointment_id, patient_id, patient_name, phone, **overrides):
         "booking_fee_paid_at": None,
         "booking_fee_waived": False,
         "consultation_type": None,
+        "session_note": None,
         "status": "scheduled",  # Default: scheduled (show booking fees for future appointments)
         "patients": {
             "name": patient_name,
@@ -137,14 +138,17 @@ async def test_compute_pendencias_extrai_telefone_do_contato_self(fake_client):
 
 
 async def test_compute_pendencias_agrupa_primeira_consulta_dividida(fake_client):
-    # Menor de idade: 1ª consulta vira 2 linhas (pais + paciente), datas diferentes,
-    # mesmo patient_id — deve virar 1 única pendência de "consulta" e 1 de "taxa".
+    # Menor de idade: 1ª consulta dividida em 2 partes (pais + paciente). As partes
+    # carregam session_note de split — é esse marcador (não só o dia) que mantém as
+    # duas partes numa pendência só, mesmo que fiquem em dias diferentes.
     fake_client.store["appointments"] = [
         _appt("a1", "p1", "Gabriel", "5581999990000",
               consultation_type="primeira_consulta",
+              session_note="1ª consulta · parte 1 de 2",
               start_time="2026-07-01T09:00:00+00:00"),
         _appt("a2", "p1", "Gabriel", "5581999990000",
               consultation_type="primeira_consulta",
+              session_note="1ª consulta · parte 2 de 2",
               start_time="2026-07-09T10:00:00+00:00"),
     ]
     out = await payments.compute_pendencias(fake_client)
@@ -155,6 +159,44 @@ async def test_compute_pendencias_agrupa_primeira_consulta_dividida(fake_client)
     assert consultas[0]["appointment_id"] == "a1,a2"
     assert "01/07/2026 06:00" in consultas[0]["data_hora"]
     assert "09/07/2026 07:00" in consultas[0]["data_hora"]
+
+
+async def test_compute_pendencias_split_mesmo_dia_vira_uma_pendencia(fake_client):
+    # Caso (c): o par 1h-pais + 1h-paciente no MESMO dia (1ª consulta dividida)
+    # continua virando 1 pendência de taxa e 1 de consulta.
+    fake_client.store["appointments"] = [
+        _appt("a1", "p1", "Alice", "5581999990000",
+              consultation_type="primeira_consulta",
+              session_note="1ª hora — responsáveis",
+              start_time="2026-07-10T12:00:00+00:00"),
+        _appt("a2", "p1", "Alice", "5581999990000",
+              consultation_type="primeira_consulta",
+              session_note="2ª hora — paciente",
+              start_time="2026-07-10T13:00:00+00:00"),
+    ]
+    out = await payments.compute_pendencias(fake_client)
+    assert len([p for p in out if p["tipo"] == "taxa"]) == 1
+    assert len([p for p in out if p["tipo"] == "consulta"]) == 1
+
+
+async def test_compute_pendencias_primeira_consulta_dias_distintos_pendencias_separadas(fake_client):
+    # Caso (b) / caso Gabriel Galindo linha 939: dado legado torto com 2
+    # primeira_consulta avulsas (sem marcador de split) em dias diferentes NÃO
+    # pode colapsar numa baixa única — cada dia é uma pendência de taxa própria.
+    fake_client.store["appointments"] = [
+        _appt("a1", "p1", "Gabriel", "5581999990000",
+              consultation_type="primeira_consulta",
+              start_time="2026-07-01T12:00:00+00:00"),
+        _appt("a2", "p1", "Gabriel", "5581999990000",
+              consultation_type="primeira_consulta",
+              start_time="2026-07-13T12:00:00+00:00"),
+    ]
+    out = await payments.compute_pendencias(fake_client)
+    taxas = [p for p in out if p["tipo"] == "taxa"]
+    assert len(taxas) == 2
+    assert {t["appointment_id"] for t in taxas} == {"a1", "a2"}
+    # Nenhuma pendência junta as duas datas na mesma linha.
+    assert all("+" not in t["data_hora"] for t in taxas)
 
 
 async def test_compute_pendencias_nao_agrupa_pacientes_diferentes(fake_client):

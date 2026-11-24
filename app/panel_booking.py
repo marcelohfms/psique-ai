@@ -228,6 +228,31 @@ def _is_minor_julio(patient: dict, doctor: str, day) -> bool:
     return doctor == "julio" and age is not None and age < 18
 
 
+async def _has_consultation_history(patient: dict) -> bool:
+    """O paciente já é da casa? Retornante (ficha marcada), migrado do sistema
+    antigo (legacy_user_id) ou com qualquer consulta já realizada. Nesses casos a
+    nova consulta não pode ser primeira_consulta."""
+    if patient.get("is_returning_patient") is True or patient.get("legacy_user_id"):
+        return True
+    try:
+        client = await get_supabase()
+        res = await (
+            client.from_("appointments")
+            .select("appointment_id")
+            .eq("patient_id", patient["id"])
+            .eq("status", "completed")
+            .limit(1)
+            .execute()
+        )
+    except Exception:
+        # Banco indisponível: não dá para confirmar histórico. Não derruba a reserva
+        # aqui — o insert a seguir usa o mesmo cliente e falha (com rollback) se o
+        # banco estiver fora. Trata como "sem histórico" para não bloquear por engano.
+        _logger.exception("histórico de consulta: consulta falhou patient=%s", patient.get("id"))
+        return False
+    return bool(res.data)
+
+
 async def create_appointments(req: dict) -> dict:
     """Cria o(s) evento(s) e a(s) linha(s). Tudo ou nada."""
     from app.graph.tools import _get_doctor_calendar_id, _apply_confirmation
@@ -254,7 +279,17 @@ async def create_appointments(req: dict) -> dict:
     fee, kind = _fee_fields(req, now_iso)
     # Split (1ª consulta infantil em duas sessões) é sempre primeira_consulta,
     # mesmo que a atendente esqueça de marcar a caixinha.
-    if req["first_consultation"] or req.get("split") or req.get("split_of"):
+    #
+    # Guarda (caso Gabriel Galindo, linha 939): um paciente retornante, migrado ou
+    # com qualquer consulta anterior NUNCA pode nascer primeira_consulta — mesmo que
+    # a atendente marque a caixinha "1ª consulta" por engano. Se nascesse, a baixa da
+    # taxa colaria em consultas antigas marcadas primeira_consulta (ver compute_pendencias).
+    # split_of é a exceção: completar a 2ª parte de uma 1ª consulta já existente
+    # continua primeira_consulta, senão quebra o pagamento ligado em register_payment.
+    wants_first = bool(req["first_consultation"] or req.get("split") or req.get("split_of"))
+    if wants_first and not req.get("split_of") and await _has_consultation_history(patient):
+        wants_first = False
+    if wants_first:
         ctype = "primeira_consulta"
     elif _is_minor_julio(patient, doctor, parts[0]["start"].date()):
         ctype = "acompanhamento"
