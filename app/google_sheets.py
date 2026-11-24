@@ -130,15 +130,23 @@ def _set_hyperlink_cell(service, spreadsheet_id: str, updated_range: str, drive_
 
 
 def _extend_table_to_row(service, spreadsheet_id: str, updated_range: str) -> None:
-    """Estica a Tabela nativa da aba para incluir a linha recém-anexada.
+    """Encaixa a linha recém-anexada na Tabela nativa da aba Pagamentos.
 
     A aba Pagamentos é uma Tabela nativa do Google Sheets. `values().append`
-    escreve a linha logo ABAIXO da tabela, mas NÃO estica a borda dela, então a
-    linha nova fica um degrau de fora — sem a formatação listrada e sem o menu
-    suspenso da coluna "Conferência Humana", até alguém abrir a planilha no
-    navegador e o Google absorver a linha vizinha. Esta função puxa a borda para a
-    linha nova na hora. Best-effort: uma falha aqui NUNCA pode desfazer a gravação
-    da linha (o chamador isola em try/except).
+    escreve a linha logo ABAIXO da tabela e com o alinhamento padrão do Sheets
+    (texto à esquerda, número/data à direita), então a linha nova fica torta de
+    DUAS formas até alguém abrir a planilha no navegador:
+
+    1. Fica um degrau de fora da borda — sem a formatação listrada nem o menu
+       suspenso da coluna "Conferência Humana".
+    2. Fica "descentralizada" — as colunas que a tabela mostra centralizadas
+       (Médico, Data da consulta, Valor, Tipo, Comprovante) saem à esquerda/direita.
+
+    Quando o navegador absorve a linha vizinha ele conserta as duas coisas; o
+    `updateTable` por API SÓ move a borda e não repinta o alinhamento. Por isso
+    aqui, além de esticar a borda, copiamos a formatação da linha de cima (uma irmã
+    já dentro da tabela) para a linha nova. Best-effort: uma falha aqui NUNCA pode
+    desfazer a gravação da linha (o chamador isola em try/except).
     """
     import re
 
@@ -163,19 +171,44 @@ def _extend_table_to_row(service, spreadsheet_id: str, updated_range: str) -> No
                 continue
             if rng.get("startColumnIndex", 0) != 0:
                 continue  # só a tabela ancorada na coluna A (a de Pagamentos)
-            if rng.get("endRowIndex", 0) >= row_number:
-                return  # a linha já está dentro da tabela — nada a fazer
-            new_range = dict(rng)
-            new_range["endRowIndex"] = row_number  # endRowIndex é exclusivo
-            service.spreadsheets().batchUpdate(
-                spreadsheetId=spreadsheet_id,
-                body={"requests": [{
+
+            requests = []
+            # 1. Estica a borda se a linha caiu fora dela.
+            if rng.get("endRowIndex", 0) < row_number:
+                new_range = dict(rng)
+                new_range["endRowIndex"] = row_number  # endRowIndex é exclusivo
+                requests.append({
                     "updateTable": {
                         "table": {"tableId": tbl["tableId"], "range": new_range},
                         "fields": "range",
                     }
-                }]},
-            ).execute()
+                })
+            # 2. Copia o formato da linha de cima para a linha nova — o updateTable
+            #    só move a borda, não aplica o alinhamento das colunas. row_number>=3
+            #    garante que há uma linha de dados acima (linha 1 = cabeçalho).
+            start_col = rng.get("startColumnIndex", 0)
+            end_col = rng.get("endColumnIndex", 10)
+            if row_number >= 3:
+                requests.append({
+                    "copyPaste": {
+                        "source": {
+                            "sheetId": sheet_id,
+                            "startRowIndex": row_number - 2, "endRowIndex": row_number - 1,
+                            "startColumnIndex": start_col, "endColumnIndex": end_col,
+                        },
+                        "destination": {
+                            "sheetId": sheet_id,
+                            "startRowIndex": row_number - 1, "endRowIndex": row_number,
+                            "startColumnIndex": start_col, "endColumnIndex": end_col,
+                        },
+                        "pasteType": "PASTE_FORMAT",
+                    }
+                })
+            if requests:
+                service.spreadsheets().batchUpdate(
+                    spreadsheetId=spreadsheet_id,
+                    body={"requests": requests},
+                ).execute()
             return
 
 

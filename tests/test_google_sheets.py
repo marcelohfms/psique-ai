@@ -98,27 +98,53 @@ async def test_no_hyperlink_written_without_drive_link():
     mock_link.assert_not_called()
 
 
-# ── Auto-extensão da Tabela nativa ────────────────────────────────────────────
-# `values().append` grava a linha logo abaixo da Tabela, mas não estica a borda —
-# a linha nova fica sem a formatação e o dropdown de Conferência Humana até alguém
-# abrir a planilha. _extend_table_to_row puxa a borda para a linha nova na hora.
+# ── Encaixe da linha na Tabela nativa ─────────────────────────────────────────
+# `values().append` grava a linha logo abaixo da Tabela e com o alinhamento padrão
+# do Sheets. Ela fica torta de duas formas até alguém abrir a planilha: um degrau
+# fora da borda (sem formatação/dropdown) e "descentralizada" (colunas que deviam
+# ser centralizadas saem à esquerda/direita). _extend_table_to_row conserta as duas:
+# estica a borda e copia o formato da linha de cima para a linha nova.
+
+def _requests(service):
+    return _batch_update(service).call_args.kwargs["body"]["requests"]
+
+
+def _request_types(service):
+    return [next(iter(r)) for r in _requests(service)]
+
 
 def test_extend_table_grows_when_new_row_is_below_the_table():
     service = _service_with_table(end_row_index=581)  # tabela vai até a linha 581
     _extend_table_to_row(service, "sheet-123", "Pagamentos!A583:J583")
 
     _batch_update(service).assert_called_once()
-    body = _batch_update(service).call_args.kwargs["body"]
-    req = body["requests"][0]["updateTable"]
+    assert _request_types(service) == ["updateTable", "copyPaste"]
+    req = _requests(service)[0]["updateTable"]
     assert req["table"]["tableId"] == "T1"
     assert req["table"]["range"]["endRowIndex"] == 583  # exclusivo → inclui a linha 583
     assert req["fields"] == "range"
 
 
-def test_extend_table_noop_when_row_already_inside():
+def test_extend_table_reformats_row_already_inside():
+    # A linha já está dentro da borda, mas pode ter entrado "descentralizada": ainda
+    # precisamos copiar o formato da linha de cima. Não há updateTable, só copyPaste.
     service = _service_with_table(end_row_index=600)
     _extend_table_to_row(service, "sheet-123", "Pagamentos!A583:J583")
-    _batch_update(service).assert_not_called()
+
+    _batch_update(service).assert_called_once()
+    assert _request_types(service) == ["copyPaste"]
+
+
+def test_extend_table_copies_format_from_the_row_above():
+    service = _service_with_table(end_row_index=600)
+    _extend_table_to_row(service, "sheet-123", "Pagamentos!A583:J583")
+
+    cp = next(r["copyPaste"] for r in _requests(service) if "copyPaste" in r)
+    assert cp["pasteType"] == "PASTE_FORMAT"
+    # Linha 583 (1-based) = índice 582 (0-based); a fonte é a linha de cima (581 → 582).
+    assert cp["source"]["startRowIndex"] == 581 and cp["source"]["endRowIndex"] == 582
+    assert cp["destination"]["startRowIndex"] == 582 and cp["destination"]["endRowIndex"] == 583
+    assert cp["source"]["startColumnIndex"] == 0 and cp["source"]["endColumnIndex"] == 10
 
 
 def test_extend_table_noop_on_unparseable_range():
