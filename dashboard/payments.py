@@ -597,6 +597,17 @@ def _booker_phone(patient: dict, booker_id) -> str:
     return phone
 
 
+def _occasion_day(appt: dict) -> str:
+    """Dia (AAAA-MM-DD, fuso de Recife/BR) da consulta — chave de ocasião para
+    agrupar primeira_consulta avulsa. Fallback no texto cru se a data vier torta."""
+    start_time = appt.get("start_time") or ""
+    try:
+        dt = datetime.fromisoformat(start_time.replace("Z", "+00:00"))
+        return dt.astimezone(timezone(timedelta(hours=-3))).date().isoformat()
+    except Exception:
+        return start_time[:10]
+
+
 async def compute_pendencias(client, patient_ids: list[str] | None = None) -> list[dict]:
     """Retorna a lista de pendências (taxa/consulta) em aberto.
 
@@ -612,7 +623,7 @@ async def compute_pendencias(client, patient_ids: list[str] | None = None) -> li
         .select(
             "appointment_id, patient_id, contact_id, start_time, doctor_id, paid_at, "
             "booking_fee_paid_at, booking_fee_waived, consultation_type, status, "
-            "is_courtesy, "
+            "session_note, is_courtesy, "
             "patients(name, birth_date, custom_price, "
             "patient_contacts(is_self, contacts(id, phone, name)))"
         )
@@ -629,14 +640,25 @@ async def compute_pendencias(client, patient_ids: list[str] | None = None) -> li
         if not r.get("is_courtesy") and (r.get("patients") or {}).get("custom_price") != 0
     ]
 
-    # Uma 1ª consulta de menor de idade vira 2 linhas de appointments (1h pais +
-    # 1h paciente, datas distintas) mas é uma cobrança só — agrupa pelo mesmo
-    # critério que register_payment já usa (app/graph/tools.py) para não exibir
-    # nem cobrar em dobro.
+    # Regra de negócio (Ayexa): um paciente tem UMA 1ª consulta, no máximo em duas
+    # partes da MESMA ocasião (ex.: menor, 1h pais + 1h paciente). Uma 1ª consulta
+    # dividida vira 2 linhas de appointments mas é uma cobrança só.
+    #
+    # Agrupamento DEFENSIVO (caso Gabriel Galindo, linha 939): não basta juntar toda
+    # primeira_consulta do paciente, senão dado legado torto (2 primeira_consulta
+    # avulsas em dias diferentes) colapsa numa baixa única e uma taxa carimba todas.
+    #   - partes de um split carregam session_note (marcador do painel "parte 1/2 de 2"
+    #     ou texto livre do bot "1ª hora — responsáveis"): juntam numa ocasião só,
+    #     mesmo em dias diferentes (o split pode ter a 2ª parte combinada depois);
+    #   - primeira_consulta avulsa (sem session_note) agrupa só por dia — dias
+    #     distintos viram pendências separadas.
     groups: dict = {}
     for appt in rows:
         if appt.get("consultation_type") == "primeira_consulta":
-            key = (appt.get("patient_id"), "primeira_consulta")
+            if (appt.get("session_note") or "").strip():
+                key = (appt.get("patient_id"), "primeira_consulta_split")
+            else:
+                key = (appt.get("patient_id"), "primeira_consulta", _occasion_day(appt))
         else:
             key = appt["appointment_id"]
         groups.setdefault(key, []).append(appt)

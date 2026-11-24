@@ -259,6 +259,71 @@ async def test_create_split_both_parts():
 
 
 @pytest.mark.asyncio
+async def test_create_first_consultation_first_timer_sets_primeira_consulta():
+    """Controle positivo: menor do Dr. Júlio, 1º contato de verdade (sem ficha de
+    retornante e sem consulta anterior), ao marcar 1ª consulta nasce primeira_consulta."""
+    client, q = _sb([])
+    minor = {"id": "p1", "name": "LUCAS MENEZES", "social_name": None, "email": "l@x.com",
+             "birth_date": "10/02/2016", "custom_price": None, "booking_fee_waived": False}
+    out, _ = await _run(_req(patient=minor, first_consultation=True), client)
+    row = q.insert.call_args[0][0][0]
+    assert row["consultation_type"] == "primeira_consulta"
+
+
+@pytest.mark.asyncio
+async def test_create_first_consultation_returning_patient_never_primeira():
+    """Caso Gabriel Galindo (linha 939): paciente RETORNANTE marcado como 1ª
+    consulta no painel NÃO pode nascer primeira_consulta — vira acompanhamento."""
+    client, q = _sb([])
+    minor_returning = {"id": "p1", "name": "GABRIEL GALINDO", "social_name": None,
+                       "email": "g@x.com", "birth_date": "10/02/2016", "custom_price": None,
+                       "booking_fee_waived": False, "is_returning_patient": True}
+    out, _ = await _run(_req(patient=minor_returning, first_consultation=True), client)
+    row = q.insert.call_args[0][0][0]
+    assert row["consultation_type"] == "acompanhamento"
+
+
+@pytest.mark.asyncio
+async def test_create_first_consultation_migrated_patient_never_primeira():
+    """Paciente migrado (legacy_user_id preenchido) já é da casa — marcar 1ª
+    consulta não pode fazê-lo nascer primeira_consulta."""
+    client, q = _sb([])
+    minor_migrated = {"id": "p1", "name": "SOFIA REAL", "social_name": None, "email": "s@x.com",
+                      "birth_date": "10/02/2016", "custom_price": None,
+                      "booking_fee_waived": False, "legacy_user_id": 123}
+    out, _ = await _run(_req(patient=minor_migrated, first_consultation=True), client)
+    row = q.insert.call_args[0][0][0]
+    assert row["consultation_type"] == "acompanhamento"
+
+
+@pytest.mark.asyncio
+async def test_create_first_consultation_with_prior_completed_never_primeira():
+    """Qualquer consulta anterior realizada impede nascer primeira_consulta,
+    mesmo sem a ficha estar marcada como retornante."""
+    client, q = _sb([{"appointment_id": "old", "status": "completed"}])
+    minor = {"id": "p1", "name": "LUCAS MENEZES", "social_name": None, "email": "l@x.com",
+             "birth_date": "10/02/2016", "custom_price": None, "booking_fee_waived": False}
+    out, _ = await _run(_req(patient=minor, first_consultation=True), client)
+    row = q.insert.call_args[0][0][0]
+    assert row["consultation_type"] == "acompanhamento"
+
+
+@pytest.mark.asyncio
+async def test_complete_pending_part2_returning_still_primeira_consulta():
+    """split_of (completar a 2ª parte de uma 1ª consulta já existente) continua
+    primeira_consulta — a guarda de retornante não derruba o complemento legítimo,
+    senão quebra o pagamento ligado em register_payment."""
+    client, q = _sb([{"appointment_id": "old", "status": "completed"}])
+    part1 = {"appointment_id": "evtP1", "booking_fee_paid_at": "2026-09-30T10:00:00-03:00",
+             "booking_fee_waived": False, "is_courtesy": False}
+    minor = {"id": "p1", "name": "LUCAS MENEZES", "social_name": None, "email": "l@x.com",
+             "birth_date": "10/02/2016", "custom_price": None, "booking_fee_waived": False}
+    out, _ = await _run(_req(patient=minor, split_of=part1, first_consultation=True), client)
+    row = q.insert.call_args[0][0][0]
+    assert row["consultation_type"] == "primeira_consulta"
+
+
+@pytest.mark.asyncio
 async def test_create_split_forces_primeira_consulta_even_if_flag_false():
     client, q = _sb([])
     tue = datetime(2026, 10, 8, 9, 0, tzinfo=TZ)
