@@ -22,7 +22,7 @@ from app.graph.tools import (
     request_external_contact, nudge_external_contact,
     _expected_consultation_amount,
 )
-from app.graph.prompts import COLLECT_SYSTEM, MINOR_RULE, MINOR_RETURNING_RULE, ADULT_RULE, GUARDIAN_RULE, EXISTING_PATIENT_SYSTEM, NEW_PATIENT_SYSTEM, CANCELLATION_RULES, MODALITY_CHANGE_RULE, CLINIC_ADDRESS, CLINIC_ADDRESS_TEXT, get_doctors_info, sanitize_clinic_address, get_booking_fee_rule, MEDICAL_LIMITS_RULE, AGE_EXCEPTION_RULE, DOCTOR_CORRECTION_RULE, EMAIL_RULE, get_pricing_rules, ATTENDANT_INSTRUCTION_RULE, get_pricing_exception_rule, CORRECT_PIX_KEY, SOCIAL_NAME_RULE, MINOR_FIRST_CONSULT_INFO, MINOR_RULE_SCHEDULING_ONLY, NO_REPEAT_ANSWER_RULE, CHANNEL_SCOPE_RULE, NAME_ADDRESSING_ANCHOR
+from app.graph.prompts import COLLECT_SYSTEM, MINOR_RULE, MINOR_RETURNING_RULE, ADULT_RULE, GUARDIAN_RULE, EXISTING_PATIENT_SYSTEM, NEW_PATIENT_SYSTEM, CANCELLATION_RULES, MODALITY_CHANGE_RULE, CLINIC_ADDRESS, CLINIC_ADDRESS_TEXT, get_doctors_info, sanitize_clinic_address, get_booking_fee_rule, MEDICAL_LIMITS_RULE, get_medical_limits_rule, AGE_EXCEPTION_RULE, DOCTOR_CORRECTION_RULE, EMAIL_RULE, get_pricing_rules, ATTENDANT_INSTRUCTION_RULE, get_pricing_exception_rule, CORRECT_PIX_KEY, SOCIAL_NAME_RULE, MINOR_FIRST_CONSULT_INFO, MINOR_RULE_SCHEDULING_ONLY, NO_REPEAT_ANSWER_RULE, CHANNEL_SCOPE_RULE, NAME_ADDRESSING_ANCHOR
 from app.whatsapp import send_text
 from app.database import upsert_user, log_event, get_events_by_type, get_upcoming_appointments, get_user_by_phone, get_users_by_phone, DOCTOR_IDS, DOCTOR_NAMES, save_message, get_last_assistant_message_time, is_registration_complete, missing_registration_field
 from app.chatwoot import get_conversation_id, add_private_note
@@ -1779,6 +1779,8 @@ async def collect_info_node(state: ConversationState, config: RunnableConfig) ->
         # All programmatic steps complete — _extracted will be merged into update below
 
     from app.dates import build_date_reference
+    # Na coleta a pessoa é lead novo (pacientes retornantes pulam este nó), ainda
+    # sem consulta realizada nem agendada: não deve receber o e-mail do médico.
     _collect_system = COLLECT_SYSTEM.format(
         current_date=build_date_reference(datetime.now(ZoneInfo("America/Recife"))),
         collected=collected,
@@ -1788,7 +1790,7 @@ async def collect_info_node(state: ConversationState, config: RunnableConfig) ->
         # inventa a resposta (caso Davi/Jacarandás, 27/07/2026).
         clinic_address=CLINIC_ADDRESS,
         doctors_info=get_doctors_info(),
-        medical_limits_rule=MEDICAL_LIMITS_RULE,
+        medical_limits_rule=get_medical_limits_rule(can_receive_doctor_email=False),
     )
     # Idade como FATO pronto, igual aos rótulos de dia da semana: a LLM erra conta
     # de calendário e já tratou paciente de 18 como menor (Emilly, 5581984503756,
@@ -2578,6 +2580,39 @@ async def _patient_has_prior_completed(phone: str, state: dict) -> bool:
         return False
 
 
+async def _patient_has_consultation_on_record(phone: str, state: dict) -> bool:
+    """True se o paciente desta conversa já tem consulta REALIZADA ou AGENDADA.
+
+    É o gate para liberar o e-mail do médico em questões de medicação/tratamento:
+    paciente de primeira vez (sem consulta concluída nem marcada) precisa passar
+    pela consulta antes de receber o e-mail — o is_returning_patient sozinho não
+    basta, pois vira True só pela fala do paciente (caso Carlos Henrique,
+    5581996720174, 25/11/2026). Considera status completed/scheduled/
+    pending_reschedule (ignora canceladas/no-show). Best-effort: qualquer erro
+    devolve False — no pior caso a Eva deixa de passar o e-mail e orienta a
+    agendar, que é o lado seguro."""
+    try:
+        from app.graph.tools import _resolve_patient_for_booking
+        from app.database import get_supabase as _get_supabase
+        user = await _resolve_patient_for_booking(phone, state)
+        if not user:
+            return False
+        client = await _get_supabase()
+        rows = await client.from_("appointments") \
+            .select("id") \
+            .eq("patient_id", user["id"]) \
+            .in_("status", ["completed", "scheduled", "pending_reschedule"]) \
+            .limit(1) \
+            .execute()
+        return bool(rows.data)
+    except Exception:
+        import logging as _log
+        _log.getLogger(__name__).exception(
+            "CONSULTATION_ON_RECORD_CHECK falhou para %s (ignorado)", phone
+        )
+        return False
+
+
 def _duration_rule_for(
     state: dict,
     patient_age: int,
@@ -3107,6 +3142,12 @@ async def patient_agent_node(state: ConversationState, config: RunnableConfig) -
     if not state.get("is_returning_patient", False):
         _has_prior_completed = await _patient_has_prior_completed(state["phone"], state)
     _treat_as_returning = bool(state.get("is_returning_patient")) or _has_prior_completed
+    # E-mail do médico só vai para quem JÁ passou (ou vai passar) pela consulta:
+    # tem consulta realizada ou agendada no banco. is_returning_patient não basta
+    # (vira True só pela fala do paciente). Caso Carlos Henrique (5581996720174).
+    _can_receive_doctor_email = await _patient_has_consultation_on_record(
+        state["phone"], state
+    )
     duration_rule = _duration_rule_for(
         state, patient_age, first_name, _has_prior_completed
     )
@@ -3165,7 +3206,7 @@ async def patient_agent_node(state: ConversationState, config: RunnableConfig) -
         pricing_rules=get_pricing_rules(datetime.now()),
         clinic_address=CLINIC_ADDRESS,
         doctors_info=get_doctors_info(),
-        medical_limits_rule=MEDICAL_LIMITS_RULE,
+        medical_limits_rule=get_medical_limits_rule(_can_receive_doctor_email),
         social_name_rule=SOCIAL_NAME_RULE,
         age_exception_rule=AGE_EXCEPTION_RULE if state.get("age_exception") else "",
         attendant_instruction_rule=ATTENDANT_INSTRUCTION_RULE,

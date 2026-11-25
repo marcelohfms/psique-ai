@@ -1745,7 +1745,7 @@ def _make_patient_agent_state(**overrides) -> dict:
     return base
 
 
-async def _run_patient_agent(state: dict, last_assistant_time=None, upcoming=None) -> "SystemMessage":
+async def _run_patient_agent(state: dict, last_assistant_time=None, upcoming=None, has_consultation=True) -> "SystemMessage":
     """Helper: run patient_agent_node and return the SystemMessage passed to the LLM."""
     from app.graph.nodes import patient_agent_node
     from langchain_core.messages import SystemMessage
@@ -1764,6 +1764,7 @@ async def _run_patient_agent(state: dict, last_assistant_time=None, upcoming=Non
          patch("app.graph.nodes.send_text", new_callable=AsyncMock), \
          patch("app.graph.nodes.save_message", new_callable=AsyncMock), \
          patch("app.graph.nodes.get_upcoming_appointments", new_callable=AsyncMock, return_value=upcoming or []), \
+         patch("app.graph.nodes._patient_has_consultation_on_record", new_callable=AsyncMock, return_value=has_consultation), \
          patch("app.graph.nodes.get_user_by_phone", new_callable=AsyncMock, return_value={"price_adjustment_notified_at": "2026-01-01"}), \
          patch("app.graph.nodes.get_last_assistant_message_time", new_callable=AsyncMock, return_value=last_assistant_time), \
          patch("app.google_calendar.format_doctor_schedules", return_value="seg-sex"):
@@ -4463,6 +4464,104 @@ def test_medical_limits_forbid_proactively_offering_doctor_email():
     # O fluxo legítimo (paciente pede / problema de medicação) continua de pé.
     assert "dr.juliogouveia@gmail.com" in MEDICAL_LIMITS_RULE
     assert "brunalima.psiquiatra@gmail.com" in MEDICAL_LIMITS_RULE
+
+
+# ── e-mail do médico só depois da consulta ────────────────────────────────────
+# Caso Carlos Henrique (5581996720174, 25/11/2026): primeiro contato que só
+# perguntou o preço, se disse "já fui paciente há muitos anos" (virou
+# is_returning_patient=True) mas NÃO tem nenhuma consulta realizada nem agendada.
+# Ao pedir "organizar os remédios" a Eva entregou o e-mail da Dra. Bruna. Paciente
+# de primeira vez precisa passar pela consulta antes de receber o e-mail do médico.
+def test_medical_limits_rule_builder_keeps_email_for_established_patient():
+    from app.graph.prompts import get_medical_limits_rule
+
+    rule = get_medical_limits_rule(can_receive_doctor_email=True)
+    assert "dr.juliogouveia@gmail.com" in rule
+    assert "brunalima.psiquiatra@gmail.com" in rule
+    # As demais travas (documentos/limites) continuam presentes nos dois modos.
+    assert "NUNCA OFEREÇA DOCUMENTOS PROATIVAMENTE" in rule
+
+
+def test_medical_limits_rule_builder_omits_email_for_first_timer():
+    from app.graph.prompts import get_medical_limits_rule
+
+    rule = get_medical_limits_rule(can_receive_doctor_email=False)
+    assert "dr.juliogouveia@gmail.com" not in rule
+    assert "brunalima.psiquiatra@gmail.com" not in rule
+    # No lugar do e-mail, orienta a agendar a consulta primeiro.
+    assert "agendar" in rule.lower()
+    # As travas de documentos/limites continuam de pé.
+    assert "NUNCA OFEREÇA DOCUMENTOS PROATIVAMENTE" in rule
+
+
+def test_default_medical_limits_rule_matches_established_builder():
+    """A constante pública segue sendo a versão completa (com e-mail), para não
+    quebrar os prompts/estados que já a injetam diretamente."""
+    from app.graph.prompts import MEDICAL_LIMITS_RULE, get_medical_limits_rule
+
+    assert MEDICAL_LIMITS_RULE == get_medical_limits_rule(can_receive_doctor_email=True)
+
+
+@pytest.mark.asyncio
+async def test_patient_agent_first_timer_without_consultation_omits_doctor_email():
+    # is_returning_patient=True veio só da fala do paciente; sem consulta no banco
+    # (helper devolve False) a Eva NÃO pode passar o e-mail do médico.
+    state = _make_patient_agent_state(
+        is_returning_patient=True,
+        preferred_doctor="bruna",
+        messages=[HumanMessage(content="preciso organizar os remédios")],
+    )
+    system_msg = await _run_patient_agent(state, has_consultation=False)
+    assert system_msg is not None
+    # O e-mail do médico do bloco de medicação (único lugar onde a Dra. Bruna
+    # aparece) não deve estar no prompt; no lugar, a variante de primeira vez.
+    assert "brunalima.psiquiatra@gmail.com" not in system_msg.content
+    assert "oriente sempre pelo e-mail do médico" not in system_msg.content
+    assert "não tiver consulta realizada" in system_msg.content
+
+
+@pytest.mark.asyncio
+async def test_patient_agent_with_consultation_on_record_keeps_doctor_email():
+    state = _make_patient_agent_state(
+        is_returning_patient=True,
+        preferred_doctor="bruna",
+        messages=[HumanMessage(content="tenho dúvida sobre a dose")],
+    )
+    system_msg = await _run_patient_agent(state, has_consultation=True)
+    assert system_msg is not None
+    assert "brunalima.psiquiatra@gmail.com" in system_msg.content
+    assert "oriente sempre pelo e-mail do médico" in system_msg.content
+
+
+async def test_collect_prompt_omits_doctor_email():
+    """Durante a coleta (lead novo, ainda sem consulta realizada nem agendada), a
+    Eva não deve ter o e-mail do médico no prompt."""
+    from app.graph.nodes import collect_info_node
+    from app.graph.schemas import CollectInfoOutput
+
+    captured = {}
+
+    async def _capture(messages):
+        captured["system"] = messages[0].content
+        return CollectInfoOutput(reply="ok", is_complete=False)
+
+    state = {
+        "phone": PHONE,
+        "messages": [HumanMessage(content="tenho dúvida sobre meu remédio")],
+        "birth_date": None,
+    }
+    with patch("app.graph.nodes._get_collect_llm") as mock_llm_fn, \
+         patch("app.graph.nodes.send_text", new_callable=AsyncMock), \
+         patch("app.graph.nodes.save_message", new_callable=AsyncMock), \
+         patch("app.graph.nodes.get_users_by_phone", new_callable=AsyncMock, return_value=[]):
+        mock_llm = MagicMock()
+        mock_llm.ainvoke = AsyncMock(side_effect=_capture)
+        mock_llm_fn.return_value = mock_llm
+        await collect_info_node(state, {})
+
+    system = captured.get("system", "")
+    assert "dr.juliogouveia@gmail.com" not in system
+    assert "brunalima.psiquiatra@gmail.com" not in system
 
 
 async def test_pending_appointment_reschedule_guard_resumes_the_llm():
