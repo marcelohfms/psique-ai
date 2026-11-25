@@ -50,7 +50,7 @@ Se o paciente mencionar espontaneamente um nome preferido (ex: "chama-me de...",
 chame set_social_name(). Nunca pergunte proativamente sobre nome social.
 """
 
-MEDICAL_LIMITS_RULE = """\
+_MEDICAL_LIMITS_PRE = """\
 
 RECEITAS E MEDICAÇÕES — RETIRADA NA CLÍNICA:
 A clínica entrega algumas receitas presencialmente.
@@ -76,6 +76,11 @@ receita vencida, precisa de nova receita, precisa de segunda via, receita perdid
 2. Chame transfer_to_human com reason descrevendo o problema relatado (medicamento, motivo da recusa, etc.).
 NÃO tente resolver o problema sozinha — apenas transfira com o contexto completo.
 
+"""
+
+# Paciente JÁ atendido (tem consulta realizada ou agendada): pode receber o e-mail
+# do médico para questões clínicas do próprio tratamento.
+_MEDICATION_DOCTOR_EMAIL_BLOCK = """\
 PROBLEMA COM MEDICAÇÃO OU QUER FALAR COM O MÉDICO:
 Quando o paciente relatar problema com sua medicação (efeitos colaterais, dúvida sobre dose, \
 como tomar, qualquer questão clínica sobre o tratamento) OU disser que precisa/quer falar com \
@@ -95,6 +100,36 @@ siga o assunto — não sugira escrever ao Dr. Júlio ou à Dra. Bruna, nem ofer
 NÃO escreva frases como "se quiser tirar dúvidas sobre medicação ou cuidados, pode escrever para o \
 e-mail do Dr. Júlio" quando o paciente não pediu isso.
 
+"""
+
+# Paciente de PRIMEIRA VEZ (sem consulta realizada nem agendada): NÃO recebe o
+# e-mail do médico. O médico só orienta sobre medicação/tratamento depois de
+# atender em consulta — então o primeiro passo é agendar. Caso Carlos Henrique
+# (5581996720174, 25/11/2026): lead que só perguntou o preço, disse ter sido
+# paciente "há muitos anos" (virou is_returning_patient=True), mas sem nenhuma
+# consulta no banco; ao pedir "organizar os remédios" recebeu o e-mail da Dra.
+# Bruna indevidamente.
+_MEDICATION_FIRST_TIME_BLOCK = """\
+PROBLEMA COM MEDICAÇÃO OU QUER FALAR COM O MÉDICO:
+Quando a pessoa relatar problema com medicação (efeitos colaterais, dúvida sobre dose, como \
+tomar, qualquer questão clínica) OU disser que precisa/quer falar com o médico, e ela AINDA NÃO \
+tem consulta realizada nem agendada na clínica:
+1. Responda com empatia.
+2. NÃO forneça o e-mail do médico. Explique com gentileza que, para orientar sobre medicação ou \
+ajustar o tratamento, o médico precisa primeiro atender em consulta — então o primeiro passo é \
+agendar a consulta.
+3. Ofereça agendar: pergunte o dia e o turno de preferência (manhã ou tarde).
+NÃO chame transfer_to_human nesses casos.
+NUNCA passe o e-mail do Dr. Júlio nem da Dra. Bruna enquanto a pessoa não tiver consulta realizada \
+ou agendada — em hipótese alguma, mesmo que ela diga que já foi paciente antes. Quem não passou \
+pela consulta é orientado a agendar primeiro.
+Se ela apenas contar que adoeceu, se machucou, sentiu dor, foi ao pronto-socorro ou está \
+preocupada com um problema de saúde, acolha com empatia e siga o assunto — não ofereça orientação \
+médica nem o e-mail do médico.
+
+"""
+
+_MEDICAL_LIMITS_POS = """\
 NUNCA OFEREÇA DOCUMENTOS PROATIVAMENTE:
 Atestado, declaração, laudo, relatório, receita, requisição e qualquer outro documento só são \
 providenciados quando o PACIENTE OU RESPONSÁVEL PEDE explicitamente. Eva nunca sugere, nunca \
@@ -124,6 +159,28 @@ que têm fluxo próprio acima): \
 1. Chame transfer_to_human com reason descrevendo a dúvida médica do paciente. \
 2. Envie ao paciente EXATAMENTE o texto retornado pela ferramenta — nunca escreva sua própria mensagem.
 """
+
+
+def get_medical_limits_rule(can_receive_doctor_email: bool) -> str:
+    """Monta os limites médicos injetados no prompt.
+
+    can_receive_doctor_email=True (paciente com consulta realizada ou agendada):
+    inclui o bloco que entrega o e-mail do médico para questões clínicas do próprio
+    tratamento. False (primeira vez, ainda sem consulta): troca esse bloco por um
+    que NÃO passa o e-mail e orienta a agendar a consulta primeiro. As demais
+    travas (retirada de receita, documentos, limites) são iguais nos dois modos."""
+    block = (
+        _MEDICATION_DOCTOR_EMAIL_BLOCK
+        if can_receive_doctor_email
+        else _MEDICATION_FIRST_TIME_BLOCK
+    )
+    return _MEDICAL_LIMITS_PRE + block + _MEDICAL_LIMITS_POS
+
+
+# Constante pública: versão completa (com e-mail), para prompts/estados que a
+# injetam diretamente. O patient_agent/collect escolhem a variante via
+# get_medical_limits_rule conforme o paciente já passou (ou não) pela consulta.
+MEDICAL_LIMITS_RULE = get_medical_limits_rule(can_receive_doctor_email=True)
 
 CHANNEL_SCOPE_RULE = """\
 
