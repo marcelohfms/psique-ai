@@ -9432,27 +9432,27 @@ async def test_confirm_register_guard_skipped_when_users_fetch_fails():
 
 @pytest.mark.asyncio
 async def test_confirm_books_on_fathers_ficha_after_registration():
+    """Loop fechado: com a ficha do pai criada, o INSERT de appointments grava o
+    patient_id do PAI, nunca o do filho (caso Helder pai x filho Júnior)."""
     son = {"id": "son-id", "patient_name": "Helder Siqueira Maciel Júnior"}
     dad = {"id": "dad-id", "patient_name": "Helder Siqueira Maciel"}
-    captured = {}
-
-    async def _fake_resolve(phone, state, override=""):
-        captured["override"] = override
-        from app.graph.tools import _match_patient_by_name
-        return _match_patient_by_name([son, dad], override)
-
+    client, table, _execute = _make_supabase_client()
     with patch("app.graph.tools.get_users_by_phone", new_callable=AsyncMock, return_value=[son, dad]), \
          patch("app.graph.tools._get_doctor_calendar_id", new_callable=AsyncMock, return_value="cal"), \
-         patch("app.google_calendar.create_event", new_callable=AsyncMock, return_value="evt"), \
-         patch("app.graph.tools._resolve_patient_for_booking", side_effect=_fake_resolve), \
-         patch("app.graph.tools.get_supabase", new_callable=AsyncMock, return_value=_make_supabase_client()) as _gs:
+         patch("app.google_calendar.create_event", new_callable=AsyncMock, return_value="evt-123"), \
+         patch("app.graph.tools.get_user_by_phone", new_callable=AsyncMock, return_value=dad), \
+         patch("app.graph.tools.log_event", new_callable=AsyncMock), \
+         patch("app.graph.tools._notify_clinic", new_callable=AsyncMock), \
+         patch("app.graph.tools.get_supabase", new_callable=AsyncMock, return_value=client):
         out = await _confirm_tool_t1.coroutine(
             "2026-12-02T11:00:00", 60, _make_state(preferred_doctor="bruna"),
             CONFIG, patient_name_override="Helder Siqueira Maciel")
     assert "register_managed_patient" not in out
-    from app.graph.tools import _match_patient_by_name
-    assert _match_patient_by_name([son, dad], "Helder Siqueira Maciel")["id"] == "dad-id"
-    assert captured["override"] == "Helder Siqueira Maciel"
+    assert table.insert.called, f"insert nao chamado; saida: {out}"
+    payload = table.insert.call_args.args[0]
+    assert payload["appointment_id"] == "evt-123"
+    assert payload["patient_id"] == "dad-id"
+    assert payload["patient_id"] != "son-id"
 
 
 def test_match_patient_by_name_exact_folds_accents():
