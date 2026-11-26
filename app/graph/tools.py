@@ -17,6 +17,10 @@ from app.dates import is_born_confirmed
 from app.phone import _phone_variants
 from app.chatwoot import get_conversation_id, unassign_agent_bot, add_label
 from app.graph.prompts import CORRECT_PIX_KEY
+from app.graph.schemas import _parse_birth_date
+from app.patients import (
+    get_contact_by_phone, link_patient_contact, upsert_patient, _compute_age,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -123,6 +127,20 @@ async def _resolve_doctor(state: dict, config: RunnableConfig) -> str:
     return doctor
 
 
+def _exact_patient_match(all_users: list[dict], name: str) -> dict | None:
+    """Ficha cujo nome civil, nome ou nome social casa EXATAMENTE com `name`
+    (sem acento, sem caixa). Prefixo não casa: 'Fulano' ≠ 'Fulano Júnior'."""
+    from app.patients import normalize_person_name
+    target = normalize_person_name(name)
+    if not target:
+        return None
+    for _u in all_users:
+        for _field in ("patient_name", "name", "social_name"):
+            if normalize_person_name(_u.get(_field)) == target:
+                return _u
+    return None
+
+
 def _match_patient_by_name(all_users: list[dict], target: str) -> dict | None:
     """Match a patient record by name among a contact's patients.
 
@@ -138,13 +156,16 @@ def _match_patient_by_name(all_users: list[dict], target: str) -> dict | None:
     target = (target or "").strip().lower()
     if not target:
         return None
+    # Comparações exatas com a mesma dobra de acento/caixa de _exact_patient_match.
+    from app.patients import normalize_person_name
+    _target_norm = normalize_person_name(target)
     for _u in all_users:
-        _pname = (_u.get("patient_name") or _u.get("name") or "").strip().lower()
-        if _pname == target:
+        _pname = normalize_person_name(_u.get("patient_name") or _u.get("name") or "")
+        if _pname and _pname == _target_norm:
             return _u
     for _u in all_users:
-        _sname = (_u.get("social_name") or "").strip().lower()
-        if _sname and _sname == target:
+        _sname = normalize_person_name(_u.get("social_name") or "")
+        if _sname and _sname == _target_norm:
             return _u
     # Substring com limite de palavra: sem \b, "Ana" casava com "Mariana Silva" e
     # anexava a consulta ao irmão errado. \b usa \w, que em str Python já inclui
@@ -1198,8 +1219,10 @@ async def confirm_appointment(
     # vez de agendar no escuro. Fica ANTES do create_event/insert (nunca cria evento sob o
     # irmão errado) e usa as MESMAS funções de _resolve_patient_for_booking (paridade).
     _phone_sn = config["configurable"]["phone"].replace("@s.whatsapp.net", "")
+    _fetch_ok = False
     try:
         _all_users_sn = await get_users_by_phone(_phone_sn)
+        _fetch_ok = True
     except Exception:
         # Supabase indisponível: não dá para avaliar multi-paciente aqui. Segue o fluxo
         # normal, que trata a falha de resolução adiante com rollback do evento do Calendar.
@@ -1209,6 +1232,29 @@ async def confirm_appointment(
             _phone_sn, exc_info=True,
         )
         _all_users_sn = []
+    # Trava de cadastro gerenciado: override que nomeia alguém sem ficha neste número
+    # nunca pode cair na ficha existente (caso Helder pai x filho Júnior).
+    # Só roda com a leitura de fichas bem-sucedida e vale para QUALQUER número de fichas
+    # (uma ou várias), antes da rede multi-paciente. Com a leitura falha, _all_users_sn=[]
+    # faria Eva tratar paciente existente como não cadastrado e o link re-vincularia a ficha
+    # com is_self=False.
+    if _fetch_ok and (patient_name_override or "").strip() and _exact_patient_match(
+        _all_users_sn, patient_name_override
+    ) is None:
+        _logger.warning(
+            "confirm_appointment: override sem ficha exata — pedindo cadastro. phone=%s",
+            _phone_sn,
+        )
+        return (
+            "[INSTRUÇÃO INTERNA — NÃO ENVIE AO PACIENTE] O paciente "
+            f"'{patient_name_override.strip()}' ainda não "
+            "tem cadastro neste número. NÃO agende na ficha existente. Se for paciente ADULTO, "
+            "colete nome completo, data de nascimento, se já é paciente da clínica, CPF e e-mail "
+            "e chame register_managed_patient; depois rechame confirm_appointment com esse nome "
+            "em patient_name_override. Se for MENOR de 18, chame register_managed_patient mesmo "
+            "assim — ela transfere para a atendente."
+        )
+
     if len(_all_users_sn) > 1 and _match_patient_by_name(_all_users_sn, patient_name_override) is None:
         _names_sn = ", ".join(
             u.get("patient_name") or u.get("name") or "Paciente" for u in _all_users_sn
@@ -5809,4 +5855,84 @@ async def waive_booking_fee(
     return (
         f"Taxa de reserva isentada para a consulta de {date_str}. Informe ao paciente que a "
         f"taxa de reserva foi dispensada e que não é necessário nenhum pagamento antecipado."
+    )
+
+
+@tool
+async def register_managed_patient(
+    patient_name: str,
+    birth_date: str,
+    is_returning_patient: bool,
+    patient_cpf: str,
+    patient_email: str,
+    relationship: str,
+    state: Annotated[dict, InjectedState],
+    config: RunnableConfig,
+) -> str:
+    """
+    Cadastra outra pessoa ADULTA (pai, esposa, amigo...) que o contato vai agendar
+    neste mesmo WhatsApp, e vincula a ficha ao contato. Chame antes de
+    confirm_appointment quando o nome não tem ficha neste número.
+    patient_name: nome completo do paciente. birth_date: dd/mm/aaaa.
+    is_returning_patient: True se já se consultou na clínica (CPF opcional);
+      False para paciente novo (CPF obrigatório).
+    relationship: parentesco com quem fala (ex: 'pai', 'esposa', 'amigo').
+    Menores de 18 anos: a ferramenta transfere para a atendente e não cadastra.
+    """
+    from app.utils import looks_like_name, format_person_name
+
+    if not looks_like_name(patient_name):
+        return (
+            "NOME_INVALIDO: o que foi informado não parece um nome de pessoa. "
+            "Peça novamente o nome completo do paciente."
+        )
+
+    normalized_birth = _parse_birth_date(birth_date or "")
+    if not normalized_birth:
+        return "DATA_INVALIDA: peça novamente a data de nascimento do paciente no formato dd/mm/aaaa."
+    age = _compute_age(normalized_birth)
+    if age is not None and age < 18:
+        return await transfer_to_human.coroutine(
+            reason="Cadastro de paciente menor gerenciado — v1 adulto-só",
+            state=state, config=config,
+        )
+
+    patient_cpf = (patient_cpf or "").strip()
+    if not is_returning_patient and any(
+        kw in patient_cpf.lower() for kw in (
+            "não tenho", "nao tenho", "estrangeiro", "estrangeira",
+            "não possuo", "nao possuo", "passport", "passaporte",
+            "sem cpf", "não tem cpf", "nao tem cpf",
+        )
+    ):
+        patient_cpf = "N/A"  # mesmo tratamento do collect_info para estrangeiros
+
+    if not is_returning_patient and not patient_cpf:
+        return "CPF_OBRIGATORIO: para paciente novo, peça o CPF antes de cadastrar."
+
+    phone = config["configurable"]["phone"].replace("@s.whatsapp.net", "")
+    contact = await get_contact_by_phone(phone)
+    if not contact:
+        return "ERRO: contato não encontrado para este número. Transfira para a atendente."
+
+    exact_name = format_person_name(patient_name)
+    # Sem patient_id: upsert_patient reconcilia retornante por nome+nascimento
+    # ou insere ficha nova; nunca resolve por telefone.
+    patient_id = await upsert_patient({
+        "name": exact_name,
+        "birth_date": normalized_birth,
+        "cpf": (patient_cpf or "").strip() or None,
+        "email": (patient_email or "").strip() or None,
+    })
+    if not patient_id:
+        return "ERRO: não foi possível cadastrar o paciente. Transfira para a atendente."
+
+    for role in ("agendamento", "financeiro", "consulta"):
+        await link_patient_contact(
+            patient_id, contact["id"], role, is_self=False, relationship=relationship,
+        )
+
+    return (
+        f"PACIENTE_CADASTRADO: {exact_name}. Agora chame confirm_appointment com "
+        f"patient_name_override=\"{exact_name}\" para o horário escolhido."
     )

@@ -9246,3 +9246,232 @@ async def test_request_document_delega_para_register_document_request():
     assert captured["config"] is CONFIG
     assert captured["medication_note"] == "Escitalopram 20mg"
     assert captured["patient_name_override"] == "Luiz"
+
+
+# ── Trava: confirm_appointment não agenda em ficha de outra pessoa ───────────
+from app.graph.tools import _exact_patient_match, confirm_appointment as _confirm_tool_t1
+
+
+def test_exact_patient_match_ignores_prefix_and_folds_accents():
+    son = {"patient_name": "Helder Siqueira Maciel Júnior", "social_name": None}
+    jose = {"patient_name": "José da Silva", "social_name": None}
+    assert _exact_patient_match([son], "Helder Siqueira Maciel") is None
+    assert _exact_patient_match([son], "helder siqueira maciel júnior") == son
+    assert _exact_patient_match([jose], "Jose da Silva") == jose
+
+
+@pytest.mark.asyncio
+async def test_confirm_blocks_override_for_unregistered_person():
+    son = {"id": "son-id", "patient_name": "Helder Siqueira Maciel Júnior"}
+    with patch("app.graph.tools.get_users_by_phone", new_callable=AsyncMock, return_value=[son]), \
+         patch("app.graph.tools._get_doctor_calendar_id", new_callable=AsyncMock, return_value="cal"), \
+         patch("app.google_calendar.create_event", new_callable=AsyncMock) as mock_create:
+        out = await _confirm_tool_t1.coroutine(
+            "2026-12-02T11:00:00", 60, _make_state(preferred_doctor="bruna"),
+            CONFIG, patient_name_override="Helder Siqueira Maciel")
+    assert "register_managed_patient" in out
+    mock_create.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_confirm_does_not_block_when_override_matches_exactly():
+    son = {"id": "son-id", "patient_name": "Helder Siqueira Maciel Júnior"}
+    with patch("app.graph.tools.get_users_by_phone", new_callable=AsyncMock, return_value=[son]), \
+         patch("app.graph.tools._get_doctor_calendar_id", new_callable=AsyncMock, return_value="cal"), \
+         patch("app.google_calendar.create_event", new_callable=AsyncMock, return_value="evt") as mock_create, \
+         patch("app.graph.tools._resolve_patient_for_booking", new_callable=AsyncMock, return_value=son), \
+         patch("app.graph.tools.get_supabase", new_callable=AsyncMock, return_value=_make_supabase_client()):
+        out = await _confirm_tool_t1.coroutine(
+            "2026-12-02T11:00:00", 60, _make_state(preferred_doctor="bruna"),
+            CONFIG, patient_name_override="Helder Siqueira Maciel Júnior")
+    assert "register_managed_patient" not in out
+    mock_create.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_confirm_empty_override_single_patient_not_blocked():
+    me = {"id": "me-id", "patient_name": "Maria"}
+    with patch("app.graph.tools.get_users_by_phone", new_callable=AsyncMock, return_value=[me]), \
+         patch("app.graph.tools._get_doctor_calendar_id", new_callable=AsyncMock, return_value="cal"), \
+         patch("app.google_calendar.create_event", new_callable=AsyncMock, return_value="evt") as mock_create, \
+         patch("app.graph.tools._resolve_patient_for_booking", new_callable=AsyncMock, return_value=me), \
+         patch("app.graph.tools.get_supabase", new_callable=AsyncMock, return_value=_make_supabase_client()):
+        out = await _confirm_tool_t1.coroutine(
+            "2026-12-02T11:00:00", 60, _make_state(), CONFIG, patient_name_override="")
+    assert "register_managed_patient" not in out
+    mock_create.assert_called_once()
+
+
+# ── register_managed_patient ──────────────────────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_register_managed_patient_creates_ficha_and_links_three_roles():
+    from app.graph.tools import register_managed_patient
+    contact = {"id": "contact-id"}
+    with patch("app.graph.tools.get_contact_by_phone", new_callable=AsyncMock, return_value=contact), \
+         patch("app.graph.tools.upsert_patient", new_callable=AsyncMock, return_value="dad-id") as mock_up, \
+         patch("app.graph.tools.link_patient_contact", new_callable=AsyncMock) as mock_link:
+        out = await register_managed_patient.coroutine(
+            "Helder Siqueira Maciel", "10/03/1960", False, "123.456.789-00",
+            "pai@x.com", "pai", _make_state(), CONFIG)
+    assert out.startswith("PACIENTE_CADASTRADO:")
+    assert "Helder Siqueira Maciel" in out
+    args, kwargs = mock_up.call_args
+    assert args[0]["birth_date"] == "10/03/1960"
+    roles = {c.args[2] for c in mock_link.call_args_list}
+    assert roles == {"agendamento", "financeiro", "consulta"}
+    assert all(c.kwargs.get("is_self") is False for c in mock_link.call_args_list)
+
+
+@pytest.mark.asyncio
+async def test_register_managed_patient_minor_transfers_and_creates_nothing():
+    from app.graph.tools import register_managed_patient
+    with patch("app.graph.tools.upsert_patient", new_callable=AsyncMock) as mock_up, \
+         patch("app.graph.tools.transfer_to_human") as mock_transfer:
+        mock_transfer.coroutine = AsyncMock(return_value="transferido")
+        out = await register_managed_patient.coroutine(
+            "Joãozinho Silva", "10/03/2015", False, "", "", "filho", _make_state(), CONFIG)
+    mock_up.assert_not_called()
+    mock_transfer.coroutine.assert_awaited_once()
+    assert out == "transferido"
+
+
+@pytest.mark.asyncio
+async def test_register_managed_patient_rejects_non_name():
+    from app.graph.tools import register_managed_patient
+    with patch("app.graph.tools.upsert_patient", new_callable=AsyncMock) as mock_up:
+        out = await register_managed_patient.coroutine(
+            "quinta-feira à tarde", "10/03/1960", False, "", "", "pai", _make_state(), CONFIG)
+    mock_up.assert_not_called()
+    assert "nome" in out.lower()
+
+
+@pytest.mark.asyncio
+async def test_register_managed_patient_returning_relies_on_reconciliation():
+    from app.graph.tools import register_managed_patient
+    contact = {"id": "contact-id"}
+    with patch("app.graph.tools.get_contact_by_phone", new_callable=AsyncMock, return_value=contact), \
+         patch("app.graph.tools.upsert_patient", new_callable=AsyncMock, return_value="existing-id") as mock_up, \
+         patch("app.graph.tools.link_patient_contact", new_callable=AsyncMock):
+        out = await register_managed_patient.coroutine(
+            "Helder Siqueira Maciel", "10/03/1960", True, "", "pai@x.com", "pai",
+            _make_state(), CONFIG)
+    assert out.startswith("PACIENTE_CADASTRADO:")
+    assert len(mock_up.call_args.args) == 1
+    assert "patient_id" not in mock_up.call_args.kwargs
+
+
+@pytest.mark.asyncio
+async def test_register_managed_patient_new_without_cpf_does_not_write():
+    from app.graph.tools import register_managed_patient
+    with patch("app.graph.tools.get_contact_by_phone", new_callable=AsyncMock, return_value={"id": "c"}), \
+         patch("app.graph.tools.upsert_patient", new_callable=AsyncMock) as mock_up, \
+         patch("app.graph.tools.link_patient_contact", new_callable=AsyncMock) as mock_link:
+        out = await register_managed_patient.coroutine(
+            "Helder Siqueira Maciel", "10/03/1960", False, "", "pai@x.com", "pai",
+            _make_state(), CONFIG)
+    assert "CPF_OBRIGATORIO" in out
+    mock_up.assert_not_called()
+    mock_link.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_register_managed_patient_invalid_birth_date_does_not_write():
+    from app.graph.tools import register_managed_patient
+    with patch("app.graph.tools.get_contact_by_phone", new_callable=AsyncMock, return_value={"id": "c"}), \
+         patch("app.graph.tools.upsert_patient", new_callable=AsyncMock) as mock_up:
+        out = await register_managed_patient.coroutine(
+            "Helder Siqueira Maciel", "sei la", False, "123.456.789-00", "", "pai",
+            _make_state(), CONFIG)
+    assert "DATA_INVALIDA" in out
+    mock_up.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_register_managed_patient_missing_contact_does_not_write():
+    from app.graph.tools import register_managed_patient
+    with patch("app.graph.tools.get_contact_by_phone", new_callable=AsyncMock, return_value=None), \
+         patch("app.graph.tools.upsert_patient", new_callable=AsyncMock) as mock_up:
+        out = await register_managed_patient.coroutine(
+            "Helder Siqueira Maciel", "10/03/1960", False, "123.456.789-00", "", "pai",
+            _make_state(), CONFIG)
+    assert out.startswith("ERRO")
+    mock_up.assert_not_called()
+
+
+# ── Fix-wave: trava de cadastro (multi-ficha, falha de leitura, acento, CPF) ──
+
+@pytest.mark.asyncio
+async def test_confirm_register_guard_fires_for_multi_patient_contact():
+    a = {"id": "a-id", "patient_name": "Laila Souza"}
+    b = {"id": "b-id", "patient_name": "Suzi Souza"}
+    with patch("app.graph.tools.get_users_by_phone", new_callable=AsyncMock, return_value=[a, b]), \
+         patch("app.graph.tools._get_doctor_calendar_id", new_callable=AsyncMock, return_value="cal"), \
+         patch("app.google_calendar.create_event", new_callable=AsyncMock) as mock_create:
+        out = await _confirm_tool_t1.coroutine(
+            "2026-12-02T11:00:00", 60, _make_state(preferred_doctor="bruna"),
+            CONFIG, patient_name_override="Helder Siqueira Maciel")
+    assert "register_managed_patient" in out
+    assert "Qual o nome completo do paciente" not in out
+    mock_create.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_confirm_register_guard_skipped_when_users_fetch_fails():
+    son = {"id": "son-id", "patient_name": "Helder Siqueira Maciel Júnior"}
+    with patch("app.graph.tools.get_users_by_phone", new_callable=AsyncMock, side_effect=RuntimeError("supabase fora")), \
+         patch("app.graph.tools._get_doctor_calendar_id", new_callable=AsyncMock, return_value="cal"), \
+         patch("app.google_calendar.create_event", new_callable=AsyncMock, return_value="evt"), \
+         patch("app.graph.tools._resolve_patient_for_booking", new_callable=AsyncMock, return_value=son), \
+         patch("app.graph.tools.get_supabase", new_callable=AsyncMock, return_value=_make_supabase_client()):
+        out = await _confirm_tool_t1.coroutine(
+            "2026-12-02T11:00:00", 60, _make_state(preferred_doctor="bruna"),
+            CONFIG, patient_name_override="Helder Siqueira Maciel")
+    assert "register_managed_patient" not in out
+
+
+@pytest.mark.asyncio
+async def test_confirm_books_on_fathers_ficha_after_registration():
+    """Loop fechado: com a ficha do pai criada, o INSERT de appointments grava o
+    patient_id do PAI, nunca o do filho (caso Helder pai x filho Júnior)."""
+    son = {"id": "son-id", "patient_name": "Helder Siqueira Maciel Júnior"}
+    dad = {"id": "dad-id", "patient_name": "Helder Siqueira Maciel"}
+    client, table, _execute = _make_supabase_client()
+    with patch("app.graph.tools.get_users_by_phone", new_callable=AsyncMock, return_value=[son, dad]), \
+         patch("app.graph.tools._get_doctor_calendar_id", new_callable=AsyncMock, return_value="cal"), \
+         patch("app.google_calendar.create_event", new_callable=AsyncMock, return_value="evt-123"), \
+         patch("app.graph.tools.get_user_by_phone", new_callable=AsyncMock, return_value=dad), \
+         patch("app.graph.tools.log_event", new_callable=AsyncMock), \
+         patch("app.graph.tools._notify_clinic", new_callable=AsyncMock), \
+         patch("app.graph.tools.get_supabase", new_callable=AsyncMock, return_value=client):
+        out = await _confirm_tool_t1.coroutine(
+            "2026-12-02T11:00:00", 60, _make_state(preferred_doctor="bruna"),
+            CONFIG, patient_name_override="Helder Siqueira Maciel")
+    assert "register_managed_patient" not in out
+    assert table.insert.called, f"insert nao chamado; saida: {out}"
+    payload = table.insert.call_args.args[0]
+    assert payload["appointment_id"] == "evt-123"
+    assert payload["patient_id"] == "dad-id"
+    assert payload["patient_id"] != "son-id"
+
+
+def test_match_patient_by_name_exact_folds_accents():
+    from app.graph.tools import _match_patient_by_name
+    jose = {"id": "j", "patient_name": "José da Silva"}
+    outro = {"id": "o", "patient_name": "Maria Souza"}
+    assert _match_patient_by_name([outro, jose], "Jose da Silva")["id"] == "j"
+    assert _match_patient_by_name([outro, {"id": "s", "patient_name": "X", "social_name": "Zé Açaí"}], "ze acai")["id"] == "s"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("cpf_text", ["não tenho", "sou estrangeiro", "passaporte", "sem cpf"])
+async def test_register_managed_patient_new_foreigner_cpf_accepted_as_na(cpf_text):
+    from app.graph.tools import register_managed_patient
+    with patch("app.graph.tools.get_contact_by_phone", new_callable=AsyncMock, return_value={"id": "c"}), \
+         patch("app.graph.tools.upsert_patient", new_callable=AsyncMock, return_value="p-id") as mock_up, \
+         patch("app.graph.tools.link_patient_contact", new_callable=AsyncMock):
+        out = await register_managed_patient.coroutine(
+            "John Smith Doe", "10/03/1960", False, cpf_text, "", "amigo",
+            _make_state(), CONFIG)
+    assert out.startswith("PACIENTE_CADASTRADO:")
+    assert mock_up.call_args.args[0]["cpf"] == "N/A"
