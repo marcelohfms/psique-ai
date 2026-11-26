@@ -156,13 +156,16 @@ def _match_patient_by_name(all_users: list[dict], target: str) -> dict | None:
     target = (target or "").strip().lower()
     if not target:
         return None
+    # Comparações exatas com a mesma dobra de acento/caixa de _exact_patient_match.
+    from app.patients import normalize_person_name
+    _target_norm = normalize_person_name(target)
     for _u in all_users:
-        _pname = (_u.get("patient_name") or _u.get("name") or "").strip().lower()
-        if _pname == target:
+        _pname = normalize_person_name(_u.get("patient_name") or _u.get("name") or "")
+        if _pname and _pname == _target_norm:
             return _u
     for _u in all_users:
-        _sname = (_u.get("social_name") or "").strip().lower()
-        if _sname and _sname == target:
+        _sname = normalize_person_name(_u.get("social_name") or "")
+        if _sname and _sname == _target_norm:
             return _u
     # Substring com limite de palavra: sem \b, "Ana" casava com "Mariana Silva" e
     # anexava a consulta ao irmão errado. \b usa \w, que em str Python já inclui
@@ -1216,8 +1219,10 @@ async def confirm_appointment(
     # vez de agendar no escuro. Fica ANTES do create_event/insert (nunca cria evento sob o
     # irmão errado) e usa as MESMAS funções de _resolve_patient_for_booking (paridade).
     _phone_sn = config["configurable"]["phone"].replace("@s.whatsapp.net", "")
+    _fetch_ok = False
     try:
         _all_users_sn = await get_users_by_phone(_phone_sn)
+        _fetch_ok = True
     except Exception:
         # Supabase indisponível: não dá para avaliar multi-paciente aqui. Segue o fluxo
         # normal, que trata a falha de resolução adiante com rollback do evento do Calendar.
@@ -1227,25 +1232,13 @@ async def confirm_appointment(
             _phone_sn, exc_info=True,
         )
         _all_users_sn = []
-    if len(_all_users_sn) > 1 and _match_patient_by_name(_all_users_sn, patient_name_override) is None:
-        _names_sn = ", ".join(
-            u.get("patient_name") or u.get("name") or "Paciente" for u in _all_users_sn
-        )
-        _logger.warning(
-            "confirm_appointment: contato multi-paciente sem override único — pedindo nome. phone=%s",
-            _phone_sn,
-        )
-        return (
-            "[INSTRUÇÃO INTERNA — NÃO ENVIE AO PACIENTE] Este contato administra mais de um "
-            f"paciente ({_names_sn}) e não deu para identificar com segurança para qual a "
-            "consulta é. Pergunte ao contato: 'Qual o nome completo do paciente para quem "
-            "deseja agendar?' e rechame confirm_appointment com esse nome em "
-            "patient_name_override."
-        )
-
     # Trava de cadastro gerenciado: override que nomeia alguém sem ficha neste número
     # nunca pode cair na ficha existente (caso Helder pai x filho Júnior).
-    if (patient_name_override or "").strip() and _exact_patient_match(
+    # Só roda com a leitura de fichas bem-sucedida e vale para QUALQUER número de fichas
+    # (uma ou várias), antes da rede multi-paciente. Com a leitura falha, _all_users_sn=[]
+    # faria Eva tratar paciente existente como não cadastrado e o link re-vincularia a ficha
+    # com is_self=False.
+    if _fetch_ok and (patient_name_override or "").strip() and _exact_patient_match(
         _all_users_sn, patient_name_override
     ) is None:
         _logger.warning(
@@ -1260,6 +1253,22 @@ async def confirm_appointment(
             "e chame register_managed_patient; depois rechame confirm_appointment com esse nome "
             "em patient_name_override. Se for MENOR de 18, chame register_managed_patient mesmo "
             "assim — ela transfere para a atendente."
+        )
+
+    if len(_all_users_sn) > 1 and _match_patient_by_name(_all_users_sn, patient_name_override) is None:
+        _names_sn = ", ".join(
+            u.get("patient_name") or u.get("name") or "Paciente" for u in _all_users_sn
+        )
+        _logger.warning(
+            "confirm_appointment: contato multi-paciente sem override único — pedindo nome. phone=%s",
+            _phone_sn,
+        )
+        return (
+            "[INSTRUÇÃO INTERNA — NÃO ENVIE AO PACIENTE] Este contato administra mais de um "
+            f"paciente ({_names_sn}) e não deu para identificar com segurança para qual a "
+            "consulta é. Pergunte ao contato: 'Qual o nome completo do paciente para quem "
+            "deseja agendar?' e rechame confirm_appointment com esse nome em "
+            "patient_name_override."
         )
 
     _split_sibling: dict | None = None
@@ -5888,7 +5897,17 @@ async def register_managed_patient(
             state=state, config=config,
         )
 
-    if not is_returning_patient and not (patient_cpf or "").strip():
+    patient_cpf = (patient_cpf or "").strip()
+    if not is_returning_patient and any(
+        kw in patient_cpf.lower() for kw in (
+            "não tenho", "nao tenho", "estrangeiro", "estrangeira",
+            "não possuo", "nao possuo", "passport", "passaporte",
+            "sem cpf", "não tem cpf", "nao tem cpf",
+        )
+    ):
+        patient_cpf = "N/A"  # mesmo tratamento do collect_info para estrangeiros
+
+    if not is_returning_patient and not patient_cpf:
         return "CPF_OBRIGATORIO: para paciente novo, peça o CPF antes de cadastrar."
 
     phone = config["configurable"]["phone"].replace("@s.whatsapp.net", "")
