@@ -19,8 +19,7 @@ from app.chatwoot import get_conversation_id, unassign_agent_bot, add_label
 from app.graph.prompts import CORRECT_PIX_KEY
 from app.graph.schemas import _parse_birth_date
 from app.patients import (
-    get_contact_by_phone, upsert_contact, link_patient_contact, upsert_patient,
-    find_patient_by_name_birth, _compute_age,
+    get_contact_by_phone, link_patient_contact, upsert_patient, _compute_age,
 )
 
 logger = logging.getLogger(__name__)

@@ -9357,4 +9357,43 @@ async def test_register_managed_patient_returning_relies_on_reconciliation():
             "Helder Siqueira Maciel", "10/03/1960", True, "", "pai@x.com", "pai",
             _make_state(), CONFIG)
     assert out.startswith("PACIENTE_CADASTRADO:")
-    assert mock_up.call_args.kwargs.get("patient_id") in (None, )
+    assert len(mock_up.call_args.args) == 1
+    assert "patient_id" not in mock_up.call_args.kwargs
+
+
+@pytest.mark.asyncio
+async def test_register_managed_patient_new_without_cpf_does_not_write():
+    from app.graph.tools import register_managed_patient
+    with patch("app.graph.tools.get_contact_by_phone", new_callable=AsyncMock, return_value={"id": "c"}), \
+         patch("app.graph.tools.upsert_patient", new_callable=AsyncMock) as mock_up, \
+         patch("app.graph.tools.link_patient_contact", new_callable=AsyncMock) as mock_link:
+        out = await register_managed_patient.coroutine(
+            "Helder Siqueira Maciel", "10/03/1960", False, "", "pai@x.com", "pai",
+            _make_state(), CONFIG)
+    assert "CPF_OBRIGATORIO" in out
+    mock_up.assert_not_called()
+    mock_link.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_register_managed_patient_invalid_birth_date_does_not_write():
+    from app.graph.tools import register_managed_patient
+    with patch("app.graph.tools.get_contact_by_phone", new_callable=AsyncMock, return_value={"id": "c"}), \
+         patch("app.graph.tools.upsert_patient", new_callable=AsyncMock) as mock_up:
+        out = await register_managed_patient.coroutine(
+            "Helder Siqueira Maciel", "sei la", False, "123.456.789-00", "", "pai",
+            _make_state(), CONFIG)
+    assert "DATA_INVALIDA" in out
+    mock_up.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_register_managed_patient_missing_contact_does_not_write():
+    from app.graph.tools import register_managed_patient
+    with patch("app.graph.tools.get_contact_by_phone", new_callable=AsyncMock, return_value=None), \
+         patch("app.graph.tools.upsert_patient", new_callable=AsyncMock) as mock_up:
+        out = await register_managed_patient.coroutine(
+            "Helder Siqueira Maciel", "10/03/1960", False, "123.456.789-00", "", "pai",
+            _make_state(), CONFIG)
+    assert out.startswith("ERRO")
+    mock_up.assert_not_called()
