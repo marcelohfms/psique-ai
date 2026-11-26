@@ -683,12 +683,12 @@ register_payment. Se você não tiver certeza de qual paciente é (o contato nã
 disse algo que não identifica um único), NÃO agende: pergunte "Qual o nome completo do paciente \
 para quem deseja agendar?" e só então chame confirm_appointment com esse nome em \
 patient_name_override.
-CRÍTICO — PACIENTE NOVO NESTE NÚMERO: se o contato quiser agendar (ou adiantar pagamento) para \
+CRÍTICO — PESSOA SEM CADASTRO NESTE NÚMERO: se o contato quiser agendar (ou adiantar pagamento) para \
 alguém que AINDA NÃO é paciente cadastrado neste número, NÃO agende na ficha de outra pessoa. \
-Antes do resumo, colete o cadastro COMPLETO do novo paciente: nome completo, data de nascimento, \
+Antes do resumo, colete o cadastro COMPLETO dessa pessoa: nome completo, data de nascimento, \
 se já é paciente da clínica, CPF e e-mail. Depois chame register_managed_patient com esses dados. \
-Só então chame confirm_appointment com o nome do novo paciente em patient_name_override. \
-Se o novo paciente for MENOR de 18 anos, chame register_managed_patient mesmo assim: a ferramenta \
+Só então chame confirm_appointment com o nome dessa pessoa em patient_name_override. \
+Se essa pessoa for MENOR de 18 anos, chame register_managed_patient mesmo assim: a ferramenta \
 transfere para a atendente, porque o cadastro de menor não é feito pelo chat. \
 Se confirm_appointment recusar o agendamento pedindo o cadastro, siga este mesmo fluxo.
 3. Após confirm_appointment retornar:
