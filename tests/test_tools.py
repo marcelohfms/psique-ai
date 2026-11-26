@@ -9300,3 +9300,61 @@ async def test_confirm_empty_override_single_patient_not_blocked():
             "2026-12-02T11:00:00", 60, _make_state(), CONFIG, patient_name_override="")
     assert "register_managed_patient" not in out
     mock_create.assert_called_once()
+
+
+# ── register_managed_patient ──────────────────────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_register_managed_patient_creates_ficha_and_links_three_roles():
+    from app.graph.tools import register_managed_patient
+    contact = {"id": "contact-id"}
+    with patch("app.graph.tools.get_contact_by_phone", new_callable=AsyncMock, return_value=contact), \
+         patch("app.graph.tools.upsert_patient", new_callable=AsyncMock, return_value="dad-id") as mock_up, \
+         patch("app.graph.tools.link_patient_contact", new_callable=AsyncMock) as mock_link:
+        out = await register_managed_patient.coroutine(
+            "Helder Siqueira Maciel", "10/03/1960", False, "123.456.789-00",
+            "pai@x.com", "pai", _make_state(), CONFIG)
+    assert out.startswith("PACIENTE_CADASTRADO:")
+    assert "Helder Siqueira Maciel" in out
+    args, kwargs = mock_up.call_args
+    assert args[0]["birth_date"] == "10/03/1960"
+    roles = {c.args[2] for c in mock_link.call_args_list}
+    assert roles == {"agendamento", "financeiro", "consulta"}
+    assert all(c.kwargs.get("is_self") is False for c in mock_link.call_args_list)
+
+
+@pytest.mark.asyncio
+async def test_register_managed_patient_minor_transfers_and_creates_nothing():
+    from app.graph.tools import register_managed_patient
+    with patch("app.graph.tools.upsert_patient", new_callable=AsyncMock) as mock_up, \
+         patch("app.graph.tools.transfer_to_human") as mock_transfer:
+        mock_transfer.coroutine = AsyncMock(return_value="transferido")
+        out = await register_managed_patient.coroutine(
+            "Joãozinho Silva", "10/03/2015", False, "", "", "filho", _make_state(), CONFIG)
+    mock_up.assert_not_called()
+    mock_transfer.coroutine.assert_awaited_once()
+    assert out == "transferido"
+
+
+@pytest.mark.asyncio
+async def test_register_managed_patient_rejects_non_name():
+    from app.graph.tools import register_managed_patient
+    with patch("app.graph.tools.upsert_patient", new_callable=AsyncMock) as mock_up:
+        out = await register_managed_patient.coroutine(
+            "quinta-feira à tarde", "10/03/1960", False, "", "", "pai", _make_state(), CONFIG)
+    mock_up.assert_not_called()
+    assert "nome" in out.lower()
+
+
+@pytest.mark.asyncio
+async def test_register_managed_patient_returning_relies_on_reconciliation():
+    from app.graph.tools import register_managed_patient
+    contact = {"id": "contact-id"}
+    with patch("app.graph.tools.get_contact_by_phone", new_callable=AsyncMock, return_value=contact), \
+         patch("app.graph.tools.upsert_patient", new_callable=AsyncMock, return_value="existing-id") as mock_up, \
+         patch("app.graph.tools.link_patient_contact", new_callable=AsyncMock):
+        out = await register_managed_patient.coroutine(
+            "Helder Siqueira Maciel", "10/03/1960", True, "", "pai@x.com", "pai",
+            _make_state(), CONFIG)
+    assert out.startswith("PACIENTE_CADASTRADO:")
+    assert mock_up.call_args.kwargs.get("patient_id") in (None, )

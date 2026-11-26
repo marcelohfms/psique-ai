@@ -17,6 +17,11 @@ from app.dates import is_born_confirmed
 from app.phone import _phone_variants
 from app.chatwoot import get_conversation_id, unassign_agent_bot, add_label
 from app.graph.prompts import CORRECT_PIX_KEY
+from app.graph.schemas import _parse_birth_date
+from app.patients import (
+    get_contact_by_phone, upsert_contact, link_patient_contact, upsert_patient,
+    find_patient_by_name_birth, _compute_age,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -5842,4 +5847,74 @@ async def waive_booking_fee(
     return (
         f"Taxa de reserva isentada para a consulta de {date_str}. Informe ao paciente que a "
         f"taxa de reserva foi dispensada e que não é necessário nenhum pagamento antecipado."
+    )
+
+
+@tool
+async def register_managed_patient(
+    patient_name: str,
+    birth_date: str,
+    is_returning_patient: bool,
+    patient_cpf: str,
+    patient_email: str,
+    relationship: str,
+    state: Annotated[dict, InjectedState],
+    config: RunnableConfig,
+) -> str:
+    """
+    Cadastra outra pessoa ADULTA (pai, esposa, amigo...) que o contato vai agendar
+    neste mesmo WhatsApp, e vincula a ficha ao contato. Chame antes de
+    confirm_appointment quando o nome não tem ficha neste número.
+    patient_name: nome completo do paciente. birth_date: dd/mm/aaaa.
+    is_returning_patient: True se já se consultou na clínica (CPF opcional);
+      False para paciente novo (CPF obrigatório).
+    relationship: parentesco com quem fala (ex: 'pai', 'esposa', 'amigo').
+    Menores de 18 anos: a ferramenta transfere para a atendente e não cadastra.
+    """
+    from app.utils import looks_like_name, format_person_name
+
+    if not looks_like_name(patient_name):
+        return (
+            "NOME_INVALIDO: o que foi informado não parece um nome de pessoa. "
+            "Peça novamente o nome completo do paciente."
+        )
+
+    normalized_birth = _parse_birth_date(birth_date or "")
+    if not normalized_birth:
+        return "DATA_INVALIDA: peça novamente a data de nascimento do paciente no formato dd/mm/aaaa."
+    age = _compute_age(normalized_birth)
+    if age is not None and age < 18:
+        return await transfer_to_human.coroutine(
+            reason="Cadastro de paciente menor gerenciado — v1 adulto-só",
+            state=state, config=config,
+        )
+
+    if not is_returning_patient and not (patient_cpf or "").strip():
+        return "CPF_OBRIGATORIO: para paciente novo, peça o CPF antes de cadastrar."
+
+    phone = config["configurable"]["phone"].replace("@s.whatsapp.net", "")
+    contact = await get_contact_by_phone(phone)
+    if not contact:
+        return "ERRO: contato não encontrado para este número. Transfira para a atendente."
+
+    exact_name = format_person_name(patient_name)
+    # Sem patient_id: upsert_patient reconcilia retornante por nome+nascimento
+    # ou insere ficha nova; nunca resolve por telefone.
+    patient_id = await upsert_patient({
+        "name": exact_name,
+        "birth_date": normalized_birth,
+        "cpf": (patient_cpf or "").strip() or None,
+        "email": (patient_email or "").strip() or None,
+    })
+    if not patient_id:
+        return "ERRO: não foi possível cadastrar o paciente. Transfira para a atendente."
+
+    for role in ("agendamento", "financeiro", "consulta"):
+        await link_patient_contact(
+            patient_id, contact["id"], role, is_self=False, relationship=relationship,
+        )
+
+    return (
+        f"PACIENTE_CADASTRADO: {exact_name}. Agora chame confirm_appointment com "
+        f"patient_name_override=\"{exact_name}\" para o horário escolhido."
     )
