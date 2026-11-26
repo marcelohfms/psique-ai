@@ -123,6 +123,20 @@ async def _resolve_doctor(state: dict, config: RunnableConfig) -> str:
     return doctor
 
 
+def _exact_patient_match(all_users: list[dict], name: str) -> dict | None:
+    """Ficha cujo nome civil, nome ou nome social casa EXATAMENTE com `name`
+    (sem acento, sem caixa). Prefixo não casa: 'Fulano' ≠ 'Fulano Júnior'."""
+    from app.patients import normalize_person_name
+    target = normalize_person_name(name)
+    if not target:
+        return None
+    for _u in all_users:
+        for _field in ("patient_name", "name", "social_name"):
+            if normalize_person_name(_u.get(_field)) == target:
+                return _u
+    return None
+
+
 def _match_patient_by_name(all_users: list[dict], target: str) -> dict | None:
     """Match a patient record by name among a contact's patients.
 
@@ -1223,6 +1237,25 @@ async def confirm_appointment(
             "consulta é. Pergunte ao contato: 'Qual o nome completo do paciente para quem "
             "deseja agendar?' e rechame confirm_appointment com esse nome em "
             "patient_name_override."
+        )
+
+    # Trava de cadastro gerenciado: override que nomeia alguém sem ficha neste número
+    # nunca pode cair na ficha existente (caso Helder pai x filho Júnior).
+    if (patient_name_override or "").strip() and _exact_patient_match(
+        _all_users_sn, patient_name_override
+    ) is None:
+        _logger.warning(
+            "confirm_appointment: override sem ficha exata — pedindo cadastro. phone=%s",
+            _phone_sn,
+        )
+        return (
+            "[INSTRUÇÃO INTERNA — NÃO ENVIE AO PACIENTE] O paciente "
+            f"'{patient_name_override.strip()}' ainda não "
+            "tem cadastro neste número. NÃO agende na ficha existente. Se for paciente ADULTO, "
+            "colete nome completo, data de nascimento, se já é paciente da clínica, CPF e e-mail "
+            "e chame register_managed_patient; depois rechame confirm_appointment com esse nome "
+            "em patient_name_override. Se for MENOR de 18, chame register_managed_patient mesmo "
+            "assim — ela transfere para a atendente."
         )
 
     _split_sibling: dict | None = None

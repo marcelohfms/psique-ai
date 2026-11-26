@@ -9246,3 +9246,57 @@ async def test_request_document_delega_para_register_document_request():
     assert captured["config"] is CONFIG
     assert captured["medication_note"] == "Escitalopram 20mg"
     assert captured["patient_name_override"] == "Luiz"
+
+
+# ── Trava: confirm_appointment não agenda em ficha de outra pessoa ───────────
+from app.graph.tools import _exact_patient_match, confirm_appointment as _confirm_tool_t1
+
+
+def test_exact_patient_match_ignores_prefix_and_folds_accents():
+    son = {"patient_name": "Helder Siqueira Maciel Júnior", "social_name": None}
+    jose = {"patient_name": "José da Silva", "social_name": None}
+    assert _exact_patient_match([son], "Helder Siqueira Maciel") is None
+    assert _exact_patient_match([son], "helder siqueira maciel júnior") == son
+    assert _exact_patient_match([jose], "Jose da Silva") == jose
+
+
+@pytest.mark.asyncio
+async def test_confirm_blocks_override_for_unregistered_person():
+    son = {"id": "son-id", "patient_name": "Helder Siqueira Maciel Júnior"}
+    with patch("app.graph.tools.get_users_by_phone", new_callable=AsyncMock, return_value=[son]), \
+         patch("app.graph.tools._get_doctor_calendar_id", new_callable=AsyncMock, return_value="cal"), \
+         patch("app.google_calendar.create_event", new_callable=AsyncMock) as mock_create:
+        out = await _confirm_tool_t1.coroutine(
+            "2026-12-02T11:00:00", 60, _make_state(preferred_doctor="bruna"),
+            CONFIG, patient_name_override="Helder Siqueira Maciel")
+    assert "register_managed_patient" in out
+    mock_create.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_confirm_does_not_block_when_override_matches_exactly():
+    son = {"id": "son-id", "patient_name": "Helder Siqueira Maciel Júnior"}
+    with patch("app.graph.tools.get_users_by_phone", new_callable=AsyncMock, return_value=[son]), \
+         patch("app.graph.tools._get_doctor_calendar_id", new_callable=AsyncMock, return_value="cal"), \
+         patch("app.google_calendar.create_event", new_callable=AsyncMock, return_value="evt") as mock_create, \
+         patch("app.graph.tools._resolve_patient_for_booking", new_callable=AsyncMock, return_value=son), \
+         patch("app.graph.tools.get_supabase", new_callable=AsyncMock, return_value=_make_supabase_client()):
+        out = await _confirm_tool_t1.coroutine(
+            "2026-12-02T11:00:00", 60, _make_state(preferred_doctor="bruna"),
+            CONFIG, patient_name_override="Helder Siqueira Maciel Júnior")
+    assert "register_managed_patient" not in out
+    mock_create.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_confirm_empty_override_single_patient_not_blocked():
+    me = {"id": "me-id", "patient_name": "Maria"}
+    with patch("app.graph.tools.get_users_by_phone", new_callable=AsyncMock, return_value=[me]), \
+         patch("app.graph.tools._get_doctor_calendar_id", new_callable=AsyncMock, return_value="cal"), \
+         patch("app.google_calendar.create_event", new_callable=AsyncMock, return_value="evt") as mock_create, \
+         patch("app.graph.tools._resolve_patient_for_booking", new_callable=AsyncMock, return_value=me), \
+         patch("app.graph.tools.get_supabase", new_callable=AsyncMock, return_value=_make_supabase_client()):
+        out = await _confirm_tool_t1.coroutine(
+            "2026-12-02T11:00:00", 60, _make_state(), CONFIG, patient_name_override="")
+    assert "register_managed_patient" not in out
+    mock_create.assert_called_once()
