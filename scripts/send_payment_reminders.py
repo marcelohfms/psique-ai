@@ -20,6 +20,7 @@ Requires in Supabase:
 """
 import asyncio
 import os
+import re
 import traceback
 from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
@@ -60,6 +61,12 @@ TEMPLATE_CANCEL = "taxa_reserva_cancelamento"
 
 # Janela de atendimento do WhatsApp: fora dela, só template é entregável.
 WHATSAPP_WINDOW_HOURS = 24
+
+# Tag embutida na mensagem de comprovante com o link do arquivo no Drive:
+# "[imagem]: ... [drive_link:URL]". É a mesma chave que o evento
+# payment_receipt_registered guarda em metadata.drive_link, então serve para casar
+# a mensagem com o registro e saber se aquele comprovante já foi tratado.
+_DRIVE_LINK_RE = re.compile(r"\[drive_link:(\S+?)\]")
 
 
 def payment_reminder_message(contact_first_name: str, doctor_label: str, date_str: str, patient_first_name: str | None = None) -> str:
@@ -260,6 +267,35 @@ async def _window_open(client, phone: str, now: datetime) -> bool:
     return bool(res.data)
 
 
+async def _registered_drive_links(client, all_variants: list[str], since_iso: str) -> set[str]:
+    """drive_links dos pagamentos já registrados (evento payment_receipt_registered)
+    desde `since_iso`, para esses telefones. Usado para reconhecer, na conversa, um
+    comprovante que já foi lançado e não deve travar a cobrança.
+
+    Best-effort: erro na consulta devolve set() — na dúvida, NÃO pula nada (mantém a
+    trava conservadora, bloqueando como antes)."""
+    if not all_variants:
+        return set()
+    try:
+        res = await (
+            client.from_("events")
+            .select("metadata")
+            .in_("phone", all_variants)
+            .eq("event_type", "payment_receipt_registered")
+            .gte("created_at", since_iso)
+            .execute()
+        )
+    except Exception as e:
+        print(f"  [payment_guard] Registered-receipt lookup FAILED for {all_variants}: {e}")
+        return set()
+    links: set[str] = set()
+    for row in res.data or []:
+        link = (row.get("metadata") or {}).get("drive_link")
+        if link:
+            links.add(link)
+    return links
+
+
 async def find_receipt_in_conversation(client, phones: list[str], since_iso: str) -> dict | None:
     """Return the most recent payment-receipt message sent by any of `phones`
     after `since_iso`, or None.
@@ -272,6 +308,20 @@ async def find_receipt_in_conversation(client, phones: list[str], since_iso: str
     """
     from app.media import RECEIPT_PREFIX, is_payment_receipt_message
     from app.phone import _phone_variants
+
+    all_variants: list[str] = []
+    for phone in phones:
+        all_variants.extend(_phone_variants(phone))
+
+    # Comprovantes JÁ REGISTRADOS não são comprovantes pendentes: a trava existe só
+    # para pegar comprovante que a Eva não lançou (booking_fee_paid_at ficou NULL).
+    # Um pagamento já registrado deixa um evento payment_receipt_registered com o
+    # drive_link do arquivo; se o drive_link do comprovante da conversa está entre
+    # eles, ele já foi tratado — pode ser de outra consulta ou da consulta em si
+    # (não da taxa). Sem isto, o comprovante de R$750 da consulta antiga, lançado
+    # pela atendente logo depois de uma consulta nova ser criada, travava a cobrança
+    # da taxa nova para sempre (caso Davi/Maria José, 26/11/2026).
+    registered_links = await _registered_drive_links(client, all_variants, since_iso)
 
     for phone in phones:
         # `contacts.phone` and `messages.phone` disagree on the 9th digit for a
@@ -303,8 +353,15 @@ async def find_receipt_in_conversation(client, phones: list[str], since_iso: str
         # the clinic to check, so the actual decision uses the same detector the
         # graph routes on.
         for row in result.data or []:
-            if is_payment_receipt_message(row.get("content") or ""):
-                return row
+            content = row.get("content") or ""
+            if not is_payment_receipt_message(content):
+                continue
+            link_m = _DRIVE_LINK_RE.search(content)
+            if link_m and link_m.group(1) in registered_links:
+                # Comprovante já lançado (outra consulta / a própria consulta): não
+                # é a taxa pendente desta consulta. Segue procurando um não tratado.
+                continue
+            return row
 
     # Sinal alternativo, independente da tabela messages: um evento
     # payment_receipt_unreadable = comprovante recebido mas com valor ILEGÍVEL,
@@ -313,9 +370,6 @@ async def find_receipt_in_conversation(client, phones: list[str], since_iso: str
     # Danielle 5587996373892, 01/09/2026: o comprovante chegou e virou evento, mas
     # não ficou em messages) — sem esta checagem o cron cancelaria a consulta de um
     # paciente que já mandou o comprovante. Bloqueia igual, até a baixa manual.
-    all_variants: list[str] = []
-    for phone in phones:
-        all_variants.extend(_phone_variants(phone))
     if all_variants:
         try:
             ev = await (

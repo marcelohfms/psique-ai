@@ -1017,3 +1017,110 @@ def test_extended_deadline_capped_at_24h_before_appointment():
             "payment_deadline_at": "2026-10-05T10:00:00+00:00"}
     assert not spr._reminder_due(appt, datetime(2026, 10, 4, 14, 59, tzinfo=TZ))
     assert spr._reminder_due(appt, datetime(2026, 10, 4, 15, 0, tzinfo=TZ))
+
+
+# ── A trava não pode bloquear num comprovante JÁ REGISTRADO ───────────────────
+# Caso Davi/Maria José (26/11/2026): a consulta nova de
+# acompanhamento (07/01/2027) foi criada pelo painel às 17h45; às 18h41 a atendente
+# registrou o comprovante de R$750 da consulta ANTIGA (26/11). Esse comprovante, já
+# lançado (evento payment_receipt_registered com o mesmo drive_link), caiu na
+# conversa depois do created_at da consulta nova, e a trava passou a bloquear a
+# cobrança da taxa nova para sempre. A trava existe só para segurar comprovante NÃO
+# tratado — um já registrado (de outra consulta / já lançado) não pode travá-la.
+
+
+class _SmartEventsTable:
+    """Double da tabela `events` que despacha por event_type. O _table genérico
+    devolve as mesmas linhas para qualquer consulta; aqui a busca de comprovante
+    registrado e a de ilegível batem na mesma tabela e precisam divergir."""
+
+    def __init__(self, registered=None, unreadable=None):
+        self._rows = {
+            "payment_receipt_registered": registered or [],
+            "payment_receipt_unreadable": unreadable or [],
+        }
+        self._etype = None
+
+    def _self(self, *a, **k):
+        return self
+
+    select = in_ = gte = order = limit = not_ = is_ = ilike = _self
+
+    def eq(self, col, val):
+        if col == "event_type":
+            self._etype = val
+        return self
+
+    async def execute(self):
+        return MagicMock(data=self._rows.get(self._etype, []))
+
+
+def _client_with_events(receipt_rows, registered=None, unreadable=None):
+    messages = _table(receipt_rows or [])
+    events = _SmartEventsTable(registered=registered, unreadable=unreadable)
+    tables = {"messages": messages, "events": events}
+    client = MagicMock()
+    client.from_.side_effect = lambda name: tables.get(name, messages)
+    return client
+
+
+_DL_REGISTERED = "https://drive.google.com/file/d/1AioXpRegistrado/view?usp=drivesdk"
+
+
+@pytest.mark.asyncio
+async def test_receipt_lookup_skips_already_registered_receipt():
+    """Comprovante cujo drive_link já consta num evento payment_receipt_registered
+    (pagamento de outra consulta, já lançado) NÃO segura o cron."""
+    client = _client_with_events(
+        receipt_rows=[{
+            "phone": "5581990000000",
+            "content": f"[imagem]: COMPROVANTE DE PAGAMENTO: Consulta R$ 750 "
+                       f"— registrado pela atendente [drive_link:{_DL_REGISTERED}]",
+            "created_at": "2026-11-26T21:41:47+00:00",
+        }],
+        registered=[{"metadata": {"drive_link": _DL_REGISTERED, "payment_type": "Consulta"}}],
+    )
+    found = await spr.find_receipt_in_conversation(
+        client, ["5581990000000@s.whatsapp.net"], "2026-11-26T20:45:00+00:00")
+    assert found is None
+
+
+@pytest.mark.asyncio
+async def test_receipt_lookup_still_blocks_unregistered_receipt():
+    """Comprovante sem registro (drive_link não aparece em nenhum evento) continua
+    segurando o cron — é o comprovante não tratado que a trava existe para pegar."""
+    client = _client_with_events(
+        receipt_rows=[{
+            "phone": "5581987415206",
+            "content": f"[imagem]: COMPROVANTE DE PAGAMENTO: R$ 100,00 [drive_link:{_DL_REGISTERED}]",
+            "created_at": "2026-07-31T17:27:29+00:00",
+        }],
+        registered=[],
+    )
+    found = await spr.find_receipt_in_conversation(
+        client, ["5581987415206@s.whatsapp.net"], "2026-07-31T14:30:44+00:00")
+    assert found is not None
+    assert found["created_at"] == "2026-07-31T17:27:29+00:00"
+
+
+@pytest.mark.asyncio
+async def test_receipt_lookup_picks_unregistered_receipt_past_a_registered_one():
+    """Dois comprovantes na conversa — um já registrado (outra consulta) e um
+    pendente: a trava pula o registrado e segura no pendente."""
+    other = "https://drive.google.com/file/d/REGISTRADO/view"
+    pending = "https://drive.google.com/file/d/PENDENTE/view"
+    client = _client_with_events(
+        receipt_rows=[
+            {"phone": "5581990000000",
+             "content": f"[imagem]: COMPROVANTE DE PAGAMENTO: Consulta R$ 750 [drive_link:{other}]",
+             "created_at": "2026-11-26T21:41:47+00:00"},
+            {"phone": "5581990000000",
+             "content": f"[imagem]: COMPROVANTE DE PAGAMENTO: Taxa R$ 100 [drive_link:{pending}]",
+             "created_at": "2026-11-26T21:00:00+00:00"},
+        ],
+        registered=[{"metadata": {"drive_link": other}}],
+    )
+    found = await spr.find_receipt_in_conversation(
+        client, ["5581990000000@s.whatsapp.net"], "2026-11-26T20:45:00+00:00")
+    assert found is not None
+    assert found["created_at"] == "2026-11-26T21:00:00+00:00"
